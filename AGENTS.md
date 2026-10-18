@@ -88,8 +88,10 @@ before the lane reports.
   the disclosure.
 - **Evidence lands in `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**, which
   `guard` checks before a push.
-- **The lenses are read-only.** They never take the e2e slot (one full
-  `test:e2e` run at a time).
+- **The lenses return findings; they do not author.** Neither reviewer writes to
+  the worktree or takes the e2e slot (one full `test:e2e` run at a time). The
+  authoring session applies the fixes and re-runs the lens where the tier
+  requires a fresh look, so no lens ever signs off on its own edit.
 
 ## Merging
 

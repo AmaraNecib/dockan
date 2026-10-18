@@ -56,10 +56,19 @@ still alive, so one shared helper decides both.
 **Consequences**
 
 - A live-but-frozen holder — a hibernated laptop, a stopped VM — goes stale and
-  can now be reclaimed after the window, where before it was protected by the
-  pid probe. Clause three is what keeps that safe: a resumed instance that lost
-  the lock refuses instead of writing, so the failure is a refusal the owner
-  reads, not two writers on one snapshot.
+  can now be reclaimed after the window, but only where the probe cannot settle
+  liveness. Clause two still protects a same-host process whose probe answers: it
+  wins over any heartbeat age, so the widening is confined to the unknowable
+  case.
+- **The safety of that reclaim rests on the write path, not on the heartbeat.**
+  Clause three's check runs in the heartbeat, so it can be up to one cadence
+  late. A persist already queued when the lock is reclaimed would otherwise
+  write the snapshot after another owner took it, which is the two-writer
+  outcome the lock exists to prevent. The reclaim is safe only once the write
+  path itself refuses on a lost lock: the persistence queue re-checks ownership
+  as it drains, and `persistNow` in the encrypted connection never writes under
+  a lock the instance no longer holds. Until that check exists, reclaiming from
+  a frozen holder trades a refusal for a possible second writer.
 - A live holder owned by another OS user keeps heartbeating, so it stays alive
   and is never reclaimed.
 - An install already stuck on the EPERM reading cannot repair itself: the app is

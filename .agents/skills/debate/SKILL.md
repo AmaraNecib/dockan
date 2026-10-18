@@ -17,7 +17,9 @@ The caller (feature-implement) provides:
 ## When to run
 
 After implementation is complete but before local verification and code-review.
-Only for High-assurance changes (authz core, permissions, denial, security).
+Standard and High-assurance changes both run it; only Lightweight (truly
+non-reviewable files) skips it. The tier decides how much scrutiny a failure
+mode earns, not whether the debate happens.
 
 ## How to run
 
@@ -72,9 +74,11 @@ Go through each critic finding and classify:
 | Any | Out of scope | **Create issue, document in PR** |
 | Any | Defender disproved (false alarm) | **Dismiss** — note in PR it was considered |
 
-### 4. Apply fixes
+### 4. Apply fixes — in the authoring session
 
-Fix all items classified as "Fix it" above. Commit fixes.
+The reviewers return findings; neither writes to the worktree. The session that
+authored the change fixes everything classified as "Fix it" above and commits,
+and the lens is re-run on the result when the tier requires a fresh look.
 
 ### 5. Document remaining items
 

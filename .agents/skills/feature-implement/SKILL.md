@@ -9,7 +9,7 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 Read `docs/engineering-workflow.md` first.
 
 **A lane stops at step 9 (Guard Phase 2).** Steps 10-13 are parent-owned: push,
-PR, CI/Greptile, merge-on-owner-word and wisdom. The lane's last act is
+PR, CI/Greptile, the merge decision and wisdom. The lane's last act is
 `crew_report`; it never pushes, never opens a PR and never merges.
 
 **Wisdom: read it, never write it.** Before step 1, read `.agents/wisdom/`, apply
@@ -210,10 +210,12 @@ The parent reports: PR link, check status (local + CI), Greptile verdict, any de
 
 ## Merge rules
 
-**Parent-only — a lane never merges at all.** The parent session merges only when
-the owner says to merge, whatever the review says. A 5/5 Greptile verdict with no
-findings, anchored to the current head SHA, and every CI check green is the **bar
-to ask** — not permission to proceed.
+**Parent-only — a lane never merges at all.** The class decides who merges: a
+cheap-to-reverse diff with no decision in it merges itself once the gate is
+clean, and an expensive-to-reverse or decision diff waits for the owner's word.
+A 5/5 Greptile verdict with no findings, anchored to the current head SHA, and
+every CI check green is the **bar to merge at all** — auto-merging below it is
+not allowed, and a REFUSED verdict never merges.
 
 The gate is [`docs/verification-and-merge-gate.md`](../../../docs/verification-and-merge-gate.md):
 the four reasons, the evidence form (visual vs measured), the AUTO/OWNER/REFUSED

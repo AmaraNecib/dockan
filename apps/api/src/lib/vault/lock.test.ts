@@ -78,8 +78,10 @@ function countingReader(behaviour: (path: string, call: number) => string) {
  * A driven clock and sleep for the held-lock retry loop: time moves only when
  * the loop sleeps, so its bounds are asserted by arithmetic rather than against
  * a loaded machine's wall clock (#281, Greptile P2). `sleeps` is every delay
- * the loop asked for, in order; a non-finite ask moves time by one, so a mutant
- * with no attempt ceiling still terminates at the window instead of hanging.
+ * the loop asked for, in order. A non-positive or non-finite ask moves time by
+ * one millisecond, so a sequence whose configured delay is 0 still reaches the
+ * one-second window: a mutant with no attempt ceiling terminates there instead
+ * of spinning the event loop where no bun timeout can interrupt it.
  */
 type ControlledClock = {
   now: () => number;
@@ -95,7 +97,7 @@ function controlledClock(): ControlledClock {
     now: () => time,
     sleep: (milliseconds: number): void => {
       sleeps.push(milliseconds);
-      time += Number.isFinite(milliseconds) ? milliseconds : 1;
+      time += Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 1;
     },
   };
 }
@@ -776,17 +778,30 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   });
 
   it("keeps its patience at the default budget for most of a second", () => {
+    // Driven clock: eight 100 ms sleeps must fit the one-second window, and on
+    // the real clock a pause between them spends the reader's remaining
+    // patience, so assertHeld() would throw for a reason that has nothing to do
+    // with the budget under test (test-audit F1, Greptile P2).
+    const clock = controlledClock();
     const reads = countingReader((lockPath, call) => {
       if (call <= 8) throw errno("EBUSY", "EBUSY: resource busy or locked");
       return realRead(lockPath);
     });
     // the knobs nobody sets: 8 x 100 ms of a scanner holding the file is inside
     // the default patience, where the old 5 x 50 ms budget failed the holder
-    // closed on a healthy machine (critic r3-2)
-    const lock = acquireVaultLock(dir, { readLockFile: reads.readLockFile, logger: reads.logger, onLost: () => undefined });
+    // closed on a healthy machine (critic r3-2). 800 of the 1000 ms window is
+    // arithmetic on the driven clock, not a race against it.
+    const lock = acquireVaultLock(dir, {
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      now: clock.now,
+      sleep: clock.sleep,
+      onLost: () => undefined,
+    });
     try {
       expect(() => lock.assertHeld()).not.toThrow();
       expect(reads.state.reads).toBe(9);
+      expect(clock.sleeps).toEqual(Array.from({ length: 8 }, () => 100));
     } finally {
       lock.release();
     }
@@ -821,6 +836,10 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   });
 
   it("caps the number of distinct codes it names in the loss reason", () => {
+    // driven clock with a 0 ms delay: time advances one millisecond per ask, so
+    // the 101 reads are ended by the attempt ceiling and the window is only the
+    // backstop that keeps a ceiling-less mutant from spinning
+    const clock = controlledClock();
     const reads = countingReader((_lockPath, call) => {
       // a distinct 40-char code on every read: without a count cap the reason
       // packs one per attempt and reaches kilobytes (code-review finding 2)
@@ -832,10 +851,13 @@ describe("a transient lock-file read error is not theft (#281)", () => {
       transientReadRetryDelayMs: 0,
       readLockFile: reads.readLockFile,
       logger: reads.logger,
+      now: clock.now,
+      sleep: clock.sleep,
       onLost: (reason) => lost.push(reason),
     });
     expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
     expect(reads.state.readsAtLoss).toBe(101);
+    expect(clock.sleeps).toEqual(Array.from({ length: 100 }, () => 0));
     expect(lost).toHaveLength(1);
     // five codes, then a count of the rest: bounded by the cap, not by the
     // 101-attempt ceiling
@@ -896,26 +918,32 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   }, 30_000);
 
   it("caps the whole retry window even when a knob asks for hours", () => {
+    // Driven clock: on the real clock a pause before the third read spends the
+    // window and the sequence ends as a loss the test did not ask for
+    // (Greptile P2). The sleeps are asserted instead of elapsed wall time.
+    const clock = controlledClock();
     const reads = countingReader((lockPath, call) => {
       if (call <= 2) throw errno("EBUSY", "EBUSY: resource busy or locked");
       return realRead(lockPath);
     });
     const lost: string[] = [];
-    const startedAt = Date.now();
     const lock = acquireVaultLock(dir, {
       transientReadRetries: 10_000,
       transientReadRetryDelayMs: 3_000,
       readLockFile: reads.readLockFile,
       logger: reads.logger,
+      now: clock.now,
+      sleep: clock.sleep,
       onLost: (reason) => lost.push(reason),
     });
     try {
       expect(() => lock.assertHeld()).not.toThrow();
       expect(reads.state.reads).toBe(3);
-      // unclamped this is 2 x 3 s; the window holds the whole sequence near a
-      // second, because it runs inside the write guard, and a regression here
-      // fails in seconds rather than after the unclamped budget (critic N2)
-      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      // unclamped this is 2 x 3 s; the per-sleep ceiling asks 500 ms twice and
+      // the window leaves exactly the second 500 ms, because the whole sequence
+      // runs inside the write guard (critic N2). A regression that drops either
+      // clamp shows up as a different ask here, not as a slow test.
+      expect(clock.sleeps).toEqual([500, 500]);
       expect(lost).toEqual([]);
     } finally {
       lock.release();
@@ -923,6 +951,10 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   });
 
   it("caps the attempt ceiling even when a knob asks for ten thousand", () => {
+    // driven clock with a 0 ms delay: the window is far away (100 ms of driven
+    // time after 100 asks), so the 101st read is ended by the attempt ceiling
+    // alone and the count is arithmetic rather than a race (Greptile P2)
+    const clock = controlledClock();
     const reads = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked");
     });
@@ -932,10 +964,13 @@ describe("a transient lock-file read error is not theft (#281)", () => {
       transientReadRetryDelayMs: 0,
       readLockFile: reads.readLockFile,
       logger: reads.logger,
+      now: clock.now,
+      sleep: clock.sleep,
       onLost: (reason) => lost.push(reason),
     });
     expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
     expect(reads.state.readsAtLoss).toBe(101);
+    expect(clock.sleeps).toEqual(Array.from({ length: 100 }, () => 0));
     expect(lost).toHaveLength(1);
   });
 

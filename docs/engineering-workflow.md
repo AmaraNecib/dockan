@@ -158,8 +158,8 @@ once the four reasons hold and every check is green — and only when the owner 
 anything expensive to reverse, any decision, or a PR the owner asked to see. A visual PR is
 cheap to reverse, so it auto-merges too, once its before/after packet is posted at the head.
 A lane never merges at all; squash merges only. A 5/5 Greptile verdict with no findings,
-anchored to the current head SHA, and every CI check green is the **bar to ask** for the
-owner's class — not permission.
+anchored to the current head SHA, and every CI check green is the **bar to merge at
+all** — auto-merging below it is not allowed, and a REFUSED verdict never merges.
 
 The gate itself is [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md):
 the four reasons (5/5, `Last reviewed commit` == head, no comments after the

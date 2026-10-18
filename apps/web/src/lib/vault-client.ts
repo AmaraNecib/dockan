@@ -185,6 +185,20 @@ export function stripVaultFragment(): void {
 
 type VaultErrorBody = { error?: { code?: string; retryAfterMs?: number } };
 
+/**
+ * The error envelope of a failed response, or undefined when the body is not
+ * one — an HTML refusal page from a build older than #275, a proxy error page,
+ * a truncated body. The API ships stable codes and no display copy, so the code
+ * is the only thing on the wire worth reading.
+ */
+function errorEnvelopeIn(text: string): VaultErrorBody["error"] {
+  try {
+    return errorEnvelopeSchema.parse(JSON.parse(text)).error;
+  } catch {
+    return undefined;
+  }
+}
+
 async function request<T>(path: string, init: RequestInit, authenticated: boolean, schema: z.ZodType<T>): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
@@ -195,14 +209,9 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
   const response = await fetch(path, { ...init, headers });
   const text = await response.text();
   if (!response.ok) {
-    let parsed: VaultErrorBody = {};
-    try {
-      parsed = errorEnvelopeSchema.parse(JSON.parse(text));
-    } catch {
-      /* non-JSON failure: fall through to the generic refusal */
-    }
-    const code = parsed.error?.code ?? "VAULT_UNEXPECTED";
-    throw new VaultRequestError(code, parsed.error?.retryAfterMs);
+    // a body with no envelope (HTML, empty, truncated) is the generic refusal
+    const refusal = errorEnvelopeIn(text);
+    throw new VaultRequestError(refusal?.code ?? "VAULT_UNEXPECTED", refusal?.retryAfterMs);
   }
   const decoded = schema.safeParse(JSON.parse(text));
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
@@ -273,8 +282,15 @@ export async function fetchVaultStatus(): Promise<VaultStatus> {
     // no vault route at all: this is the legacy plaintext build
     throw new VaultRequestError("VAULT_UNSUPPORTED");
   }
-  if (!response.ok) throw new VaultRequestError("VAULT_UNREACHABLE");
-  const decoded = statusSchema.safeParse(JSON.parse(await response.text()));
+  const text = await response.text();
+  if (!response.ok) {
+    // A refusal that names its cause arrives as JSON with the API's stable
+    // code: the other-instance lock answers 503 + VAULT_LOCKED_BY_OTHER_INSTANCE
+    // on this route (#275). A body that names no code names no cause — an HTML
+    // refusal page, a proxy 502 — so it stays the honest "unreachable" (#276).
+    throw new VaultRequestError(errorEnvelopeIn(text)?.code ?? "VAULT_UNREACHABLE");
+  }
+  const decoded = statusSchema.safeParse(JSON.parse(text));
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
   return decoded.data;
 }

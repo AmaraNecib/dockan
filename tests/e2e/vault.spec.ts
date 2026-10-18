@@ -1,6 +1,7 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -33,6 +34,8 @@ const VAULT_KDF_TIMEOUT_MS = 20_000;
 
 let api: ChildProcess | undefined;
 let web: ChildProcess | undefined;
+/** the second instance on the same folder; it can only answer with the refusal */
+let refusal: ChildProcess | undefined;
 let dataDir: string;
 /** shown exactly once by the first test, used by the recovery test after a restart */
 let recoveryKey = "";
@@ -53,13 +56,47 @@ async function waitForOk(url: string, timeoutMs = 20_000): Promise<void> {
   }
 }
 
-function startApi(): ChildProcess {
+/** A port the kernel just proved free, for the second instance's own listener. */
+async function freePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      // SAFETY: a live listening TCP socket's address() is an AddressInfo
+      const assigned = (server.address() as net.AddressInfo).port;
+      server.close(() => resolve(assigned));
+    });
+    server.on("error", reject);
+  });
+}
+
+/**
+ * Wait for the second instance's refusal and hand back what a browser receives
+ * on the route the app actually calls. The body comes from the process
+ * (apps/api #275 answers 503 + VAULT_LOCKED_BY_OTHER_INSTANCE here), so the
+ * screen asserted below is checked against the wire shape the API sends rather
+ * than a body this spec invented.
+ */
+async function waitForRefusal(onPort: number, timeoutMs = 20_000): Promise<Response> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${onPort}/api/vault/status`);
+      if (response.status === 503) return response;
+    } catch {
+      /* the child is still binding */
+    }
+    if (Date.now() >= deadline) throw new Error(`no refusal answered on ${onPort}`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+function startApi(onPort = API_PORT): ChildProcess {
   const child = spawn("bun", ["src/main.ts"], {
     cwd: path.join(ROOT, "apps", "api"),
     env: {
       ...process.env,
       DOKAN_DATA_DIR: dataDir,
-      DOKAN_PORT: String(API_PORT),
+      DOKAN_PORT: String(onPort),
       DOKAN_PORT_ROOT: path.join(dataDir, "run"),
       // DOKAN_VAULT intentionally unset: the default is the encrypted vault
     },
@@ -119,6 +156,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  await stopAndWait(refusal);
   await stopAndWait(web);
   await stopAndWait(api);
   fs.rmSync(dataDir, { recursive: true, force: true });
@@ -277,4 +315,47 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   await page.getByTestId("vault-passphrase").fill(NEW_PASSPHRASE);
   await page.getByTestId("vault-unlock-submit").click();
   await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+});
+
+test("a second instance on this folder: the browser is told the folder is in use (#276)", async ({ page }) => {
+  // The first instance above still holds the folder, so this child cannot take
+  // the lock and serves the refusal on its own port (ADR-0012). Its /api/vault
+  // answer is the body the web must read; the dev proxy points at the first
+  // instance, so the body is fetched here and replayed through the SPA — the
+  // transport between the refuser and the page is the only part not exercised.
+  const refusalPort = await freePort();
+  refusal = startApi(refusalPort);
+  const refusalResponse = await waitForRefusal(refusalPort);
+  expect(refusalResponse.status).toBe(503);
+  const refusalBody = await refusalResponse.text();
+  expect(refusalBody).toContain("VAULT_LOCKED_BY_OTHER_INSTANCE");
+
+  await page.route("**/api/vault/status", (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: refusalBody }),
+  );
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+
+  const inUse = page.getByTestId("vault-status-in-use");
+  await expect(inUse).toBeVisible();
+  await expect(inUse).toHaveText("البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.");
+  // the server-down story must not appear for a refusal
+  await expect(page.getByTestId("vault-status-unavailable")).toHaveCount(0);
+  await expect(page.getByText("تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.")).toHaveCount(0);
+
+  // closing the other copy and retrying reaches the real gate
+  await stopAndWait(refusal);
+  refusal = undefined;
+  await page.unroute("**/api/vault/status");
+  await page.getByTestId("vault-status-retry").click();
+  await expect(page.getByTestId("vault-passphrase")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+});
+
+test("a genuinely unreachable server keeps the server-down copy (#276)", async ({ page }) => {
+  // the status call dies at the client, which is the honest "server down" case
+  await page.route("**/api/vault/status", (route) => route.abort("failed"));
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  const down = page.getByTestId("vault-status-unavailable");
+  await expect(down).toBeVisible();
+  await expect(down).toHaveText("تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.");
+  await expect(page.getByTestId("vault-status-in-use")).toHaveCount(0);
 });

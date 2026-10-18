@@ -149,6 +149,25 @@ describe("vault status and logout", () => {
     await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_UNREACHABLE" });
   });
 
+  it("keeps the code of a named refusal instead of calling it unreachable (#276)", async () => {
+    // the other-instance lock answers this route with 503 + the stable code (#275)
+    routes.set("/api/vault/status", () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 }));
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+  });
+
+  it("reads an HTML refusal page and a code-less 5xx as unreachable, never as a named cause (#276)", async () => {
+    // a build older than #275 answers the route with the Arabic refusal page
+    routes.set(
+      "/api/vault/status",
+      () => new Response("<!doctype html><main>البيانات مفتوحة في نسخة أخرى</main>", { status: 503, headers: { "content-type": "text/html" } }),
+    );
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_UNREACHABLE" });
+
+    // a proxy error body is not an error envelope either
+    routes.set("/api/vault/status", () => Response.json({ error: "bad gateway" }, { status: 502 }));
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_UNREACHABLE" });
+  });
+
   it("revokeVaultSession posts with the stored token", async () => {
     storeVaultSessionToken("session-tok");
     const seen = { value: "" };

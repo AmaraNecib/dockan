@@ -237,6 +237,67 @@ describe("vault status retry (finding 5)", () => {
   });
 });
 
+describe("vault folder held by another instance (issue #276)", () => {
+  it("shows the in-use screen for the refusal, never the server-down screen", async () => {
+    vaultStatusResponse = async () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 });
+    const host = await mountAuthGateFor('[data-testid="vault-status-in-use"]');
+    expect(host.querySelector('[data-testid="vault-status-in-use"]')?.textContent).toBe(
+      "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+    );
+    expect(host.querySelector('[data-testid="vault-status-unavailable"]')).toBeNull();
+    // the legacy login must not appear behind a refusal either
+    expect(host.querySelector("form")).toBeNull();
+  });
+
+  it("retries the refusal into the gate once the folder is free", async () => {
+    let calls = 0;
+    vaultStatusResponse = async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 });
+      return Response.json({
+        mode: "vault",
+        state: "locked",
+        legacyDatabase: false,
+        recoveryKeyCount: 0,
+        lockedForMs: 0,
+        unlocked: false,
+      });
+    };
+    const host = await mountAuthGateFor('[data-testid="vault-status-in-use"]');
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="vault-status-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-status-in-use"]')).toBeNull();
+  });
+
+  it("keeps the server-down screen when the server is genuinely unreachable", async () => {
+    vaultStatusResponse = async () => {
+      throw new Error("api down");
+    };
+    const host = await mountAuthGateFor('[data-testid="vault-status-unavailable"]');
+    expect(host.querySelector('[data-testid="vault-status-unavailable"]')?.textContent).toBe(
+      "تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.",
+    );
+    expect(host.querySelector('[data-testid="vault-status-in-use"]')).toBeNull();
+  });
+
+  it("invents no cause: an HTML 503 and an unknown code both stay server-down", async () => {
+    // a build older than #275 answers the status route with the Arabic refusal page
+    vaultStatusResponse = async () =>
+      new Response("<!doctype html><main>البيانات مفتوحة في نسخة أخرى</main>", { status: 503, headers: { "content-type": "text/html" } });
+    const html503 = await mountAuthGateFor('[data-testid="vault-status-unavailable"]');
+    expect(html503.querySelector('[data-testid="vault-status-in-use"]')).toBeNull();
+
+    // an envelope naming a code the gate cannot attribute is not the lock story
+    vaultStatusResponse = async () => Response.json({ error: { code: "VAULT_UNEXPECTED" } }, { status: 503 });
+    const unknownCode = await mountAuthGateFor('[data-testid="vault-status-unavailable"]');
+    expect(unknownCode.querySelector('[data-testid="vault-status-in-use"]')).toBeNull();
+    expect(unknownCode.querySelector('form')).toBeNull();
+  });
+});
+
 describe("vault owner gate retry (round-7 finding 4)", () => {
   it("auto-retries a failed needsSetup check instead of hanging on the loading screen", async () => {
     needsSetupFailures = 1;

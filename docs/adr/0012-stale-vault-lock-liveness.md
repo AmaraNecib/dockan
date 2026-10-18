@@ -64,11 +64,20 @@ still alive, so one shared helper decides both.
   Clause three's check runs in the heartbeat, so it can be up to one cadence
   late. A persist already queued when the lock is reclaimed would otherwise
   write the snapshot after another owner took it, which is the two-writer
-  outcome the lock exists to prevent. The reclaim is safe only once the write
-  path itself refuses on a lost lock: the persistence queue re-checks ownership
-  as it drains, and `persistNow` in the encrypted connection never writes under
-  a lock the instance no longer holds. Until that check exists, reclaiming from
-  a frozen holder trades a refusal for a possible second writer.
+  outcome the lock exists to prevent. So the guarantee is mechanical, not
+  intended: `VaultLock.assertHeld()` re-reads the lock's token at the instant of
+  the write, `EncryptedConnectionOptions.writeGuard` runs it before each attempt
+  and again before `persistedVersion` advances, and shutdown skips the abandoned
+  store's final checkpoint. Two holes remain, deferred with issues of their own
+  rather than claimed closed: an in-flight write that passed the guard before the
+  theft can still land, so the new owner can briefly believe in a version it does
+  not hold on disk (#280), and an unreadable lock file is indistinguishable from
+  a stolen one, which fail-stops a healthy holder (#281).
+- A refused instance keeps its decrypted image and its copy of the connection key
+  in memory for the rest of the process's life. Closing the abandoned store would
+  run the final checkpoint this change exists to prevent, so the trade-off is
+  deliberate: a process that no longer owns the folder retains plaintext it can
+  no longer write.
 - A live holder owned by another OS user keeps heartbeating, so it stays alive
   and is never reclaimed.
 - An install already stuck on the EPERM reading cannot repair itself: the app is

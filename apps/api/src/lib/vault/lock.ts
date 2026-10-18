@@ -267,7 +267,6 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
     DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS,
   );
   const reader = lockFileReader(options);
-  let warned = false;
   for (let attempt = 0; ; attempt += 1) {
     const read = readOwnerOnce(lockPath, reader);
     if (read.kind === "owner") {
@@ -277,14 +276,10 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
     }
     if (read.kind === "gone") return { kind: "lost", reason: "the lock file disappeared" };
     if (attempt >= retries) {
+      // the errno and the attempt count ride in the reason, which `lost()`
+      // logs as VAULT_LOCK_LOST: the api's log vocabulary is a contract shared
+      // with the web badge, so a new event code is not this module's to add
       return { kind: "lost", reason: `the lock file could not be read (${read.code} after ${attempt + 1} attempts)` };
-    }
-    if (!warned) {
-      warned = true;
-      options.logger?.warn(
-        "VAULT_LOCK_READ_RETRY",
-        `the lock file could not be read (${read.code}); retrying up to ${retries} time(s) before it is called lost`,
-      );
     }
     Bun.sleepSync(delayMs);
   }
@@ -391,15 +386,11 @@ export class VaultLock {
     }
     this.fd = undefined;
     const read = readOwnerOnce(this.path, lockFileReader(this.options));
-    if (read.kind === "unreadable") {
-      // we cannot compare the token, so unlinking could delete a NEW owner's
-      // record; a stale file is still reclaimable by the pid probe (#281)
-      this.options.logger?.warn(
-        "VAULT_LOCK_RELEASE_SKIPPED",
-        `left the lock file at ${this.path} in place: it could not be read (${read.code})`,
-      );
-      return;
-    }
+    // an unreadable record is never unlinked: the token cannot be compared, so
+    // the file may be a new owner's (#281). The cost is a stale file, which the
+    // next boot reclaims through the pid probe; the cost of deleting it would be
+    // dropping a fresh owner's lock.
+    if (read.kind === "unreadable") return;
     if (read.kind === "owner" && read.owner.token !== this.owner.token) return;
     try {
       fs.unlinkSync(this.path);

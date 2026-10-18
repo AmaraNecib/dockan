@@ -46,15 +46,23 @@ Two readers over that classification:
 - `readHeldLock(lockPath, token, options)` — the holder path (`assertHeld` and
   `heartbeat`). `gone` is a loss now, a different token is a loss now, and
   `unreadable` is **held-and-retry**: up to `transientReadRetries` extra reads
-  (default 5 × 50 ms = 250 ms), one `VAULT_LOCK_READ_RETRY` warn naming the
-  errno, and only after the budget is spent a fail-stop whose reason names the
-  code and the attempt count. Bounded, so a persistent error still fails closed
-  rather than reporting ownership we cannot attest to.
+  (default 5 × 50 ms = 250 ms), and only after the budget is spent a fail-stop
+  whose reason names the code and the attempt count. Bounded, so a persistent
+  error still fails closed rather than reporting ownership we cannot attest to.
 
 `release()` gets the same classification and one rule: an `unreadable` record is
 **not deleted**. We cannot compare the token, so unlinking could delete a new
 owner's file; a stale file left behind is still reclaimable by the pid probe.
 `gone` and "not ours" behave as before.
+
+**Where the diagnostic goes.** The errno and the attempt count ride in the loss
+reason, which `lost()` already logs as `VAULT_LOCK_LOST` (the ADR's own event).
+A dedicated `VAULT_LOCK_READ_RETRY` warn would be better for a recovered hiccup,
+but the api's event codes are a cross-package contract: `logEvents` in
+`packages/contracts` plus an Arabic badge key `logEvent_<EVENT>` in
+`apps/web/src/lib/i18n.ts`, both enforced by tests. Neither file is this lane's
+to touch (scope: lock.ts + tests; a sibling lane is in the web), so a recovered
+retry logs nothing. Deferred to the parent as a two-event follow-up.
 
 Seam: `VaultLockOptions.readLockFile?: (lockPath: string) => string`, default
 `fs.readFileSync(path, "utf8")`, the `probePid` precedent. Tests force `EACCES`
@@ -72,19 +80,20 @@ and `ENOENT` through it and assert the two outcomes.
 Counter seam + logger capture (`reads`, `readsAtLoss` — the release that follows
 a loss reads again, so the raw count alone cannot pin the budget).
 
-1. one `EBUSY` then readable → `assertHeld()` returns, `reads === 2`, one
-   `VAULT_LOCK_READ_RETRY` naming `EBUSY`, no loss, record still ours.
-2. `ENOENT` from the seam → loss at once, `readsAtLoss === 1`, no retry event.
+1. one `EBUSY` then readable → `assertHeld()` returns, `reads === 2`, no
+   `VAULT_LOCK_LOST`, record still ours.
+2. `ENOENT` from the seam → loss at once, `readsAtLoss === 1`, reason is
+   "the lock file disappeared".
 3. real `rmSync` + `assertHeld()` → reason is exactly "the lock file
    disappeared" (default reader, no seam).
 4. another owner's record → loss at once (`readsAtLoss === 1`), holder named.
 5. `EBUSY` forever, `transientReadRetries: 3` → loss at `readsAtLoss === 4`,
-   reason names `EBUSY`; the beat after the budget still works.
-6. `MALFORMED` once, then readable → held (the mid-write race).
-7. heartbeat: one `EBUSY` then readable → no `onLost`, record still ours.
-8. heartbeat: `EBUSY` forever → `onLost` fires with `EBUSY` in the reason.
-9. `release()` over an unreadable record → file kept, `VAULT_LOCK_RELEASE_SKIPPED`
-   names `EACCES`.
+   reason names `EBUSY` and the attempt count.
+6. `{ not json` forever → loss reason names `MALFORMED`, not a disappearance.
+7. `MALFORMED` once, then readable → held (the mid-write race).
+8. heartbeat: one `EBUSY` then readable → no `onLost`, record still ours.
+9. heartbeat: `EBUSY` forever → `onLost` fires with `EBUSY` in the reason.
+10. `release()` over an unreadable record → one read, file kept.
 
 ## Risks
 

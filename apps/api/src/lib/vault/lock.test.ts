@@ -526,7 +526,7 @@ describe("a transient lock-file read error is not theft (#281)", () => {
       expect(() => lock.assertHeld()).not.toThrow();
       expect(reads.state.reads).toBe(2);
       expect(lost).toEqual([]);
-      expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_READ_RETRY") && line.includes("EBUSY"))).toBe(true);
+      expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_LOST"))).toBe(false);
       // the record is untouched: we never stopped holding it
       // SAFETY: the test wrote this JSON itself in acquireVaultLock
       const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
@@ -549,8 +549,7 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     });
     expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
     expect(reads.state.readsAtLoss).toBe(1);
-    expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_READ_RETRY"))).toBe(false);
-    expect(lost[0]).toContain("disappeared");
+    expect(lost[0]).toBe("the lock file disappeared");
   });
 
   it("fail-stops when the lock file has genuinely gone (default reader)", () => {
@@ -597,6 +596,20 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(lost[0]).toContain(`${fastRead.transientReadRetries + 1} attempts`);
   });
 
+  it("names a malformed record, not a disappearance, when the budget runs out", () => {
+    const reads = countingReader(() => "{ not json");
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(reads.state.readsAtLoss).toBe(fastRead.transientReadRetries + 1);
+    expect(lost[0]).toContain("MALFORMED");
+  });
+
   it("retries a record that is momentarily malformed while it is being written", () => {
     const reads = countingReader((lockPath, call) => (call === 1 ? "" : realRead(lockPath)));
     const lost: string[] = [];
@@ -608,8 +621,8 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     });
     try {
       expect(() => lock.assertHeld()).not.toThrow();
+      expect(reads.state.reads).toBe(2);
       expect(lost).toEqual([]);
-      expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_READ_RETRY") && line.includes("MALFORMED"))).toBe(true);
     } finally {
       lock.release();
     }
@@ -663,8 +676,8 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     lock.release();
     // we cannot compare the token, so we must not unlink: the record may be a
     // new owner's, and a stale file is still reclaimable by the pid probe
+    expect(reads.state.reads).toBe(1);
     expect(fs.existsSync(lockPath())).toBe(true);
-    expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_RELEASE_SKIPPED") && line.includes("EACCES"))).toBe(true);
   });
 });
 

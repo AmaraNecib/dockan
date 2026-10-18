@@ -38,6 +38,18 @@ they no longer have to be serialized across lanes (#202).
 
 ## Lanes
 
+**Mechanism: a child agent with its own worktree, by default.** `delegate_task` with
+`isolation: "worktree"` checks out the work from the parent's local commit, runs project setup,
+and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,
+none to close afterwards, and the completion arrives by itself instead of being polled.
+
+A top-level thread (`t3_thread_launch`) is for the one case a fresh worktree cannot serve:
+**resuming work that only exists uncommitted** in an existing worktree. That is the fallback for a
+dead lane, not the default. The cheaper path through the same situation is to commit the partial
+work to its branch first, after which an ordinary child can continue on that branch.
+
+Either way, one writer per worktree, and a lane never pushes or merges.
+
 Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
 reuse a lane's session for the next PR (a reused session also misses the
 workspace label at startup, which is what makes `crew_report` work).

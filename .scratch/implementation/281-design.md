@@ -100,6 +100,30 @@ a loss reads again, so the raw count alone cannot pin the budget).
 8. heartbeat: one `EBUSY` then readable → no `onLost`, record still ours.
 9. heartbeat: `EBUSY` forever → `onLost` fires with `EBUSY` in the reason.
 10. `release()` over an unreadable record → one read, file kept.
+11. flapping `EBUSY`/`EACCES` → the reason names both codes, on one line.
+12. a non-Error `{ code: "ENOENT" }` thrown through the seam → gone at once.
+13. `transientReadRetries: 10_000` with a 60 s delay → held after 3 reads in
+    about a second (the window cap), and an always-failing read stops at 101
+    reads (the attempt cap).
+
+## Round-2 fixes (debate on 9a6a30c)
+
+- **N1 (6):** the reason now names *every* code the window hit (`EBUSY, EACCES`)
+  and the OS sentence is folded to one line, capped at 200 chars, so a JSONL
+  line cannot be broken by a multi-line or hostile error message.
+- **N2 (5):** a synchronous loop must stay bounded even when a caller
+  misconfigures it. `retryBudget` clamps a knob to `[0, ceiling]` (100 attempts,
+  500 ms delay) and the held-lock retry sequence additionally stops after
+  `MAX_HELD_RETRY_WINDOW_MS` = 1 s, because it runs inside `writeGuard`.
+- **N3 (4):** `release()` keeps its single read — deliberately best-effort, and
+  now says so: it runs from the exit hook, where sleeping to chase a file this
+  process is about to stop caring about is worse than leaving a stale file the
+  next boot reclaims.
+- **N4 (3):** the errno is read off the thrown value with a schema, so a
+  non-Error thrown through the read seam still classifies by its code.
+- **N5 (3):** documented — a reclaim's rename can surface as `ENOENT`, so a
+  replacement may lose as "the lock file disappeared". The outcome is the same
+  prompt fail-stop; only the holder goes unnamed.
 
 ## Risks
 

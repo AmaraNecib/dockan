@@ -77,6 +77,15 @@ export type VaultLockFileReader = (lockPath: string) => string;
 /** Extra reads a HELD lock's unreadable file gets before the holder fails closed. */
 const DEFAULT_TRANSIENT_READ_RETRIES = 5;
 const DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS = 50;
+/**
+ * Absolute bounds on a synchronous retry loop. The defaults are already
+ * bounded; these stop a misconfigured knob (or a boot with a pathological
+ * `readRetries`) from turning a boot or a write into an event-loop stall.
+ */
+const MAX_RETRY_ATTEMPTS = 100;
+const MAX_RETRY_DELAY_MS = 500;
+/** One held-lock read sequence may block for at most this long, whatever the knobs. */
+const MAX_HELD_RETRY_WINDOW_MS = 1_000;
 
 export type VaultLockOptions = {
   logger?: VaultLockLogger;
@@ -174,9 +183,16 @@ function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileR
   try {
     raw = reader(lockPath);
   } catch (error) {
-    const failure = error instanceof Error ? error : new Error(String(error));
-    if (errnoCode(failure) === "ENOENT") return { kind: "gone" };
-    return { kind: "unreadable", code: errnoCode(failure) ?? "UNKNOWN", error: failure };
+    // the code is read off the thrown value, not the wrapped Error: the seam
+    // may throw a bare `{ code }`, and flattening it first would lose the errno
+    const thrown = thrownCodeSchema.safeParse(error);
+    const code = thrown.success ? thrown.data.code : undefined;
+    if (code === "ENOENT") return { kind: "gone" };
+    return {
+      kind: "unreadable",
+      code: code ?? "UNKNOWN",
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
   }
   let json: unknown;
   try {
@@ -194,12 +210,24 @@ function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileR
 }
 
 /**
- * A retry/delay knob: a non-finite value falls back to the default and a
- * negative one clamps to zero, so neither can make the loop unbounded.
+ * The errno on any thrown value, Error or not. Node's fs errors are Errors, so
+ * `errnoCode` covers production; the read seam is injectable, and a bare
+ * `{ code }` thrown through it must still classify as its real errno.
  */
-function retryBudget(configured: number | undefined, fallback: number): number {
+const thrownCodeSchema = z.object({ code: z.string() });
+
+/** One bounded line: the reason reaches a JSONL log line, not a log page. */
+function describeReadError(error: Error): string {
+  return error.message.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/**
+ * A retry/delay knob, clamped to `[0, ceiling]`: the loop is synchronous, so an
+ * absurd or non-finite value must not be able to make it unbounded.
+ */
+function retryBudget(configured: number | undefined, fallback: number, ceiling: number): number {
   if (configured === undefined || !Number.isFinite(configured)) return fallback;
-  return Math.max(0, Math.trunc(configured));
+  return Math.min(ceiling, Math.max(0, Math.trunc(configured)));
 }
 
 /**
@@ -209,8 +237,8 @@ function retryBudget(configured: number | undefined, fallback: number): number {
  * #281, which is what keeps an unreadable stale lock from blocking a boot.
  */
 function readOwner(lockPath: string, options: VaultLockOptions): VaultLockOwner | undefined {
-  const retries = retryBudget(options.readRetries, 20);
-  const delayMs = retryBudget(options.readRetryDelayMs, 50);
+  const retries = retryBudget(options.readRetries, 20, MAX_RETRY_ATTEMPTS);
+  const delayMs = retryBudget(options.readRetryDelayMs, 50, MAX_RETRY_DELAY_MS);
   const reader = lockFileReader(options);
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const read = readOwnerOnce(lockPath, reader);
@@ -269,12 +297,17 @@ type HeldRead =
  *   third instance could take the folder.
  */
 function readHeldLock(lockPath: string, token: string, options: VaultLockOptions): HeldRead {
-  const retries = retryBudget(options.transientReadRetries, DEFAULT_TRANSIENT_READ_RETRIES);
+  const retries = retryBudget(options.transientReadRetries, DEFAULT_TRANSIENT_READ_RETRIES, MAX_RETRY_ATTEMPTS);
   const delayMs = retryBudget(
     options.transientReadRetryDelayMs,
     DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS,
+    MAX_RETRY_DELAY_MS,
   );
   const reader = lockFileReader(options);
+  // the window bounds the stall whatever the knobs say: this runs inside
+  // `writeGuard`, so an unbounded wait here is an unbounded stalled write
+  const budgetEndsAt = Date.now() + MAX_HELD_RETRY_WINDOW_MS;
+  const codes: string[] = [];
   for (let attempt = 0; ; attempt += 1) {
     const read = readOwnerOnce(lockPath, reader);
     if (read.kind === "owner") {
@@ -282,18 +315,24 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
         ? { kind: "held" }
         : { kind: "lost", reason: "the lock file was replaced by another owner", holder: read.owner };
     }
-    if (read.kind === "gone") return { kind: "lost", reason: "the lock file disappeared" };
-    if (attempt >= retries) {
-      // the errno, the attempt count and the OS's own sentence ride in the
-      // reason, which `lost()` logs as VAULT_LOCK_LOST: the api's log
+    if (read.kind === "gone") {
+      // a reclaim renames the file aside before it writes its own, so a
+      // replacement can surface here as a disappearance; the outcome is the
+      // same prompt fail-stop, only the holder goes unnamed (critic N5)
+      return { kind: "lost", reason: "the lock file disappeared" };
+    }
+    if (!codes.includes(read.code)) codes.push(read.code);
+    if (attempt >= retries || Date.now() >= budgetEndsAt) {
+      // every code seen, the attempt count and the OS's own sentence ride in
+      // the reason, which `lost()` logs as VAULT_LOCK_LOST: the api's log
       // vocabulary is a contract shared with the web badge, so a new event
       // code is not this module's to add
       return {
         kind: "lost",
-        reason: `the lock file could not be read (${read.code} after ${attempt + 1} attempts: ${read.error.message})`,
+        reason: `the lock file could not be read (${codes.join(", ")} after ${attempt + 1} attempts: ${describeReadError(read.error)})`,
       };
     }
-    Bun.sleepSync(delayMs);
+    Bun.sleepSync(Math.min(delayMs, Math.max(0, budgetEndsAt - Date.now())));
   }
 }
 
@@ -401,7 +440,9 @@ export class VaultLock {
     // an unreadable record is never unlinked: the token cannot be compared, so
     // the file may be a new owner's (#281). The cost is a stale file, which the
     // next boot reclaims through the pid probe; the cost of deleting it would be
-    // dropping a fresh owner's lock.
+    // dropping a fresh owner's lock. ONE read only, deliberately: release runs
+    // from the exit hook, and sleeping there to chase a file this process is
+    // about to stop caring about is worse than leaving it (critic N3).
     if (read.kind === "unreadable") return;
     if (read.kind === "owner" && read.owner.token !== this.owner.token) return;
     try {

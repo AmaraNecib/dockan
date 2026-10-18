@@ -638,6 +638,87 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(holders[0]?.token).toBe("the-new-owner");
   });
 
+  it("names every error code it hit, on one line", () => {
+    const reads = countingReader((_lockPath, call) => {
+      const code = call % 2 === 1 ? "EBUSY" : "EACCES";
+      throw errno(code, `${code}: cannot read\n  'vault.lock'`);
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      transientReadRetries: 3,
+      transientReadRetryDelayMs: 1,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    // a flapping window names both codes, not just the last one, and the OS's
+    // own multi-line sentence is folded to one line (critic N1)
+    expect(lost[0]).toContain("EBUSY, EACCES");
+    expect(lost[0]).not.toContain("\n");
+  });
+
+  it("classifies a non-Error throw by its errno code", () => {
+    const reads = countingReader(() => {
+      // the seam is injectable, so the thrown value is not guaranteed to be an
+      // Error; flattening it first would lose the errno (critic N4)
+      throw { code: "ENOENT" };
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(reads.state.readsAtLoss).toBe(1);
+    expect(lost[0]).toBe("the lock file disappeared");
+  });
+
+  it("caps the whole retry window even when a knob asks for hours", () => {
+    const reads = countingReader((lockPath, call) => {
+      if (call <= 2) throw errno("EBUSY", "EBUSY: resource busy or locked");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const startedAt = Date.now();
+    const lock = acquireVaultLock(dir, {
+      transientReadRetries: 10_000,
+      transientReadRetryDelayMs: 60_000,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    try {
+      expect(() => lock.assertHeld()).not.toThrow();
+      expect(reads.state.reads).toBe(3);
+      // unclamped this is 2 x 60 s; the window holds the whole sequence near a
+      // second, because it runs inside the write guard (critic N2)
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      expect(lost).toEqual([]);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it("caps the attempt ceiling even when a knob asks for ten thousand", () => {
+    const reads = countingReader(() => {
+      throw errno("EBUSY", "EBUSY: resource busy or locked");
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      transientReadRetries: 10_000,
+      transientReadRetryDelayMs: 0,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(reads.state.readsAtLoss).toBe(101);
+    expect(lost).toHaveLength(1);
+  });
+
   it("heartbeats through a transient read error instead of declaring the lock lost", async () => {
     const reads = countingReader((lockPath, call) => {
       if (call === 1) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");

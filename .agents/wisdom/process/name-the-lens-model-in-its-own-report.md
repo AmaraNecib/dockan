@@ -26,4 +26,12 @@ own log read as a tracked change and the re-run failed on a clean checkout. Anyt
 cleanliness excludes its own artifacts, and evidence tooling is proven by re-running it, not by having
 worked once.
 
+**Media and its harness do not go in the reviewable diff.** `develop` tracks 794 files under
+`.scratch/reviews/` and 105 under `.scratch/implementation/`, and **zero** under `.scratch/evidence/`.
+Images, GIFs and mp4s are hosted on R2 — the layout is in #263: `<PR>/before/`, `<PR>/after/`, and the
+Full HD pair under `<PR>/after/hd/`. A capture harness stays local until another person needs it.
+#285 committed both, which is how a dev tool carrying a `git status` assertion ended up inside a code
+review for a web fix and earned the P2 above. The media is the evidence; the tooling is a convenience
+that has to earn its place, and the default is that it does not.
+
 **Seen in:** #282 (code-review header, Greptile P2), #285 (`capture.mjs:157`, Greptile P2).

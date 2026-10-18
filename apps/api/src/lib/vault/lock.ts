@@ -156,8 +156,9 @@ export class VaultLockLostError extends Error {
  * other failure — a sharing violation (`EACCES`/`EBUSY`/`EPERM`), an I/O error,
  * or a record that does not parse or does not satisfy the schema — is
  * `unreadable`: the file is there and may well be ours, we just cannot attest
- * to it at this instant. A holder's own truncate-then-write heartbeat is one
- * way to see `MALFORMED` on a perfectly healthy lock.
+ * to it at this instant. A record another instance is in the middle of writing
+ * — a reclaim renames our file away and creates its own before writing it —
+ * is one way to see `MALFORMED` on a perfectly healthy lock.
  */
 type LockFileRead =
   | { readonly kind: "owner"; readonly owner: VaultLockOwner }
@@ -180,15 +181,22 @@ function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileR
   let json: unknown;
   try {
     json = JSON.parse(raw);
-  } catch (error) {
-    return { kind: "unreadable", code: "MALFORMED", error: error instanceof Error ? error : new Error(String(error)) };
+  } catch {
+    // a fixed single-line detail, never the raw content: the reason reaches a
+    // JSONL log line, and the record is a file on disk
+    return { kind: "unreadable", code: "MALFORMED", error: new Error("the record did not parse as JSON") };
   }
   const parsed = ownerSchema.safeParse(json);
-  if (!parsed.success) return { kind: "unreadable", code: "MALFORMED", error: parsed.error };
+  if (!parsed.success) {
+    return { kind: "unreadable", code: "MALFORMED", error: new Error("the record did not satisfy the owner schema") };
+  }
   return { kind: "owner", owner: parsed.data };
 }
 
-/** A retry/delay knob: a non-finite or negative value falls back, never loops. */
+/**
+ * A retry/delay knob: a non-finite value falls back to the default and a
+ * negative one clamps to zero, so neither can make the loop unbounded.
+ */
 function retryBudget(configured: number | undefined, fallback: number): number {
   if (configured === undefined || !Number.isFinite(configured)) return fallback;
   return Math.max(0, Math.trunc(configured));
@@ -255,10 +263,10 @@ type HeldRead =
  * - `gone` — lost NOW (someone deleted the file);
  * - another owner's token — lost NOW (someone replaced it);
  * - `unreadable` — retried, bounded, and only then lost. It is NOT theft: a
- *   transient Windows sharing violation, or the holder's own heartbeat caught
- *   between truncate and write, used to fail-stop a healthy holder — which
- *   released its own lock, unlinked the file and served the refusal page,
- *   after which a third instance could take the folder.
+ *   transient Windows sharing violation, or a reclaim caught between its
+ *   create and its write, used to fail-stop a healthy holder — which released
+ *   its own lock, unlinked the file and served the refusal page, after which a
+ *   third instance could take the folder.
  */
 function readHeldLock(lockPath: string, token: string, options: VaultLockOptions): HeldRead {
   const retries = retryBudget(options.transientReadRetries, DEFAULT_TRANSIENT_READ_RETRIES);
@@ -276,10 +284,14 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
     }
     if (read.kind === "gone") return { kind: "lost", reason: "the lock file disappeared" };
     if (attempt >= retries) {
-      // the errno and the attempt count ride in the reason, which `lost()`
-      // logs as VAULT_LOCK_LOST: the api's log vocabulary is a contract shared
-      // with the web badge, so a new event code is not this module's to add
-      return { kind: "lost", reason: `the lock file could not be read (${read.code} after ${attempt + 1} attempts)` };
+      // the errno, the attempt count and the OS's own sentence ride in the
+      // reason, which `lost()` logs as VAULT_LOCK_LOST: the api's log
+      // vocabulary is a contract shared with the web badge, so a new event
+      // code is not this module's to add
+      return {
+        kind: "lost",
+        reason: `the lock file could not be read (${read.code} after ${attempt + 1} attempts: ${read.error.message})`,
+      };
     }
     Bun.sleepSync(delayMs);
   }

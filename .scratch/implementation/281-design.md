@@ -34,9 +34,13 @@ type LockFileRead =
 
 `code` is the errno (`EACCES`, `EBUSY`, `EPERM`, …) or `MALFORMED` for a record
 that is present and readable but does not parse or does not satisfy
-`ownerSchema`. `MALFORMED` covers the holder's own truncate-then-write
-heartbeat: a reader can see the empty file between `ftruncateSync` and
-`writeSync`, which today also reads as "the lock disappeared".
+`ownerSchema`. `MALFORMED` covers a *replacing* instance's window: a reclaim
+renames our file away and creates its own, and a read that lands between its
+`openSync("wx")` and its first `writeSync` sees an empty record. (It is not the
+holder's own heartbeat — that read and write are synchronous on one thread —
+which the first draft of this doc got wrong: the reviewer's F2 stands, the code
+is unchanged because a 250 ms delay before naming the new holder is still
+timely, and the reason now names the holder when the record lands.)
 
 Two readers over that classification:
 
@@ -90,19 +94,43 @@ a loss reads again, so the raw count alone cannot pin the budget).
 5. `EBUSY` forever, `transientReadRetries: 3` → loss at `readsAtLoss === 4`,
    reason names `EBUSY` and the attempt count.
 6. `{ not json` forever → loss reason names `MALFORMED`, not a disappearance.
-7. `MALFORMED` once, then readable → held (the mid-write race).
+7. `MALFORMED` once, then another owner's complete record → one retry, then
+   "replaced" with that holder named (a reclaim's create-before-write window
+   must not read as a disappearance).
 8. heartbeat: one `EBUSY` then readable → no `onLost`, record still ours.
 9. heartbeat: `EBUSY` forever → `onLost` fires with `EBUSY` in the reason.
 10. `release()` over an unreadable record → one read, file kept.
 
 ## Risks
 
-- The retry block is synchronous (`Bun.sleepSync`), 250 ms worst case inside
-  `writeGuard`. Bounded and already the norm in this module (`readOwner` sleeps
-  20 × 50 ms at acquisition).
+- The retry block is synchronous (`Bun.sleepSync`), 250 ms per check in the
+  worst case. A persistent error makes the first check fail closed, which is
+  terminal for the write path, so the process pays it once; a flapping error
+  can pay it per check (up to twice per business unit plus the checkpoint). The
+  50 ms delay matches `readOwner`'s, and both knobs are options.
+- The loss reason carries the OS's own sentence (`... after 6 attempts: EACCES:
+  permission denied, open 'vault.lock'`), so the log names the syscall and the
+  path, not only the errno. Read failures that *recover* log nothing (see the
+  vocabulary note above).
 - A permanently unreadable lock still fail-stops, only 250 ms later. Raising
   `transientReadRetries` is the knob; a *longer* grace would need the write to
   be refused without releasing the lock, which is the ADR's fail-stop contract.
-- The ADR-0012 "consequences" line still lists #281 as an open hole. Out of
-  scope for this diff (lock.ts + tests only); the parent decides whether to
-  amend it.
+
+## Deferred (for the parent)
+
+- **ADR-0012's consequences line** still lists #281 as an open hole
+  ("an unreadable lock file is indistinguishable from a stolen one, which
+  fail-stops a healthy holder (#281)"). This diff closes it. `docs/**` is
+  outside this lane's stated scope, so the two-line amendment waits for the
+  parent's call.
+- **`release()` TOCTOU (pre-existing, untouched).** Between the read answering
+  `gone`/ours and `unlinkSync`, a third instance can create its own record and
+  we delete it. The unreadable-skip narrows the reachable set but does not close
+  the window; it needs a token-checked unlink (rename aside first, or unlink
+  only the fd we verified).
+- **Two log events** (`VAULT_LOCK_READ_RETRY`, `VAULT_LOCK_RELEASE_SKIPPED`):
+  each needs a `logEvents` entry in `packages/contracts` plus an Arabic badge
+  key in `apps/web/src/lib/i18n.ts`, both outside scope.
+- **The seam replaces every read**, including acquisition; the acquisition
+  scenarios in the existing suite use the default reader, and the new tests use
+  the seam only for held-path cases.

@@ -594,6 +594,9 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(lost).toHaveLength(1);
     expect(lost[0]).toContain("EACCES");
     expect(lost[0]).toContain(`${fastRead.transientReadRetries + 1} attempts`);
+    // the OS's own sentence survives into the reason: the errno alone does not
+    // say which syscall failed on which path (critic F1)
+    expect(lost[0]).toContain("permission denied");
   });
 
   it("names a malformed record, not a disappearance, when the budget runs out", () => {
@@ -610,22 +613,29 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(lost[0]).toContain("MALFORMED");
   });
 
-  it("retries a record that is momentarily malformed while it is being written", () => {
+  it("retries a malformed record instead of calling a replacement a disappearance", () => {
+    // a reclaim renames our file away and creates its own before writing it, so
+    // a held read can catch a 0-byte record on a healthy lock; the retry must
+    // resolve to "replaced by <holder>", not to "the lock file disappeared"
     const reads = countingReader((lockPath, call) => (call === 1 ? "" : realRead(lockPath)));
     const lost: string[] = [];
+    const holders: (VaultLockOwner | undefined)[] = [];
     const lock = acquireVaultLock(dir, {
       ...fastRead,
       readLockFile: reads.readLockFile,
       logger: reads.logger,
-      onLost: (reason) => lost.push(reason),
+      onLost: (reason, holder) => {
+        lost.push(reason);
+        holders.push(holder);
+      },
     });
-    try {
-      expect(() => lock.assertHeld()).not.toThrow();
-      expect(reads.state.reads).toBe(2);
-      expect(lost).toEqual([]);
-    } finally {
-      lock.release();
-    }
+    writeLock({ host: "shop-pc", pid: 4242, token: "the-new-owner" });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    // one retry, then the decision; the release that follows the loss reads again
+    expect(reads.state.readsAtLoss).toBe(2);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain("replaced");
+    expect(holders[0]?.token).toBe("the-new-owner");
   });
 
   it("heartbeats through a transient read error instead of declaring the lock lost", async () => {

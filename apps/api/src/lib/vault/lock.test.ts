@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, createVaultLockRefusalApp, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLockOwner } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLockOwner } from "./lock";
 import { createAppConfig } from "../../config";
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 
@@ -39,6 +39,17 @@ function writeLock(overrides: Partial<{ pid: number; host: string; heartbeatAt: 
       ...overrides,
     }),
   );
+}
+
+/**
+ * A pid the OS is guaranteed to answer `ESRCH` for: spawn a child and reap it.
+ * The probe tests must not hang their outcome on whether a hardcoded pid
+ * happens to exist on the runner (test-audit F1).
+ */
+async function reapedPid(): Promise<number> {
+  const child = Bun.spawn(["bun", "-e", ""], { stdout: "ignore", stderr: "ignore" });
+  await child.exited;
+  return child.pid;
 }
 
 describe("vault single-writer lock", () => {
@@ -81,37 +92,66 @@ describe("vault single-writer lock", () => {
   });
 
   it("reclaims a lock left by a dead same-host process", async () => {
-    const child = Bun.spawn(["bun", "-e", ""], { stdout: "ignore", stderr: "ignore" });
-    await child.exited;
-    const deadPid = child.pid;
+    const deadPid = await reapedPid();
     writeLock({ pid: deadPid, host: os.hostname(), heartbeatAt: new Date().toISOString() });
     const lock = acquireVaultLock(dir, fastSteal);
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
   });
 
-  it("reclaims a lock the injected probe calls gone, even with a fresh heartbeat", () => {
-    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date().toISOString() });
+  it("reclaims a lock the injected probe calls gone, even with a fresh heartbeat", async () => {
+    writeLock({ pid: await reapedPid(), host: os.hostname(), heartbeatAt: new Date().toISOString() });
     const lock = acquireVaultLock(dir, { ...fastSteal, probePid: () => "gone" });
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
   });
 
-  it("reclaims an inconclusive probe once the heartbeat is stale (EPERM on Windows, ADR-0012)", () => {
-    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+  it("reclaims an inconclusive probe once the heartbeat is stale (EPERM on Windows, ADR-0012)", async () => {
+    writeLock({ pid: await reapedPid(), host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString() });
     const lock = acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" });
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
   });
 
-  it("refuses an inconclusive probe while the heartbeat is fresh", () => {
-    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date().toISOString() });
+  it("refuses an inconclusive probe while the heartbeat is fresh", async () => {
+    // the pid is genuinely gone, so reverting the seam would reclaim and fail
+    // this test deterministically; only the heartbeat may keep it refused
+    writeLock({ pid: await reapedPid(), host: os.hostname(), heartbeatAt: new Date().toISOString() });
     expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" })).toThrow(VaultAlreadyLockedError);
   });
 
   it("refuses a pid the probe answers as alive however old the heartbeat", () => {
-    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 60 * 60_000).toISOString() });
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 60 * 60_000).toISOString() });
     expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "alive" })).toThrow(VaultAlreadyLockedError);
+  });
+
+  it("writes exactly the documented lock record at the documented path (criterion 10)", () => {
+    const lock = acquireVaultLock(dir);
+    expect(lock.path).toBe(path.join(dir, "vault.lock"));
+    // SAFETY: the lock record is JSON this process just wrote
+    const record = JSON.parse(fs.readFileSync(path.join(dir, "vault.lock"), "utf8")) as VaultLockOwner;
+    expect(Object.keys(record).sort()).toEqual(["heartbeatAt", "host", "pid", "startedAt", "token"]);
+    expect(record.pid).toBe(process.pid);
+    expect(record.host).toBe(os.hostname());
+    // both timestamps are real ISO instants, not a dropped field
+    expect(Number.isFinite(Date.parse(record.startedAt))).toBe(true);
+    expect(Number.isFinite(Date.parse(record.heartbeatAt))).toBe(true);
+    expect(record.token).toBe(lock.currentOwner().token);
+    lock.release();
+  });
+
+  it("abandons a reclaim when the holder looks live again after the settle window (critic C2)", () => {
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString(), token: "still-ours" });
+    // first look: gone. After the settle it answers alive, as a holder whose
+    // heartbeat or process came back inside the window would
+    let probes = 0;
+    const probePid = (): "gone" | "alive" => (probes++ === 0 ? "gone" : "alive");
+    expect(() => acquireVaultLock(dir, { ...fastSteal, stealSettleMs: 20, probePid })).toThrow(VaultAlreadyLockedError);
+    expect(probes).toBeGreaterThanOrEqual(2);
+    // the record is untouched: the reclaim was abandoned, not raced
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe("still-ours");
   });
 
   it("reclaims an unreadable lock file instead of blocking forever", () => {
@@ -267,6 +307,15 @@ describe("vault single-writer lock", () => {
     lock.release();
   });
 
+  it("abandons the store at shutdown once the folder is lost (ADR-0012 clause 3)", () => {
+    // without this, the loser's final checkpoint writes its stale image over
+    // the new owner's snapshot
+    const store = { close: async (): Promise<void> => undefined };
+    expect(connectionToCloseAtShutdown(true, store)).toBeUndefined();
+    expect(connectionToCloseAtShutdown(false, store)).toBe(store);
+    expect(connectionToCloseAtShutdown(true, undefined)).toBeUndefined();
+  });
+
   it("a queued snapshot write refuses once the lock is stolen, and writes nothing (ADR-0012 clause 3)", async () => {
     const lock = acquireVaultLock(dir, { ...fastSteal, onLost: () => undefined });
     const snapshot = path.join(dir, "dokan.db.enc");
@@ -284,15 +333,17 @@ describe("vault single-writer lock", () => {
       await conn.flush();
       const before = fs.readFileSync(snapshot);
 
-      // another copy reclaims the folder while this instance is idle
+      // the ADR ordering: mutate while we still hold the lock, QUEUE the
+      // persist, steal the folder before the queued job runs
+      conn.raw.exec("INSERT INTO t VALUES ('sale')");
+      conn.markDirty();
+      const queued = conn.persistIfDirty();
       fs.rmSync(lockPath(), { force: true });
       writeLock({ token: "the-new-owner" });
 
-      // a persist was queued (or is asked for) before the heartbeat could
-      // notice: it must refuse rather than overwrite the new owner's snapshot
-      conn.raw.exec("INSERT INTO t VALUES ('sale')");
-      conn.markDirty();
-      await expect(conn.flush()).rejects.toThrow(VaultLockLostError);
+      // the queued persist must refuse when it drains rather than overwrite
+      // the new owner's snapshot
+      await expect(queued).rejects.toThrow(VaultLockLostError);
       expect(fs.readFileSync(snapshot)).toEqual(before);
       // the fail-stop ran once, and the replacement's record survived
       // SAFETY: the test wrote this JSON itself above

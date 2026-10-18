@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -110,6 +110,36 @@ describe("withPortFileLock", () => {
     expect(rejected).toBe(true);
   });
 
+  it("never takes over a holder whose pid probe is inconclusive (EPERM on Windows)", async () => {
+    // test-audit F2: port-record previously read EPERM as alive; the shared
+    // rule reads it as unknowable, and this site must still refuse to break
+    // exclusivity on an answer it cannot trust
+    const eperm = path.join(dir, "eperm.lock");
+    fs.mkdirSync(eperm);
+    fs.writeFileSync(path.join(eperm, "pid"), "4242", "utf8");
+    const spy = spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    });
+    try {
+      let ran = false;
+      await expect(
+        withPortFileLock(
+          eperm,
+          async () => {
+            ran = true;
+          },
+          { deadlineMs: 60 },
+        ),
+      ).rejects.toThrow("port record lock timeout");
+      expect(ran).toBe(false);
+      // the holder's dir and marker are untouched
+      expect(fs.existsSync(path.join(eperm, "pid"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+      fs.rmSync(eperm, { recursive: true, force: true });
+    }
+  });
+
   it("a displaced owner never touches the winning dir (read-back verify)", async () => {
     // Simulate the mkdir->marker displacement: another "process" creates the
     // dir and owns it; a second acquisition must not act on it and must give
@@ -203,6 +233,25 @@ describe("registry", () => {
     expect(readRegistryEntry(registryDir, String(process.pid))!.port).toBe(4320);
     // restore the JSON form for later tests
     writeRegistryEntry(registryDir, process.pid, "127.0.0.1", 4317);
+  });
+
+  it("keeps a registry entry whose pid probe is inconclusive (EPERM on Windows)", () => {
+    // test-audit F2: a drift that treats "unknown" as gone would prune a live
+    // owner's entry here and take over its lock above
+    const pid = 4242;
+    writeRegistryEntry(registryDir, pid, "127.0.0.1", 4319);
+    const spy = spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    });
+    try {
+      const entry = readRegistryEntry(registryDir, String(pid));
+      expect(entry).not.toBeNull();
+      expect(entry?.port).toBe(4319);
+      expect(fs.existsSync(path.join(registryDir, String(pid)))).toBe(true);
+    } finally {
+      spy.mockRestore();
+      fs.rmSync(path.join(registryDir, String(pid)), { force: true });
+    }
   });
 
   it("propagates registry entry I/O failures instead of treating them as no entry", () => {

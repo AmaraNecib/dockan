@@ -229,10 +229,13 @@ describe("desktop shell vault broker", () => {
     const nextLine = lineReader(child);
     send(child, JSON.stringify({ action: "status" }));
     // SAFETY: the broker status contract is a single JSON reply line
-    const statusReply = JSON.parse(await nextLine()) as { ok: boolean; status?: { broker?: boolean; state?: string } };
+    const statusReply = JSON.parse(await nextLine()) as { ok: boolean; status?: { broker?: boolean; state?: string; unlocked?: boolean; lockLost?: boolean } };
     expect(statusReply.ok).toBe(true);
     expect(statusReply.status?.broker).toBe(true);
     expect(statusReply.status?.state).toBe("unconfigured");
+    // the lock-loss flag is always present, so the shell never has to infer it
+    expect(statusReply.status?.unlocked).toBe(false);
+    expect(statusReply.status?.lockLost).toBe(false);
 
     // the same child still takes the real one-shot request
     send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));

@@ -23,7 +23,7 @@ import { ensureSessionSecret } from "./lib/session-secret";
 import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypto";
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
-import { closeVaultThenReleaseLock, createVaultLockRefusalApp, VaultAlreadyLockedError, VaultLockLostError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
+import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, VaultAlreadyLockedError, VaultLockLostError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -65,18 +65,13 @@ if (config.vault === "on") {
   try {
     vaultLock = acquireVaultLock(config.dataDir, {
       logger,
-      onLost: (reason, holder) => {
-        logger.error(
-          "VAULT_LOCK_LOST",
-          holder === undefined
-            ? `the single-writer lock was lost (${reason}); refusing on the port this instance already owns`
-            : `the single-writer lock was lost to ${holder.host} pid ${holder.pid} (${reason}); refusing on the port this instance already owns`,
-        );
+      onLost: (_reason, holder) => {
         // Fail-stop, but not exit (ADR-0012 clause 3): stop serving writes at
         // once and answer the in-use refusal on the port already bound. An
         // exiting sidecar left the shell's broker with nothing to talk to, so
         // the web fell back to "server unreachable" — the wrong diagnosis.
-        // No second listener, no port-record publication, no new writes.
+        // No second listener, no port-record publication, no new writes. The
+        // single VAULT_LOCK_LOST line is emitted by the lock itself.
         lockLost = true;
         activeHandler = buildLockRefusalHandler(holder);
       },
@@ -146,7 +141,10 @@ function buildOverlay(api: RequestHandler | undefined): RequestHandler {
  * instead of treating the refusal as a dead sidecar.
  */
 function buildLockRefusalHandler(holder: VaultLockOwner | undefined): RequestHandler {
-  const app = createVaultLockRefusalApp(config, new VaultAlreadyLockedError(holder, vaultLock?.path ?? ""));
+  // the holder-free variant takes no path: there is no lock file to name when
+  // this instance never held the folder, and an empty-string sentinel would be
+  // worse than omitting it (code-review S3)
+  const app = createVaultLockRefusalApp(config, new VaultAlreadyLockedError(holder));
   return (request, env) => app.fetch(request, env);
 }
 
@@ -243,8 +241,14 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   if (seedBytes !== undefined) storeInput.seedBytes = seedBytes;
   // ADR-0012 clause 3: every snapshot write re-checks that this process still
   // owns the folder, so a persist queued before another copy reclaimed the
-  // lock cannot overwrite that copy's data (the heartbeat alone is too slow)
-  storeInput.writeGuard = () => vaultLock?.assertHeld();
+  // lock cannot overwrite that copy's data (the heartbeat alone is too slow).
+  // Fail loud, never open: a missing lock must not turn the guard into a no-op
+  // (critic C3).
+  storeInput.writeGuard = () => {
+    const held = vaultLock;
+    if (held === undefined) throw new Error("the vault write guard ran without a held lock");
+    held.assertHeld();
+  };
   const { conn, store } = openVaultStore(storeInput);
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed
@@ -254,8 +258,16 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     // A lost lock is not a snapshot failure: the write-path guard refused the
     // write, and the lock's fail-stop already switched this instance to the
     // in-use refusal. Exiting here would reproduce the bug this change fixes
-    // (the shell's broker would have nothing to talk to).
-    if (error instanceof VaultLockLostError) return;
+    // (the shell's broker would have nothing to talk to). The swallow is
+    // deliberate, but never wordless (code-review S4): the log must name the
+    // refusal, so an offline sale is not attributed to a disk failure.
+    if (error instanceof VaultLockLostError) {
+      logger.error(
+        "SERVER_ERROR",
+        "the encrypted snapshot write was refused: another copy owns the folder; this instance is serving the in-use refusal",
+      );
+      return;
+    }
     logger.error("SNAPSHOT_PERSIST_FAILED", "FATAL: encrypted snapshot could not be written; exiting to avoid divergence", error);
     process.exit(1);
   };
@@ -289,6 +301,16 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     });
     const deps: AppDeps = { config, logger, auth, rpcRouter };
     const app = createApp(deps);
+    if (lockLost) {
+      // The folder was taken while this instance was booting (a heartbeat or a
+      // guarded write). Never install the live app: a mutation would commit in
+      // SQLite, its guarded persist would fail, and a retry would re-execute
+      // against the real app (critic C1). The refusal handler onLost installed
+      // stays in place, and the cleanup/backup tail that could write to the
+      // folder is skipped.
+      logger.error("SERVER_ERROR", "the vault opened while another copy owns the folder; keeping the in-use refusal");
+      return;
+    }
     activeConnection = conn;
     vaultStoreForBackup = store;
     appReady = true;
@@ -330,20 +352,28 @@ type VaultStatusPayload = {
   lockedForMs: number;
   unlocked: boolean;
   broker: boolean;
+  /**
+   * True once another copy owns the folder. `unlocked` is then false even
+   * though the manager still holds the in-memory image, so the shell cannot
+   * report a healthy unlocked vault while HTTP serves the refusal (critic C4).
+   */
+  lockLost: boolean;
 };
 
 /** The gate status over the pipe (same fields the HTTP status route serves). */
 function brokerStatusPayload(vault: VaultManager): VaultStatusPayload {
   const status = vault.status();
+  const unlocked = vault.unlocked && !lockLost;
   return {
     mode: "vault",
     state: status.state,
     legacyDatabase: status.legacyDatabase,
-    // never advertise the wrap inventory before unlock
-    recoveryKeyCount: status.state === "unlocked" ? status.recoveryKeyCount : 0,
+    // never advertise the wrap inventory before unlock (or after a loss)
+    recoveryKeyCount: unlocked ? status.recoveryKeyCount : 0,
     lockedForMs: status.lockedForMs,
-    unlocked: vault.unlocked,
+    unlocked,
     broker: true,
+    lockLost,
   };
 }
 
@@ -643,7 +673,7 @@ async function closeStoreThenLock(): Promise<void> {
     // connection would run a final checkpoint over ITS snapshot, so the
     // abandoned store is left alone: no request can reach it any more, and
     // the replacement instance's data is never overwritten (ADR-0012).
-    await closeVaultThenReleaseLock(lockLost ? undefined : activeConnection, vaultLock);
+    await closeVaultThenReleaseLock(connectionToCloseAtShutdown(lockLost, activeConnection), vaultLock);
   } catch (err) {
     logger.error("SERVER_ERROR", "store close failed during shutdown", err instanceof Error ? err : new Error(String(err)));
   }

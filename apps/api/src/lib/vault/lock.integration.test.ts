@@ -86,6 +86,35 @@ async function hardKillAndWait(child: ChildProcessWithoutNullStreams | undefined
   await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The JSON envelope the RPC/vault routes accept. */
+type JsonBody = { json: Record<string, string> } | { passphrase: string };
+
+async function postJson(url: string, body: JsonBody, headers: Record<string, string> = {}): Promise<Response> {
+  return fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Wait for the lock file to show a NEW heartbeat, so a theft has a full cadence before the next tick. */
+async function waitForFreshHeartbeat(lockFile: string, seen: string | undefined): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    try {
+      // SAFETY: the lock record is JSON written by the running sidecar
+      const record = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { heartbeatAt?: string };
+      if (record.heartbeatAt !== undefined && record.heartbeatAt !== seen) return;
+    } catch {
+      /* mid-write; retry */
+    }
+    if (Date.now() >= deadline) return;
+    await sleep(50);
+  }
+}
+
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-vault-lock-integration-"));
   port = await freePort();
@@ -194,5 +223,82 @@ describe("vault single-writer lock over a live sidecar", () => {
     // SAFETY: the test wrote this JSON itself above
     const owner = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { token: string };
     expect(owner.token).toBe("the-new-owner");
+  });
+
+  itHeavy("a loser neither exits nor checkpoints over the new owner's snapshot (ADR-0012 clause 3)", async () => {
+    api = startApi(port);
+    await waitForHealth(port);
+    const snapshot = path.join(dir, "dokan.db.enc");
+    const lockFile = path.join(dir, "vault.lock");
+
+    // open the vault so this instance holds a live store and snapshot
+    const passphrase = "correct horse battery staple";
+    const setup = await postJson(`http://127.0.0.1:${port}/api/vault/setup`, { passphrase });
+    expect(setup.status).toBe(200);
+    // SAFETY: the setup route returns this shape by contract
+    const { sessionToken } = (await setup.json()) as { sessionToken: string };
+    // unlock signs the owner in, but the RPC guard also needs the provisioned
+    // owner row: firstTimeSetup writes it (vault mode needs no password)
+    const provision = await postJson(`http://127.0.0.1:${port}/api/rpc/firstTimeSetup`, {
+      json: { ownerName: "Owner", phoneNumber: "0550123123", storeName: "Shop" },
+    });
+    expect(provision.ok).toBe(true);
+    for (let attempt = 0; attempt < 200 && !fs.existsSync(snapshot); attempt += 1) await sleep(50);
+    expect(fs.existsSync(snapshot)).toBe(true);
+
+    // a committed mutation persists, so the file matches the in-memory image
+    const first = await postJson(
+      `http://127.0.0.1:${port}/api/rpc/preferencesSet`,
+      { json: { key: "ui.pageSize", value: "25" } },
+      { "x-vault-session": sessionToken },
+    );
+    expect(first.ok).toBe(true);
+    const before = fs.readFileSync(snapshot);
+
+    // align to a fresh heartbeat so the theft has a full cadence before the
+    // heartbeat (not the write guard) could notice it
+    // SAFETY: the lock record is JSON written by the running sidecar
+    const seen = (JSON.parse(fs.readFileSync(lockFile, "utf8")) as { heartbeatAt?: string }).heartbeatAt;
+    await waitForFreshHeartbeat(lockFile, seen);
+
+    // another copy takes the folder, then a mutation commits in memory while
+    // its persist is refused by the write guard
+    fs.writeFileSync(
+      lockFile,
+      JSON.stringify({
+        pid: 4242,
+        host: "another-machine",
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "the-new-owner",
+      }),
+    );
+    const secondWrite = postJson(
+      `http://127.0.0.1:${port}/api/rpc/preferencesSet`,
+      { json: { key: "ui.pageSize", value: "50" } },
+      { "x-vault-session": sessionToken },
+    ).catch(() => undefined);
+    const secondResponse = await secondWrite;
+    await sleep(200);
+    // onFatalError returned on VaultLockLostError instead of exiting; an exit
+    // here would also close the socket mid-request
+    expect(api.exitCode).toBeNull();
+    expect(secondResponse?.ok).toBe(false);
+
+    // SIGTERM: the shutdown must skip the final checkpoint (the folder is no
+    // longer ours), so the new owner's snapshot bytes stay exactly as they were
+    const running = api;
+    api = undefined;
+    running.kill("SIGTERM");
+    await new Promise<void>((resolve) => running.once("exit", () => resolve()));
+    expect(fs.readFileSync(snapshot)).toEqual(before);
+
+    // the skip is visible in the log: without it the abandoned store is closed
+    // anyway, the checkpoint guard refuses, and the shutdown reports a failure
+    const logsDir = path.join(dir, "logs");
+    const logText = fs.existsSync(logsDir)
+      ? fs.readdirSync(logsDir).map((name) => fs.readFileSync(path.join(logsDir, name), "utf8")).join("\n")
+      : "";
+    expect(logText).not.toContain("store close failed during shutdown");
   });
 });

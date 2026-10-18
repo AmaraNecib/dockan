@@ -220,6 +220,69 @@ describe("encrypted connection", () => {
   });
 });
 
+describe("snapshot write guard (ADR-0012 clause 3)", () => {
+  /** Stands in for VaultLockLostError: the connection only sees a throw. */
+  class GuardRefusedError extends Error {}
+
+  it("refuses after a post-write guard failure and never marks the version durable", async () => {
+    let guardCalls = 0;
+    let failPostWrite = true;
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeGuard: () => {
+        guardCalls += 1;
+        // odd call = before the write, even = after it landed
+        if (failPostWrite && guardCalls % 2 === 0) throw new GuardRefusedError("the lock was lost mid-write");
+      },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+
+    await expect(conn.persistIfDirty()).rejects.toThrow(GuardRefusedError);
+    // the bytes landed (the guard ran after the write), but the version must
+    // not be durable
+    expect(fs.existsSync(snapshotPath())).toBe(true);
+    expect(guardCalls).toBe(2);
+
+    // a later persist with no new mutation still has work to do: if
+    // persistedVersion had advanced, this would return without a write
+    failPostWrite = false;
+    await conn.persistIfDirty();
+    expect(guardCalls).toBeGreaterThan(2);
+    conn.close();
+  });
+
+  it("refuses a checkpoint whose guard fails and leaves the snapshot untouched", () => {
+    let refuse = false;
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeGuard: () => {
+        if (refuse) throw new GuardRefusedError("the lock was lost");
+      },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+    conn.checkpoint();
+    const before = fs.readFileSync(snapshotPath());
+
+    refuse = true;
+    conn.raw.exec("INSERT INTO t VALUES ('sale')");
+    conn.markDirty();
+    expect(() => conn.checkpoint()).toThrow(GuardRefusedError);
+    expect(fs.readFileSync(snapshotPath())).toEqual(before);
+
+    // cleanup: the shutdown path never reaches here when the lock is lost
+    refuse = false;
+    conn.close();
+  });
+});
+
 describe("legacy database image", () => {
   it("reads a WAL-mode database into a deserialisable image and preserves the schema version", () => {
     const legacy = path.join(dir, "dokan.db");

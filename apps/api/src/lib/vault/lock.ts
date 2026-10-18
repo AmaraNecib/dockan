@@ -83,13 +83,18 @@ export type VaultLockOptions = {
 };
 
 export class VaultAlreadyLockedError extends Error {
+  /**
+   * `lockPath` is optional: a live holder identified by its own record needs no
+   * path to be named (the refusal page shows the holder), and inventing an
+   * empty-string sentinel at those call sites would be worse than omitting it.
+   */
   constructor(
     readonly owner: VaultLockOwner | undefined,
-    readonly lockPath: string,
+    readonly lockPath?: string,
   ) {
     super(
       owner === undefined
-        ? `another Dokan instance is using this data folder (${lockPath})`
+        ? `another Dokan instance is using this data folder${lockPath === undefined ? "" : ` (${lockPath})`}`
         : `another Dokan instance is using this data folder (${owner.host}, pid ${owner.pid})`,
     );
     this.name = "VaultAlreadyLockedError";
@@ -375,10 +380,15 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
     const existing = readOwner(lockPath, options);
     if (existing !== undefined && holderIsLive(existing, options)) throw new VaultAlreadyLockedError(existing, lockPath);
     // stale (dead same-host PID, quiet foreign heartbeat, or unreadable):
-    // settle so a near-simultaneous reclaimer is likely decided, then reclaim
-    // atomically; a lost race refuses this boot instead of acquiring over it
+    // settle so a near-simultaneous reclaimer is likely decided, then re-read
+    // and re-check IMMEDIATELY before the rename. Without the second check a
+    // holder whose heartbeat lands inside the settle window would be stolen
+    // from (critic C2); a lost race refuses this boot instead of acquiring
+    // over it.
     Bun.sleepSync(options.stealSettleMs ?? 200);
-    const outcome = reclaimStaleLock(lockPath, readOwner(lockPath, options), options);
+    const settled = readOwner(lockPath, options);
+    if (settled !== undefined && holderIsLive(settled, options)) throw new VaultAlreadyLockedError(settled, lockPath);
+    const outcome = reclaimStaleLock(lockPath, settled, options);
     if (outcome === "raced") {
       throw new VaultAlreadyLockedError(readOwner(lockPath, options), lockPath);
     }
@@ -491,6 +501,20 @@ export async function closeVaultThenReleaseLock(
   } finally {
     lock?.release();
   }
+}
+
+/**
+ * The connection a losing holder may close at shutdown. A lost lock means
+ * another copy owns the folder now, so the abandoned store is `undefined`: its
+ * final checkpoint would write this instance's stale image over the new
+ * owner's snapshot (ADR-0012 clause 3). Exported so this decision is pinned by
+ * a unit test and main.ts cannot drift away from it.
+ */
+export function connectionToCloseAtShutdown<T>(
+  lockLost: boolean,
+  connection: T | undefined,
+): T | undefined {
+  return lockLost ? undefined : connection;
 }
 
 /**

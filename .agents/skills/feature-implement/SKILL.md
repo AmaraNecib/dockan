@@ -15,7 +15,7 @@ and never merges.
 
 **Wisdom: read it, never write it.** Before step 1, grep `.agents/wisdom/` for your area
 (`grep -rin "<symbol or failure mode>" .agents/wisdom/ | head -40`) and read the hits — not
-all 58 files. Lessons live in per-area folders (`api/`, `data/`, `e2e/`, `money/`, `process/`,
+all 62 files. Lessons live in per-area folders (`api/`, `data/`, `e2e/`, `money/`, `process/`,
 `testing/`, `vault/`, `web/`, …); `.agents/wisdom/README.md` has the rule. Then apply
 what bears on the task, and say in your **commit message body** which lessons you applied —
 and which you deliberately did not. Wisdom is read-only for a lane; a candidate

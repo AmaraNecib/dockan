@@ -25,7 +25,7 @@ values, or one of them blocks a legitimate operation.
 
 `isPartyPhoneText` initially copy-pasted `normalizePartyPhone`'s cleaning steps
 (fold Arabic-Indic digits, strip invisible bidi marks, strip
-space/dot/parens/dash). Wisdom `2026-10-01-identity-keys-and-backfill` records
+space/dot/parens/dash). Wisdom `identity-keys-and-backfill.md` records
 that this exact cleaning drifted before, splitting one identity into two. Extract
 one `cleanPhoneText` and call it from both the predicate and the canonicalizer;
 a separator added to one path and not the other is an identity-split bug in the

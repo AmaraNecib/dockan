@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-18 · **Ticket:** 276 · **Area:** review pipeline — `debate`, `test-audit`, `code-review`
 
-Three lenses ran on PR #285's head (`1a5be76`). Two were useful. The third filed a HIGH blocker with
+Three lenses ran on PR #285's head (`b4a8e80`, the rebased tip; the api fix they disputed landed
+in `375788b`). Two were useful. The third filed a HIGH blocker with
 a score that was wrong in the same direction as its diagnosis:
 
 > *"the diff has no `apps/api` change... nothing on the status route ever delivers the code, in

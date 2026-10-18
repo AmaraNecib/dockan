@@ -12,7 +12,7 @@ against the very double-announcement mutant they claimed to catch. Its item-3 pa
 it stale rather than wrong.
 
 A later source change or a stale assertion can **hollow a pin while the suite stays green**. This is the
-same failure as `2026-10-15-test-helper-vacuous-guard-and-inherited-mutation-claims`, one step further
+same failure as `../testing/test-helper-vacuous-guard.md`, one step further
 back: there, a mutation claim was inherited; here, the *pin* was.
 
 **Always**: re-run every inherited mutation on the current base before trusting a pin. A pin you did not

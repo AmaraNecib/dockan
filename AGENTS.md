@@ -25,10 +25,11 @@
   line — a second dated file for the same lesson is how a lane reads one of them,
   misses the other, and re-derives it a third time. `README.md` holds the full rule. One
   occurrence is a report line, not wisdom; the parent records it when the same
-  failure shows up across reports. Measured reason: 45 non-merge commits on
-  `develop` touch `.agents/wisdom/` (46 with merges), six of those files carry
-  edits from more than one commit, and one carries three, so lane-written lessons
-  collided and the owner resolved the same conflict by hand.
+  failure shows up across reports. Measured reason (2026-10-19 snapshot — re-measure
+  it, it grows): 47 non-merge commits on `develop` touch `.agents/wisdom/` (48 with
+  merges), six of those files carry edits from more than one commit, and one carries
+  three, so lane-written lessons collided and the owner resolved the same conflict by
+  hand.
 
 ## e2e ports and lanes
 
@@ -199,7 +200,6 @@ decision, so pick one of these instead:
 
 - `rg "symbol"` — ripgrep skips what `.gitignore` excludes, so start here;
 - `grep -rn --exclude-dir=node_modules "symbol" .`;
-- `find . -type d -name node_modules -prune -o -type f -name "*.ts" -print` — `-not -path`
-  only hides a path from the output; the walk still descends into it, which is the cost this rule
-  exists to avoid. `-prune` stops the descent.
-- or name the subtree you mean: `find apps/api/src -name "*.ts"`.
+- or name the subtree you mean: `find apps/api/src -name "*.ts"`. A subtree is the only
+  `find` the guard runs: it refuses a bare `find .` even with `-prune`, so the pruned
+  root form is not a safe recommendation.

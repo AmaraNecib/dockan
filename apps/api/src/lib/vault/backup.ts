@@ -54,6 +54,17 @@ export function readVaultBackupBundle(bundle: Uint8Array): { headerText: string;
   return { headerText, snapshot };
 }
 
+export type ExtractVaultBackupOptions = {
+  /**
+   * Called when the folder's lock is lost mid-restore, just before
+   * `VaultLockLostError` fails the call. Passing a handler is also what keeps
+   * the lock's default fail-stop (`process.exit(1)`, for a holder that never
+   * asked to hear about the loss) away from a caller that has an error path of
+   * its own. The reason says whether the record vanished or changed owner.
+   */
+  onLockLost?: (reason: string) => void;
+};
+
 /**
  * Restore a backup bundle into a data dir: `<dataDir>/vault/vault.json` plus
  * `<dataDir>/dokan.db.enc`, written atomically. The caller opens the dir with a
@@ -73,6 +84,8 @@ export function readVaultBackupBundle(bundle: Uint8Array): { headerText: string;
  * - `assertHeld()` runs before each write and once after the pair, so a lock
  *   lost mid-restore stops the writes instead of overwriting the new owner's
  *   data, and a restore that lost the folder is never reported as completed.
+ *   The loss raises `VaultLockLostError` for the caller to catch; it never
+ *   ends the caller's process.
  * - The lock is released before returning, so the VaultManager the caller boots
  *   next can take it.
  *
@@ -83,18 +96,28 @@ export function readVaultBackupBundle(bundle: Uint8Array): { headerText: string;
 export async function extractVaultBackup(
   bundle: Uint8Array,
   dataDir: string,
+  options: ExtractVaultBackupOptions = {},
 ): Promise<{ headerPath: string; snapshotPath: string }> {
   const decoded = readVaultBackupBundle(bundle);
   if (decoded === undefined) throw new Error("not a Dokan vault backup bundle");
   // decode BEFORE locking: garbage input must not take or touch the folder
-  const lock = acquireVaultLock(dataDir);
+  const lock = acquireVaultLock(dataDir, {
+    // a handler is always present: without one a lost lock fail-stops the whole
+    // process inside the lock module, which is the wrong reaction for a caller
+    // that can report a failed restore
+    onLost: (reason) => options.onLockLost?.(reason),
+  });
   try {
     const vaultDir = path.join(dataDir, "vault");
     fs.mkdirSync(vaultDir, { recursive: true });
     const headerPath = path.join(vaultDir, "vault.json");
     const snapshotPath = path.join(dataDir, "dokan.db.enc");
     // snapshot first, header second: the same ordering first-run setup uses, so a
-    // crash mid-restore leaves an unconfigured dir, never a header without data
+    // crash mid-restore leaves an unconfigured dir, never a header without data.
+    // On a folder that already holds a vault this pair is a replacement, not a
+    // merge: a failure between the two writes leaves the old header over the new
+    // snapshot. Swapping the pair atomically is a separate change; #282 closes
+    // the ownership hole only.
     lock.assertHeld();
     await writeFileAtomic(snapshotPath, decoded.snapshot);
     lock.assertHeld();

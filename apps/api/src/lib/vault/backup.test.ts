@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,7 +9,7 @@ import type { KdfParams } from "./crypto";
 import { createVaultBackupBundle, extractVaultBackup, readVaultBackupBundle } from "./backup";
 import { VaultCore } from "./core";
 import { VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION } from "./format";
-import { acquireVaultLock, VaultAlreadyLockedError } from "./lock";
+import { acquireVaultLock, VaultAlreadyLockedError, VaultLockLostError } from "./lock";
 import { VaultManager } from "./manager";
 import { AppLogger } from "../logger";
 import { createDrizzleStore } from "../../store/drizzle-store";
@@ -225,8 +225,7 @@ describe("vault backup restore takes the data folder's lock", () => {
     next.release();
   });
 
-  it("releases the folder lock when a write fails, and does not lock a bundle it cannot decode", async () => {
-    const header = await headerText();
+  it("releases the folder lock when a write fails, and does not lock a bundle it cannot decode", async () => {    const header = await headerText();
     const bundle = createVaultBackupBundle(header, fakeSnapshot());
     const target = tempDir("dokan-backup-failed-");
     // a directory where the snapshot belongs makes the atomic rename fail
@@ -240,5 +239,36 @@ describe("vault backup restore takes the data folder's lock", () => {
     const garbageTarget = tempDir("dokan-backup-garbage-");
     await expect(extractVaultBackup(Buffer.from("nope"), garbageTarget)).rejects.toThrow();
     expect(fs.existsSync(path.join(garbageTarget, "vault.lock"))).toBe(false);
+  });
+
+  it("fails the restore with an error, never a process exit, when the lock is stolen mid-restore", async () => {
+    const header = await headerText();
+    const bundle = createVaultBackupBundle(header, fakeSnapshot());
+    const target = tempDir("dokan-backup-theft-");
+    const losses: string[] = [];
+    const original = fs.promises.rename;
+    let stolen = false;
+    // the snapshot's own rename is where another instance can take the folder;
+    // the pair must stop there and fail this call, not kill the test process
+    const spy = spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
+      if (!stolen && String(to).endsWith("dokan.db.enc")) {
+        stolen = true;
+        writeLockRecord(target, { token: "thief" });
+      }
+      return original(from, to);
+    });
+    try {
+      await expect(
+        extractVaultBackup(bundle, target, { onLockLost: (reason) => losses.push(reason) }),
+      ).rejects.toThrow(VaultLockLostError);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(stolen).toBe(true);
+    expect(losses.length).toBe(1);
+    expect(losses[0]).toMatch(/lock/i);
+    // the header never landed, and the new owner's record is left alone
+    expect(fs.existsSync(path.join(target, "vault", "vault.json"))).toBe(false);
+    expect(fs.existsSync(path.join(target, "vault.lock"))).toBe(true);
   });
 });

@@ -1,0 +1,10 @@
+[22:24:05] ports owner=64369 refuser=64370 web=64371 dataDir=C:\Users\sensei57\AppData\Local\Temp\dokan-285-evidence-lJnqmu
+[22:24:06] owner API healthy (holds the folder lock)
+[22:24:06] refuser API answered 503 {"error":{"code":"VAULT_LOCKED_BY_OTHER_INSTANCE"}}
+[22:24:29] after: desktop captured (vault-status-in-use) text="البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق."
+[22:24:29] after: phone captured
+[22:24:29] checked out develop's web files for the before capture
+[22:24:33] before: desktop captured (vault-status-unavailable) text="تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة."
+[22:24:33] before: phone captured
+[22:24:34] restored HEAD's web files
+[22:24:34] stopped servers

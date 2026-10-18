@@ -236,7 +236,7 @@ describe("vault single-writer lock", () => {
 
   it("reclaims an unreadable lock file instead of blocking forever", () => {
     fs.writeFileSync(lockPath(), "{ not json");
-    const lock = acquireVaultLock(dir, fastSteal);
+    const lock = acquireVaultLock(dir, { ...fastSteal, onLost: () => undefined });
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
   });
@@ -696,26 +696,32 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   });
 
   it("clamps a negative or non-finite knob to the safe end", () => {
-    // NaN is not a budget: it falls back to the default instead of zeroing it
-    const nan = countingReader((lockPath, call) => {
-      if (call <= 2) throw errno("EBUSY", "EBUSY: resource busy or locked");
-      return realRead(lockPath);
+    // NaN is not a budget: it falls back to the default 10 x 100 ms instead of
+    // zeroing it OR spinning. The reader never recovers, so the 11th attempt
+    // (the default budget) is what ends it; a mutant that lets NaN through has
+    // no attempt ceiling and only the 1 s window stops it, thousands of reads
+    // later. A reader that recovers on attempt 3 would pass either way.
+    const nan = countingReader(() => {
+      throw errno("EBUSY", "EBUSY: resource busy or locked");
     });
+    const nanLost: string[] = [];
     const nanLock = acquireVaultLock(dir, {
       transientReadRetries: Number.NaN,
       transientReadRetryDelayMs: Number.NaN,
       readLockFile: nan.readLockFile,
       logger: nan.logger,
+      onLost: (reason) => nanLost.push(reason),
     });
-    try {
-      expect(() => nanLock.assertHeld()).not.toThrow();
-      expect(nan.state.reads).toBe(3);
-    } finally {
-      nanLock.release();
-    }
+    expect(() => nanLock.assertHeld()).toThrow(VaultLockLostError);
+    expect(nan.state.readsAtLoss).toBe(11);
+    expect(nanLost).toHaveLength(1);
+    nanLock.release();
 
     // -1 truncates to no retries at all: one read, then the loss. Last, because
     // a lock lost this way leaves its file behind for the next boot
+    // the NaN half above left its unreadable record at the path; clear it so
+    // this acquisition does not spend the read seam reclaiming it first
+    fs.rmSync(lockPath(), { force: true });
     const negative = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked");
     });
@@ -740,7 +746,7 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     // the knobs nobody sets: 8 x 100 ms of a scanner holding the file is inside
     // the default patience, where the old 5 x 50 ms budget failed the holder
     // closed on a healthy machine (critic r3-2)
-    const lock = acquireVaultLock(dir, { readLockFile: reads.readLockFile, logger: reads.logger });
+    const lock = acquireVaultLock(dir, { readLockFile: reads.readLockFile, logger: reads.logger, onLost: () => undefined });
     try {
       expect(() => lock.assertHeld()).not.toThrow();
       expect(reads.state.reads).toBe(9);
@@ -748,6 +754,107 @@ describe("a transient lock-file read error is not theft (#281)", () => {
       lock.release();
     }
   });
+
+  it("caps the held sequence at the one-second window even when the attempt ceiling cannot do it", () => {
+    // the knobs are legal at their ceilings (100 attempts x 500 ms = 50 s) and
+    // the reader never recovers, so only MAX_HELD_RETRY_WINDOW_MS can end this
+    // sequence: a mutant that drops the window check alone runs all 101
+    // attempts before it loses
+    const reads = countingReader(() => {
+      throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+    });
+    const lost: string[] = [];
+    const startedAt = Date.now();
+    const lock = acquireVaultLock(dir, {
+      transientReadRetries: 10_000,
+      transientReadRetryDelayMs: 500,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    const elapsed = Date.now() - startedAt;
+    // a handful of reads, not the ceiling's 101
+    expect(reads.state.readsAtLoss).toBeLessThan(10);
+    expect(elapsed).toBeLessThan(2_000);
+    expect(lost).toHaveLength(1);
+    lock.release();
+  }, 10_000);
+
+  it("caps the number of distinct codes it names in the loss reason", () => {
+    const reads = countingReader((_lockPath, call) => {
+      // a distinct 40-char code on every read: without a count cap the reason
+      // packs one per attempt and reaches kilobytes (code-review finding 2)
+      throw errno(`E${String(call).padStart(3, "0")}${"x".repeat(40)}`, "EBUSY: resource busy or locked");
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      transientReadRetries: 100,
+      transientReadRetryDelayMs: 0,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(reads.state.readsAtLoss).toBe(101);
+    expect(lost).toHaveLength(1);
+    // five codes, then a count of the rest: bounded by the cap, not by the
+    // 101-attempt ceiling
+    expect(lost[0]).toContain("+96 more");
+    expect(lost[0]).not.toContain("E101");
+    expect(lost[0]!.length).toBeLessThan(600);
+  }, 10_000);
+
+  it("bounds the boot-path read attempts even when a knob asks for ten thousand", () => {
+    // acquisition reads through the same clamped budget: three readOwner calls,
+    // each capped at 100 retries, is ~303 reads. A mutant that reverts the boot
+    // path to the raw knob does 10 001 x 3
+    const reads = countingReader(() => {
+      throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+    });
+    fs.writeFileSync(lockPath(), "{ not json");
+    const startedAt = Date.now();
+    const lock = acquireVaultLock(dir, {
+      readRetries: 10_000,
+      readRetryDelayMs: 0,
+      stealSettleMs: 1,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: () => undefined,
+    });
+    try {
+      expect(reads.state.reads).toBeLessThan(400);
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+      expect(lock.currentOwner().pid).toBe(process.pid);
+    } finally {
+      lock.release();
+    }
+  }, 10_000);
+
+  it("bounds the boot-path read delay even when a knob asks for five seconds", () => {
+    // three readOwner calls, each with one retry folded to 500 ms: ~1.5 s. A
+    // mutant that reverts the boot path to the raw knob sleeps 3 x 5 s
+    const reads = countingReader(() => {
+      throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+    });
+    fs.writeFileSync(lockPath(), "{ not json");
+    const startedAt = Date.now();
+    const lock = acquireVaultLock(dir, {
+      readRetries: 1,
+      readRetryDelayMs: 5_000,
+      stealSettleMs: 1,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: () => undefined,
+    });
+    try {
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+      expect(reads.state.reads).toBeLessThan(20);
+      expect(lock.currentOwner().pid).toBe(process.pid);
+    } finally {
+      lock.release();
+    }
+  }, 30_000);
 
   it("caps the whole retry window even when a knob asks for hours", () => {
     const reads = countingReader((lockPath, call) => {

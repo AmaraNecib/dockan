@@ -86,6 +86,12 @@ const MAX_RETRY_ATTEMPTS = 100;
 const MAX_RETRY_DELAY_MS = 500;
 /** One held-lock read sequence may block for at most this long, whatever the knobs. */
 const MAX_HELD_RETRY_WINDOW_MS = 1_000;
+/**
+ * How many distinct error codes the loss reason spells out. The attempt ceiling
+ * (101) already bounds the assembled reason, but 101 distinct hostile codes are
+ * still ~4.5 KB of JSONL; the reason names a few and counts the rest.
+ */
+const MAX_REASON_CODES = 5;
 
 export type VaultLockOptions = {
   logger?: VaultLockLogger;
@@ -311,6 +317,8 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
   // `writeGuard`, so an unbounded wait here is an unbounded stalled write
   const budgetEndsAt = Date.now() + MAX_HELD_RETRY_WINDOW_MS;
   const codes: string[] = [];
+  const seenCodes = new Set<string>();
+  let omittedCodes = 0;
   for (let attempt = 0; ; attempt += 1) {
     const read = readOwnerOnce(lockPath, reader);
     if (read.kind === "owner") {
@@ -325,17 +333,24 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
       return { kind: "lost", reason: "the lock file disappeared" };
     }
     // the errno is folded and bounded like the message: it reaches the reason,
-    // and a code is only ever a token, never a smuggled log line
+    // and a code is only ever a token, never a smuggled log line. Only the
+    // first few distinct codes are spelled out; the rest are counted, so a
+    // hostile reader cannot grow the reason with fresh codes on every attempt
     const code = oneLine(read.code, 40);
-    if (!codes.includes(code)) codes.push(code);
+    if (!seenCodes.has(code)) {
+      seenCodes.add(code);
+      if (codes.length < MAX_REASON_CODES) codes.push(code);
+      else omittedCodes += 1;
+    }
     if (attempt >= retries || Date.now() >= budgetEndsAt) {
-      // every code seen, the attempt count and the OS's own sentence ride in
+      // the codes seen, the attempt count and the OS's own sentence ride in
       // the reason, which `lost()` logs as VAULT_LOCK_LOST: the api's log
       // vocabulary is a contract shared with the web badge, so a new event
       // code is not this module's to add
+      const codeSummary = omittedCodes === 0 ? codes.join(", ") : `${codes.join(", ")}, +${omittedCodes} more`;
       return {
         kind: "lost",
-        reason: `the lock file could not be read (${codes.join(", ")} after ${attempt + 1} attempts: ${oneLine(read.error.message)})`,
+        reason: `the lock file could not be read (${codeSummary} after ${attempt + 1} attempts: ${oneLine(read.error.message)})`,
       };
     }
     Bun.sleepSync(Math.min(delayMs, Math.max(0, budgetEndsAt - Date.now())));

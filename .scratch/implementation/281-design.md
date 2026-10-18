@@ -190,7 +190,9 @@ a loss reads again, so the raw count alone cannot pin the budget).
   read error during a reclaim can unlink a live holder's record and acquire over
   it. It is byte-for-byte base behaviour, the design's "Not changed" section
   says so, and #281 narrows the damage rather than widening it: the evicted
-  holder now loses *promptly and without releasing*, instead of unlinking its own
+  holder now loses *promptly and without unlinking anyone else's file* (it still
+  runs its own `release()`, but by then the file at the path is not its own and
+  an unreadable one is never unlinked), instead of unlinking its own
   lock and walking away, and every write it attempts stays gated by
   `assertHeld`. The proposed guard (re-link the moved file and report "raced"
   when `readOwner` fails for a non-ENOENT reason) is new locking work for #275's

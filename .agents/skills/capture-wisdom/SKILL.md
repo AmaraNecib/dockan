@@ -8,7 +8,8 @@ argument-hint: "What repeated lesson to capture, or what task you're starting th
 
 **Writing is parent-session only.** Every lane reads `.agents/wisdom/` before it
 starts and reports which lessons it applied; no lane writes these files. A lane
-puts a candidate lesson in its `crew_report` and the parent decides. The rule
+puts a candidate lesson in its commit message body (a `Lesson:` line) and the
+parent decides. The rule
 exists because the opposite was measurable: lane-written lessons collided and the
 owner resolved the same conflict by hand, and two lanes declined to record a
 lesson because the write would have marked their own review evidence stale (the

@@ -3,20 +3,21 @@
 ## Authority
 
 - **A lane commits and reports; it does not land.** A lane (`fix-*`, `feat-*`,
-  `test-*`, `chore-*`, `docs-*`, …) works in its own worktree, commits its diff
-  and calls `crew_report`. It **never** runs `git push`, **never** opens a PR
-  (`gh pr create`) and **never** merges. `feature-implement` step 10 is
-  parent-only.
+  `test-*`, `chore-*`, `docs-*`, …) works in its own worktree and commits its diff. Its
+  completion wakes the parent; there is no report tool to call. It **never** runs
+  `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
+  `feature-implement` step 10 is parent-only.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
   lane's branch, opens the PR, requests Greptile review, drives the rounds, and
   merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
   before/after packet is posted), and otherwise only when the owner says so (see `Merging`).
 - **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
-  lane reads `.agents/wisdom/` before it starts, applies what bears on its task
-  and says in its `crew_report` which lessons it applied, and which it
-  deliberately did not. Wisdom is **read-only for a lane**: it never writes the
-  file. A candidate lesson goes in the `lesson` field of `crew_report` (a harness
-  without that field carries it in the report summary).
+  lane reads `.agents/wisdom/` before it starts, applies what bears on its task,
+  and says which lessons it applied and which it deliberately did not **in its
+  commit message body**, which is the durable handoff that travels with the
+  branch. Wisdom is **read-only for a lane**: it never writes the file. A
+  candidate lesson also goes in the commit message body, under a `Lesson:` line,
+  for the parent to promote or drop.
 - **A lesson lives in a category folder, and its filename never carries a date.**
   `.agents/wisdom/<category>/<lesson>.md`: the folder is the area (`api`, `data`, `e2e`,
   `money`, `process`, `testing`, `vault`, `web`, …), the filename says what the lesson
@@ -48,16 +49,14 @@ A top-level thread (`t3_thread_launch`) is for the one case a fresh worktree can
 dead lane, not the default. The cheaper path through the same situation is to commit the partial
 work to its branch first, after which an ordinary child can continue on that branch.
 
+**A fresh worktree has no `node_modules`.** Worktree setup does not install. A lane must run
+`bun install --frozen-lockfile` (about a minute with the warm cache) before it can run a test,
+typecheck, or build, or it will fail for a reason that has nothing to do with its change.
+
 Either way, one writer per worktree, and a lane never pushes or merges.
 
 Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
-reuse a lane's session for the next PR (a reused session also misses the
-workspace label at startup, which is what makes `crew_report` work).
-
-Name the herdr workspace label so it matches `/^(issue|rev|pr|feat|fix|chore|docs|test|build|ci|perf|style)-/`
-AND name the manifest `<worktree>/.scratch/sessions/crew/<label>.manifest.json`
-expected by `crew-watch`. `herdr workspace rename <id> <label>` takes the label
-positionally (no `--label` flag).
+reuse a lane's session for the next PR.
 
 **Three lanes at a time, and an idle lane is a wasted one.** Close a lane's
 workspace the moment the parent has pushed its branch: a lane waiting on review
@@ -165,8 +164,8 @@ Do not hand the wait back to the user. After pushing and requesting
 then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
 Greptile comment each time, until the verdict appears. Same for CI.
 
-A crew lane reports on its own (`crew_report` wakes the session) — stop and
-let it report. Never poll a lane.
+A lane reports by finishing: its completion wakes the session. Stop and let it
+finish rather than polling it.
 
 ## Search scope
 

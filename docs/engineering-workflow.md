@@ -48,7 +48,7 @@ Code-review — Standards + Spec axes against pinned base SHA
     ↓
 Guard Phase 2 — pre-push gate
     ↓
-crew_report — the lane stops here
+commit — the lane stops here
     ↓
 ── parent-owned from here ──
     ↓
@@ -63,9 +63,9 @@ Capture wisdom (repeated pattern only) + report to the owner
 Merge — cheap-to-reverse merges itself; expensive or decision diffs wait for the owner
 ```
 
-A **worker lane stops at Guard Phase 2** and reports (`crew_report`); the parent
-session pushes, opens the PR, drives the review rounds and merges. A lane that
-pushes is breaking its authority boundary, not helping.
+A **worker lane stops at Guard Phase 2** and commits. Its completion wakes the
+parent session, which pushes, opens the PR, drives the review rounds and merges.
+A lane that pushes is breaking its authority boundary, not helping.
 
 Do not run a later phase without recording the earlier gate, its commands, and its result.
 
@@ -129,11 +129,10 @@ reviewable next to the verdict instead of being invisible.
   must contain the exact reviewed HEAD SHA; any later reviewable-file change makes evidence stale.
 - **Wisdom: parent-owned generation, every lane's consumption.** A lane reads
   `.agents/wisdom/` before it starts, applies what bears on its task and says in
-  its `crew_report` which lessons it applied (and which it deliberately did not)
+  its commit message body which lessons it applied (and which it deliberately did not)
   — reading is the lane's job even though writing is not. Wisdom is **read-only
-  for a lane**: its `crew_report` may carry a candidate lesson in the `lesson`
-  field (a harness without that field carries it in the report summary), but only
-  the parent writes the file, and only when the same failure has
+  for a lane**: that same body may carry a candidate lesson under a `Lesson:`
+  line, but only the parent writes the file, and only when the same failure has
   occurred more than once (one occurrence is a report line, not wisdom). This
   also keeps `.agents/wisdom/**` out of every lane diff, so a lane's review
   evidence can no longer go stale from a wisdom write it made to satisfy the

@@ -199,5 +199,7 @@ decision, so pick one of these instead:
 
 - `rg "symbol"` — ripgrep skips what `.gitignore` excludes, so start here;
 - `grep -rn --exclude-dir=node_modules "symbol" .`;
-- `find . -not -path "*node_modules*" -name "*.ts"`;
+- `find . -type d -name node_modules -prune -o -type f -name "*.ts" -print` — `-not -path`
+  only hides a path from the output; the walk still descends into it, which is the cost this rule
+  exists to avoid. `-prune` stops the descent.
 - or name the subtree you mean: `find apps/api/src -name "*.ts"`.

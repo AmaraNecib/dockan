@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLockOwner } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLockOwner } from "./lock";
 import { createAppConfig } from "../../config";
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 
@@ -44,7 +44,7 @@ function writeLock(overrides: Partial<{ pid: number; host: string; heartbeatAt: 
 /**
  * A pid the OS is guaranteed to answer `ESRCH` for: spawn a child and reap it.
  * The probe tests must not hang their outcome on whether a hardcoded pid
- * happens to exist on the runner (test-audit F1).
+ * happens to exist on the runner.
  */
 async function reapedPid(): Promise<number> {
   const child = Bun.spawn(["bun", "-e", ""], { stdout: "ignore", stderr: "ignore" });
@@ -125,6 +125,53 @@ describe("vault single-writer lock", () => {
     expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "alive" })).toThrow(VaultAlreadyLockedError);
   });
 
+  it("pins the 60s heartbeat window at its edges", () => {
+    // an inconclusive probe leaves the heartbeat as the only evidence
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 59_000).toISOString() });
+    expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" })).toThrow(VaultAlreadyLockedError);
+    fs.rmSync(lockPath(), { force: true });
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 61_000).toISOString() });
+    const lock = acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" });
+    expect(lock.currentOwner().pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it("holds the conservative refusal for a heartbeat dated in the future", () => {
+    // a foreign clock running ahead is not evidence of death: reclaiming would
+    // risk two writers, so the holder must stay refused
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() + 5 * 60_000).toISOString() });
+    expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" })).toThrow(VaultAlreadyLockedError);
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { heartbeatAt: string };
+    expect(Date.parse(owner.heartbeatAt)).toBeGreaterThan(Date.now());
+  });
+
+  it("assertHeld refuses a lock file that vanished, and fail-stops exactly once", () => {
+    let lost = 0;
+    const lock = acquireVaultLock(dir, {
+      ...fastSteal,
+      onLost: () => {
+        lost += 1;
+      },
+    });
+    fs.rmSync(lockPath(), { force: true });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(lost).toBe(1);
+  });
+
+  it("assertHeld refuses a released lock", () => {
+    const lock = acquireVaultLock(dir, fastSteal);
+    lock.release();
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+  });
+
+  it("the write guard refuses loudly when no lock was ever held, and passes while held", () => {
+    expect(() => requireHeldLock(undefined)()).toThrow("the vault write guard ran without a held lock");
+    const lock = acquireVaultLock(dir, fastSteal);
+    expect(() => requireHeldLock(lock)()).not.toThrow();
+    lock.release();
+  });
+
   it("writes exactly the documented lock record at the documented path (criterion 10)", () => {
     const lock = acquireVaultLock(dir);
     expect(lock.path).toBe(path.join(dir, "vault.lock"));
@@ -140,7 +187,7 @@ describe("vault single-writer lock", () => {
     lock.release();
   });
 
-  it("abandons a reclaim when the holder looks live again after the settle window (critic C2)", () => {
+  it("abandons a reclaim when the holder looks live again after the settle window", () => {
     writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString(), token: "still-ours" });
     // first look: gone. After the settle it answers alive, as a holder whose
     // heartbeat or process came back inside the window would

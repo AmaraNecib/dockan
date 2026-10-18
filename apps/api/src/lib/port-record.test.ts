@@ -111,9 +111,9 @@ describe("withPortFileLock", () => {
   });
 
   it("never takes over a holder whose pid probe is inconclusive (EPERM on Windows)", async () => {
-    // test-audit F2: port-record previously read EPERM as alive; the shared
-    // rule reads it as unknowable, and this site must still refuse to break
-    // exclusivity on an answer it cannot trust
+    // port-record previously read EPERM as alive; the shared rule reads it as
+    // unknowable, and this site must still refuse to break exclusivity on an
+    // answer it cannot trust
     const eperm = path.join(dir, "eperm.lock");
     fs.mkdirSync(eperm);
     fs.writeFileSync(path.join(eperm, "pid"), "4242", "utf8");
@@ -236,8 +236,8 @@ describe("registry", () => {
   });
 
   it("keeps a registry entry whose pid probe is inconclusive (EPERM on Windows)", () => {
-    // test-audit F2: a drift that treats "unknown" as gone would prune a live
-    // owner's entry here and take over its lock above
+    // a drift that treats "unknown" as gone would prune a live owner's entry
+    // here and take over its lock above
     const pid = 4242;
     writeRegistryEntry(registryDir, pid, "127.0.0.1", 4319);
     const spy = spyOn(process, "kill").mockImplementation(() => {

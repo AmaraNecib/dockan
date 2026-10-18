@@ -34,8 +34,9 @@ import { errnoCode, probePidLiveness, type PidLiveness, type PidLivenessProbe } 
  * trusting a clock-only timeout for a live same-host process.
  *
  * Losing the lock file while running (someone deleted it) is fail-stop: the
- * `onLost` callback fires so the caller can exit rather than run without
- * exclusivity. The module never exits by itself when `onLost` is provided.
+ * `onLost` callback fires so the caller can stop writing and refuse rather than
+ * run without exclusivity. The module never exits by itself when `onLost` is
+ * provided.
  */
 
 export type VaultLockOwner = {
@@ -150,7 +151,12 @@ function readOwner(lockPath: string, options: VaultLockOptions): VaultLockOwner 
 function heartbeatIsFresh(owner: VaultLockOwner, options: VaultLockOptions): boolean {
   const heartbeat = Date.parse(owner.heartbeatAt);
   if (!Number.isFinite(heartbeat)) return false;
-  return Date.now() - heartbeat <= (options.staleHeartbeatMs ?? 60_000);
+  const age = Date.now() - heartbeat;
+  // A stamp in the future is not evidence of death: a foreign clock running
+  // ahead must hold the conservative refusal, never invite a reclaim. Only
+  // non-negative ages are measured against the window.
+  if (age < 0) return true;
+  return age <= (options.staleHeartbeatMs ?? 60_000);
 }
 
 /**
@@ -195,7 +201,7 @@ export class VaultLock {
   }
 
   /**
-   * The WRITE-path ownership check (ADR-0012 clause 3, review P2). The
+   * The WRITE-path ownership check (ADR-0012 clause 3). The
    * heartbeat alone is not enough: a snapshot persist already queued can run
    * before the next heartbeat and overwrite the new owner's data. Every write
    * asks here instead, and the answer is read from the lock file NOW (the same
@@ -282,6 +288,19 @@ export class VaultLock {
       /* already gone */
     }
   }
+}
+
+/**
+ * The snapshot write guard main.ts installs: refuse loudly when no lock was
+ * ever held. A missing lock must never turn the guard into a silent no-op
+ * (ADR-0012 clause 3); that would let a store write with no exclusivity at
+ * all. Exported so the no-lock branch is pinned by a unit test.
+ */
+export function requireHeldLock(lock: VaultLock | undefined): () => void {
+  return () => {
+    if (lock === undefined) throw new Error("the vault write guard ran without a held lock");
+    lock.assertHeld();
+  };
 }
 
 /**
@@ -383,8 +402,7 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
     // settle so a near-simultaneous reclaimer is likely decided, then re-read
     // and re-check IMMEDIATELY before the rename. Without the second check a
     // holder whose heartbeat lands inside the settle window would be stolen
-    // from (critic C2); a lost race refuses this boot instead of acquiring
-    // over it.
+    // from; a lost race refuses this boot instead of acquiring over it.
     Bun.sleepSync(options.stealSettleMs ?? 200);
     const settled = readOwner(lockPath, options);
     if (settled !== undefined && holderIsLive(settled, options)) throw new VaultAlreadyLockedError(settled, lockPath);

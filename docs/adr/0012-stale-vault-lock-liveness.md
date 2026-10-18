@@ -67,7 +67,9 @@ still alive, so one shared helper decides both.
   outcome the lock exists to prevent. So the guarantee is mechanical, not
   intended: `VaultLock.assertHeld()` re-reads the lock's token at the instant of
   the write, `EncryptedConnectionOptions.writeGuard` runs it before each attempt
-  and again before `persistedVersion` advances, and shutdown skips the abandoned
+  and again before `persistedVersion` advances (the asynchronous write; the
+  synchronous `checkpoint()` cannot be interleaved in-process, so it checks
+  once before it), and shutdown skips the abandoned
   store's final checkpoint. Two holes remain, deferred with issues of their own
   rather than claimed closed: an in-flight write that passed the guard before the
   theft can still land, so the new owner can briefly believe in a version it does

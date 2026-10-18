@@ -19,6 +19,8 @@ let dir: string;
 let port: number;
 let api: ChildProcessWithoutNullStreams | undefined;
 let second: ChildProcessWithoutNullStreams | undefined;
+/** The last stderr the api child wrote, so a failed wait names the exit path. */
+let apiStderr = "";
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -33,7 +35,7 @@ async function freePort(): Promise<number> {
 }
 
 function startApi(onPort: number): ChildProcessWithoutNullStreams {
-  return spawn("bun", ["src/main.ts"], {
+  const child = spawn("bun", ["src/main.ts"], {
     cwd: path.join(import.meta.dir, "..", "..", ".."),
     env: {
       ...process.env,
@@ -43,6 +45,18 @@ function startApi(onPort: number): ChildProcessWithoutNullStreams {
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
+  child.stderr.on("data", (chunk: Buffer) => {
+    apiStderr = `${apiStderr}${chunk.toString()}`.slice(-4_000);
+  });
+  return child;
+}
+
+/** Everything the running api child logged, for assertions and failure text. */
+function readLogs(): string {
+  const logsDir = path.join(dir, "logs");
+  return fs.existsSync(logsDir)
+    ? fs.readdirSync(logsDir).map((name) => fs.readFileSync(path.join(logsDir, name), "utf8")).join("\n")
+    : "";
 }
 
 async function waitForHealth(onPort: number, timeoutMs = 20_000): Promise<void> {
@@ -118,6 +132,7 @@ async function waitForFreshHeartbeat(lockFile: string, seen: string | undefined)
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-vault-lock-integration-"));
   port = await freePort();
+  apiStderr = "";
 });
 
 afterEach(async () => {
@@ -202,22 +217,35 @@ describe("vault single-writer lock over a live sidecar", () => {
     );
 
     // the heartbeat notices within one cadence (10s) and the instance answers
-    // the JSON status route the app calls with the in-use refusal
+    // the JSON status route the app calls with the in-use refusal. The port
+    // record must be snapshotted first so a loser cannot quietly republish it.
+    const registryDir = path.join(dir, "run", ".dokan-port.registry");
+    const registryBefore = fs.existsSync(registryDir) ? fs.readdirSync(registryDir).sort() : [];
     const deadline = Date.now() + 30_000;
     for (;;) {
-      const response = await fetch(`http://127.0.0.1:${port}/api/vault/status`);
-      if (response.status === 503) {
-        // SAFETY: the refusal app serves this JSON shape by contract
-        const body = (await response.json()) as { error?: { code?: string } };
-        if (body.error?.code === "VAULT_LOCKED_BY_OTHER_INSTANCE") break;
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/vault/status`);
+        if (response.status === 503) {
+          // SAFETY: the refusal app serves this JSON shape by contract
+          const body = (await response.json()) as { error?: { code?: string } };
+          if (body.error?.code === "VAULT_LOCKED_BY_OTHER_INSTANCE") break;
+        }
+      } catch {
+        // the child may be mid-swap: a transient refused connection is not a
+        // failure, retry until the deadline
       }
-      if (Date.now() >= deadline) throw new Error("instance never switched to the in-use refusal");
+      if (Date.now() >= deadline) {
+        throw new Error(`instance never switched to the in-use refusal; stderr: ${apiStderr}`);
+      }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
     // no second listener and no port-record publication: the boot record is
-    // untouched, and /health answers the refusal on the same port
+    // untouched, the per-process registry directory gained no new entry, and
+    // /health answers the refusal on the same port
     expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
+    const registryAfter = fs.existsSync(registryDir) ? fs.readdirSync(registryDir).sort() : [];
+    expect(registryAfter).toEqual(registryBefore);
     expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(503);
     // the replacement owner's lock file was never deleted by the loser
     // SAFETY: the test wrote this JSON itself above
@@ -273,6 +301,10 @@ describe("vault single-writer lock over a live sidecar", () => {
         token: "the-new-owner",
       }),
     );
+    // let the forged record land, then mutate BEFORE the next heartbeat tick
+    // (10s away): the request reaches the live app, the mutation commits, and
+    // its persist is what the write guard refuses
+    await sleep(50);
     const secondWrite = postJson(
       `http://127.0.0.1:${port}/api/rpc/preferencesSet`,
       { json: { key: "ui.pageSize", value: "50" } },
@@ -284,6 +316,10 @@ describe("vault single-writer lock over a live sidecar", () => {
     // here would also close the socket mid-request
     expect(api.exitCode).toBeNull();
     expect(secondResponse?.ok).toBe(false);
+    // the abandoned store is genuinely dirty: persistNow only asks the guard
+    // when a mutation is unpersisted, so this line cannot appear if the refusal
+    // handler intercepted the request instead of the app committing the change
+    expect(readLogs()).toContain("the encrypted snapshot write was refused");
 
     // SIGTERM: the shutdown must skip the final checkpoint (the folder is no
     // longer ours), so the new owner's snapshot bytes stay exactly as they were
@@ -294,11 +330,12 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(fs.readFileSync(snapshot)).toEqual(before);
 
     // the skip is visible in the log: without it the abandoned store is closed
-    // anyway, the checkpoint guard refuses, and the shutdown reports a failure
-    const logsDir = path.join(dir, "logs");
-    const logText = fs.existsSync(logsDir)
-      ? fs.readdirSync(logsDir).map((name) => fs.readFileSync(path.join(logsDir, name), "utf8")).join("\n")
-      : "";
-    expect(logText).not.toContain("store close failed during shutdown");
+    // anyway, the checkpoint guard refuses, and the shutdown reports a failure.
+    // Only POSIX delivers the SIGTERM: Bun's kill on Windows terminates the
+    // child outright, so the shutdown path never runs there and this assertion
+    // cannot bite. CI runs the api suite on ubuntu, where it is the gate.
+    if (process.platform !== "win32") {
+      expect(readLogs()).not.toContain("store close failed during shutdown");
+    }
   });
 });

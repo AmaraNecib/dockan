@@ -149,4 +149,50 @@ describe("vault single-writer lock over a live sidecar", () => {
     // the first instance still owns the folder and keeps serving
     expect((await fetch(`http://127.0.0.1:${port}/health`)).ok).toBe(true);
   });
+
+  itHeavy("a running instance that loses the folder refuses on its own port instead of exiting (ADR-0012)", async () => {
+    api = startApi(port);
+    await waitForHealth(port);
+    const portFile = path.join(dir, "run", ".dokan-port");
+    const lockFile = path.join(dir, "vault.lock");
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(portFile); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
+
+    // another copy takes the folder: replace the running instance's lock record
+    fs.writeFileSync(
+      lockFile,
+      JSON.stringify({
+        pid: 4242,
+        host: "another-machine",
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "the-new-owner",
+      }),
+    );
+
+    // the heartbeat notices within one cadence (10s) and the instance answers
+    // the JSON status route the app calls with the in-use refusal
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const response = await fetch(`http://127.0.0.1:${port}/api/vault/status`);
+      if (response.status === 503) {
+        // SAFETY: the refusal app serves this JSON shape by contract
+        const body = (await response.json()) as { error?: { code?: string } };
+        if (body.error?.code === "VAULT_LOCKED_BY_OTHER_INSTANCE") break;
+      }
+      if (Date.now() >= deadline) throw new Error("instance never switched to the in-use refusal");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    // no second listener and no port-record publication: the boot record is
+    // untouched, and /health answers the refusal on the same port
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
+    expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(503);
+    // the replacement owner's lock file was never deleted by the loser
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { token: string };
+    expect(owner.token).toBe("the-new-owner");
+  });
 });

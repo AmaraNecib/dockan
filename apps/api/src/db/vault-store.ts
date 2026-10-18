@@ -17,6 +17,8 @@ export type OpenVaultStoreInput = {
   /** decrypted legacy image to adopt on first run */
   seedBytes?: Uint8Array;
   logger?: StoreLogger;
+  /** write-path guard: throws when this process no longer owns the folder */
+  writeGuard?: () => void;
 };
 
 /** The two seams one encrypted-store bootstrap produces. */
@@ -31,6 +33,7 @@ export function openVaultStore(input: OpenVaultStoreInput): OpenVaultStore {
   };
   if (input.fresh === true) options.fresh = true;
   if (input.seedBytes !== undefined) options.seedBytes = input.seedBytes;
+  if (input.writeGuard !== undefined) options.writeGuard = input.writeGuard;
   const conn = createEncryptedConnection(options);
   return { conn, store: createDrizzleStore(conn, input.logger) };
 }

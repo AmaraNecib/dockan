@@ -497,10 +497,16 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
           process.exit(1);
         }
         const prepared = await vault.prepareSetup(passphrase);
-        // bootstrap throws VaultLockLostError when the folder is taken mid-boot:
-        // the header commit and the plaintext sweep below never run, and the
-        // catch answers the typed refusal over the pipe
+        // bootstrap throws VaultLockLostError when the folder is taken mid-boot, and
+        // the catch answers the typed refusal over the pipe. It also RETURNS EARLY
+        // when the app is already up, so a loss during its own await slips past the
+        // throw: refuse here too, before the header is committed, exactly as the
+        // unlock branch below does
         await bootstrapVault({ masterKey: vault.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
+        if (lockLost) {
+          writeBrokerReply({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+          continue;
+        }
         // the app is up; a concurrent resume would now be safe, but the broker is
         // single-request anyway
         vault.finishSetupBootstrap();

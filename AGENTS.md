@@ -51,7 +51,17 @@ work to its branch first, after which an ordinary child can continue on that bra
 
 **A fresh worktree has no `node_modules`.** Worktree setup does not install. A lane must run
 `bun install --frozen-lockfile` (about a minute with the warm cache) before it can run a test,
-typecheck, or build, or it will fail for a reason that has nothing to do with its change.
+typecheck, or build, or it will fail for a reason that has nothing to do with its change. Reusing
+an existing install with a directory junction is faster, but it shares one dependency tree with
+the worktree it points at, so deleting `node_modules/` through the junction would delete that
+worktree's packages too.
+
+**A worktree also costs a trust decision.** Pi asks before loading a folder's skills and settings
+whenever `.agents/skills` sits in it or above it, and this repository has exactly that — so every
+worktree needs one. The lane roots are saved in `~/.pi/agent/trust.json`
+(`D:\worktrees\mani-project`, `D:\projects\mani-worktrees`), and the closest ancestor entry covers
+every worktree under it. When T3 runs Pi in RPC mode it cannot show that prompt itself, which is
+why an untrusted lane surfaces as an approval card in T3 instead of a question in the terminal.
 
 Either way, one writer per worktree, and a lane never pushes or merges.
 
@@ -169,7 +179,17 @@ finish rather than polling it.
 
 ## Search scope
 
-Scope every filesystem search (`find`, `grep`, `rg`, glob) to this repository
-root or a specific subdirectory — e.g. `find . -name "*.ts"` from the repo
-root. Never search from `/` (the filesystem root): scans of the whole disk are
-slow and waste the session.
+Scope every search (`find`, `grep`, `rg`, glob) to this repository root or a
+specific subdirectory. Never search from `/` (the filesystem root): scans of
+the whole disk are slow and waste the session, and the guard refuses one before
+it runs. A caller that genuinely needs one escalates to the parent session;
+the guard never asks the owner.
+
+A walk that starts at the repository root also reads `node_modules` unless you
+exclude it, and that is the heaviest tree here. Reading it is a resource
+decision, so pick one of these instead:
+
+- `rg "symbol"` — ripgrep skips what `.gitignore` excludes, so start here;
+- `grep -rn --exclude-dir=node_modules "symbol" .`;
+- `find . -not -path "*node_modules*" -name "*.ts"`;
+- or name the subtree you mean: `find apps/api/src -name "*.ts"`.

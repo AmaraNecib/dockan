@@ -64,9 +64,9 @@ export type ExtractVaultBackupOptions = {
    * `holder` names the instance that took the folder when it was replaced.
    *
    * The hook is a notification, not the failure path: a throw from it is
-   * swallowed, because the lock also reports a loss from its heartbeat timer,
-   * where one throw would become an uncaught exception and end the process this
-   * handler exists to keep alive.
+   * swallowed. On the write path a throw would replace `VaultLockLostError` as
+   * the error the caller sees; the lock also calls the hook from its heartbeat
+   * timer, where a throw escapes the timer callback.
    */
   onLockLost?: (reason: string, holder?: VaultLockOwner) => void;
 };
@@ -115,9 +115,10 @@ export async function extractVaultBackup(
       try {
         options.onLockLost?.(reason, holder);
       } catch {
-        // swallowing is deliberate: the heartbeat calls this hook from a timer,
-        // where a thrown error is an uncaught exception, and the loss itself
-        // still reaches the caller as VaultLockLostError
+        // swallowing is deliberate: on the write path a throw here would replace
+        // VaultLockLostError as the error the caller sees, and the lock also
+        // calls the hook from its heartbeat timer, where a throw escapes the
+        // timer callback
       }
     },
   });

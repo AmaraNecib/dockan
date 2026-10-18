@@ -290,13 +290,17 @@ describe("vault backup restore takes the data folder's lock", () => {
 
   it("still fails with VaultLockLostError when the caller's onLockLost handler throws", async () => {
     const target = tempDir("dokan-backup-theft-throw-");
+    let hookRan = false;
     const { error, losses } = await restoreWhileLockIsStolen(target, {
       onLockLost: () => {
+        hookRan = true;
         throw new Error("handler boom");
       },
     });
-    // the hook saw the loss, and its throw is neither the failure the caller
-    // sees nor an uncaught exception out of the lock's heartbeat timer
+    // the hook really was invoked (not just the helper's own wrapper), and its
+    // throw is neither the failure the caller sees nor an uncaught exception
+    // out of the lock's heartbeat timer
+    expect(hookRan).toBe(true);
     expect(losses.length).toBe(1);
     expect(error).toBeInstanceOf(VaultLockLostError);
     expect(error?.message).not.toContain("handler boom");

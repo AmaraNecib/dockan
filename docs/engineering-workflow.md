@@ -89,6 +89,9 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   `zen-proxy/minimax-m3.1-flash-free`. A model that reviews its own diff shares the blind spots the lens exists to
   catch, so the reviewer is never the author. For one stretch on 2026-10-19 the owner required a
   single model for both roles; that is no longer the rule, and these two are the pair.
+  `zen-proxy/beam-free` is the next free reviewer when MiniMax is down or a round wants a third
+  opinion. Free lenses carry no parallelism cap; `opencode-go/deepseek-v4.1-flash` is the fallback
+  when a free route fails.
 - **All three lenses run at Standard and above.** `debate` is no longer reserved
   for High-assurance (owner decision, 2026-10-18); the tier decides how much
   scrutiny a failure mode earns, not whether the debate happens.

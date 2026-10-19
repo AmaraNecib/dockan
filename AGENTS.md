@@ -148,7 +148,9 @@ before the lane reports.
   OpenCode Go subscription, the lens model is free, reached through `zen-proxy`. The same MiniMax
   model is advertised as `opencode-go/minimax-m3.1-flash-free`, but that route answered a CLI probe
   and then returned `404 status code (no body)` from a real sub-agent run, so use the `zen-proxy`
-  one. Nothing else is in use.
+  one. `zen-proxy/beam-free` is the next free reviewer to reach for when MiniMax is down or a round
+  wants a third opinion. Free lenses have no parallelism cap, so a review round can go as wide as
+  the work needs; DeepSeek is the fallback when a free route fails.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.

@@ -20,7 +20,9 @@ For part of that day the owner required a single model for both roles, which rem
 entry exists to protect; the owner then opened a free second model, so the split is back. The lens runs
 `zen-proxy/minimax-m3.1-flash-free`: the same MiniMax model is also advertised as
 `opencode-go/minimax-m3.1-flash-free`, and that route answered a CLI probe but returned `404 status code
-(no body)` from a real sub-agent run, so the `zen-proxy` route is the one to use. The rule is the lines,
+(no body)` from a real sub-agent run, so the `zen-proxy` route is the one to use. `zen-proxy/beam-free` is
+the next free reviewer, free lenses take no parallelism slot, and `opencode-go/deepseek-v4.1-flash` is
+the fallback when a free route fails. The rule is the lines,
 not those strings: name the models that actually ran. If a round ever runs reviewer and author on one
 model, say so in the report rather than let a reader assume a separation that was not there.
 

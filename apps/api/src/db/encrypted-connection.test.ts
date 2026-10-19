@@ -632,6 +632,30 @@ describe("snapshot fence (#280)", () => {
     await again?.close();
   });
 
+  it("repairs a foreign snapshot at checkpoint even when nothing changed", async () => {
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    expect(diskFence()?.stamp).toBe(tokenB);
+
+    // A zombie renames its envelope over our verified write and this holder then
+    // goes quiet: mutationVersion equals persistedVersion, so the version
+    // bookkeeping alone would let checkpoint() return and leave the zombie's
+    // bytes where our data should be. The fenced half of snapshotIsCurrent() is
+    // the only reason the shutdown/backup seam repairs them.
+    fs.writeFileSync(snapshotPath(), buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenA));
+    conn.checkpoint();
+
+    expect(diskFence()?.stamp).toBe(tokenB);
+    await conn.close();
+
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    // SAFETY: the test created the table with a single TEXT column
+    expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "mine" }]);
+    reopened.close();
+  });
+
   it("closes the raw handle even when the final checkpoint refuses", async () => {
     const zombieEnvelope = buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenA);
     const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });

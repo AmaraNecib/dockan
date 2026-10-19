@@ -220,11 +220,22 @@ export function snapshotAad(vaultId: string): string {
 
 /**
  * AEAD context for a fenced snapshot (#280): the holder's stamp is bound in, so
- * swapping the cleartext stamp field fails the GCM tag. FROZEN like the legacy
- * builder: the `v2` is the envelope version this AAD belongs to.
+ * swapping the cleartext stamp field fails the GCM tag.
+ *
+ * The `v2` is a **literal**, and that is the whole point of writing it out.
+ * Written as `v${VAULT_SNAPSHOT_VERSION}` this string would move the day the
+ * envelope version moves: a bump to format 3 would change the context that
+ * every existing format-2 snapshot has to be opened with, so a reader that
+ * still accepted version 2 could no longer decrypt one byte of it. Freezing a
+ * format means naming its number rather than referring to the variable that
+ * currently holds it. `format.test.ts` pins both the exact string and the
+ * absence of the constant from this body.
+ *
+ * `sealSnapshot` and `openSnapshot` both derive their context here, so writer
+ * and reader cannot drift apart.
  */
 export function fencedSnapshotAad(vaultId: string, stamp: string): string {
-  return `dokan:vault:db:v${VAULT_SNAPSHOT_VERSION}:${vaultId}:${stamp}`;
+  return `dokan:vault:db:v2:${vaultId}:${stamp}`;
 }
 
 /** The readable envelope header: its version, its holder stamp, and where the sealed blob starts. */

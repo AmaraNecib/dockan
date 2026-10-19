@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   MAX_SNAPSHOT_STAMP_BYTES,
@@ -7,12 +9,15 @@ import {
   VAULT_SNAPSHOT_VERSION,
   base32Decode,
   base32Encode,
+  fencedSnapshotAad,
   formatRecoveryCode,
   generateRecoveryCode,
   parseRecoveryCode,
   parseVaultHeader,
   readSnapshotFence,
   serializeVaultHeader,
+  snapshotAad,
+  wrapAad,
   type VaultHeader,
 } from "./format";
 import { DEFAULT_KDF_PARAMS, NONCE_BYTES, SALT_BYTES, WRAPPED_KEY_BYTES } from "./crypto";
@@ -169,5 +174,44 @@ describe("snapshot envelope fence (#280)", () => {
     ).toBeUndefined();
     // the stamp claims more bytes than the envelope holds
     expect(readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, 8]), Buffer.from("abcd")]))).toBeUndefined();
+  });
+});
+
+/**
+ * The three AEAD contexts are the one thing in this module that cannot ever be
+ * re-derived: editing one makes existing bytes undecryptable, and no migration
+ * can fix it because the key that would re-seal them is inside the thing that
+ * no longer opens. So each is pinned to its exact string, by hand, with no
+ * interpolation and no constant.
+ */
+describe("AEAD contexts are frozen strings", () => {
+  const vaultId = "11111111-2222-3333-4444-555555555555";
+
+  it("pins the legacy snapshot AAD", () => {
+    expect(snapshotAad(vaultId)).toBe("dokan:vault:db:v1:11111111-2222-3333-4444-555555555555");
+  });
+
+  it("pins the fenced snapshot AAD", () => {
+    expect(fencedSnapshotAad(vaultId, "holder-token")).toBe(
+      "dokan:vault:db:v2:11111111-2222-3333-4444-555555555555:holder-token",
+    );
+  });
+
+  it("pins the wrapped-key AAD", () => {
+    expect(wrapAad(vaultId, "passphrase")).toBe("dokan:vault:wrap:v1:11111111-2222-3333-4444-555555555555:passphrase");
+  });
+
+  it("builds the fenced AAD from a literal, not from the envelope version constant", () => {
+    // A source scan on purpose. An assertion on the returned value cannot see
+    // the difference while the two numbers happen to agree, and the whole point
+    // of the literal is that the envelope version is now free to diverge from
+    // it. This is the check that fails on the regression: rebuilding the AAD
+    // from `VAULT_SNAPSHOT_VERSION` makes a format bump move the context every
+    // format-2 snapshot on disk was sealed with.
+    const formatTs = readFileSync(fileURLToPath(new URL("./format.ts", import.meta.url)), "utf8");
+    const builder = /export function fencedSnapshotAad[\s\S]*?\n}/.exec(formatTs)?.[0];
+    expect(builder).toBeDefined();
+    expect(builder).toContain("dokan:vault:db:v2:");
+    expect(builder).not.toContain("VAULT_SNAPSHOT_VERSION");
   });
 });

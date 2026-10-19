@@ -1029,6 +1029,17 @@ describe("unregisteredVerdicts", () => {
     expect(unregisteredVerdicts("f", parent, parent, []).verdicts).toEqual([]);
   });
 
+  test("every waiver matching an unregistered test is marked used", () => {
+    // Only the first was marked, so the second was then reported as matching no
+    // test in the file and failed a correct, properly waived run.
+    const broad: Waiver = { pattern: "brand", reason: "broad", line: 12 };
+    const narrow: Waiver = { pattern: "brandNew returns the number", reason: "narrow", line: 13 };
+    const { verdicts, usedWaiverLines } = unregisteredVerdicts("f", parent, change, [broad, narrow]);
+    expect([...usedWaiverLines].sort()).toEqual([12, 13]);
+    expect(verdicts.every(verdictPasses)).toBe(true);
+    expect(unusedWaiverVerdicts("f", [broad, narrow], usedWaiverLines)).toEqual([]);
+  });
+
   test("a name the parent reported once does not cover a second case on the change", () => {
     const one = parseJunit(
       `<testsuites><testsuite><testcase name="case 1" classname="each" /></testsuite></testsuites>`,

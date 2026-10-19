@@ -559,7 +559,10 @@ export function unregisteredVerdicts(
     }
     const matching = waivers.filter((candidate) => matches(candidate, result));
     const waiver = matching[0] ?? null;
-    if (waiver !== null) used.add(waiver.line);
+    // Every pattern that matched is used, not only the first: the rest would
+    // otherwise be reported as matching no test in the file, and a correctly
+    // waived run would fail on a waiver that did exactly its job.
+    for (const candidate of matching) used.add(candidate.line);
     verdicts.push({
       file,
       test,

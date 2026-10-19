@@ -1594,6 +1594,54 @@ describe("the vault lock refusal app", () => {
     expect(await html.text()).toContain(path);
   });
 
+  it("tells the owner the instance takes the folder by itself instead of asking for a restart (#298)", () => {
+    // The sentence #277 exists to delete. The refused start now takes the
+    // folder as soon as the other copy closes (lib/vault/reclaim-retry.ts), so
+    // "close the other copy and reopen the app" sends the owner through a
+    // restart the instance has already removed. All three held variants carry
+    // it: a named holder, a suspected recycled pid, and no record at all.
+    const honest = vaultLockRefusalPageHtml(heldRefusal(owner));
+    const stale = vaultLockRefusalPageHtml(heldRefusal(owner, true));
+    const unknown = vaultLockRefusalPageHtml(heldRefusal(undefined));
+    for (const page of [honest, stale, unknown]) {
+      expect(page).not.toContain("ثم أعد فتح التطبيق");
+      expect(page).toContain("من تلقاء نفسها");
+    }
+    // and the instructions that still apply survive the rewrite
+    expect(honest).toContain("لا تحذف أي ملف");
+    expect(stale).toContain("vault.lock");
+  });
+
+  it("keeps the reopen instruction on the unreadable page, which no loop clears (#298)", () => {
+    // The deliberate opposite of the test above, so a blanket rewrite cannot
+    // pass both. An unreadable lock file starts no retry loop at boot (#287)
+    // and stops the one that meets it later (main.ts), so nothing on this page
+    // may promise a self-take: the file has to go and the app has to restart.
+    const page = vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: "/data/vault.lock" });
+    expect(page).toContain("أعد فتح التطبيق");
+    expect(page).not.toContain("من تلقاء نفسها");
+  });
+
+  it("refreshes the refusal page so it recovers once the folder is free (#298)", () => {
+    // The refusal page is the whole screen in the packaged app: the shell loads
+    // the sidecar's own origin and never the SPA, so a static page means the
+    // instance heals while the screen keeps showing the refusal until the owner
+    // reloads by hand. A meta refresh is the one control that needs no script
+    // and no second route.
+    const held = vaultLockRefusalPageHtml(heldRefusal(owner));
+    const unreadable = vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: "/data/vault.lock" });
+    for (const page of [held, unreadable]) {
+      // SAFETY: the regex asserts the attribute shape; a miss fails below
+      const meta = /<meta http-equiv="refresh" content="(\d+)">/.exec(page);
+      expect(meta).not.toBeNull();
+      const seconds = Number(meta?.[1]);
+      // quick enough that the vault shows up a few seconds after the folder
+      // frees, slow enough that a page left open all day is not a request loop
+      expect(seconds).toBeGreaterThanOrEqual(1);
+      expect(seconds).toBeLessThanOrEqual(10);
+    }
+  });
+
   it("escapes a hostile lock path before it reaches the unreadable page (#287)", () => {
     const hostile = { kind: "unreadable", lockPath: '/data/<script>alert("x")</script>/vault.lock' } as const;
     const page = vaultLockRefusalPageHtml(hostile);

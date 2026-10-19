@@ -902,20 +902,36 @@ const VAULT_LOCK_PAGE_COPY = {
   heading: "البيانات قيد الاستعمال",
   hint: "لا تُعدّل بيانات المتجر ولا تحذف أي ملف. أغلق النسخة الأخرى فقط.",
   fallbackHost: "جهاز غير معروف",
-  unknownOwner: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
-  ownerTemplate: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز {host}، العملية {pid}). أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+  /**
+   * #277: the refusal is not a dead end any more. This instance retries the
+   * folder on its own bounded schedule and takes it the moment the other copy
+   * closes, so the copy says what happens next instead of asking for the
+   * restart the change removed. The restart sentence is what the feature exists
+   * to delete; only the unreadable variant below still keeps it, because no
+   * loop clears that story (see `unreadableTemplate`).
+   */
+  unknownOwner: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
+  ownerTemplate: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز {host}، العملية {pid}). أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
   /**
    * The recycled-pid story: the holder named here answers alive but stopped
    * beating, so there may be no other Dokan copy. The hint cannot say "delete
-   * no file", and the message must name the lock file as the one exit.
+   * no file", and the message must name the lock file as the one exit — and
+   * then promise what really happens: the retry loop keeps running on this
+   * story, so the deleted file is taken by this instance and not at restart.
    */
   staleHint: "لا تُعدّل بيانات المتجر. إن تأكدت من عدم وجود نسخة أخرى مفتوحة، احذف ملف vault.lock وحده.",
-  staleOwnerTemplate: "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان (الجهاز {host}، العملية {pid}). إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+  staleOwnerTemplate: "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان (الجهاز {host}، العملية {pid}). إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
   /**
    * The unreadable-lock story (#287): the file is there and no read could
    * attest to it, so no holder can be named and the folder may well be free.
    * The hint here cannot say "delete no file" — the message names the one file,
    * and deleting it is half of the only recovery the owner has.
+   *
+   * This is the ONE variant that keeps "then reopen the app" (#298): an
+   * unreadable lock starts no retry loop at boot (#287) and stops the one that
+   * meets it later (main.ts), so nothing here takes the folder by itself. The
+   * held and recycled-pid pages must not carry that sentence, and this page
+   * must not promise a self-take that no loop will perform.
    */
   unreadableHint: "لا تُعدّل بيانات المتجر. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock وحده.",
   unreadableTemplate: "تعذّر قراءة ملف القفل في مجلد البيانات: {path}. أغلق أي نسخة أخرى من دكان إن كانت مفتوحة، وإن لم تكن هناك نسخة مفتوحة فاحذف ملف vault.lock وحده ثم أعد فتح التطبيق.",
@@ -974,6 +990,7 @@ export function vaultLockRefusalPageHtml(refusal: VaultLockRefusal): string {
 <html lang="ar" dir="rtl">
   <head>
     <meta charset="utf-8" />
+    <meta http-equiv="refresh" content="5">
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(VAULT_LOCK_PAGE_COPY.title)}</title>
     <style>

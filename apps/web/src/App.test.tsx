@@ -255,8 +255,10 @@ describe("vault folder held by another instance (issue #276)", () => {
   it("shows the in-use screen for the refusal, never the server-down screen", async () => {
     vaultStatusResponse = async () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 });
     const host = await mountAuthGateFor('[data-testid="vault-status-in-use"]');
+    // #277: the refused instance takes the folder by itself, so the screen
+    // must not send the owner through the restart that change removed
     expect(host.querySelector('[data-testid="vault-status-in-use"]')?.textContent).toBe(
-      "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+      "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
     );
     expect(host.querySelector('[data-testid="vault-status-unavailable"]')).toBeNull();
     // the legacy login must not appear behind a refusal either
@@ -336,8 +338,10 @@ describe("vault folder locked by a recycled pid (issue #283)", () => {
     vaultStatusResponse = async () =>
       Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }, { status: 503 });
     const host = await mountAuthGateFor('[data-testid="vault-status-stale-lock"]');
+    // the recycled-pid story keeps its file instruction and loses the restart:
+    // deleting vault.lock is enough, the retry loop takes the folder after it
     expect(host.querySelector('[data-testid="vault-status-stale-lock"]')?.textContent).toBe(
-      "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+      "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
     );
     expect(host.querySelector('[data-testid="vault-status-in-use"]')).toBeNull();
     expect(host.querySelector("form")).toBeNull();

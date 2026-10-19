@@ -86,8 +86,7 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   them — re-run the lenses where the tool exists, and record the disclosure.
 - **The lenses run on a different model than the author (owner decision, 2026-10-19).** Author
   lanes run `opencode-go/deepseek-v4.1-flash`; `debate`, `test-audit` and `code-review` run
-  `opencode-go/minimax-m3.1-flash-free`, with `zen-proxy/minimax-m3.1-flash-free` as the same model
-  behind a second route. A model that reviews its own diff shares the blind spots the lens exists to
+  `zen-proxy/minimax-m3.1-flash-free`. A model that reviews its own diff shares the blind spots the lens exists to
   catch, so the reviewer is never the author. For one stretch on 2026-10-19 the owner required a
   single model for both roles; that is no longer the rule, and these two are the pair.
 - **All three lenses run at Standard and above.** `debate` is no longer reserved

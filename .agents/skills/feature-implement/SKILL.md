@@ -119,7 +119,7 @@ Load relevant skills from the workflow's quality check table:
 Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
 
-Run this lens, `test-audit` and `code-review` on `opencode-go/minimax-m3.1-flash-free` —
+Run this lens, `test-audit` and `code-review` on `zen-proxy/minimax-m3.1-flash-free` —
 never on the model that wrote the diff (`opencode-go/deepseek-v4.1-flash`). The
 reviewer is never the author. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.

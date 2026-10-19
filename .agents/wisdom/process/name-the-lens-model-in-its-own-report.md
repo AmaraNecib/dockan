@@ -11,17 +11,18 @@ model; the report made that impossible to tell, and an unverifiable claim is a d
 Every lens report carries these two lines right under its title, and nothing sits between them:
 
 ```
-Reviewer model: opencode-go/minimax-m3.1-flash-free
+Reviewer model: zen-proxy/minimax-m3.1-flash-free
 Author model:   opencode-go/deepseek-v4.1-flash
 ```
 
 Those IDs are the pair in force from 2026-10-19, when OpenCode's free tier began refusing this box's IP.
 For part of that day the owner required a single model for both roles, which removed the separation this
-entry exists to protect; the owner then opened a free second model, so the split is back and the lens
-runs on `opencode-go/minimax-m3.1-flash-free` with `zen-proxy/minimax-m3.1-flash-free` as the same model
-behind a second route. The rule is the lines, not those strings: name the models that actually ran. If a
-round ever runs reviewer and author on one model, say so in the report rather than let a reader assume a
-separation that was not there.
+entry exists to protect; the owner then opened a free second model, so the split is back. The lens runs
+`zen-proxy/minimax-m3.1-flash-free`: the same MiniMax model is also advertised as
+`opencode-go/minimax-m3.1-flash-free`, and that route answered a CLI probe but returned `404 status code
+(no body)` from a real sub-agent run, so the `zen-proxy` route is the one to use. The rule is the lines,
+not those strings: name the models that actually ran. If a round ever runs reviewer and author on one
+model, say so in the report rather than let a reader assume a separation that was not there.
 
 Why it matters past tidiness: the reason the reviewer is a second model is that the author's blind
 spots are not the reviewer's. If the report does not name the reviewer, the gate cannot check that

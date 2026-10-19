@@ -2,7 +2,9 @@
 
 **Branch:** `t3/295-client-freshness-1` · **Base:** `bff7a1a`
 **Commits:** `f4856e0` (the change) → `6f39a41` (the debate fixes) → `97c9612`
-(the evidence) → `f16890d` (the test-audit and code-review fixes)
+(the evidence) → `f16890d` (the test-audit and code-review fixes) → `5a87f93`
+(the refreshed report) → `61ba809` (the round-2 lens fixes: the 10s window, its
+real edge, the checklist's background flag, the tick-bound test)
 **Tier:** Standard. **Status:** lane done — committed, not pushed, no PR, no merge.
 
 ## The two questions, answered first
@@ -119,7 +121,7 @@ input schema is exactly the contracts change criterion 4 forbids.
 | `bun test apps/api/src/store/stock-ledger-store.test.ts` | 7 pass, 0 fail |
 | `bun test` (in `apps/web`) — `src/pages/items.test.tsx` | 58 pass, 0 fail |
 | `bun test` (in `apps/web`) — `items.test.tsx` + `dashboard.test.tsx` | 95 pass, 0 fail |
-| `bun run test` (full unit suite, heavy queue) | api 1076, web 1432, scripts 97 — **0 fail** |
+| `bun run test` (full unit suite, heavy queue) | api 1080, web 1434, scripts 97 — **0 fail** |
 | `bun run test:e2e` (heavy queue) | **104 passed (6.7m)** |
 | `bun run lint` | 0 errors |
 | `bun run typecheck` | 4 tasks successful |
@@ -171,5 +173,13 @@ input schema is exactly the contracts change criterion 4 forbids.
 - **Code-review** — round 1: standards *met with gaps*, spec *met with gaps*;
   the gaps are fixed in `f16890d`. Round-1 output:
   `.scratch/reviews/295/round1-code-review.md`.
-- Round 2 of both lenses runs against `f16890d`; its evidence files land
-  next to the round-1 ones.
+- Round 2 ran against `f16890d`: the code-review found the 30s window too
+  wide for its own justification (a typed second batch takes seconds, and
+  the way past the refusal wrote a fake reason into the ledger) and the
+  window's edge unpinned; both are fixed in `61ba809`. Outputs:
+  `.scratch/reviews/295/round1-*.md`, `round2-*.md`.
+- **The gate still needs the three lenses at the FINAL head.** `guard`
+  compares each `<sha>-<lens>.md` with HEAD and calls the evidence stale when
+  reviewable files changed since — and every lens fix moved the head. The
+  parent's re-run at the final head is what closes the Standard tier; the
+  debate evidence at `6f39a41-debate.md` is stale for the same reason.

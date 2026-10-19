@@ -52,6 +52,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -62,6 +63,11 @@ const BUN = process.execPath;
 const WAIVER_MARKER = "red-on-parent-waive";
 const TEST_TIMEOUT_MS = 120_000;
 const GIT_TIMEOUT_MS = 60_000;
+/** The cold `bun install` in the base worktree. Inside the lock, so the lock
+ * wait budget has to cover it. */
+const INSTALL_TIMEOUT_MS = 10 * 60_000;
+/** The slack a waiting run gets past the work it knows can be inside the lock. */
+const LOCK_WAIT_SLACK_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,8 +111,10 @@ export type WaiverParse = {
 export type VerdictName =
   | "RIGHT_REASON_RED"
   | "WRONG_REASON_RED"
+  | "NOT_ON_PARENT"
   | "GREEN_ON_PARENT"
-  | "WAIVER_MISFILED";
+  | "WAIVER_MISFILED"
+  | "RUN_INCOMPLETE";
 
 export type Verdict = {
   file: string;
@@ -259,9 +267,11 @@ export function verdictPasses(verdict: Verdict): boolean {
     case "RIGHT_REASON_RED":
       return true;
     case "WRONG_REASON_RED":
+    case "NOT_ON_PARENT":
     case "GREEN_ON_PARENT":
       return verdict.waiver !== null;
     case "WAIVER_MISFILED":
+    case "RUN_INCOMPLETE":
       return false;
   }
 }
@@ -361,8 +371,24 @@ export function classifyFileRun(run: FileRun, waivers: Waiver[]): Classification
   const used = new Set<number>();
   const verdicts: Verdict[] = [];
 
+  // A run that did not finish produced no result anyone can judge. It is not a
+  // load failure — the file may never have been read — and no waiver covers it:
+  // a waiver says why a test is green on the parent, and a timeout says nothing
+  // at all. Without this branch the `junit === null` path below attaches the
+  // first waiver to a timeout and calls the file covered.
+  if (run.error.length > 0) {
+    verdicts.push({
+      file: run.file,
+      test: "(whole file)",
+      name: "RUN_INCOMPLETE",
+      detail: run.error,
+      waiver: null,
+    });
+    return { verdicts, usedWaiverLines: used };
+  }
+
   if (run.junit === null) {
-    const reason = run.error.length > 0 ? run.error : loadFailureReason(run.stdout);
+    const reason = loadFailureReason(run.stdout);
     const waiver = waivers[0] ?? null;
     if (waiver !== null) for (const w of waivers) used.add(w.line);
     verdicts.push({
@@ -391,6 +417,47 @@ export function classifyFileRun(run: FileRun, waivers: Waiver[]): Classification
     const waiver = firstWaiver(waivers, result);
     if (waiver !== null) used.add(waiver.line);
     verdicts.push(classifyResult(run.file, result, waiver));
+  }
+  return { verdicts, usedWaiverLines: used };
+}
+
+/**
+ * The tests the change registers that the parent's report never names.
+ *
+ * The parent's junit is the only test list the gate trusts, and it is a subset
+ * of what the file declares whenever a test is registered behind a condition
+ * the change newly satisfies:
+ *
+ *   import * as mod from "./helper";
+ *   if ("brandNew" in mod) test("brandNew ...", ...);
+ *
+ * That test is exactly the one the gate exists for, and it is absent from the
+ * parent's report — so the remaining tests would carry the file to a pass with
+ * no red and no waiver for it. The change's own run supplies the names; every
+ * one of them must appear on the parent or carry a waiver.
+ */
+export function unregisteredVerdicts(
+  file: string,
+  parentResults: TestResult[],
+  changeResults: TestResult[],
+  waivers: Waiver[],
+): Classification {
+  const used = new Set<number>();
+  const verdicts: Verdict[] = [];
+  const onParent = new Set(parentResults.map((result) => displayName(result)));
+  for (const result of changeResults) {
+    const test = displayName(result);
+    if (onParent.has(test)) continue;
+    const waiver = firstWaiver(waivers, result);
+    if (waiver !== null) used.add(waiver.line);
+    verdicts.push({
+      file,
+      test,
+      name: "NOT_ON_PARENT",
+      detail:
+        "the change registers this test and the parent's run never reported it, so the gate has no red to judge for it",
+      waiver,
+    });
   }
   return { verdicts, usedWaiverLines: used };
 }
@@ -480,6 +547,45 @@ function gitText(repo: string, args: string[]): string {
   return result.stdout;
 }
 
+/** Whether `path` differs from HEAD in the working tree (`git diff --quiet` exits 1). */
+function modifiedInWorkingTree(repo: string, path: string): boolean {
+  return git(repo, ["diff", "--quiet", "HEAD", "--", path]).status !== 0;
+}
+
+/**
+ * The directory bun must run `file` from, and the path to pass it.
+ *
+ * Bun loads the `bunfig.toml` of its *working directory*, not of the test file.
+ * Running `apps/web/src/x.test.tsx` from the repo root therefore skips
+ * `apps/web/bunfig.toml`, and with it the preload that defines `document` — so a
+ * React test that correctly tests the change dies at load and the gate calls it
+ * WRONG-REASON RED. Each file runs from the nearest ancestor directory that owns
+ * a `bunfig.toml`, under its path relative to that directory.
+ */
+function runFrom(root: string, file: string, junitPath: string): CommandResult {
+  const here = relativeToWorkspace(root, file);
+  return run(
+    BUN,
+    ["test", here.path, "--reporter=junit", `--reporter-outfile=${junitPath}`],
+    here.cwd,
+    TEST_TIMEOUT_MS,
+  );
+}
+
+/** Where bun must run a test file, and the path to pass it. */
+type WorkspaceRun = { cwd: string; path: string };
+
+function relativeToWorkspace(root: string, file: string): WorkspaceRun {
+  const parts = file.split("/");
+  for (let depth = parts.length - 1; depth > 0; depth -= 1) {
+    const dir = parts.slice(0, depth).join("/");
+    if (existsSync(join(root, dir, "bunfig.toml"))) {
+      return { cwd: join(root, dir), path: parts.slice(depth).join("/") };
+    }
+  }
+  return { cwd: root, path: file };
+}
+
 function cacheRoot(repo: string): string {
   const override = process.env.RED_ON_PARENT_CACHE;
   if (override !== undefined && override.length > 0) return resolve(override);
@@ -509,6 +615,76 @@ function clearPreviousCopies(repo: string, worktree: string, baseSha: string): v
     rmSync(join(worktree, relative), { force: true });
   }
   rmSync(manifest, { force: true });
+}
+
+const LOCK_RETRY_MS = 250;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Whether the process that wrote this lock's pid file is gone. */
+function lockHolderIsGone(lockPath: string): boolean {
+  const pidFile = join(lockPath, "pid");
+  if (!existsSync(pidFile)) return false;
+  const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    // ESRCH: no such process, so the holder died without releasing. EPERM: it
+    // exists but belongs to another user — treat that as alive.
+    // SAFETY: `process.kill` is the only throw source here and rejects with a
+    // NodeJS.ErrnoException, whose string `code` is what this test reads.
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+/**
+ * Serialize every run that touches one base worktree.
+ *
+ * Two invocations from the same checkout and the same base copy their added
+ * files into the same paths, and `--fresh` deletes the directory the other run
+ * is testing in. The lock directory is the atomic acquire available on both
+ * platforms (`mkdir` fails with EEXIST, unlike a test-then-write). A holder that
+ * died is detected by its pid and its lock is renamed away before removal, so
+ * unknown has to cover the whole worst case: wait too little and a legitimate
+ * second run is refused with "wait for it to finish", which is advice it cannot
+ * follow because the deadline has already fired. The caller therefore derives
+ * the budget from the work it is about to do. `RED_ON_PARENT_LOCK_WAIT_MS`
+ * overrides it, which is how the lock's refusal is pinned in milliseconds.
+ */
+function acquireWorktreeLock(lockPath: string, lockWaitMs: number): () => void {
+  const deadline = Date.now() + lockWaitMs;
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      break;
+    } catch (error) {
+      // SAFETY: `mkdirSync` rejects with a NodeJS.ErrnoException, and its `code`
+      // is the documented way to tell "already held" from a real failure.
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (lockHolderIsGone(lockPath)) {
+        const tombstone = `${lockPath}.stale-${process.pid}`;
+        try {
+          renameSync(lockPath, tombstone);
+          rmSync(tombstone, { recursive: true, force: true });
+        } catch {
+          // Another run broke it first; the retry below takes the lock.
+        }
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new GateError(
+          `another red-on-parent run is using ${lockPath}; wait for it to finish, or delete that directory if no run is alive`,
+        );
+      }
+      sleepSync(LOCK_RETRY_MS);
+    }
+  }
+  writeFileSync(join(lockPath, "pid"), `${process.pid}\n`);
+  return () => rmSync(lockPath, { recursive: true, force: true });
 }
 
 function ensureBaseWorktree(
@@ -552,7 +728,7 @@ function ensureBaseNodeModules(worktree: string): string {
   const lock = join(worktree, "bun.lock");
   const modules = join(worktree, "node_modules");
   if (existsSync(modules) || !existsSync(lock)) return "";
-  const install = run(BUN, ["install", "--frozen-lockfile"], worktree, 10 * 60_000);
+  const install = run(BUN, ["install", "--frozen-lockfile"], worktree, INSTALL_TIMEOUT_MS);
   if (!install.ok) {
     throw new GateError(
       `bun install --frozen-lockfile failed in the parent worktree: ${
@@ -639,6 +815,47 @@ function readAtRevision(repo: string, head: string, path: string): string {
   return result.stdout;
 }
 
+/**
+ * The tests the change's own run registers, for comparison with the parent's.
+ *
+ * It runs the file where the author runs it — the change's checkout, which
+ * already holds the modules the change adds — rather than in the base worktree,
+ * where the file is deliberately being tested without them. The file itself must
+ * match HEAD, or the names enumerated belong to a version the gate is not
+ * judging; that is reported instead of guessed at.
+ */
+function changeSideResults(
+  repo: string,
+  file: string,
+  junitPath: string,
+  problems: string[],
+): TestResult[] {
+  if (modifiedInWorkingTree(repo, file)) {
+    problems.push(
+      `${file}: has uncommitted changes, so the gate cannot tell which tests this change registers — commit it and run again`,
+    );
+    return [];
+  }
+  rmSync(junitPath, { force: true });
+  const result = runFrom(repo, file, junitPath);
+  if (!existsSync(junitPath)) {
+    problems.push(
+      `${file}: the change's own run wrote no junit report (${
+        result.error.length > 0 ? result.error : "the file did not run to completion"
+      }), so the gate cannot tell which tests this change registers`,
+    );
+    return [];
+  }
+  return parseJunit(readFileSync(junitPath, "utf8"));
+}
+
+/** How long a run waits for the lock, given what can legitimately be inside it. */
+export function lockWaitBudget(fileCount: number): number {
+  const override = Number.parseInt(process.env.RED_ON_PARENT_LOCK_WAIT_MS ?? "", 10);
+  if (Number.isInteger(override) && override > 0) return override;
+  return INSTALL_TIMEOUT_MS + fileCount * TEST_TIMEOUT_MS + LOCK_WAIT_SLACK_MS;
+}
+
 export function runGate(options: GateOptions): GateRun {
   const { repo, head, fresh } = options;
   const baseSha = gitText(repo, ["merge-base", options.base, head]).trim();
@@ -657,6 +874,30 @@ export function runGate(options: GateOptions): GateRun {
       uncommitted,
     };
   }
+  // Two runs from the same checkout and the same base share this worktree, and
+  // one of them copying files into it or `--fresh`-deleting it would corrupt the
+  // other's verdicts. The lock covers everything that reads or writes it, so the
+  // wait budget covers the install plus one timeout per file: a shorter budget
+  // would refuse a legitimate second run that is simply behind a slow first one.
+  const lockWaitMs = lockWaitBudget(files.length);
+  const release = acquireWorktreeLock(join(cacheRoot(repo), `wt-${baseSha}.lock`), lockWaitMs);
+  try {
+    return gateBaseWorktree({ repo, head, baseSha, files, uncommitted, fresh });
+  } finally {
+    release();
+  }
+}
+
+/** The part of the run that reads and writes the cached base worktree. */
+function gateBaseWorktree(input: {
+  repo: string;
+  head: string;
+  baseSha: string;
+  files: string[];
+  uncommitted: string[];
+  fresh: boolean;
+}): GateRun {
+  const { repo, head, baseSha, files, uncommitted, fresh } = input;
   const { path: worktree, created } = ensureBaseWorktree(repo, baseSha, fresh);
   const installLog = ensureBaseNodeModules(worktree);
 
@@ -676,12 +917,7 @@ export function runGate(options: GateOptions): GateRun {
 
       const junitPath = join(outDir, `${copied.length}.xml`);
       rmSync(junitPath, { force: true });
-      const result = run(
-        BUN,
-        ["test", file, "--reporter=junit", `--reporter-outfile=${junitPath}`],
-        worktree,
-        TEST_TIMEOUT_MS,
-      );
+      const result = runFrom(worktree, file, junitPath);
       const parsed = parseWaivers(source);
       for (const problem of parsed.problems) problems.push(`${file}: ${problem}`);
 
@@ -697,8 +933,19 @@ export function runGate(options: GateOptions): GateRun {
       };
       stdoutByFile.set(file, fileRun.stdout);
       const classified = classifyFileRun(fileRun, parsed.waivers);
-      verdicts.push(...classified.verdicts);
-      verdicts.push(...unusedWaiverVerdicts(file, parsed.waivers, classified.usedWaiverLines));
+      // Only a file the parent could load can register *fewer* tests there than
+      // on the change. A file that did not load is already one whole-file
+      // failure, and comparing its empty parent list against the change would
+      // restate it once per test.
+      const parentResults = junit === null ? [] : parseJunit(junit);
+      const changeResults =
+        parentResults.length === 0
+          ? []
+          : changeSideResults(repo, file, join(outDir, `${copied.length}-change.xml`), problems);
+      const unregistered = unregisteredVerdicts(file, parentResults, changeResults, parsed.waivers);
+      verdicts.push(...classified.verdicts, ...unregistered.verdicts);
+      const usedLines = new Set([...classified.usedWaiverLines, ...unregistered.usedWaiverLines]);
+      verdicts.push(...unusedWaiverVerdicts(file, parsed.waivers, usedLines));
     }
     if (copied.length > 0) {
       mkdirSync(dirname(manifestPath(repo, baseSha)), { recursive: true });
@@ -725,7 +972,7 @@ export function runGate(options: GateOptions): GateRun {
 // Report
 // ---------------------------------------------------------------------------
 
-export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fixes: [string, string] }> = [
+export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fixes: readonly string[] }> = [
   {
     name: "RIGHT_REASON_RED",
     title: "the test fails on the parent for its own reason, and passes on the change",
@@ -738,8 +985,25 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
     name: "WRONG_REASON_RED",
     title: "the test could not be evaluated on the parent (load error, or a non-assertion throw)",
     fixes: [
-      "commit the module/export/fixture the test needs as the change's first commit, so the parent can evaluate its body",
+      "land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken",
+      "or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`",
       "if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`",
+    ],
+  },
+  {
+    name: "NOT_ON_PARENT",
+    title: "the change registers a test the parent's run never reported, so there is no red to judge for it",
+    fixes: [
+      "build the test so the parent registers it too — the gate has to run it on the parent before it can trust the red",
+      "if the parent genuinely cannot register it, add `// red-on-parent-waive: \"<test name>\" — <why the parent cannot run it>`",
+    ],
+  },
+  {
+    name: "RUN_INCOMPLETE",
+    title: "the test run did not finish, so there is no result to judge",
+    fixes: [
+      "re-run the gate — a timeout or a failed process start says nothing about the change",
+      "no waiver covers this: a waiver says why a test is green on the parent, not why no result arrived",
     ],
   },
   {
@@ -855,7 +1119,14 @@ function countVerdicts(verdicts: Verdict[]): Map<VerdictName, number> {
 }
 
 function summaryLine(counts: Map<VerdictName, number>): string {
-  const order: VerdictName[] = ["RIGHT_REASON_RED", "WRONG_REASON_RED", "GREEN_ON_PARENT", "WAIVER_MISFILED"];
+  const order: VerdictName[] = [
+    "RIGHT_REASON_RED",
+    "WRONG_REASON_RED",
+    "NOT_ON_PARENT",
+    "GREEN_ON_PARENT",
+    "WAIVER_MISFILED",
+    "RUN_INCOMPLETE",
+  ];
   return order
     .map((name) => `${counts.get(name) ?? 0} ${name.toLowerCase().replaceAll("_", " ")}`)
     .join(" · ");

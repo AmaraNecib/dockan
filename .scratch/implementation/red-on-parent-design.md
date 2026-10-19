@@ -193,17 +193,19 @@ separate CI logic to drift.
       bun test <copied files> -t '<pattern>' --reporter=junit
       --reporter-outfile=...
 6. Classify per test:
-   - junit absent / `error:` in stdout            → WRONG-REASON RED (gate fails)
+   - the run did not finish (timeout, spawn error)  → RUN INCOMPLETE (fail; no waiver)
+   - junit absent                                 → WRONG-REASON RED (fail)
    - junit testcase <failure type="AssertionError"> → RIGHT-REASON RED (pass)
    - junit testcase passed                        → GREEN ON PARENT → waiver needed
-   - junit testcase <skipped>, no match in test-name list → your -t didn't hit
-     the test you added (author error; fail)
-   - matched-0                                    → fail, gate bug or name typo
+   - junit testcase <skipped>                     → GREEN ON PARENT → waiver needed
+   - a test the change registers and the parent's report never names →
+     NOT ON PARENT → waiver needed. The change's own run supplies the names,
+     because the parent's report is only a subset of what the file declares.
 7. Waivers are read from the change's test file text; evaluated in step 6
    before deciding to fail.
 8. Print the table (file / test / verdict / message). Exit 1 on any
-   WRONG-REASON RED, any green without waiver, or any classification that is
-   not one of the four. Exit 0 on all red or all waived-with-red-check-clean.
+   WRONG-REASON RED, any green without waiver, any NOT ON PARENT, any RUN
+   INCOMPLETE. Exit 0 on all red or all waived-with-red-check-clean.
 ```
 
 **Failures the author sees.** Each verdict prints what to do, not "gate
@@ -211,16 +213,22 @@ failed":
 
 - `WRONG-REASON RED: your new test cannot even load on the parent. Its import
   resolution fails ('Cannot find module ...' in the base worktree). Options:
-  commit the helper module into the change's first commit, default the export
-  on parent-visible types, or add a red-on-parent-waive line if the module
-  existence IS the change (rename PRs). Transcript: <stdout, trimmed to the
-  error block>.`
+  land the helper module on the base branch in its own change and rebase — the
+  parent is the merge-base, so a commit inside this change is still after it —
+  point the gate at a parent that already has it (`--base <rev>`), or add a
+  red-on-parent-waive line if the module existence IS the change (rename PRs).
+  Transcript: <stdout, trimmed to the error block>.`
 - `GREEN ON PARENT, NO WAIVER: test '<name>' passes on the parent commit
   (<base-sha>). Either the test pins pre-existing behaviour — add
   red-on-parent-waive '<pattern>' — <reason> — or the change does not make the
   behaviour it seems to test.`
 - `WAIVER MISFILED: waived test '<name>' actually FAILS on the parent. Delete
   the waiver line; the red you were looking for is already there.`
+- `NOT ON PARENT: the change registers test '<name>' and the parent's run never
+  reported it, so there is no red to judge. Build the test so the parent
+  registers it too, or waive it with the reason the parent cannot.`
+- `RUN INCOMPLETE: the test run did not finish (<timeout or spawn error>), so
+  there is no result to judge. Re-run the gate; no waiver covers this.`
 
 **Runtime cost, honestly.** Per PR, not per push:
 

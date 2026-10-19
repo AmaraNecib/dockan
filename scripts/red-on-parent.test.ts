@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -31,6 +31,7 @@ import {
   isGatedTestPath,
   parseJunit,
   parseWaivers,
+  unregisteredVerdicts,
   verdictPasses,
   type FileRun,
   type Verdict,
@@ -104,14 +105,35 @@ type GateOutput = {
   stdout: string;
 };
 
-function runGateFixture(fixture: Fixture): GateOutput {
+function runGateFixture(fixture: Fixture, extraEnv: Record<string, string> = {}): GateOutput {
   const result = spawnSync(process.execPath, [GATE, "--base", fixture.base], {
     cwd: fixture.repo,
     encoding: "utf8",
     timeout: 120_000,
-    env: { ...process.env, RED_ON_PARENT_CACHE: fixture.cache },
+    env: { ...process.env, RED_ON_PARENT_CACHE: fixture.cache, ...extraEnv },
   });
   return { status: result.status, stdout: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+}
+
+/**
+ * The same gate, in the background, so two runs can overlap. The lock is only
+ * observable when two of them race for one base worktree.
+ */
+function runGateAsync(fixture: Fixture): Promise<GateOutput> {
+  return new Promise((settle) => {
+    const child = spawn(process.execPath, [GATE, "--base", fixture.base], {
+      cwd: fixture.repo,
+      env: { ...process.env, RED_ON_PARENT_CACHE: fixture.cache },
+    });
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      out += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      out += String(chunk);
+    });
+    child.on("close", (status) => settle({ status, stdout: out }));
+  });
 }
 
 /**
@@ -202,6 +224,11 @@ describe("brand", () => {
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain("WRONG-REASON-RED");
       expect(stdout).toContain("# Unhandled error between tests");
+      // The parent is the merge-base, so a commit inside this change is still
+      // after it: the fix has to say so, or an author follows it and meets the
+      // same missing import on the next run.
+      expect(stdout).toContain("--base <rev>");
+      expect(stdout).not.toContain("first commit");
       expect(status).toBe(1);
     } finally {
       fixture.cleanup();
@@ -362,6 +389,148 @@ test("already here", () => {
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain("no added test files");
       expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a test the change registers and the parent does not is NOT ON PARENT", () => {
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        {
+          path: "packages/core/src/helper.ts",
+          text: `${HELPER_AFTER}
+export function brandNew(n: number): number {
+  return n;
+}
+`,
+        },
+        {
+          path: "packages/core/src/conditional.test.ts",
+          text: `import { expect, test } from "bun:test";
+import * as helper from "./helper";
+test("rejects zero", () => {
+  expect(() => helper.guard(0)).toThrow("ZERO");
+});
+if ("brandNew" in helper) {
+  test("brandNew returns the number", () => {
+    expect(helper.brandNew(2)).toBe(2);
+  });
+}
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // `rejects zero` is a genuine red on the parent, so on the parent's own
+      // test list alone this file passes without the second test ever being
+      // judged — the one test the gate exists for.
+      expect(stdout).toContain("NOT-ON-PARENT");
+      expect(stdout).toContain("brandNew returns the number");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("a file whose workspace owns a bunfig.toml", () => {
+  // The parent of a React test file has to run the way its workspace runs it.
+  // Bun reads the `bunfig.toml` of its working directory, so a gate that runs
+  // every file from the repo root never loads this preload, and the fixture
+  // below dies at load with `document is not defined`.
+  const BUNFIG: File = { path: "apps/web/bunfig.toml", text: `[test]\npreload = ["./preload.ts"]\n` };
+  const PRELOAD: File = {
+    path: "apps/web/preload.ts",
+    text: `(globalThis as { document?: { createElement: (tag: string) => unknown } }).document = {\n  createElement: () => ({}),\n};\n`,
+  };
+
+  test("runs from that workspace, so the preload's globals exist", () => {
+    const fixture = createFixture(
+      [PKG, BUNFIG, PRELOAD],
+      [
+        {
+          path: "apps/web/src/preload.test.ts",
+          text: `import { expect, test } from "bun:test";
+const host = (globalThis as { document: { createElement: (tag: string) => unknown } }).document.createElement("div");
+test("the preload defined document", () => {
+  expect(host).toBeDefined();
+  expect(1).toBe(2);
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("the base worktree lock", () => {
+  const redTest: File = {
+    path: "packages/core/src/red.test.ts",
+    text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+  };
+
+  test("a lock left behind by a dead process does not block the gate", () => {
+    const fixture = createFixture([PKG, HELPER], [{ path: "packages/core/src/helper.ts", text: HELPER_AFTER }, redTest]);
+    try {
+      const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
+      mkdirSync(lockPath, { recursive: true });
+      writeFileSync(join(lockPath, "pid"), "4999999\n");
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a lock held by a live run waits, then refuses, and says which lock", () => {
+    const fixture = createFixture([PKG, HELPER], [{ path: "packages/core/src/helper.ts", text: HELPER_AFTER }, redTest]);
+    try {
+      const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
+      mkdirSync(lockPath, { recursive: true });
+      writeFileSync(join(lockPath, "pid"), `${process.pid}\n`);
+      // The holder is this test process, which is alive, so the gate must not
+      // break the lock and must not pretend to have a verdict: it waits out a
+      // budget it was told to keep short, then refuses with exit 2.
+      const { status, stdout } = runGateFixture(fixture, { RED_ON_PARENT_LOCK_WAIT_MS: "600" });
+      expect(stdout).toContain("another red-on-parent run is using");
+      expect(stdout).toContain(lockPath);
+      expect(status).toBe(2);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  // A smoke check on the outcome, not the regression detector: without the lock
+  // these two may still both succeed if one finishes `git worktree add` before
+  // the other looks. The test above is the one that fails deterministically when
+  // the lock is removed, because a held lock is observable without a race.
+  test("two runs on one base both produce a verdict instead of colliding", async () => {
+    const fixture = createFixture([PKG, HELPER], [{ path: "packages/core/src/helper.ts", text: HELPER_AFTER }, redTest]);
+    try {
+      const [first, second] = await Promise.all([
+        runGateAsync(fixture),
+        runGateAsync(fixture),
+      ]);
+      expect(first.stdout).toContain("RIGHT-REASON-RED");
+      expect(second.stdout).toContain("RIGHT-REASON-RED");
+      expect([first.status, second.status]).toEqual([0, 0]);
     } finally {
       fixture.cleanup();
     }
@@ -674,6 +843,44 @@ describe("classifyFileRun", () => {
     const { verdicts } = classifyFileRun(run("<testsuites></testsuites>"), noWaiver);
     expect(verdicts[0]?.name).toBe("WRONG_REASON_RED");
     expect(verdicts[0]?.detail).toContain("no testcase");
+  });
+
+  test("a run that did not finish is RUN INCOMPLETE, and no waiver covers it", () => {
+    const { verdicts } = classifyFileRun(
+      { ...run(null, ""), error: "bun test did not complete (hit the 120000ms timeout)" },
+      [waiver],
+    );
+    expect(verdicts[0]?.name).toBe("RUN_INCOMPLETE");
+    expect(verdicts[0]?.waiver).toBeNull();
+    expect(verdicts.every(verdictPasses)).toBe(false);
+  });
+});
+
+describe("unregisteredVerdicts", () => {
+  const parent = parseJunit(
+    `<testsuites><testsuite><testcase name="rejects zero" classname="guard" /></testsuite></testsuites>`,
+  );
+  const change = parseJunit(
+    `<testsuites><testsuite><testcase name="rejects zero" classname="guard" /><testcase name="brandNew returns the number" classname="brand" /></testsuite></testsuites>`,
+  );
+
+  test("names the test the parent never reported", () => {
+    const { verdicts } = unregisteredVerdicts("packages/core/src/x.test.ts", parent, change, []);
+    expect(verdicts.map((entry) => entry.test)).toEqual(["brand brandNew returns the number"]);
+    expect(verdicts[0]?.name).toBe("NOT_ON_PARENT");
+    expect(verdicts.every(verdictPasses)).toBe(false);
+  });
+
+  test("a waiver on that test covers it, and is marked used", () => {
+    const { verdicts, usedWaiverLines } = unregisteredVerdicts("f", parent, change, [
+      { pattern: "brandNew returns the number", reason: "registered only when the export exists", line: 12 },
+    ]);
+    expect(verdicts.every(verdictPasses)).toBe(true);
+    expect([...usedWaiverLines]).toEqual([12]);
+  });
+
+  test("a test the parent already reported is not restated", () => {
+    expect(unregisteredVerdicts("f", parent, parent, []).verdicts).toEqual([]);
   });
 });
 

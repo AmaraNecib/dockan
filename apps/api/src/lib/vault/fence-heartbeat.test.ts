@@ -183,6 +183,44 @@ describe("the snapshot fence on the heartbeat tick (#292)", () => {
     }
   });
 
+  it("names a replacement a dirty write repairs, not only a clean checkpoint", async () => {
+    // Greptile P2: a dirty version short-circuits `snapshotIsCurrent()` at the
+    // version comparison, so the write used to repair the zombie's envelope and
+    // then read back its own stamp — silent. The theft is still repaired, but an
+    // operator who never sees it cannot tell a repair from a quiet day.
+    const events: string[] = [];
+    const lock = acquireVaultLock(dir, { heartbeatIntervalMs: 60_000 });
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeStamp: () => lock.currentOwner().token,
+      logger: { warn: (event) => events.push(event) },
+    });
+    try {
+      conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+      conn.markDirty();
+      await conn.persistIfDirty();
+
+      const zombie = path.join(dir, "zombie.db.enc");
+      fs.writeFileSync(zombie, buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), zombieToken));
+      fs.renameSync(zombie, snapshotPath());
+
+      // a NEW mutation arrives before the next heartbeat: the version is dirty,
+      // so the write path is the only thing that can notice before repairing
+      conn.raw.exec("INSERT INTO t VALUES ('second')");
+      conn.markDirty();
+      await conn.persistIfDirty();
+
+      expect(events).toEqual(["VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+      expect(diskStamp()).toBe(lock.currentOwner().token);
+    } finally {
+      await conn.close();
+      lock.release();
+    }
+  });
+
   it("keeps the lock when a heartbeat check throws", async () => {
     // a fence re-read that could not decide must not fail-stop a healthy
     // instance: the lock is still ours, and only the log says so

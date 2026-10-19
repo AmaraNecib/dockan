@@ -349,6 +349,21 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     options.logger?.warn("VAULT_SNAPSHOT_FENCE_FOREIGN", foreignStampMessage(context, stamp));
   }
 
+  /**
+   * Read the disk fence and name a replacement, without judging ownership.
+   *
+   * This has to run BEFORE a write, not after it. A dirty version short-circuits
+   * `snapshotIsCurrent()` at the version comparison, so the write path's own
+   * fence read (the post-write one) only ever saw the stamp it had just written:
+   * a dirty write repaired a zombie's envelope and reported nothing, while a
+   * clean checkpoint named it because its early-return check happened to read
+   * first. Reading first makes the report independent of that ordering.
+   */
+  function recordDiskStamp(context: "write" | "heartbeat"): void {
+    const fence = readDiskFenceWithRetry();
+    if (fence.outcome === "fence") noteDiskStamp(fence.stamp, context);
+  }
+
   /** The wording of a foreign-stamp report, per the site that noticed it. */
   function foreignStampMessage(context: "open" | "write" | "heartbeat", stamp: string | undefined): string {
     if (stamp === undefined) {
@@ -458,6 +473,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   }
 
   async function persistNow(): Promise<void> {
+    // name a replacement before this write repairs it; the version comparison
+    // below never looks at the disk when the version is dirty
+    recordDiskStamp("write");
     if (snapshotIsCurrent()) return;
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
@@ -528,6 +546,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // for the post-commit flush.
       if (connection.inTransaction) return;
       if (snapshotIsCurrent() && fs.existsSync(snapshotPath)) return;
+      // same ordering rule as persistNow: a checkpoint whose version is dirty
+      // would otherwise overwrite the zombie's envelope before reading it
+      recordDiskStamp("write");
       // the same write guard as persistNow: a shutdown or backup checkpoint
       // must not overwrite a snapshot the folder's new owner already wrote
       options.writeGuard?.();

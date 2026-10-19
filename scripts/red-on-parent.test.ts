@@ -20,18 +20,22 @@
 
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
+  bunOnlyRefusal,
   classifyFileRun,
   decodeXml,
   displayName,
   isGatedTestPath,
+  lockHolderIsGone,
+  main,
   parseJunit,
   parseWaivers,
   unregisteredVerdicts,
+  unusedWaiverVerdicts,
   verdictPasses,
   type FileRun,
   type Verdict,
@@ -160,6 +164,9 @@ const HELPER_BEFORE = `export function guard(n: number): number {
 
 const HELPER_AFTER = `export function guard(n: number): number {
   if (n <= 0) throw new Error("ZERO");
+  return n;
+}
+export function brandNew(n: number): number {
   return n;
 }
 `;
@@ -944,11 +951,29 @@ describe("classifyFileRun", () => {
   });
 
   test("a waived missing junit report passes (the rename case)", () => {
-    const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver]);
+    // A whole-file waiver cannot be judged against the parent, which produced
+    // nothing. The names the change registers are the only list it has.
+    const { verdicts, usedWaiverLines } = classifyFileRun(
+      run(null, "SyntaxError: x"),
+      [waiver],
+      ["gr keeps a positive number"],
+    );
     expect(verdicts[0]?.name).toBe("WRONG_REASON_RED");
     expect(verdicts[0]?.waiver).toEqual(waiver);
     expect(verdicts.every(verdictPasses)).toBe(true);
     expect([...usedWaiverLines]).toEqual([7]);
+  });
+
+  test("a waiver naming no test the change registers explains nothing", () => {
+    // Before this, `waivers[0]` was attached whatever it named and every waiver
+    // was marked used, so this exact input printed PASS with nothing judged.
+    const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver], [
+      "some other test",
+    ]);
+    expect(verdicts[0]?.waiver).toBeNull();
+    expect(verdicts[0]?.detail).toContain("no waiver here names a test the change registers");
+    expect(verdicts.every(verdictPasses)).toBe(false);
+    expect([...usedWaiverLines]).toEqual([]);
   });
 
   test("a skipped test pins nothing", () => {
@@ -1043,5 +1068,99 @@ describe("decodeXml", () => {
     expect(decodeXml("a &amp;lt; b &gt; c &quot;d&quot; &amp; &apos;")).toBe(
       'a &lt; b > c "d" & \'',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 5 — the defects no earlier round named. Each one ended in a PASS that
+// judged nothing, or in a message that was simply false.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 5", () => {
+  const suiteFor = (name: string, classname: string, body: string): string =>
+    `<testsuites><testsuite name="f.test.ts"><testsuite name="${classname}"><testcase name="${name}" classname="${classname}">${body}</testcase></testsuite></testsuite></testsuites>`;
+  const fileRun = (junit: string | null, stdout = ""): FileRun => ({
+    file: "packages/core/src/x.test.ts",
+    junit,
+    stdout,
+    error: "",
+  });
+  const red = `<failure type="AssertionError" message="x">AssertionError: x</failure>`;
+
+  test("a lock with no pid is reclaimed once it is older than the grace", () => {
+    // A crash between taking the lock and writing its pid used to leave a lock
+    // nothing could reclaim: "no pid" read as "holder alive", so every later
+    // run waited its whole budget (11 minutes) and refused, forever.
+    const lockPath = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    try {
+      expect(lockHolderIsGone(lockPath)).toBe(false);
+      const stale = new Date(Date.now() - 60_000);
+      utimesSync(lockPath, stale, stale);
+      expect(lockHolderIsGone(lockPath)).toBe(true);
+    } finally {
+      rmSync(lockPath, { recursive: true, force: true });
+    }
+  });
+
+  test("a broad waiver does not swallow the narrower one", () => {
+    // `firstWaiver` returns the first match, so "case" claimed "case returns the
+    // number" and the narrower waiver was reported as matching no test at all.
+    const waivers: Waiver[] = [
+      { pattern: "case", reason: "broad", line: 5 },
+      { pattern: "case returns the number", reason: "narrow", line: 6 },
+    ];
+    const { usedWaiverLines } = classifyFileRun(
+      fileRun(suiteFor("returns the number", "case", red)),
+      waivers,
+    );
+    expect([...usedWaiverLines].sort()).toEqual([5, 6]);
+    expect(unusedWaiverVerdicts("packages/core/src/x.test.ts", waivers, usedWaiverLines)).toHaveLength(
+      0,
+    );
+  });
+
+  test("a line that mentions the marker is neither a waiver nor a problem", () => {
+    // Every line containing the marker used to be parsed, fail the anchor, and
+    // fail the whole run — so documenting the convention broke the gate.
+    const { waivers, problems } = parseWaivers(
+      [
+        "// see red-on-parent-waive for the format this file uses",
+        'const note = "red-on-parent-waive: \\"x\\"";',
+        '// red-on-parent-waive: "a real one" — because',
+        '// red-on-parent-waive "missing colon" — malformed',
+      ].join("\n"),
+    );
+    expect(waivers.map((parsed) => parsed.pattern)).toEqual(["a real one"]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("line 4");
+    expect(problems[0]).toContain("must read");
+  });
+
+  test("the gate refuses to run under node", () => {
+    // Node strips TS types and starts this file, then spawns `node test` for
+    // every parent-side run, so every file reads as a whole-file load failure —
+    // which a waiver could turn into a PASS.
+    expect(bunOnlyRefusal({ bun: "1.4.3" })).toBeNull();
+    expect(bunOnlyRefusal({})).toContain("run this with bun, not node");
+  });
+
+  test("main refuses under node before it reads an argument", () => {
+    // The predicate above is only useful if main asks it. Without the wiring the
+    // gate starts, spawns `node test <file>` for the parent side, reads every
+    // file as a load failure, and a waiver turns that into a PASS.
+    // SAFETY: `process.versions` is a plain object; the cast only names the
+    // `bun` key the runtime adds to it, which the gate reads as a string.
+    const versions = process.versions as { bun?: string };
+    const original = versions.bun;
+    Object.defineProperty(versions, "bun", { value: undefined, configurable: true, writable: true });
+    try {
+      expect(main(["--base", "develop"])).toBe(2);
+    } finally {
+      Object.defineProperty(versions, "bun", {
+        value: original,
+        configurable: true,
+        writable: true,
+      });
+    }
   });
 });

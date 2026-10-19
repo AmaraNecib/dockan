@@ -54,12 +54,31 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const BUN = process.execPath;
+
+/**
+ * The refusal text when the gate is not running under bun, or null when it is.
+ *
+ * Node 22+ strips TypeScript types, so `node scripts/red-on-parent.ts` starts
+ * cleanly and then spawns `node test <file>` for every parent-side run. Every
+ * file then reads as a whole-file load failure, and a waiver on such a file
+ * would turn that into a PASS. The gate cannot tell its bun is not bun unless it
+ * asks, so it asks once, before any work.
+ */
+export function bunOnlyRefusal(
+  // SAFETY: `process.versions` is a plain object and bun adds a `bun` key to it,
+  // so reading an optional property cannot throw; the cast only names that key.
+  versions: { bun?: string } = process.versions as { bun?: string },
+): string | null {
+  if (versions.bun !== undefined) return null;
+  return "red-on-parent: run this with bun, not node — every parent-side run spawns `bun test` from process.execPath, and under node each file reads as a whole-file load failure\n";
+}
 const WAIVER_MARKER = "red-on-parent-waive";
 const TEST_TIMEOUT_MS = 120_000;
 const GIT_TIMEOUT_MS = 60_000;
@@ -224,12 +243,16 @@ export function parseWaivers(text: string): WaiverParse {
   const waivers: Waiver[] = [];
   const problems: string[] = [];
   const linePattern = waiverLinePattern();
+  const startsAsWaiver = new RegExp(`^[ \\t]*//[ \\t]*${WAIVER_MARKER}`, "u");
   let line = 0;
   // Split on CRLF too: a Windows checkout hands this a file with `\r` at the end
   // of every line, and the `$` anchor in the pattern does not match before `\r`.
   for (const raw of text.split(/\r?\n/u)) {
     line += 1;
-    if (!raw.includes(WAIVER_MARKER)) continue;
+    // Only a line that *is* a waiver counts. A line that merely mentions the
+    // marker — documenting the convention, or a string literal — used to be
+    // parsed, fail the anchored pattern, and fail the whole run.
+    if (!startsAsWaiver.test(raw)) continue;
     const match = linePattern.exec(raw);
     if (match === null) {
       problems.push(
@@ -367,7 +390,11 @@ function failureReason(result: TestResult): string {
  * rename case — the import resolves only on the change, and the module's
  * existence IS the change).
  */
-export function classifyFileRun(run: FileRun, waivers: Waiver[]): Classification {
+export function classifyFileRun(
+  run: FileRun,
+  waivers: Waiver[],
+  changeNames: string[] = [],
+): Classification {
   const used = new Set<number>();
   const verdicts: Verdict[] = [];
 
@@ -389,19 +416,40 @@ export function classifyFileRun(run: FileRun, waivers: Waiver[]): Classification
 
   if (run.junit === null) {
     const reason = loadFailureReason(run.stdout);
-    const waiver = waivers[0] ?? null;
-    if (waiver !== null) for (const w of waivers) used.add(w.line);
+    // Nothing ran on the parent, so its test list is empty and a waiver cannot
+    // be judged against it. The change side still knows which tests the file
+    // registers, and that is the only list available here. This used to attach
+    // `waivers[0]` whatever it named and mark every waiver used, so a file that
+    // never loaded printed PASS with no test judged at all.
+    const covers = (waiver: Waiver): boolean => {
+      const re = new RegExp(waiver.pattern, "u");
+      return changeNames.some((name) => re.test(name));
+    };
+    const waiver = waivers.find(covers) ?? null;
+    for (const candidate of waivers) if (covers(candidate)) used.add(candidate.line);
+    const explainsNothing =
+      waiver === null && waivers.length > 0
+        ? ` — and no waiver here names a test the change registers (${changeNames.join(", ") || "none found"})`
+        : "";
     verdicts.push({
       file: run.file,
       test: "(whole file)",
       name: "WRONG_REASON_RED",
-      detail: `${reason}${waiver === null ? "" : ` — covered by the waiver on line ${waiver.line}`}`,
+      detail: `${reason}${waiver === null ? explainsNothing : ` — covered by the waiver on line ${waiver.line}`}`,
       waiver,
     });
     return { verdicts, usedWaiverLines: used };
   }
 
   const results = parseJunit(run.junit);
+  // A waiver is used when it matches a test, not when it is the one this run
+  // happened to pick. `firstWaiver` returns the first match, so a broad pattern
+  // ("case") hid a later narrow one ("case one") and the narrow one was then
+  // reported as matching no test in the file — a factually wrong message on a
+  // file that was fine.
+  for (const waiver of waivers) {
+    if (results.some((result) => matches(waiver, result))) used.add(waiver.line);
+  }
   if (results.length === 0) {
     verdicts.push({
       file: run.file,
@@ -629,15 +677,33 @@ function clearPreviousCopies(repo: string, worktree: string, baseSha: string): v
 }
 
 const LOCK_RETRY_MS = 250;
+/**
+ * How long a lock directory may exist without its pid file before it is read as
+ * abandoned. The pid is written immediately after `mkdirSync` takes the lock, so
+ * anything older than this lost the writer in that window.
+ */
+const LOCK_PID_GRACE_MS = 10_000;
 
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** Whether the process that wrote this lock's pid file is gone. */
-function lockHolderIsGone(lockPath: string): boolean {
+export function lockHolderIsGone(lockPath: string): boolean {
   const pidFile = join(lockPath, "pid");
-  if (!existsSync(pidFile)) return false;
+  if (!existsSync(pidFile)) {
+    // A crash between taking the lock and writing its pid leaves a lock that no
+    // run can ever reclaim if "no pid" means "holder alive": every later run
+    // waits its whole budget and refuses, forever. Grader than the write itself,
+    // the directory's own age is the only evidence left.
+    try {
+      return Date.now() - statSync(lockPath).mtimeMs > LOCK_PID_GRACE_MS;
+    } catch {
+      // It went away between the EEXIST and this stat; the caller retries and
+      // takes it.
+      return false;
+    }
+  }
   const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -981,17 +1047,27 @@ function gateBaseWorktree(input: {
             : "",
       };
       stdoutByFile.set(file, fileRun.stdout);
-      const classified = classifyFileRun(fileRun, parsed.waivers);
+      const parentResults = junit === null ? [] : parseJunit(junit);
       // Only a file the parent could load can register *fewer* tests there than
       // on the change. A file that did not load is already one whole-file
       // failure, and comparing its empty parent list against the change would
-      // restate it once per test.
-      const parentResults = junit === null ? [] : parseJunit(junit);
-      const changeResults =
-        parentResults.length === 0 || checkoutDiffers
-          ? []
-          : changeSideResults(repo, file, join(outDir, `${copied.length}-change.xml`), problems);
-      const unregistered = unregisteredVerdicts(file, parentResults, changeResults, parsed.waivers);
+      // restate it once per test. It is still enumerated when a waiver is
+      // present, because the names the change registers are the only test list a
+      // whole-file waiver can be judged against.
+      const enumerateChange =
+        !checkoutDiffers && (parentResults.length > 0 || parsed.waivers.length > 0);
+      const changeResults = enumerateChange
+        ? changeSideResults(repo, file, join(outDir, `${copied.length}-change.xml`), problems)
+        : [];
+      const classified = classifyFileRun(
+        fileRun,
+        parsed.waivers,
+        changeResults.flatMap((changeResult) => [changeResult.name, displayName(changeResult)]),
+      );
+      const unregistered =
+        parentResults.length === 0
+          ? { verdicts: [], usedWaiverLines: new Set<number>() }
+          : unregisteredVerdicts(file, parentResults, changeResults, parsed.waivers);
       verdicts.push(...classified.verdicts, ...unregistered.verdicts);
       const usedLines = new Set([...classified.usedWaiverLines, ...unregistered.usedWaiverLines]);
       verdicts.push(...unusedWaiverVerdicts(file, parsed.waivers, usedLines));
@@ -1235,7 +1311,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return parsed;
 }
 
-function main(argv: string[]): number {
+export function main(argv: string[]): number {
+  const refusal = bunOnlyRefusal();
+  if (refusal !== null) {
+    process.stderr.write(refusal);
+    return 2;
+  }
   let args: ParsedArgs;
   try {
     args = parseArgs(argv);

@@ -225,6 +225,25 @@ describe("vault single-writer lock", () => {
     expect(recycled?.staleHeartbeatOverAlivePid).toBe(true);
   });
 
+  it("pins the recycled-pid threshold at three default heartbeat windows on both sides (#283)", () => {
+    // The threshold is `staleHeartbeatMs` x 3 and the default window is 60s, so
+    // the boundary is 180s. Both sides matter: raise the multiplier and a
+    // genuinely recycled pid stops being named; lower it and a holder
+    // suspended for three minutes is told to delete a live lock file. The
+    // 2s/5s pair above runs at `staleHeartbeatMs: 1000` and so pins neither
+    // edge of the shipped default.
+    const options = { ...fastSteal, probePid: () => "alive" as const };
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 179_000).toISOString() });
+    const inside = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(inside).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(inside?.staleHeartbeatOverAlivePid).toBe(false);
+    fs.rmSync(lockPath(), { force: true });
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 181_000).toISOString() });
+    const past = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(past).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(past?.staleHeartbeatOverAlivePid).toBe(true);
+  });
+
   it("does not claim a recycled pid when the refusal rests on a heartbeat (#283)", () => {
     const options = { ...fastSteal, staleHeartbeatMs: 1000, probePid: () => "unknown" as const };
     // An inconclusive probe defers to a FRESH heartbeat: it refuses, but the
@@ -333,6 +352,26 @@ describe("vault single-writer lock", () => {
     // SAFETY: the test wrote this JSON itself above
     const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
     expect(owner.token).toBe("still-ours");
+  });
+
+  it("names the lock file at the post-settle check too, not only the first look (#283)", () => {
+    // `acquireVaultLock` classifies the holder twice: before the settle window
+    // and again immediately before the rename. Both throws carry the
+    // recycled-pid story, so dropping it from the second one would send a botched
+    // boot back to "close the other copy" for a pid that looks recycled.
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString(), token: "quiet" });
+    // first look: gone, so the first check does not throw and the settle window
+    // runs; the second look answers alive over the same quiet heartbeat
+    let probes = 0;
+    const probePid = (): "gone" | "alive" => (probes++ === 0 ? "gone" : "alive");
+    const refusal = refusalFrom(() => acquireVaultLock(dir, { ...fastSteal, stealSettleMs: 20, probePid }));
+    expect(probes).toBeGreaterThanOrEqual(2);
+    expect(refusal).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(refusal?.staleHeartbeatOverAlivePid).toBe(true);
+    // the record is untouched: the reclaim was abandoned, not raced
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe("quiet");
   });
 
   it("reclaims an unreadable lock file instead of blocking forever", () => {
@@ -583,6 +622,29 @@ describe("vault single-writer lock", () => {
     expect(html).not.toContain("<script");
     // the record is still identified, stripped to the hostname charset
     expect(html).toContain("imgsrcxonerroralert1");
+  });
+
+  it("escapes a hostile lock-record host in the stale page too (#283)", () => {
+    // The stale template shares `sanitizeHostForDisplay` and `escapeHtml` with
+    // the honest one, but nothing pinned that: interpolating the host straight
+    // into `staleOwnerTemplate` would keep the honest-page test above green.
+    const html = vaultLockRefusalPageHtml(
+      {
+        pid: 4242,
+        host: '<img src=x onerror="alert(1)">',
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "t",
+      },
+      true,
+    );
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("onerror=");
+    expect(html).not.toContain("<script");
+    // the holder is still named, so escaping is not simply dropping it
+    expect(html).toContain("imgsrcxonerroralert1");
+    expect(html).toContain("4242");
+    expect(html).toContain("vault.lock");
   });
 
   it("treats a lock record with an over-long host as unreadable (round-5)", () => {

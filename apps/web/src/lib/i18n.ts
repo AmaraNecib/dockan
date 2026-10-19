@@ -145,6 +145,8 @@ const resources = {
       logEvent_VAULT_PLAINTEXT_REMAINS: "ملفات غير مشفّرة ما زالت موجودة",
       logEvent_VAULT_LOCK_LOST: "فُقد قفل الكتابة",
       logEvent_VAULT_LOCK_RECLAIM_RACED: "سبقنا كاتب آخر إلى القفل",
+      logEvent_VAULT_SNAPSHOT_FENCE_FOREIGN: "لقطة من كاتب سابق",
+      logEvent_VAULT_SNAPSHOT_FENCE_UNREADABLE: "تعذّرت قراءة بصمة اللقطة",
       logEvent_VAULT_ATTEMPT_FAILED: "فشلت محاولة فتح الخزنة",
       logEvent_VAULT_STATE_RESET: "أُعيد ضبط حالة المحاولات",
       logEvent_VAULT_PASSPHRASE_CHANGED: "تغيير كلمة مرور الخزنة",

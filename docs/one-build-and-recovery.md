@@ -195,12 +195,36 @@ password changes — someone holding a pre-reset session must not keep access.
 Argon2id (`@noble/hashes`), m=32768 KiB, t=3, p=1, 16-byte random salt,
 32-byte output. AEAD: AES-256-GCM (`node:crypto`) with a fresh random 12-byte
 nonce per encryption and domain-separated AAD
-(`dokan:vault:wrap:v1:<vaultId>:<kind>` for wraps,
-`dokan:vault:db:v1:<vaultId>` for snapshots). A wrapped master key is
-`nonce ‖ ciphertext+tag` base64 in `vault.json`; the snapshot is
-`"DKNVAULT" ‖ version ‖ nonce ‖ ciphertext+tag`. Recovery keys: 20 random
-bytes (160 bits) rendered as 32 base32 characters plus a 10-bit SHA-256
-checksum, grouped for transcription; a bad checksum fails before the KDF.
+(`dokan:vault:wrap:v1:<vaultId>:<kind>` for wraps; the snapshot context is per
+envelope, below). A wrapped master key is `nonce ‖ ciphertext+tag` base64 in
+`vault.json`. Recovery keys: 20 random bytes (160 bits) rendered as 32 base32
+characters plus a 10-bit SHA-256 checksum, grouped for transcription; a bad
+checksum fails before the KDF.
+
+**Snapshot envelope: two versions, one written.** Both start with the 8-byte
+magic `"DKNVAULT"` and a one-byte version.
+
+- **v1 — read, never written.** `"DKNVAULT" ‖ 1 ‖ nonce ‖ ciphertext+tag`,
+  sealed with AAD `dokan:vault:db:v1:<vaultId>`. Every released vault is in
+  this shape, so it stays readable. It carries no writer stamp, so a former
+  holder's bytes cannot be told from the current holder's.
+- **v2 — what every new write produces.** `"DKNVAULT" ‖ 2 ‖ stampLen ‖ stamp ‖
+  nonce ‖ ciphertext+tag`, sealed with AAD
+  `dokan:vault:db:v2:<vaultId>:<stamp>`. The stamp is the writing process's
+  `vault.lock` token (1..64 bytes), kept in the clear and bound into the AAD:
+  swapping it fails the GCM tag, and a reader learns the bytes are not its own
+  before decrypting. A v1 file is rewritten fenced on the holder's first write;
+  a foreign-stamped file is rewritten when it is opened.
+
+Both snapshot contexts and the wrap context are frozen string literals in
+`format.ts`. The `v1` and `v2` are written out rather than interpolated from a
+version constant, so a later format bump adds a builder instead of moving a
+context that released bytes are sealed under. The v2 envelope makes the
+machine-detectable half of the #280 window ADR-0012 leaves open — "the new
+owner can briefly believe in a version it does not hold on disk" — by making
+the writer's stamp testable after the rename; the lock's `assertHeld()` and the
+write guard are the other half. ADR-0008 §4.6 owns the format canon, so the
+second envelope is recorded here rather than in an ADR of its own.
 
 **What is encrypted.** The database is the only shop-data file: the runtime is
 an in-memory SQLite image and every persisted byte is an encrypted snapshot

@@ -187,6 +187,21 @@ describe("snapshot envelope fence (#280)", () => {
 describe("AEAD contexts are frozen strings", () => {
   const vaultId = "11111111-2222-3333-4444-555555555555";
 
+  /**
+   * The body of one exported builder in `format.ts`, found by name. The scans
+   * below use it because an assertion on the returned value cannot see the
+   * difference while the literal and the constant happen to agree, and the
+   * whole point of a literal is that the two are free to diverge: rebuilding a
+   * context from the version constant makes a format bump move the AAD that
+   * every released blob was sealed with, and no migration can re-seal them.
+   */
+  const builderBody = (name: string): string => {
+    const formatTs = readFileSync(fileURLToPath(new URL("./format.ts", import.meta.url)), "utf8");
+    const builder = new RegExp(`export function ${name}\\([\\s\\S]*?\\n}`).exec(formatTs)?.[0];
+    expect(builder).toBeDefined();
+    return builder ?? "";
+  };
+
   it("pins the legacy snapshot AAD", () => {
     expect(snapshotAad(vaultId)).toBe("dokan:vault:db:v1:11111111-2222-3333-4444-555555555555");
   });
@@ -201,17 +216,26 @@ describe("AEAD contexts are frozen strings", () => {
     expect(wrapAad(vaultId, "passphrase")).toBe("dokan:vault:wrap:v1:11111111-2222-3333-4444-555555555555:passphrase");
   });
 
+  it("builds the legacy snapshot AAD from a literal, not from the header version constant", () => {
+    // The value assertion above is satisfied by editing the expected string, so
+    // it cannot stop a developer from moving the context. This one can: the
+    // snapshot context is frozen at `db:v1` whatever the header format becomes.
+    const builder = builderBody("snapshotAad");
+    expect(builder).toContain("dokan:vault:db:v1:");
+    expect(builder).not.toContain("VAULT_FORMAT_VERSION");
+  });
+
   it("builds the fenced AAD from a literal, not from the envelope version constant", () => {
-    // A source scan on purpose. An assertion on the returned value cannot see
-    // the difference while the two numbers happen to agree, and the whole point
-    // of the literal is that the envelope version is now free to diverge from
-    // it. This is the check that fails on the regression: rebuilding the AAD
-    // from `VAULT_SNAPSHOT_VERSION` makes a format bump move the context every
-    // format-2 snapshot on disk was sealed with.
-    const formatTs = readFileSync(fileURLToPath(new URL("./format.ts", import.meta.url)), "utf8");
-    const builder = /export function fencedSnapshotAad[\s\S]*?\n}/.exec(formatTs)?.[0];
-    expect(builder).toBeDefined();
+    const builder = builderBody("fencedSnapshotAad");
     expect(builder).toContain("dokan:vault:db:v2:");
     expect(builder).not.toContain("VAULT_SNAPSHOT_VERSION");
+  });
+
+  it("builds the wrapped-key AAD from a literal, not from the header version constant", () => {
+    // Wrapped keys live in `vault.json` and are as long-lived as the snapshots;
+    // the header version bumping must not move their AEAD context either.
+    const builder = builderBody("wrapAad");
+    expect(builder).toContain("dokan:vault:wrap:v1:");
+    expect(builder).not.toContain("VAULT_FORMAT_VERSION");
   });
 });

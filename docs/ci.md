@@ -242,7 +242,7 @@ on purpose — an unverifiable audit is not a green audit.
 ## Bun version
 
 `oven-sh/setup-bun` reads `packageManager` from `package.json`
-(`bun@1.3.14`), so CI tracks the repo pin automatically.
+(`bun@1.4.3`), so CI tracks the repo pin automatically.
 
 ## Rust capability guards (`rust` job)
 

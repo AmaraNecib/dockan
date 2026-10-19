@@ -13,6 +13,7 @@ import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
 import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
+import { effectiveUnitCost, isRepeatedAdjustment, REPEAT_WINDOW_MS, type RecordedAdjustment, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
@@ -286,6 +287,28 @@ async function postStock(tx: StorePort, spec: StockMovementSpec) {
   const [posted] = await postStockBatch(tx, [spec]);
   // SAFETY: the batch returns exactly one result per spec, and we passed one
   return posted!;
+}
+
+/**
+ * #295 — the item's most recently RECORDED movement, which is the one a
+ * repeated request has to be compared against.
+ *
+ * "Recorded", not "dated": the store orders the ledger by business date, so a
+ * backdated adjustment sits earlier in that list than the movement that
+ * follows it. The guard asks "what was written last", which is the rowid
+ * (the store's `seq`), not the business date.
+ */
+async function lastRecordedMovement(tx: StorePort, itemId: string): Promise<RecordedAdjustment | undefined> {
+  const newest = await tx.lastStockMovement(itemId);
+  if (newest === undefined) return undefined;
+  const adjustment: StockAdjustment = {
+    itemId: newest.itemId,
+    kind: newest.kind,
+    delta: newest.delta,
+    unitCost: newest.unitCost,
+    reason: newest.reason,
+  };
+  return { adjustment, recordedAt: newest.createdAt };
 }
 
 /**
@@ -663,10 +686,35 @@ export function createRpcRouter(deps: RpcDeps) {
         if (input.kind === "PURCHASE" && input.delta <= 0) {
           throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_REQUIRES_INFLOW" });
         }
-        return deps.store.withTransaction(async (tx) => {
+        // #295 — a money path that READS before it WRITES takes the write lock
+        // first (the same reason the sale, payment and return paths use
+        // `withTransactionImmediate`): the guard below compares the request
+        // with the movement that was recorded last, and a deferred transaction
+        // would let a second writer's read land on a stale snapshot.
+        return deps.store.withTransactionImmediate(async (tx) => {
           const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);
           if (item === undefined) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+          }
+          // #295 — the same action must not be applied twice. Two windows on
+          // one API (the v1 multi-client shape, #294) can post the SAME
+          // adjustment: a double-clicked save, a lost response re-sent as the
+          // same action (the #115 rule), or one form open in both windows.
+          // The ledger is append-only, so the second post is not an
+          // overwrite — it is a SECOND MOVEMENT, and the stock moves twice
+          // for one intention. The first write stands; the second is refused
+          // with a code the owner can act on.
+          const incoming: StockAdjustment = {
+            itemId: item.id,
+            kind: input.kind,
+            delta: input.delta,
+            unitCost: effectiveUnitCost(input.delta, input.unitCost, item.costPrice),
+            reason: input.reason ?? null,
+          };
+          const last = await lastRecordedMovement(tx, item.id);
+          const cutoff = localDateTime(new Date(Date.now() - REPEAT_WINDOW_MS));
+          if (isRepeatedAdjustment(last, incoming, cutoff)) {
+            throw new ORPCError("CONFLICT", { message: "STOCK_ADJUSTMENT_DUPLICATE" });
           }
           // The seam owns the whole sequence: it defaults an inflow's cost to
           // the item's current one, keeps outflows costless, validates the

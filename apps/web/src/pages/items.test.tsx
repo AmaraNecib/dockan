@@ -100,6 +100,10 @@ let createWithStockDeferred = false;
 let resolveCreateWithStock: (() => void) | null = null;
 /** holds the itemsList refetch open so the stale-cache window is observable */
 let itemsGate: Promise<void> | null = null;
+/** counts the items-list reads, so the hot-counter tick is observable */
+let itemsListFetches = 0;
+/** the error code the api refuses a repeated adjustment with (#295) */
+let stockRefuses: string | null = null;
 let releaseItemsGate: (() => void) | null = null;
 
 // The page reads/writes everything through orpc.*; the mock keeps the fixture
@@ -123,6 +127,7 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => {
           // the stale-cache test holds this open to make the window observable
           if (itemsGate !== null) await itemsGate;
+          itemsListFetches += 1;
           return { items: items.map((item) => ({ ...item })), total: items.length };
         },
       }),
@@ -202,6 +207,11 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: MutationOptions) => ({
         mutationFn: async (input: CapturedStockInput) => {
           stockInputs.push(input);
+          if (stockRefuses !== null) {
+            // the api refuses a repeated adjustment with a CONFLICT whose
+            // message is the code the web translates (#295)
+            throw Object.assign(new Error(stockRefuses), { code: "CONFLICT" });
+          }
           return { id: "movement-1" };
         },
         ...opts,
@@ -314,7 +324,7 @@ async function waitFor(check: () => boolean, attempts = 120): Promise<void> {
   throw new Error("condition not met within timeout");
 }
 
-async function mount(): Promise<MountedPage> {
+async function mount(options?: { refreshMs?: number }): Promise<MountedPage> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -323,7 +333,7 @@ async function mount(): Promise<MountedPage> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <ItemsPage />
+        <ItemsPage refreshMs={options?.refreshMs} />
       </QueryClientProvider>,
     );
   });
@@ -391,6 +401,8 @@ beforeEach(() => {
   createWithStockDeferred = false;
   resolveCreateWithStock = null;
   itemsGate = null;
+  itemsListFetches = 0;
+  stockRefuses = null;
   releaseItemsGate = null;
   document.body.innerHTML = "";
 });
@@ -403,6 +415,29 @@ afterEach(() => {
     entry.container.remove();
   }
   document.body.innerHTML = "";
+});
+
+/**
+ * #295 — the stock on hand is a hot counter. A second window posts a sale or
+ * an adjustment, and this window has to show the new number without anybody
+ * clicking into it: no focus event fires on a window that is visible but
+ * unfocused, so the tick is what carries the change.
+ */
+describe("items list hot counter (#295)", () => {
+  it("polls the items list so the stock column converges without an invalidation", async () => {
+    await mount({ refreshMs: 20 }); // 20ms refresh keeps the test fast
+    await waitFor(() => itemsListFetches >= 2);
+  });
+
+  it("keeps polling while the window is in the background", async () => {
+    const { queryClient } = await mount({ refreshMs: 20 });
+    await waitFor(() => itemsListFetches >= 1);
+    // the options the page handed the query carry the background flag: a
+    // window that is visible but unfocused never sends a focus event
+    const observer = queryClient.getQueryCache().find({ queryKey: ["items"] })?.observers[0];
+    expect(observer?.options.refetchInterval).toBe(20);
+    expect(observer?.options.refetchIntervalInBackground).toBe(true);
+  });
 });
 
 describe("items page tabs", () => {
@@ -1004,6 +1039,19 @@ describe("stock form prefill", () => {
     // the label already says this; an error has to say what is wrong
     expect(message).not.toContain("موجب إدخال");
     expect(stockInputs.length).toBe(0);
+  });
+
+  it("shows the actionable refusal when the same adjustment is posted twice (#295)", async () => {
+    stockRefuses = "STOCK_ADJUSTMENT_DUPLICATE";
+    await mount();
+    await openAddTab();
+    setInput("stock-delta", "5");
+    click("stock-save");
+    await waitFor(() => document.querySelector('[data-testid="stock-error"]') !== null);
+    const message = el<HTMLElement>('[data-testid="stock-error"]').textContent ?? "";
+    // the raw code must not reach the owner: the message says what happened
+    expect(message).not.toContain("STOCK_ADJUSTMENT_DUPLICATE");
+    expect(message).toContain("لم يُطبَّق مرتين");
   });
 
   it("refreshes a prefilled cost when the item's known cost changes, without clobbering a typed value", async () => {

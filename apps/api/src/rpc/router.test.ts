@@ -38,6 +38,8 @@ let conn: Connection;
 let store: StorePort;
 let client: DokanClient;
 let unauthed: DokanClient;
+/** a second window on the same session — the v1 multi-client shape (#294) */
+let secondClient: DokanClient;
 // hoisted so tests can rebuild an app+router against a modified store (the
 // settings-atomicity test) and so the ticket-14 describe can seed DIRECT log
 // rows, with the same config/auth/cookie as beforeAll
@@ -93,6 +95,8 @@ beforeAll(async () => {
   cookie = login.headers.get("set-cookie") ?? "";
 
   client = createORPCClient(linkWith(cookie));
+  // the same session cookie on a second link: two browser windows, one API
+  secondClient = createORPCClient(linkWith(cookie));
   unauthed = createORPCClient(linkWith(""));
 }, HEAVY_TEST_TIMEOUT_MS);
 
@@ -428,6 +432,68 @@ describe("stock ledger (ticket 27)", () => {
       total: 0,
       stockOnHand: 0,
     });
+  });
+});
+
+/**
+ * #295 — one stock adjustment, one movement.
+ *
+ * Two windows on one API (the v1 multi-client shape, #294) can post the SAME
+ * action: a double-clicked save, a lost response re-sent as the same action
+ * (the #115 rule), or the same form open in both windows. The ledger is
+ * append-only, so the second post does not overwrite the first — it appends a
+ * SECOND movement, and the stock moves twice for one intention. The first
+ * write stands; the second is refused with a code the owner can act on.
+ */
+describe("stock adjustment — the same action is applied once (#295)", () => {
+  const makeItem = async (name: string) => {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice: 100,
+      sellingPrice: 200,
+      lowStockThreshold: 0,
+    });
+  };
+
+  it("refuses the same adjustment from a second client, and the first write survives", async () => {
+    const item = await makeItem("تسوية-تكرار");
+
+    // window A records the adjustment
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+
+    // window B posts the SAME action
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+    expect(refused!.message).toContain("STOCK_ADJUSTMENT_DUPLICATE");
+
+    // the first write survived: ONE movement, and the stock moved once
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(1);
+    expect(history.stockOnHand).toBe(5);
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(5);
+  });
+
+  it("still records a different adjustment right after the first one", async () => {
+    const item = await makeItem("تسوية-مختلفة");
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // a different quantity: a second action, not a repeat
+    await secondClient.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, reason: "count" });
+    // and a different reason on the same quantity
+    await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "delivery" });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(3);
+    expect(history.stockOnHand).toBe(13);
   });
 });
 

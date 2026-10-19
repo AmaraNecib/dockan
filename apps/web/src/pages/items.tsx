@@ -21,6 +21,7 @@ import { normalizeBarcode } from "@dokan/contracts";
 import { draftBlank, parseLooseNumber } from "@/lib/amount-parse";
 import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
+import { hotCounterRefresh } from "../lib/freshness";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { StockForm } from "./stock";
@@ -63,7 +64,7 @@ function invalidateItems(queryClient: QueryClient) {
   void queryClient.invalidateQueries();
 }
 
-export function ItemsPage() {
+export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
@@ -202,6 +203,7 @@ export function ItemsPage() {
       <div role="tabpanel" id="items-panel-products" aria-labelledby="items-tab-products" hidden={tab !== "products"}>
         <CatalogSearch />
         <ItemList
+          refreshMs={refreshMs}
           scanNonce={scanNonce}
           onAddItem={() => {
             selectTab("add");
@@ -584,11 +586,14 @@ function ItemForm({
   );
 }
 
-function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () => void }) {
+function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAddItem: () => void; refreshMs?: number }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const pager = usePagination();
-  const items = useQuery(orpc.itemsList.queryOptions({ input: { ...pager.pagination } }));
+  // #295 — the stock on hand is a hot counter: it moves with every sale in
+  // every window, so the table re-reads it on the bounded tick instead of
+  // waiting for a focus event that a second window never sends.
+  const items = useQuery({ ...orpc.itemsList.queryOptions({ input: { ...pager.pagination } }), ...hotCounterRefresh(refreshMs) });
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [draft, setDraft] = useState<ItemEditDraft | null>(null);
   const [editError, setEditError] = useState<string | null>(null);

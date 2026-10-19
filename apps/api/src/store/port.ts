@@ -276,6 +276,13 @@ export interface StorePort {
   insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "returnMark">>): Promise<StockMovement>;
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
   listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
+  /**
+   * The movement recorded LAST, in insertion order (seq = rowid) — not in
+   * business-date order. A backdated adjustment is recorded now, so "what was
+   * written last" is the rowid, and the repeat guard (#295) needs that one row
+   * rather than the whole ledger.
+   */
+  lastStockMovement(itemId: string): Promise<(StockMovement & { seq: number }) | undefined>;
   countStockMovements(itemId: string): Promise<number>;
 
   // --- purchase linkage (ticket 29) ----------------------------------------

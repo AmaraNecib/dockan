@@ -1074,6 +1074,40 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     second.release();
   });
 
+  it("never unlinks a record that comes back naming another owner (Greptile P1)", async () => {
+    // The own-record chain is armed because the budget and the release read all
+    // failed. Before its first attempt fires, a reclaim of the unreadable record
+    // puts a stranger's live record at the path: the chain must leave it alone,
+    // or it would delete a live holder's lock and make two writers.
+    const failingReads = fastRead.transientReadRetries + 2;
+    const reads = countingReader((lockPath, call) => {
+      if (call <= failingReads) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(lost).toHaveLength(1);
+    // "behind the reader's back": the swap happens before the armed chain gets
+    // an event-loop turn, so its recovered read is the one that sees the stranger
+    writeLock({ host: "shop-pc", pid: 4242, token: "the-new-owner" });
+    await waitUntil(() => reads.state.reads > failingReads);
+    const readsAtResolution = reads.state.reads;
+    // no second attempt: an owner it does not own is an ending, not a retry
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(reads.state.reads).toBe(readsAtResolution);
+    // the stranger's record is untouched and still names the stranger
+    expect(fs.existsSync(lockPath())).toBe(true);
+    // SAFETY: the test wrote this JSON itself through writeLock
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe("the-new-owner");
+  });
+
   it("keeps the one-second budget when the wall clock jumps mid-retry (Greptile P2)", () => {
     // The budget measures ELAPSED time, so this is not an elapsed-time test:
     // the real default clock and sleep drive the loop and only `Date.now` is

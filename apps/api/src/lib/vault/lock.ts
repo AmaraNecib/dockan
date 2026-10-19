@@ -40,9 +40,14 @@ import { errnoCode, probePidLiveness, type PidLiveness, type PidLivenessProbe } 
  *
  * A read that fails without the file being gone is NOT that loss (#281): a
  * Windows sharing violation (`EACCES`/`EBUSY`/`EPERM`, antivirus or the indexer
- * holding `vault.lock`) and a record caught mid-write are `unreadable`, not
- * missing, so the holder retries them a bounded number of times and only then
- * fails closed. `ENOENT` and a different owner's token still lose the lock at
+ * holding `vault.lock`) is `unreadable`, not missing, so the holder retries it a
+ * bounded number of times and only then fails closed. A record caught mid-write
+ * is a different class, `malformed` (#288): the bytes were read fine and are not
+ * a lock record yet. The held-lock path retries both and never stops a holder on
+ * either, but the acquisition path acts on the difference — a `malformed` record
+ * is stale and reclaimable, while an `unreadable` one withholds the reclaim
+ * entirely, because a read that failed cannot prove a live holder is gone
+ * (#287). `ENOENT` and a different owner's token still lose the lock at
  * once, so this is not a new way to strand the folder. `release()` never
  * unlinks a record it could not read, for the same reason: an unreadable file
  * may be a new owner's. When `onLost` keeps the process alive after a loss
@@ -118,7 +123,8 @@ export type VaultLockOptions = {
   stealSettleMs?: number;
   /**
    * how many extra reads the lock file of a HELD lock gets when it exists but
-   * cannot be read (`EACCES`/`EBUSY`/`EPERM`, or a record caught mid-write),
+   * cannot be read — a sharing violation (`EACCES`/`EBUSY`/`EPERM`), or a record
+   * caught mid-write, which is `malformed` rather than `unreadable` (#288) —
    * before the holder fails closed (#281); 10 x 100 ms by default, which is a
    * whole second of patience for an antivirus scanner holding the file, while
    * a genuine theft is still judged on the first read (a replacement record or

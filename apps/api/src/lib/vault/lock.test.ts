@@ -54,6 +54,36 @@ function spyLockReadFailure(matches: (target: string) => boolean, code = "EBUSY"
   return () => spy.mockRestore();
 }
 
+/**
+ * A read fault that fails the first matching attempt and lets the next one
+ * through, so every `readOwner` window at `readRetries: 1` is one failed
+ * attempt followed by a readable one (#287). Unlike `spyLockReadFailure`,
+ * which fails every matching read, this models the intermittent sharing
+ * violation the sticky `blocked` flag exists for: a later readable but
+ * malformed read in the same window must not clear the failure before it.
+ */
+function spyLockIntermittentReadFailure(matches: (target: string) => boolean, code = "EBUSY"): () => void {
+  const originalRead = fs.readFileSync;
+  // SAFETY: see spyLockReadFailure: only the lock module's utf8 reads are intercepted.
+  const readUtf8 = originalRead as (file: fs.PathLike, ...args: unknown[]) => string;
+  let failNext = true;
+  const spy = spyOn(fs, "readFileSync").mockImplementation(
+    // SAFETY: bun types the mock as the callee's whole overload set; this
+    // implementation forwards every read that does not match to the original.
+    ((target: fs.PathLike, ...args: unknown[]) => {
+      if (matches(String(target))) {
+        if (failNext) {
+          failNext = false;
+          throw Object.assign(new Error(`${code}: simulated lock-file read failure`), { code });
+        }
+        failNext = true;
+      }
+      return readUtf8(target, ...args);
+    }) as typeof fs.readFileSync,
+  );
+  return () => spy.mockRestore();
+}
+
 function writeLock(overrides: Partial<{ pid: number; host: string; heartbeatAt: string; token: string }>): void {
   fs.writeFileSync(
     lockPath(),
@@ -458,6 +488,39 @@ describe("vault single-writer lock", () => {
       restore();
     }
     expect(fs.existsSync(lockPath())).toBe(true);
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("keeps refusing a reclaim when the settled read fails once and a later read in the same window reads malformed content (#287)", () => {
+    // a holder's record hidden by an intermittent read fault: the first read
+    // attempt errors, the retry reads bytes that are not a lock record. If that
+    // readable retry cleared `blocked`, this attempt would rename the file
+    // aside and unlink it — the eviction #287 exists to stop.
+    fs.writeFileSync(lockPath(), "{ still not a lock record");
+    const restore = spyLockIntermittentReadFailure((target) => target === lockPath());
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+    } finally {
+      restore();
+    }
+    // not renamed aside, not deleted, not replaced by a fresh acquisition
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ still not a lock record");
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("puts back a renamed-aside record whose first read failed and retry read only malformed content (#287)", () => {
+    // the record at vault.lock reads (malformed, so reclaimable), but its
+    // renamed-aside copy's first read fails while the retry reads malformed
+    // bytes: the earlier failure must keep the reclaim from unlinking an inode
+    // it could not identify.
+    fs.writeFileSync(lockPath(), "{ not json");
+    const restore = spyLockIntermittentReadFailure((target) => target.includes(".reclaim-"));
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+    } finally {
+      restore();
+    }
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
     expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
   });
 

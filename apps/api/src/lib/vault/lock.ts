@@ -37,6 +37,12 @@ import { errnoCode, probePidLiveness, type PidLiveness, type PidLivenessProbe } 
  * `onLost` callback fires so the caller can stop writing and refuse rather than
  * run without exclusivity. The module never exits by itself when `onLost` is
  * provided.
+ *
+ * The heartbeat is also the folder's clock (#292): a check registered with
+ * `addHeartbeatCheck` runs on every tick, so a slow-moving fact (the snapshot
+ * fence, say) is re-read every 10s instead of only when the holder happens to
+ * write. One timer, one cadence — a second timer beside this one would be a
+ * second thing to keep in step with it.
  */
 
 export type VaultLockOwner = {
@@ -182,6 +188,8 @@ export class VaultLock {
   private owner: VaultLockOwner;
   private timer: ReturnType<typeof setInterval> | undefined;
   private released = false;
+  /** the checks that ride the heartbeat tick (#292) */
+  private readonly heartbeatChecks: (() => void)[] = [];
 
   constructor(
     lockPath: string,
@@ -198,6 +206,19 @@ export class VaultLock {
   /** The recorded holder (for tests and diagnostics). */
   currentOwner(): VaultLockOwner {
     return this.owner;
+  }
+
+  /**
+   * Register a check to run on every heartbeat tick (#292). The lock already
+   * beats every 10s, so a check that rides that tick is bounded by the same
+   * cadence and costs no extra timer.
+   *
+   * A check that throws is logged and skipped: the lock is still ours, and a
+   * failed re-read says nothing about ownership. Turning it into a lost lock
+   * would fail-stop a healthy instance over a diagnostic.
+   */
+  addHeartbeatCheck(check: () => void): void {
+    this.heartbeatChecks.push(check);
   }
 
   /**
@@ -254,6 +275,27 @@ export class VaultLock {
       this.owner = next;
     } catch (error) {
       this.lost(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    // the lock still beats, so the checks that ride it still run
+    this.runHeartbeatChecks();
+  }
+
+  /**
+   * The checks that ride the heartbeat tick (#292). Each one stands alone: a
+   * check that throws is logged and the rest still run.
+   */
+  private runHeartbeatChecks(): void {
+    for (const check of this.heartbeatChecks) {
+      try {
+        check();
+      } catch (error) {
+        this.options.logger?.error(
+          "SERVER_ERROR",
+          "a vault heartbeat check failed and was skipped",
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
     }
   }
 

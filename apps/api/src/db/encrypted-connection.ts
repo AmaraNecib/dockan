@@ -55,6 +55,15 @@ export type EncryptedConnection = {
   flush(): Promise<void>;
   checkpoint(): void;
   close(): Promise<void>;
+  /**
+   * Re-read the fence on disk NOW (#292) and say whether the bytes there are
+   * still this holder's. The holder's heartbeat calls it, so a snapshot a
+   * zombie replaced while this holder was idle is detected within one
+   * heartbeat instead of at the next persist, checkpoint or close. A foreign
+   * stamp makes the version not durable, and it is logged: a silent case that
+   * is at least named becomes diagnosable.
+   */
+  recheckFence(): void;
   /** verify one encrypted snapshot OR self-contained backup bundle */
   validateSnapshotFile(filePath: string): boolean;
   /** write a self-contained backup (header wraps + snapshot) to destPath */
@@ -232,6 +241,13 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   // its version is not durable. No callback = unfenced (the legacy envelope).
   const connectionStamp = options.writeStamp?.();
   let fenceSatisfied = connectionStamp === undefined;
+  /**
+   * The stamp the disk carried the last time it was read, so one change to a
+   * foreign stamp is one log line however many times the disk is read: the
+   * heartbeat notices a replacement and the next write notices it too, and
+   * those are the same event, not two.
+   */
+  let observedStamp: { value: string | undefined } | undefined;
   let raw: Database;
   if (options.seedBytes !== undefined) {
     raw = Database.deserialize(options.seedBytes);
@@ -257,14 +273,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // no longer the holder, so the newest acknowledged transactions may be
       // missing from them — and nothing here can distinguish that from an
       // honest handover, because the stamp carries no version to compare.
-      if (!fenceSatisfied) {
-        options.logger?.warn(
-          "VAULT_SNAPSHOT_FENCE_FOREIGN",
-          opened.stamp === undefined
-            ? "the snapshot on disk is the legacy unfenced format: it carries no holder stamp, so its currency is unverifiable and this holder rewrites it"
-            : "the snapshot on disk is stamped by a former holder: its currency is unverifiable and this holder rewrites it",
-        );
-      }
+      noteDiskStamp(opened.stamp, "open");
     }
     raw = Database.deserialize(opened.image);
   } else {
@@ -318,6 +327,59 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   }
 
   /**
+   * Remember the stamp on disk and report a CHANGE to a foreign one.
+   *
+   * A stamp that is not this holder's means the bytes on disk were written by
+   * another writer, so the last version this holder acknowledged is not the
+   * one on disk. That is the case #280 fenced and #292 watches for on the
+   * heartbeat, and it is reported rather than swallowed: a silent case that is
+   * at least named becomes diagnosable.
+   *
+   * One change is one log line. The disk is read from three places (open, a
+   * write, the heartbeat), and a single replacement is noticed by all of
+   * them; the first one to notice names it and the rest stay quiet. A repair
+   * (our own stamp back on disk) resets it, so the next theft is named again.
+   */
+  function noteDiskStamp(stamp: string | undefined, context: "open" | "write" | "heartbeat"): void {
+    const changed = observedStamp === undefined || observedStamp.value !== stamp;
+    observedStamp = { value: stamp };
+    if (!changed) return;
+    // our own bytes: nothing to report
+    if (stamp === connectionStamp) return;
+    options.logger?.warn("VAULT_SNAPSHOT_FENCE_FOREIGN", foreignStampMessage(context, stamp));
+  }
+
+  /** The wording of a foreign-stamp report, per the site that noticed it. */
+  function foreignStampMessage(context: "open" | "write" | "heartbeat", stamp: string | undefined): string {
+    if (stamp === undefined) {
+      return "the snapshot on disk is the legacy unfenced format: it carries no holder stamp, so its currency is unverifiable and this holder rewrites it";
+    }
+    if (context === "heartbeat") {
+      return "the snapshot on disk was replaced by another writer's envelope while this holder was idle: the last acknowledged transactions are not durable, and the snapshot is rewritten on the next write";
+    }
+    if (context === "write") {
+      return "another writer's envelope replaced the snapshot on disk: the version this holder acknowledged is not on disk, so it is not durable and this holder rewrites it";
+    }
+    return "the snapshot on disk is stamped by a former holder: its currency is unverifiable and this holder rewrites it";
+  }
+
+  /**
+   * Read the disk fence, asking a second time when the read itself failed. A
+   * transient EBUSY must not be reported as another writer, and a decidable
+   * answer cannot change by asking again.
+   */
+  function readDiskFenceWithRetry(): {
+    outcome: "fence";
+    stamp: string | undefined;
+  } | { outcome: "absent" | "undecidable" | "unreadable" } {
+    for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
+      const fence = readDiskFence();
+      if (fence.outcome !== "unreadable") return fence;
+    }
+    return { outcome: "unreadable" };
+  }
+
+  /**
    * True when the bytes on disk carry this holder's stamp (always true when
    * unfenced). An unreadable prefix is asked twice before it is called foreign:
    * one retry absorbs a transient EBUSY, and no retry is spent on a decidable
@@ -325,19 +387,25 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    */
   function diskFenceIsMine(): boolean {
     if (connectionStamp === undefined) return true;
-    for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
-      const fence = readDiskFence();
-      if (fence.outcome === "unreadable") continue;
-      return fence.outcome === "fence" && fence.stamp === connectionStamp;
+    const fence = readDiskFenceWithRetry();
+    if (fence.outcome === "fence") {
+      // the write path is a reader of the fence too, so it names a replacement
+      // the heartbeat has not noticed yet
+      noteDiskStamp(fence.stamp, "write");
+      return fence.stamp === connectionStamp;
     }
-    // Still unreadable: our own bytes cannot be shown to be ours, so the version
-    // is not durable and a write is owed. That is the safe direction — a
-    // redundant rewrite costs time, a version reported durable over an
-    // unreadable file costs the committed transaction it claimed to save.
-    options.logger?.warn(
-      "VAULT_SNAPSHOT_FENCE_UNREADABLE",
-      "the snapshot fence could not be read twice; treating the version on disk as unverified and rewriting",
-    );
+    if (fence.outcome === "unreadable") {
+      // Still unreadable: our own bytes cannot be shown to be ours, so the
+      // version is not durable and a write is owed. That is the safe
+      // direction — a redundant rewrite costs time, a version reported durable
+      // over an unreadable file costs the committed transaction it claimed to
+      // save.
+      options.logger?.warn(
+        "VAULT_SNAPSHOT_FENCE_UNREADABLE",
+        "the snapshot fence could not be read twice; treating the version on disk as unverified and rewriting",
+      );
+      return false;
+    }
     return false;
   }
 
@@ -349,6 +417,44 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    */
   function snapshotIsCurrent(): boolean {
     return mutationVersion === persistedVersion && fenceSatisfied && diskFenceIsMine();
+  }
+
+  /**
+   * Re-read the fence on disk NOW (#292). The holder's heartbeat calls it, so
+   * a snapshot a zombie replaced while this holder was idle is detected within
+   * one heartbeat instead of at the next persist, checkpoint or close.
+   *
+   * What it does with the answer:
+   *   - our stamp: the bytes on disk are ours, and the version is durable
+   *     again;
+   *   - a foreign stamp (the legacy envelope carries none, so it counts as
+   *     foreign too): those bytes are not ours, so the version is NOT durable.
+   *     It is named, once, when the stamp changed — a foreign stamp that
+   *     repeats on every tick is one event, not ten thousand;
+   *   - anything else (no file, bytes that are not an envelope, a prefix that
+   *     could not be read): the disk is not verifiably ours, so the version is
+   *     not durable, and the next write repairs it.
+   *
+   * It never writes and never throws: a diagnostic that broke the holder
+   * would be worse than the silence it replaces.
+   */
+  function recheckFence(): void {
+    // unfenced: the legacy envelope carries no stamp, so there is nothing to
+    // compare and nothing to report
+    if (connectionStamp === undefined) return;
+    const fence = readDiskFenceWithRetry();
+    if (fence.outcome === "fence") {
+      noteDiskStamp(fence.stamp, "heartbeat");
+      fenceSatisfied = fence.stamp === connectionStamp;
+      return;
+    }
+    if (fence.outcome === "unreadable") {
+      options.logger?.warn(
+        "VAULT_SNAPSHOT_FENCE_UNREADABLE",
+        "the snapshot fence could not be read twice; the version on disk counts as unverified",
+      );
+    }
+    fenceSatisfied = false;
   }
 
   async function persistNow(): Promise<void> {
@@ -408,6 +514,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       persistQueue = run.catch(() => undefined);
       await run;
     },
+    recheckFence,
     async flush() {
       // force a write even when nothing changed: the first snapshot after setup
       // and explicit checkpoints must never be skipped by version bookkeeping

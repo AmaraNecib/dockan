@@ -253,6 +253,13 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     return vaultLock.currentOwner().token;
   };
   const { conn, store } = openVaultStore(storeInput);
+  // #292: the snapshot fence is re-read on the holder's heartbeat tick, so a
+  // zombie that replaced the snapshot while this instance was idle is
+  // detected within one heartbeat instead of at the next persist, checkpoint
+  // or close. The lock already beats every 10s, so this rides that tick
+  // instead of starting a second timer. A missing lock cannot reach here: the
+  // stamp callback above throws without one.
+  vaultLock?.addHeartbeatCheck(() => conn.recheckFence());
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed
   // (a retry would duplicate a sale/payment). Exiting here means the client

@@ -71,6 +71,39 @@ describe("vault reclaim retry (#277)", () => {
     expect([...schedule]).toEqual([250, 500, 1_000, 2_000, 4_000, 8_000, 15_000]);
   });
 
+  it("start is idempotent: a second start does not double the attempt rate", () => {
+    const clock = fakeScheduler();
+    let attempts = 0;
+    const retry = new ReclaimRetry<Owner>({
+      attempt: () => {
+        attempts += 1;
+        return { ok: false, owner: undefined };
+      },
+      onAcquired: () => {},
+      backoffMs: [10, 20],
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    retry.start();
+    retry.start();
+    retry.start();
+
+    // one tick is on the schedule, not three: three starts, three timers, and
+    // the folder would be reclaimed three times per backoff window
+    expect(clock.delays).toEqual([10]);
+    expect(clock.pending()).toBe(1);
+
+    // and one tick means one attempt
+    clock.fireNext();
+    expect(attempts).toBe(1);
+
+    // a start after a tick is guarded the same way
+    retry.start();
+    expect(clock.delays).toEqual([10, 20]);
+    expect(clock.pending()).toBe(1);
+  });
+
   it("keeps the loop alive when an attempt breaks its contract and throws", () => {
     const clock = fakeScheduler();
     const seen: (Owner | undefined)[] = [];

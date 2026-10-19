@@ -56,8 +56,10 @@ path is the strict one.
 `malformed` is what a reclaim caught between its create and its write looks
 like: bytes that were read fine and are not a lock record. `readHeldLock`
 retries it exactly like an errno — `MALFORMED` rides in the loss reason with the
-other codes — and never stops a holder on it, because a healthy holder can
-catch a sibling's zero-byte record through no fault of its own. That is the
+other codes — and does not stop the holder on the first one, because a healthy
+holder can catch a sibling's zero-byte record through no fault of its own. It
+does fail closed (`lost`) when the retry budget runs out, since a write inside
+`writeGuard` must not stall forever. That is the
 dominant behaviour of `assertHeld` and `heartbeat` on this tree, and it is
 #288's, not this lane's.
 

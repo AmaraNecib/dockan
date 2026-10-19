@@ -43,8 +43,10 @@ import { errnoCode, probePidLiveness, type PidLiveness, type PidLivenessProbe } 
  * holding `vault.lock`) is `unreadable`, not missing, so the holder retries it a
  * bounded number of times and only then fails closed. A record caught mid-write
  * is a different class, `malformed` (#288): the bytes were read fine and are not
- * a lock record yet. The held-lock path retries both and never stops a holder on
- * either, but the acquisition path acts on the difference — a `malformed` record
+ * a lock record yet. The held-lock path does not stop a holder on either read
+ * immediately: it retries both, and fails closed (`lost`) only when the retry
+ * budget runs out, because a write must not stall forever. The acquisition path
+ * acts on the difference — a `malformed` record
  * is stale and reclaimable, while an `unreadable` one withholds the reclaim
  * entirely, because a read that failed cannot prove a live holder is gone
  * (#287). `ENOENT` and a different owner's token still lose the lock at

@@ -423,11 +423,20 @@ describe("snapshot fence (#280)", () => {
     await conn.persistIfDirty();
     await conn.close();
 
-    // the first byte of the stamp (magic + version + length byte)
-    const bytes = fs.readFileSync(snapshotPath());
-    const stampByte = VAULT_SNAPSHOT_MAGIC.length + 2;
-    bytes[stampByte] = bytes[stampByte] === 0x61 ? 0x62 : 0x61;
-    fs.writeFileSync(snapshotPath(), bytes);
+    // The whole stamp field is swapped for another holder's, and the sealed
+    // body is left byte-identical. That is the only shape in which the AAD can
+    // be the explanation: a single flipped byte inside the sealed body fails
+    // the GCM tag on its own, so a test that flips one byte proves only that
+    // "a corrupted byte is refused", which was true before the fence existed.
+    const before = fs.readFileSync(snapshotPath());
+    const fence = readSnapshotFence(before);
+    expect(fence?.version).toBe(VAULT_SNAPSHOT_VERSION);
+    expect(fence?.stamp).toBe(tokenA);
+    const bodyOffset = fence?.bodyOffset ?? 0;
+    const after = Buffer.from(before);
+    Buffer.from(tokenB, "utf8").copy(after, VAULT_SNAPSHOT_MAGIC.length + 2);
+    expect(after.subarray(bodyOffset)).toEqual(before.subarray(bodyOffset));
+    fs.writeFileSync(snapshotPath(), after);
 
     expect(() => createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() })).toThrow(VaultCorruptionError);
   });

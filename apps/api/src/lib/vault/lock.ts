@@ -131,6 +131,12 @@ export type VaultLockOptions = {
   /** the lock-file read; injectable so tests can force a read error (#281) */
   readLockFile?: VaultLockFileReader;
   /**
+   * @internal The lock-file unlink; defaults to `fs.unlinkSync`. Injectable so a
+   * test can force the non-ENOENT failure the owed-release chain logs
+   * (code-review P3-2), the same way `readLockFile` forces a read error.
+   */
+  unlinkLockFile?: (lockPath: string) => void;
+  /**
    * @internal The clock and sleep the held-lock retry loop runs on. Both
    * default to the real `Date.now` and `Bun.sleepSync`, so production is
    * unchanged; tests inject a controlled pair so the loop's attempt ceiling and
@@ -510,7 +516,7 @@ export class VaultLock {
     }
     if (read.kind === "owner" && read.owner.token !== this.owner.token) return;
     try {
-      fs.unlinkSync(this.path);
+      this.unlinkRecord();
     } catch {
       /* already gone */
     }
@@ -523,8 +529,8 @@ export class VaultLock {
    * a live pid whatever the heartbeat age, so this process's abandoned record
    * would refuse every later instance until a human stops it. The token is
    * compared on every attempt: the file is removed only once a successful read
-   * shows it is still ours, a gone file is left to the unlink's own ENOENT, and
-   * another owner's record ends the retry untouched. Armed only when `onLost`
+   * shows it is still ours, a gone file stops the chain, and another owner's
+   * record ends the retry untouched. Armed only when `onLost`
    * is set, which is exactly the module's "process continues" case. Unref'd, so
    * it never keeps a closing process alive.
    */
@@ -537,24 +543,58 @@ export class VaultLock {
       1,
       retryBudget(this.options.transientReadRetryDelayMs, DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS, MAX_RETRY_DELAY_MS),
     );
+    let attemptCount = 0;
     const attempt = (): void => {
       this.owedReleaseTimer = undefined;
+      attemptCount += 1;
       const read = readOwnerOnce(this.path, lockFileReader(this.options));
-      if (read.kind === "unreadable") {
-        delay = Math.min(MAX_OWED_RELEASE_DELAY_MS, Math.max(delay + 1, delay * 2));
-        this.owedReleaseTimer = setTimeout(attempt, delay);
-        this.owedReleaseTimer.unref?.();
+      if (read.kind === "owner") {
+        // a readable record is removed only when it is still ours; another
+        // owner's token is not ours to touch (#281, Greptile P1)
+        if (read.owner.token !== this.owner.token) return;
+        // read -> unlink is not atomic: a foreign reclaim could rename this
+        // record aside and create its own between the two calls, and the
+        // unlink would then drop the new owner's record. This is the same
+        // window `release()` has always had, and the module's own actors
+        // cannot reach it: a same-host reclaim is refused while our live pid
+        // answers `alive`, and a foreign-host reclaim verifies the moved
+        // record's token before it deletes. A manual replacement is outside
+        // the threat model, so this comment is the fix, not a seam
+        // (code-review P3-1).
+        try {
+          this.unlinkRecord();
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          // only a non-ENOENT failure is news: ENOENT means someone else
+          // already removed the record, which is the outcome this retry wants.
+          // The message names the record and the attempt so the state this
+          // chain exists to surface — a record that should be gone and is not
+          // — is never silent (code-review P3-2).
+          if (errnoCode(failure) !== "ENOENT") {
+            this.options.logger?.warn(
+              "VAULT_LOCK_LOST",
+              `the owed release at ${this.path} could not remove this process's record on attempt ${attemptCount}: ${oneLine(failure.message)}`,
+            );
+          }
+        }
         return;
       }
-      if (read.kind === "owner" && read.owner.token !== this.owner.token) return;
-      try {
-        fs.unlinkSync(this.path);
-      } catch {
-        /* already gone */
-      }
+      // gone is an ending: there is nothing left to remove, so stop rather
+      // than re-arm (code-review P3-3)
+      if (read.kind === "gone") return;
+      // unreadable: the record may still be ours, retry on a capped backoff
+      delay = Math.min(MAX_OWED_RELEASE_DELAY_MS, Math.max(delay + 1, delay * 2));
+      this.owedReleaseTimer = setTimeout(attempt, delay);
+      this.owedReleaseTimer.unref?.();
     };
     this.owedReleaseTimer = setTimeout(attempt, delay);
     this.owedReleaseTimer.unref?.();
+  }
+
+  /** The lock-file unlink, through the injectable `unlinkLockFile` seam. */
+  private unlinkRecord(): void {
+    const unlink = this.options.unlinkLockFile ?? ((lockPath: string): void => fs.unlinkSync(lockPath));
+    unlink(this.path);
   }
 }
 

@@ -1110,6 +1110,67 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(owner.token).toBe("the-new-owner");
   });
 
+  it("logs the record and attempt when the owed release's unlink fails (code-review P3-2)", async () => {
+    // A non-ENOENT unlink failure is the exact state this chain exists to
+    // surface: a record that should be gone and is not. The read seam hands
+    // back our own record after the budget, and the unlink seam fails with
+    // EACCES, so the only question is whether the failure reaches the log.
+    const failingReads = fastRead.transientReadRetries + 2;
+    const reads = countingReader((lockPath, call) => {
+      if (call <= failingReads) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      unlinkLockFile: () => {
+        throw errno("EACCES", "EACCES: permission denied, unlink 'vault.lock'");
+      },
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(lost).toHaveLength(1);
+    await waitUntil(() => reads.events.some((line) => line.includes("could not remove")));
+    const logged = reads.events.filter((line) => line.includes("could not remove"));
+    expect(logged).toHaveLength(1);
+    // the record and the attempt both ride in the message
+    expect(logged[0]).toContain("VAULT_LOCK_LOST");
+    expect(logged[0]).toContain(lockPath());
+    expect(logged[0]).toContain("attempt 1");
+    expect(logged[0]).toContain("EACCES");
+  });
+
+  it("stops the owed-release chain when the record has gone (code-review P3-3)", async () => {
+    // The budget and the release read fail, arming the chain. The record is
+    // removed before the armed chain gets an event-loop turn, so its recovered
+    // read comes back ENOENT ("gone"). Gone is an ending: the chain must stop
+    // rather than re-arm on a record that no longer exists.
+    const failingReads = fastRead.transientReadRetries + 2;
+    const reads = countingReader((lockPath, call) => {
+      if (call <= failingReads) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(lost).toHaveLength(1);
+    // "behind the chain's back": removed before the armed setTimeout runs
+    fs.rmSync(lockPath(), { force: true });
+    await waitUntil(() => reads.state.reads > failingReads);
+    const readsAtResolution = reads.state.reads;
+    // nothing left to remove: no re-arm, so the reader is not called again
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(reads.state.reads).toBe(readsAtResolution);
+    expect(fs.existsSync(lockPath())).toBe(false);
+  });
+
   it("keeps the one-second budget when the wall clock jumps mid-retry (Greptile P2)", () => {
     // The budget measures ELAPSED time, so this is not an elapsed-time test:
     // the real default clock and sleep drive the loop and only `Date.now` is

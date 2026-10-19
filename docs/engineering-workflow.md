@@ -84,11 +84,12 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 - **Reviewers are independent.** `debate`, `test-audit` and `code-review` run as
   separate sub-agents. A child that reports "I ran the gates in-lane" has not run
   them — re-run the lenses where the tool exists, and record the disclosure.
-- **One model runs the lanes and the lenses (owner decision, 2026-10-19).** Author lanes and
-  `debate`, `test-audit` and `code-review` all run `opencode-go/deepseek-v4.1-flash`. A model that
-  reviews its own diff shares the blind spots the lens exists to catch, so a lens report states
-  plainly that the reviewer and the author were the same model. An earlier instruction named a
-  different model per role; the owner replaced it, so do not restore the split unasked.
+- **The lenses run on a different model than the author (owner decision, 2026-10-19).** Author
+  lanes run `opencode-go/deepseek-v4.1-flash`; `debate`, `test-audit` and `code-review` run
+  `opencode-go/minimax-m3.1-flash-free`, with `zen-proxy/minimax-m3.1-flash-free` as the same model
+  behind a second route. A model that reviews its own diff shares the blind spots the lens exists to
+  catch, so the reviewer is never the author. For one stretch on 2026-10-19 the owner required a
+  single model for both roles; that is no longer the rule, and these two are the pair.
 - **All three lenses run at Standard and above.** `debate` is no longer reserved
   for High-assurance (owner decision, 2026-10-18); the tier decides how much
   scrutiny a failure mode earns, not whether the debate happens.

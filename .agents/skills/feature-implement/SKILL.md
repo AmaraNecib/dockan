@@ -119,11 +119,9 @@ Load relevant skills from the workflow's quality check table:
 Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
 
-Run this lens, `test-audit` and `code-review` on `opencode-go/deepseek-v4.1-flash`, the same
-model that wrote the diff (owner decision, 2026-10-19: one model for every sub-agent, so the
-reviewer-is-never-the-author separation is not available). The reviewer is never the author, so
-a lens report states plainly that its round had no model separation. A lane that reports "I ran
-the debate" has not run
+Run this lens, `test-audit` and `code-review` on `opencode-go/minimax-m3.1-flash-free` —
+never on the model that wrote the diff (`opencode-go/deepseek-v4.1-flash`). The
+reviewer is never the author. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.
 
 ### 7. Test audit — Standard and High-assurance

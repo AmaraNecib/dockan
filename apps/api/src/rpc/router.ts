@@ -690,12 +690,21 @@ export function createRpcRouter(deps: RpcDeps) {
             unitCost: expressUnitCost(input.delta, input.unitCost, item.costPrice),
             reason: input.reason ?? null,
             occurredAt: input.occurredAt ?? null,
+            // an adjustment the owner typed has no origin document; the rows
+            // the SERVER posted (a purchase correction, a supplier return, a
+            // scrap) carry theirs, and those are never a copy of this request
+            ref: null,
           };
           // EVERY movement recorded inside the window, not only the newest
           // one: a sale or a correction posted between the two copies would
           // otherwise push the row the guard is looking for out of sight, and
           // the stock would move twice for one intention.
-          const recent = await tx.listStockMovementsSince(item.id, repeatCutoff());
+          // the window is measured against the SERVER's clock, which is the
+          // seam a test drives (`deps.now`): the guard has to know when the
+          // first copy landed, and the wall clock is only one way to know
+          // that. Without it, widening the window in one place leaves the
+          // behaviour unpinned everywhere else.
+          const recent = await tx.listStockMovementsSince(item.id, repeatCutoff(deps.now?.() ?? new Date()));
           if (recent.some((recorded) => matchesAdjustment(incoming, recorded))) {
             throw new ORPCError("CONFLICT", { message: "STOCK_ADJUSTMENT_DUPLICATE" });
           }

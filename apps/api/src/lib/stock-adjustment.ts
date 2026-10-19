@@ -16,8 +16,8 @@ import { localDateTime } from "./logger";
  * recently.
  *
  * WHAT THE IDENTITY IS. The fields that make two adjustments the same action:
- * the item, the kind, the signed quantity, the unit cost and the reason. Two
- * of those join only when the CALLER expressed them:
+ * the item, the kind, the signed quantity, the unit cost, the reason and the
+ * origin document. Two of those join only when the CALLER expressed them:
  *
  *   - the business date: a server-stamped date cannot tell a retry apart,
  *     because two identical requests would differ on it and never match (the
@@ -61,6 +61,18 @@ export interface StockAdjustment {
    */
   readonly unitCost: number | undefined;
   readonly reason: string | null;
+  /**
+   * What the request is ABOUT: null for an adjustment the owner typed, and
+   * the origin document's id for a movement the SERVER posted — a purchase
+   * correction carries its invoice, a supplier return its return, a scrap the
+   * document it scrapped.
+   *
+   * It is part of the identity because a server-posted row is never a copy of
+   * the owner's request: the two are different actions that happen to share a
+   * quantity and a reason. Without it, the guard could refuse the owner's
+   * own adjustment as a duplicate of a system row.
+   */
+  readonly ref: string | null;
   /**
    * The business date the CALLER supplied, or null when the server stamps it.
    *
@@ -123,6 +135,10 @@ export function expressUnitCost(
 export function matchesAdjustment(request: StockAdjustment, recorded: StockMovement): boolean {
   if (request.itemId !== recorded.itemId) return false;
   if (request.kind !== recorded.kind) return false;
+  // the origin: a row the server posted carries the document it came from, so
+  // it is a different action from anything the owner typed — and the owner's
+  // request never refuses against it
+  if (request.ref !== recorded.ref) return false;
   if (request.delta !== recorded.delta) return false;
   if (request.unitCost !== undefined && request.unitCost !== recorded.unitCost) return false;
   if (request.reason !== recorded.reason) return false;

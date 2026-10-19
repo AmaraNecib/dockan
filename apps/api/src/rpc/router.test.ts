@@ -21,6 +21,7 @@ import { pickOpeningSupplier } from "./opening-balance-resolver";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
 import { weightedAverageCost } from "../lib/stock-ledger";
+import { repeatCutoff } from "../lib/stock-adjustment";
 
 // Every test drives the real SQLite database through the wire, so the whole
 // file takes the shared heavy budget.
@@ -113,13 +114,14 @@ afterAll(() => {
 });
 
 /** Build a client over an alternate StorePort with the shared config, auth and
- * owner cookie — for tests that must observe or fail one store call. */
-const clientForStore = (storeFor: StorePort): DokanClient => {
+ * owner cookie — for tests that must observe or fail one store call, or that
+ * must drive the server's clock. */
+const clientForStore = (storeFor: StorePort, routerDeps: { now?: () => Date } = {}): DokanClient => {
   const app = createApp({
     config,
     logger,
     auth,
-    rpcRouter: createRpcRouter({ db: conn.db, config, logger, store: storeFor, auth }),
+    rpcRouter: createRpcRouter({ db: conn.db, config, logger, store: storeFor, auth, ...routerDeps }),
   });
   const link = new RPCLink({
     url: () => `http://127.0.0.1:${config.port}/api/rpc`,
@@ -131,6 +133,21 @@ const clientForStore = (storeFor: StorePort): DokanClient => {
     },
   });
   return createORPCClient(link);
+};
+
+/**
+ * The instant whose Algeria-local stamp is exactly this one.
+ *
+ * Algeria is a fixed UTC+01:00 zone with no DST (see `lib/logger.ts`), so a
+ * wall stamp maps back by subtracting the offset. The caller proves the
+ * mapping with the cutoff it produces, so a zone change fails the premise
+ * instead of silently moving the second.
+ */
+const instantOfAlgeriaStamp = (stamp: string): Date => {
+  const [date = "", time = ""] = stamp.split("T");
+  const [year = 0, month = 1, day = 1] = date.split("-").map(Number);
+  const [hour = 0, minute = 0, second = 0] = time.split(":").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hour - 1, minute, second));
 };
 
 describe("health", () => {
@@ -649,6 +666,97 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.movements).toHaveLength(1);
     expect(history.stockOnHand).toBe(5);
+  });
+
+  it("applies the repeat window to the injected clock, not to the wall clock", async () => {
+    // the window is the promise that an owner who means it twice can do it a
+    // moment later. It is applied by the ROUTER, so the router has to ask
+    // the clock the question — `deps.now` is that seam. The store stamps
+    // `created_at` from the wall clock, so the fake clock starts at the real
+    // one and then advances.
+    const item = await makeItem("تسوية-نافذة");
+    const clock = { at: new Date() };
+    const clocked = clientForStore(store, { now: () => clock.at });
+
+    // window A records the adjustment
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // eleven seconds later — outside the ten-second window
+    clock.at = new Date(clock.at.getTime() + 11_000);
+    // window B posts the SAME action
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+
+    // two movements: the owner meant it twice, and the ledger says so
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(10);
+  });
+
+  it("does not refuse the owner's adjustment because a system row looks like it", async () => {
+    // a purchase correction posts its own MANUAL_ADJUSTMENT row, carrying the
+    // invoice it came from. That row is the SERVER's action, not a copy of
+    // anything the owner typed: it must not refuse the owner's own
+    // adjustment as a duplicate
+    const item = await makeItem("تسوية-تصحيح");
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    await client.purchasesCorrectLine({ lineId: invoice.lines[0]!.id, quantity: 16, unitCost: 200 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    const correction = history.movements.find((m) => m.kind === "MANUAL_ADJUSTMENT" && m.ref === invoice.id);
+    expect(correction).toBeDefined();
+
+    // the owner posts the SAME quantity with the SAME reason: a different
+    // action, not a copy of the correction
+    await client.stockAddManual({ itemId: item.id, delta: correction!.delta, reason: correction!.reason ?? undefined });
+
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements).toHaveLength(history.movements.length + 1);
+  });
+
+  it("pins the window's boundary second on the wire", async () => {
+    // `created_at` is a one-second stamp and the store's comparison is
+    // STRICT (`gt`), so a row recorded IN the cutoff second is already
+    // outside the window: the effective window is (9s, 10s], not 10s. The
+    // owner feels that edge — a repeat a hair late is accepted — so it is
+    // pinned where the owner feels it, not only in the store's own read.
+    const item = await makeItem("تسوية-حد");
+    const clock = { at: new Date() };
+    const clocked = clientForStore(store, { now: () => clock.at });
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    const recordedAt = history.movements[0]!.createdAt;
+
+    // the instant whose Algeria-local stamp is the row's own stamp
+    const recorded = instantOfAlgeriaStamp(recordedAt);
+    // the premise: at that instant the router's cutoff IS the row's stamp,
+    // to the second
+    expect(repeatCutoff(new Date(recorded.getTime() + 10_000))).toBe(recordedAt);
+
+    // the cutoff lands ON the row, and the comparison is strict: the row is
+    // outside the window, so the same action is a second action
+    clock.at = new Date(recorded.getTime() + 10_000);
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements).toHaveLength(2);
+    expect(after.stockOnHand).toBe(10);
+
+    // one second earlier the cutoff is one second BEFORE the row: the row is
+    // inside the window, so the same action is a repeat and is refused
+    clock.at = new Date(recorded.getTime() + 9_000);
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+    expect(refused!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
+    const final = await client.itemsHistory({ itemId: item.id });
+    expect(final.movements).toHaveLength(2);
+    expect(final.stockOnHand).toBe(10);
   });
 });
 

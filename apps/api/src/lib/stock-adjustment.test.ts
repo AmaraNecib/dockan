@@ -25,6 +25,8 @@ const adjustment = (over: Partial<StockAdjustment> = {}): StockAdjustment => ({
   unitCost: 100,
   reason: "delivery",
   occurredAt: null,
+  // the owner typed it: an adjustment of their own has no origin document
+  ref: null,
   ...over,
 });
 
@@ -82,6 +84,16 @@ describe("stock adjustment identity (#295)", () => {
     expect(expressUnitCost(-5, 100, 100)).toBeUndefined();
     // a cost of the owner's own is part of the identity
     expect(expressUnitCost(5, 300, 100)).toBe(300);
+  });
+
+  it("does not mistake a row the SERVER posted for the owner's own repeat", () => {
+    // a purchase correction, a supplier return and a scrap are movements the
+    // server posted: they carry the document they came from. None of them is
+    // a copy of anything the owner typed, so the guard must not refuse the
+    // owner's adjustment as a duplicate of one of them.
+    expect(matchesAdjustment(adjustment(), recorded({ ref: "invoice-1" }))).toBe(false);
+    // a row the owner posted carries no document, and that IS the same action
+    expect(matchesAdjustment(adjustment(), recorded({ ref: null }))).toBe(true);
   });
 
   it("keeps a caller-supplied business date and drops a server-stamped one", () => {

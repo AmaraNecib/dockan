@@ -34,6 +34,8 @@ import {
   main,
   parseJunit,
   parseWaivers,
+  renderReport,
+  runGate,
   unregisteredVerdicts,
   unusedWaiverVerdicts,
   verdictPasses,
@@ -1161,6 +1163,68 @@ describe("red-on-parent round 5", () => {
         configurable: true,
         writable: true,
       });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 6 — the two findings the deepseek council read found by reproducing
+// them, neither of which any earlier lens had named.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 6", () => {
+  test("a sibling file the substring filter also ran is not judged as this one", () => {
+    // `bun test cart.test.ts` is a substring filter over the discovered files, so
+    // it also runs `cart.test.tsx`. Judging that file's testcases here fails a
+    // correct change with "GREEN ON PARENT: <a test this file does not contain>".
+    const xml = [
+      "<testsuites>",
+      '<testsuite name="packages/core/src/cart.test.tsx" file="packages/core/src/cart.test.tsx" tests="1">',
+      '<testcase name="sibling component renders" classname="" />',
+      "</testsuite>",
+      '<testsuite name="packages/core/src/cart.test.ts" file="packages/core/src/cart.test.ts" tests="1">',
+      '<testcase name="cart totals two" classname="cart"><failure type="AssertionError" message="x">AssertionError: x</failure></testcase>',
+      "</testsuite>",
+      "</testsuites>",
+    ].join("\n");
+    const judged = parseJunit(xml, "packages/core/src/cart.test.ts");
+    expect(judged.map((result) => result.name)).toEqual(["cart totals two"]);
+    // Unfiltered is the defect: the sibling's test is read as this file's.
+    expect(parseJunit(xml)).toHaveLength(2);
+    // bun writes Windows paths with backslashes and reports a path relative to
+    // the cwd it ran in, so both forms have to name the same file.
+    const backslash = String.fromCharCode(92);
+    const windows = xml.split("packages/core/").join(`packages${backslash}core${backslash}`);
+    expect(parseJunit(windows, "packages/core/src/cart.test.ts")).toHaveLength(1);
+    expect(parseJunit(xml, "apps/api/packages/core/src/cart.test.ts")).toHaveLength(1);
+  });
+
+  test("--base that already contains head reports a problem, not a green run", () => {
+    // `merge-base(base, head)` is `head` itself when the base contains the change,
+    // so the diff is empty and the gate printed PASS having judged nothing.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        {
+          path: "packages/core/src/x.test.ts",
+          text: `import { expect, test } from "bun:test";
+test("n is two", () => {
+  expect(2).toBe(1);
+});
+`,
+        },
+      ],
+    );
+    try {
+      const run = runGate({ repo: fixture.repo, base: "HEAD", head: "HEAD", fresh: false });
+      expect(run.files).toEqual([]);
+      expect(run.problems.join(" ")).toContain("there is no change to gate");
+      const report = renderReport(run, run.problems);
+      expect(report).toContain("PROBLEMS");
+      expect(report).toContain("there is no change to gate");
+      expect(report).not.toContain("red-on-parent: PASS");
+    } finally {
+      fixture.cleanup();
     }
   });
 });

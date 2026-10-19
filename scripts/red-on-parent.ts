@@ -197,14 +197,52 @@ function numericAttribute(source: string, name: string): number | null {
 }
 
 /**
+ * The `file` attribute of the suite enclosing the testcase starting at `index`.
+ *
+ * bun's junit puts `file` on the outermost suite and nests one suite per
+ * `describe` without repeating it, so the nearest opening tag that carries one
+ * is the file this testcase came from.
+ */
+function enclosingSuiteFile(xml: string, index: number): string | null {
+  const openings = [...xml.slice(0, index).matchAll(/<testsuite\b([^>]*)>/gu)];
+  for (let position = openings.length - 1; position >= 0; position -= 1) {
+    const file = attribute(openings[position]?.[1] ?? "", "file");
+    if (file !== null) return file;
+  }
+  return null;
+}
+
+/** Whether a junit `file` attribute names the test file the gate is judging. */
+function sameTestFile(reported: string, gated: string): boolean {
+  const normalise = (path: string): string => path.split("\\").join("/");
+  const reportedPath = normalise(reported);
+  const gatedPath = normalise(gated);
+  // bun reports the path relative to the cwd it ran in, so a gate that ran from a
+  // workspace subdirectory sees `src/x.test.ts` for `apps/api/src/x.test.ts`.
+  return (
+    reportedPath === gatedPath ||
+    gatedPath.endsWith(`/${reportedPath}`) ||
+    reportedPath.endsWith(`/${gatedPath}`)
+  );
+}
+
+/**
  * Read bun's junit report. The report nests `<testsuite>` per `describe`, so
  * testcases are matched anywhere in the document; `classname` carries the
  * chain, reversed and joined with " > ".
  */
-export function parseJunit(xml: string): TestResult[] {
+export function parseJunit(xml: string, onlyFile?: string): TestResult[] {
   const results: TestResult[] = [];
   const testcase = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/gu;
   for (const match of xml.matchAll(testcase)) {
+    // bun's positional argument is a *substring filter* over the discovered test
+    // files, not a selector: `cart.test.ts` also runs `cart.test.tsx`. Those
+    // testcases belong to a file this pass is not judging, and judging them
+    // fails a correct change with "GREEN ON PARENT: <another file's test>".
+    if (onlyFile !== undefined) {
+      const reported = enclosingSuiteFile(xml, match.index ?? 0);
+      if (reported !== null && !sameTestFile(reported, onlyFile)) continue;
+    }
     const attributes = match[1] ?? "";
     const body = match[2] ?? "";
     const name = attribute(attributes, "name");
@@ -441,7 +479,7 @@ export function classifyFileRun(
     return { verdicts, usedWaiverLines: used };
   }
 
-  const results = parseJunit(run.junit);
+  const results = parseJunit(run.junit, run.file);
   // A waiver is used when it matches a test, not when it is the one this run
   // happened to pick. `firstWaiver` returns the first match, so a broad pattern
   // ("case") hid a later narrow one ("case one") and the narrow one was then
@@ -942,7 +980,7 @@ function changeSideResults(
     );
     return [];
   }
-  return parseJunit(readFileSync(junitPath, "utf8"));
+  return parseJunit(readFileSync(junitPath, "utf8"), file);
 }
 
 /** How long a run waits for the lock, given what can legitimately be inside it. */
@@ -955,8 +993,19 @@ export function lockWaitBudget(fileCount: number): number {
 export function runGate(options: GateOptions): GateRun {
   const { repo, head, fresh } = options;
   const baseSha = gitText(repo, ["merge-base", options.base, head]).trim();
-  const files = addedTestFiles(repo, baseSha, head);
   const uncommitted = uncommittedTestFiles(repo);
+  const files = addedTestFiles(repo, baseSha, head);
+  // `merge-base(base, head)` is `head` itself when the base already contains the
+  // change, so the diff is empty and the gate would print PASS having judged
+  // nothing — indistinguishable from "this change adds no test". `--base HEAD`
+  // after a local merge, or a gate wired into the target branch's own push job,
+  // both land here and both look green forever. The one exception is the case the
+  // uncommitted WARNING already explains: HEAD is the base because the change's
+  // test file was never committed, which the gate reports by name instead.
+  const headSha = gitText(repo, ["rev-parse", "--verify", `${head}^{commit}`]).trim();
+  const baseContainsHead =
+    git(repo, ["merge-base", "--is-ancestor", headSha, options.base]).ok &&
+    !(headSha === baseSha && uncommitted.length > 0);
   if (files.length === 0) {
     return {
       baseSha,
@@ -966,7 +1015,11 @@ export function runGate(options: GateOptions): GateRun {
       files,
       verdicts: [],
       stdoutByFile: new Map(),
-      problems: [],
+      problems: baseContainsHead
+        ? [
+            `--base ${options.base} already contains ${head}: there is no change to gate, so this run would pass having judged nothing. Point --base at the branch this change targets.`,
+          ]
+        : [],
       uncommitted,
     };
   }
@@ -1047,7 +1100,7 @@ function gateBaseWorktree(input: {
             : "",
       };
       stdoutByFile.set(file, fileRun.stdout);
-      const parentResults = junit === null ? [] : parseJunit(junit);
+      const parentResults = junit === null ? [] : parseJunit(junit, file);
       // Only a file the parent could load can register *fewer* tests there than
       // on the change. A file that did not load is already one whole-file
       // failure, and comparing its empty parent list against the change would
@@ -1167,6 +1220,14 @@ export function renderReport(run: GateRun, problems: string[]): string {
   }
   if (files === 0) {
     lines.push("no added test files: nothing to gate");
+    // A run that judged nothing still owes its problems: an empty diff is the
+    // shape a misconfigured `--base` produces, and swallowing the reason here is
+    // what turned that misconfiguration into a green result.
+    if (problems.length > 0) {
+      lines.push("");
+      lines.push("PROBLEMS (any entry here fails the run)");
+      for (const problem of problems) lines.push(`  ${problem}`);
+    }
     return `${lines.join("\n")}\n`;
   }
   if (run.installLog.length > 0) lines.push(`installed the parent's dependencies: ${run.installLog}`);

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
@@ -256,20 +256,13 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(fs.readFileSync(portFile, "utf8")).toBe(String(plaintextPort));
   });
 
-  // A process-level race cannot be pinned honestly: the backoff reaches 15s
-  // while shutdown exits after 3s, so a test that waits for the tick either
-  // flakes or proves nothing. Pin the ORDER instead, which is the whole fix.
-  it("shutdown stops the reclaim loop before closing the listener (greptile P2 on #298)", () => {
-    const source = fs.readFileSync(path.join(import.meta.dir, "..", "..", "main.ts"), "utf8");
-    const start = source.indexOf("function beginShutdown(): void {");
-    expect(start).toBeGreaterThan(-1);
-    const body = source.slice(start, source.indexOf('process.on("SIGINT"', start));
-    const stopped = body.indexOf("reclaim?.stop();");
-    const closed = body.indexOf("server?.close();");
-    expect(stopped).toBeGreaterThan(-1);
-    expect(closed).toBeGreaterThan(-1);
-    expect(stopped).toBeLessThan(closed);
-  });
+  // The shutdown ordering is no longer pinned by reading main.ts's source
+  // text: that test could be satisfied by a comment carrying the same
+  // strings, and it could not see the case that actually bites - an attempt
+  // that was already in flight when the shutdown began. The behaviour is
+  // pinned at the seam instead (reclaim-retry.test.ts: "reports no
+  // acquisition when the loop is stopped while an attempt runs"), and the
+  // ordering in beginShutdown is defence in depth on top of it.
 
   itHeavy("a refused sidecar takes the folder by itself once the holder is killed (#277)", async () => {
     const secondPort = await freePort();

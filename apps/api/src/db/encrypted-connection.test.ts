@@ -562,7 +562,7 @@ describe("snapshot fence (#280)", () => {
     reopened.close();
   });
 
-  it("retries an unreadable fence once before calling the file another writer's", async () => {
+  it("absorbs a transient EBUSY inside one check: no warning, no rewrite", async () => {
     const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
     first.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
     first.markDirty();
@@ -570,34 +570,106 @@ describe("snapshot fence (#280)", () => {
     await first.close();
     const written = fs.readFileSync(snapshotPath());
 
-    // The snapshot path refuses the first two opens with EBUSY and then behaves.
-    // One durability check asks twice (that is the retry under test), so a
-    // healthy, correctly stamped snapshot must survive it untouched: a rewrite
-    // is visible, because the nonce is random.
+    // The snapshot path refuses to open for the first 10 ms and then behaves.
+    // The designed transient case: ONE refusal is absorbed inside the check,
+    // so the healthy, correctly stamped file survives untouched — a rewrite is
+    // visible, because the nonce is random — and nothing is warned about.
+    //
+    // The window is measured from the first attempt, not from the start of the
+    // test: the connection reads and decrypts the whole snapshot before it
+    // asks the fence anything, and that takes longer than the window.
     // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
     // it passes exactly (path, "r"); the narrowed signature names that one call
     // so the spy can delegate to the real open
     const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
-    let failures = 0;
+    let firstAttempt = 0;
+    let refusals = 0;
     // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
     // parameters are the (path, flags) overload production calls
     const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
-      if (String(file) === snapshotPath() && failures < 2) {
-        failures += 1;
-        throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      if (String(file) === snapshotPath()) {
+        if (firstAttempt === 0) firstAttempt = Date.now();
+        if (Date.now() - firstAttempt < 10) {
+          refusals += 1;
+          throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+        }
       }
       return realOpenSync(file, flags);
     }) as typeof fs.openSync);
+    const events: string[] = [];
     try {
-      const again = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), writeStamp: () => tokenA });
+      const again = createEncryptedConnection({
+        vaultId,
+        masterKey,
+        snapshotPath: snapshotPath(),
+        writeStamp: () => tokenA,
+        logger: { warn: (event) => events.push(event) },
+      });
       await again.persistIfDirty();
       expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(true);
       await again.close();
     } finally {
       spy.mockRestore();
     }
-    // both refusals were spent inside the one check, so the check asked twice
-    expect(failures).toBe(2);
+    // exactly one refusal, absorbed inside the check, and nothing warned
+    expect(refusals).toBe(1);
+    expect(events).toEqual([]);
+  });
+
+  it("asks the fence exactly twice before a check gives up", async () => {
+    const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    first.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    first.markDirty();
+    await first.persistIfDirty();
+    await first.close();
+    const written = fs.readFileSync(snapshotPath());
+
+    // The bound is part of the contract: one retry absorbs a transient EBUSY,
+    // and a decidable fence cannot change by asking again, so a check asks
+    // exactly twice. Two refusals, then the file behaves: the first check
+    // gives up (and says so), the next one gets a good answer. The first
+    // successful read is therefore the THIRD attempt — with a bound of one it
+    // would be the second, and with a bound of five it would be the sixth.
+    // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
+    // it passes exactly (path, "r"); the narrowed signature names that one call
+    // so the spy can delegate to the real open
+    const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
+    let attempts = 0;
+    let refusals = 0;
+    let firstSuccess = 0;
+    // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
+    // parameters are the (path, flags) overload production calls
+    const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
+      if (String(file) === snapshotPath()) {
+        attempts += 1;
+        if (attempts <= 2) {
+          refusals += 1;
+          throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+        }
+        if (firstSuccess === 0) firstSuccess = attempts;
+      }
+      return realOpenSync(file, flags);
+    }) as typeof fs.openSync);
+    const events: string[] = [];
+    try {
+      const again = createEncryptedConnection({
+        vaultId,
+        masterKey,
+        snapshotPath: snapshotPath(),
+        writeStamp: () => tokenA,
+        logger: { warn: (event) => events.push(event) },
+      });
+      await again.persistIfDirty();
+      expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(true);
+      await again.close();
+    } finally {
+      spy.mockRestore();
+    }
+    // the first check spent both of its attempts and gave up; the next one
+    // got a good answer, so the first successful read is the THIRD attempt
+    expect(refusals).toBe(2);
+    expect(firstSuccess).toBe(3);
+    expect(events).toEqual(["VAULT_SNAPSHOT_FENCE_UNREADABLE"]);
   });
 
   it("still writes, and says so, when the fence never reads", async () => {

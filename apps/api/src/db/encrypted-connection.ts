@@ -141,6 +141,26 @@ const WRITE_ATTEMPTS = 3;
 const WRITE_RETRY_DELAY_MS = 50;
 /** Ask twice: one retry absorbs a transient EBUSY. A decidable fence cannot change by asking again. */
 const FENCE_READ_ATTEMPTS = 2;
+/**
+ * The gap between two attempts at the same file. The write path already
+ * waits 50 ms between its attempts, because a rename that fails on a busy
+ * handle usually succeeds on the next try; the fence read asked twice with no
+ * gap at all, so two refusals microseconds apart both landed and the write
+ * was treated as "not durable" — three rewrites and a fatal error for a file
+ * that was perfectly healthy. Same spacing, same reason.
+ */
+const FENCE_READ_RETRY_DELAY_MS = 50;
+
+/**
+ * A synchronous pause. The fence read runs on the async persist path AND on
+ * the synchronous checkpoint path, so one implementation has to serve both,
+ * and `Atomics.wait` is the only sleep a sync function can do. It is used
+ * only between two attempts at opening a file that refused, so the event loop
+ * is held for that one window and for nothing else.
+ */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 /**
  * Build the envelope. With a holder stamp it is the fenced format (#280):
@@ -319,15 +339,21 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
 
   /**
    * True when the bytes on disk carry this holder's stamp (always true when
-   * unfenced). An unreadable prefix is asked twice before it is called foreign:
-   * one retry absorbs a transient EBUSY, and no retry is spent on a decidable
-   * answer, which cannot change by asking again.
+   * unfenced). An unreadable prefix is asked twice, with the same spacing the
+   * write path uses between its attempts, so one retry can absorb a transient
+   * EBUSY: no retry is spent on a decidable answer, which cannot change by
+   * asking again.
    */
   function diskFenceIsMine(): boolean {
     if (connectionStamp === undefined) return true;
     for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
       const fence = readDiskFence();
-      if (fence.outcome === "unreadable") continue;
+      if (fence.outcome === "unreadable") {
+        // the file may be busy for a moment; ask again after a pause, exactly
+        // as the write path does before it gives up on a rename
+        if (attempt < FENCE_READ_ATTEMPTS) sleepSync(FENCE_READ_RETRY_DELAY_MS);
+        continue;
+      }
       return fence.outcome === "fence" && fence.stamp === connectionStamp;
     }
     // Still unreadable: our own bytes cannot be shown to be ours, so the version

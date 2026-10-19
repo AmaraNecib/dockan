@@ -37,7 +37,7 @@ mean a focus refetch happened.
 never overwrites a movement, so two windows posting the same adjustment do
 not overwrite each other — they append twice, and the stock moves twice for
 one intention. `stockAddManual` now refuses the second post inside a
-30-second window with `ORPCError("CONFLICT", { message:
+10-second window with `ORPCError("CONFLICT", { message:
 "STOCK_ADJUSTMENT_DUPLICATE" })`; the first write stands.
 
 The guard compares the incoming request against every movement **recorded**
@@ -63,7 +63,7 @@ input schema is exactly the contracts change criterion 4 forbids.
 **API**
 
 - `apps/api/src/lib/stock-adjustment.ts` (new) — the identity of one stock
-  adjustment, the 30s window, the cutoff, and the comparison.
+  adjustment, the 10s window, the cutoff, and the comparison.
 - `apps/api/src/rpc/router.ts` — `stockAddManual` posts inside
   `withTransactionImmediate` (the guard reads and then writes, so the write
   lock comes first) and refuses a repeat with `CONFLICT` /
@@ -98,10 +98,12 @@ input schema is exactly the contracts change criterion 4 forbids.
   a caller-supplied one is; the cutoff lands on the window's edge in the
   server's own format.
 - `apps/api/src/store/stock-ledger-store.test.ts` — the window in sql.
-- `apps/api/src/rpc/router.test.ts` — 4 tests: two clients, one refusal,
+- `apps/api/src/rpc/router.test.ts` — 7 tests: two clients, one refusal,
   the first write survives; a different adjustment right after still records;
   an intervening movement does not hide the repeat; a no-cost repeat after
-  the average moved is still refused.
+  the average moved is still refused; a repeat carrying the re-derived cost
+  is refused; a repeat removal, a blank reason and two dated adjustments
+  each get their own identity; two posts at the same time leave one movement.
 - `apps/web/src/pages/items.test.tsx` — the list polls, the query carries the
   background flag, and the refusal is actionable.
 - `tests/e2e/client-freshness.spec.ts` — two windows, one sale, no reload.
@@ -147,9 +149,11 @@ input schema is exactly the contracts change criterion 4 forbids.
 - **The `refreshMs` prop on the two pages** is test surface area. The
   dashboard shipped it before this change; the alternative (a context or an
   env knob) is worse.
-- **A second identical adjustment inside 30s is refused.** The escape hatch
-  the predicate offers is the reason: a different reason is a different
-  action. The refusal says so.
+- **A second identical adjustment inside 10s is refused.** The window covers
+  the two threats and nothing more: a double-clicked save and a lost
+  response re-sent as the same action. A typed second batch takes a few
+  seconds too, so it is refused as well; the way past that is a moment later,
+  not a different reason typed into the ledger.
 - **The read-cost numbers are one measurement, not a promise** — 0.65 ms per
   `dashboardSummary` and 0.27 ms per `itemsList` (50 rows), sql only, on a
   shop of 20 items and 500 movements. There is no committed benchmark.

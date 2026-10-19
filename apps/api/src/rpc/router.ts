@@ -289,7 +289,6 @@ async function postStock(tx: StorePort, spec: StockMovementSpec) {
   return posted!;
 }
 
-
 /**
  * #256 — the customer's total outstanding debt, read through the same store
  * seam the debts screen groups by (id when the party is known, else the typed

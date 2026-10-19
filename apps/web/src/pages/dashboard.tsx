@@ -98,7 +98,7 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
     enabled: !hidden && !preferencesPending,
     // While it can render, the same cadence as the summary lets a step
     // completed in another window self-heal (disabled queries never fetch).
-    refetchInterval: refreshMs,
+    ...hotCounterRefresh(refreshMs),
   });
 
   // "Finished means gone": when the four real records are observed, ask the

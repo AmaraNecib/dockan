@@ -9,6 +9,7 @@ import { openConnection, type Connection } from "../db/connection";
 import { createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
 import { COST_CORRECTION_REASON, weightedAverageCost } from "../lib/stock-ledger";
+import { repeatCutoff } from "../lib/stock-adjustment";
 
 /**
  * Ticket 27 store-seam tests: stock_movements persistence, deterministic
@@ -120,6 +121,42 @@ describe("stock movements — persistence + ordering", () => {
     expect(inside.map((r) => r.delta)).toEqual([10, -2]);
     const outside = await store.listStockMovementsSince(item.id, "2099-01-01T00:00:00");
     expect(outside).toHaveLength(0);
+  });
+
+  it("reads the window by its real edge, and only the item's own rows", async () => {
+    // the window is a number, not a shape: a movement recorded now is inside
+    // it, and the same movement falls out of it one window later. Without
+    // this, widening REPEAT_WINDOW_MS to half an hour would leave every
+    // test in the branch green while the owner who means it twice is refused
+    // forever
+    const item = await makeItem("ledger-edge");
+    const other = await makeItem("ledger-edge-other");
+    const now = new Date();
+    await store.insertStockMovement({
+      itemId: item.id,
+      kind: "MANUAL_ADJUSTMENT",
+      delta: 5,
+      unitCost: 100,
+      reason: null,
+      ref: null,
+      occurredAt: "2026-10-19T10:00:00",
+    });
+    // another item's movement, in the same second
+    await store.insertStockMovement({
+      itemId: other.id,
+      kind: "MANUAL_ADJUSTMENT",
+      delta: 7,
+      unitCost: 100,
+      reason: null,
+      ref: null,
+      occurredAt: "2026-10-19T10:00:00",
+    });
+
+    const inside = await store.listStockMovementsSince(item.id, repeatCutoff(now));
+    expect(inside.map((r) => r.delta)).toEqual([5]);
+    // one window later the same row has fallen out
+    const later = await store.listStockMovementsSince(item.id, repeatCutoff(new Date(now.getTime() + 11_000)));
+    expect(later).toHaveLength(0);
   });
 
   it("counts movements per item only", async () => {

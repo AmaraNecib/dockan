@@ -28,14 +28,14 @@ SQLite file.
    change, no new procedure. The ledger never overwrites a movement, so two
    windows posting the same adjustment do not overwrite each other: they
    append twice, and the stock moves twice for one intention. The guard
-   refuses the second post inside a 30-second window and lets the first
+   refuses the second post inside a 10-second window and lets the first
    stand.
 
 ## What changes
 
 | Area | Change |
 |---|---|
-| `apps/api/src/lib/stock-adjustment.ts` (new) | The identity of one stock adjustment (item, kind, signed delta, the cost the request *expressed*, the reason) and the 30s window inside which a second copy of it is a repeat. Two fields join the identity only when the caller expressed them: a **server-stamped** `occurredAt` cannot tell a retry apart (two identical requests would differ on it — the trap #177 closed for supplier adjustments), and a cost the **server would have derived anyway** is not part of what the request said. The second one matters more than it looks: the web pre-fills the cost field with the item's current cost, and a focus refetch refreshes that pre-fill, so a retry after the average moved carries a different number that means exactly the same thing. A cost of the owner's own (different from the current one) IS part of the identity: "add five at 300" is not "add five". A caller-supplied date IS part of the identity too: two adjustments dated differently are two actions. |
+| `apps/api/src/lib/stock-adjustment.ts` (new) | The identity of one stock adjustment (item, kind, signed delta, the cost the request *expressed*, the reason) and the 10s window inside which a second copy of it is a repeat. Two fields join the identity only when the caller expressed them: a **server-stamped** `occurredAt` cannot tell a retry apart (two identical requests would differ on it — the trap #177 closed for supplier adjustments), and a cost the **server would have derived anyway** is not part of what the request said. The second one matters more than it looks: the web pre-fills the cost field with the item's current cost, and a focus refetch refreshes that pre-fill, so a retry after the average moved carries a different number that means exactly the same thing. A cost of the owner's own (different from the current one) IS part of the identity: "add five at 300" is not "add five". A caller-supplied date IS part of the identity too: two adjustments dated differently are two actions. |
 | `apps/api/src/rpc/router.ts` | `stockAddManual` now posts inside `withTransactionImmediate` and refuses a repeat with `ORPCError("CONFLICT", { message: "STOCK_ADJUSTMENT_DUPLICATE" })`. The write lock comes first: the guard reads and then writes, so a deferred transaction would let a second writer's read land on a stale snapshot. |
 | `apps/api/src/store/port.ts`, `drizzle-store.ts` | One new read, `listStockMovementsSince(itemId, recordedAfter)`: the movements **recorded** after a local stamp, in insertion order. The window is applied in sql, so the guard reads the handful of rows inside it rather than the whole ledger. The comparison against the recorded rows happens in the guard, not in the store — the identity is business policy, not a query. |
 | `apps/web/src/lib/freshness.ts` (new) | The bounded tick the hot counters ride: `HOT_COUNTER_REFETCH_MS = 5_000`, and `hotCounterRefresh(refreshMs)` — the tick plus `refetchIntervalInBackground`, because the unfocused window is the case the tick exists for. |
@@ -103,11 +103,13 @@ fail (exit 1).
 
 ## Risks
 
-- **A deliberate second adjustment inside 30s is refused.** The window
-  covers a double-clicked save and a re-sent request, not a typed second
-  batch. The refusal says what happened, and the reason box is the escape
-  hatch the predicate actually offers: a different reason is a different
-  action. An operator who means it twice submits again a moment later.
+- **A deliberate second adjustment inside 10s is refused.** The window
+  covers the two threats and nothing more: a double-clicked save (under a
+  second) and a lost response re-sent as the same action (the #115 rule,
+  which lands in the same second or the next). A typed second batch takes a
+  few seconds too, so it is refused as well — the way past that is a moment
+  later, not a different reason typed to get past the guard and into the
+  ledger.
 - **A no-cost repeat is refused against a movement that carried a cost.** An
   inflow that said no cost means "at the item's cost", so the cost is not
   part of the identity — and that makes "add five" match "add five at 300".

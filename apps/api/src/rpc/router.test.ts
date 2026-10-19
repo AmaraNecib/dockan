@@ -590,6 +590,43 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     expect(history.stockOnHand).toBe(10);
   });
 
+  it("refuses a repeat removal, and accepts two dated adjustments", async () => {
+    // the removal path is the one the web form easiest double-clicks (the
+    // cost field is hidden for removals)
+    const item = await makeItem("تسوية-سحب");
+    // stock to remove: the item starts empty
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "delivery" });
+    await client.stockAddManual({ itemId: item.id, delta: -5, reason: "count" });
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: -5, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+
+    // a blank reason is what the web sends, and it is an identity of its own
+    const blank = await makeItem("تسوية-بلا-سبب");
+    await client.stockAddManual({ itemId: blank.id, delta: 5, unitCost: 100 });
+    let refusedBlank: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: blank.id, delta: 5, unitCost: 100 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refusedBlank = err as { code?: string; message: string };
+    }
+    expect(refusedBlank).not.toBeNull();
+
+    // two adjustments dated differently are two actions
+    const dated = await makeItem("تسوية-مؤرخة");
+    await client.stockAddManual({ itemId: dated.id, delta: 5, unitCost: 100, occurredAt: "2999-01-01T00:00:00" });
+    await secondClient.stockAddManual({ itemId: dated.id, delta: 5, unitCost: 100, occurredAt: "2999-01-02T00:00:00" });
+    const datedHistory = await client.itemsHistory({ itemId: dated.id });
+    expect(datedHistory.movements).toHaveLength(2);
+  });
+
   it("refuses one of two posts that arrive at the same time", async () => {
     // the v1 multi-client shape: two windows save at once. The store
     // serializes the two calls, so the first write stands and the second is

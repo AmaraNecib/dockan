@@ -97,11 +97,11 @@ describe("stock adjustment identity (#295)", () => {
 
 describe("the repeat window (#295)", () => {
   it("keeps the window a bounded, documented number of milliseconds", () => {
-    expect(REPEAT_WINDOW_MS).toBe(30_000);
+    expect(REPEAT_WINDOW_MS).toBe(10_000);
   });
 
   it("puts the cutoff at the window's edge, in the format the store records", () => {
     // the server's local stamp: "YYYY-MM-DDTHH:mm:ss", one zone, fixed width
-    expect(repeatCutoff(new Date("2026-10-19T10:00:30.000Z"))).toBe("2026-10-19T11:00:00");
+    expect(repeatCutoff(new Date("2026-10-19T10:00:30.000Z"))).toBe("2026-10-19T11:00:20");
   });
 });

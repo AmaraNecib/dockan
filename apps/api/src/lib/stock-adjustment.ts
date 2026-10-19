@@ -33,16 +33,19 @@ import { localDateTime } from "./logger";
 /**
  * How long after a movement the same action is still "the same action".
  *
- * A retry lands in seconds (the API is loopback; a lost connection fails
- * fast) and a double-clicked save lands in under a second. Thirty seconds
- * covers both with room to spare, while a deliberate second adjustment — the
- * owner carrying in two batches of the same item — is typed, not fired, and
- * lands outside the window. The refusal says what happened, so an operator
- * who means it twice submits again a moment later, or changes the reason: a
- * different reason is a different action, and the reason box is the escape
- * hatch the predicate actually offers.
+ * The window covers the two threats and nothing more: a double-clicked save
+ * (under a second) and a lost response re-sent as the same action (the
+ * #115 rule — the API is loopback, so a lost connection fails fast and the
+ * retry lands in the same second or the next).
+ *
+ * It is deliberately short. A typed second adjustment takes a few seconds,
+ * not thirty, so a wide window would refuse a deliberate second batch of the
+ * same item — and the way past that refusal (a different reason) writes a
+ * reason the owner only typed to get past the guard into the ledger. Ten
+ * seconds keeps the guard on the threats and lets an owner who means it
+ * twice simply do it a moment later.
  */
-export const REPEAT_WINDOW_MS = 30_000;
+export const REPEAT_WINDOW_MS = 10_000;
 
 /** The fields that make two stock adjustments the same action. */
 export interface StockAdjustment {

@@ -85,8 +85,8 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   separate sub-agents. A child that reports "I ran the gates in-lane" has not run
   them — re-run the lenses where the tool exists, and record the disclosure.
 - **The lenses run on a different model than the author.** Author lanes run
-  `zen-proxy/deepseek-v4.1-flash-free`; `debate`, `test-audit` and `code-review`
-  run `zen-proxy/glm-5.3-flash-free`. A model that reviews its own diff shares
+  `opencode-go/deepseek-v4.1-flash`; `debate`, `test-audit` and `code-review`
+  run `opencode-go/glm-5.3-flash`. A model that reviews its own diff shares
   the blind spots the lens exists to catch, so the reviewer is never the author.
 - **All three lenses run at Standard and above.** `debate` is no longer reserved
   for High-assurance (owner decision, 2026-10-18); the tier decides how much

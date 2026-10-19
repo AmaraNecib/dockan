@@ -11,9 +11,14 @@ model; the report made that impossible to tell, and an unverifiable claim is a d
 Every lens report carries these two lines right under its title, and nothing sits between them:
 
 ```
-Reviewer model: zen-proxy/glm-5.3-flash-free
-Author model:   zen-proxy/deepseek-v4.1-flash-free
+Reviewer model: opencode-go/glm-5.3-flash
+Author model:   opencode-go/deepseek-v4.1-flash
 ```
+
+The model IDs above are the pair in force from 2026-10-19, when OpenCode's free tier began refusing
+this box's IP and the `zen-proxy/deepseek-v4.1-flash-free` / `zen-proxy/glm-5.3-flash-free` pair became
+unusable. The rule is the pair, not those two strings: name whichever reviewer and author models
+actually ran, and correct the pair here when it moves again.
 
 Why it matters past tidiness: the reason the reviewer is a second model is that the author's blind
 spots are not the reviewer's. If the report does not name the reviewer, the gate cannot check that

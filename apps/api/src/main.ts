@@ -24,7 +24,7 @@ import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypt
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
-import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -248,10 +248,7 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // #280: the holder's own lock token is stamped into every snapshot it writes,
   // so a byte written by a former holder is recognisable and never trusted. The
   // same fail-loud rule as the guard: no lock, no stamp, no write.
-  storeInput.writeStamp = () => {
-    if (vaultLock === undefined) throw new Error("the vault write stamp ran without a held lock");
-    return vaultLock.currentOwner().token;
-  };
+  storeInput.writeStamp = () => holderToken(vaultLock);
   const { conn, store } = openVaultStore(storeInput);
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed

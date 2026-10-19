@@ -712,6 +712,20 @@ export function requireHeldLock(lock: VaultLock | undefined): () => void {
 }
 
 /**
+ * The holder's own lock token, for stamping into a snapshot envelope (#280).
+ * Fail loud on the same rule as the guard above: no lock, no token, no write.
+ * A snapshot written without a stamp is the unfenced legacy envelope, which
+ * is exactly the hole the fence closes, so this must never fall back to a
+ * default. The token comes from the lock, not from the caller's memory, so it
+ * is the token the folder itself records. Exported so the no-lock branch is
+ * pinned by a unit test.
+ */
+export function holderToken(lock: VaultLock | undefined): string {
+  if (lock === undefined) throw new Error("the vault write stamp ran without a held lock");
+  return lock.currentOwner().token;
+}
+
+/**
  * Remove a stale lock safely. The win is decided by ONE atomic rename: only
  * the process whose rename moved the file may reclaim it, and only after the
  * moved record is verified to be the SAME stale owner. If the lock changed

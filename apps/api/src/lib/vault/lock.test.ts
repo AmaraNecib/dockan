@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, VaultLockUnreadableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner, type VaultLockRefusal } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, VaultLockUnreadableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner, type VaultLockRefusal } from "./lock";
 import { createAppConfig } from "../../config";
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 
@@ -385,6 +385,17 @@ describe("vault single-writer lock", () => {
     const lock = acquireVaultLock(dir, fastSteal);
     expect(() => requireHeldLock(lock)()).not.toThrow();
     lock.release();
+  });
+
+  it("the snapshot stamp is the lock's own token, and no lock is a hard failure (#280)", () => {
+    // the token production stamps into every snapshot is the one the lock
+    // file records, read from the lock and not from the caller's memory
+    const lock = acquireVaultLock(dir, fastSteal);
+    expect(holderToken(lock)).toBe(lock.currentOwner().token);
+    lock.release();
+    // no lock, no token: the snapshot would be unfenced, which is the hole
+    // the fence closes, so this must fail loudly rather than fall back
+    expect(() => holderToken(undefined)).toThrow("the vault write stamp ran without a held lock");
   });
 
   it("writes exactly the documented lock record at the documented path (criterion 10)", () => {

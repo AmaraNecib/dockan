@@ -56,11 +56,19 @@ describe("vault reclaim retry (#277)", () => {
     expect(retry.taken).toBe(false);
   });
 
-  it("uses a first wait and a cap that cannot spin the CPU", () => {
-    // the shipped schedule is bounded: the first wait is short, the last repeats
+  it("ships a first wait and a cap that cannot spin the CPU", () => {
+    // The SHIPPED schedule, not the shape of an injected one: a constant
+    // [250, 250, 250] satisfies every shape-only rule while spinning the CPU
+    // on every tick. The values below are the shipped ones.
     const schedule: readonly number[] = DEFAULT_RECLAIM_BACKOFF_MS;
-    expect(schedule[0]).toBeGreaterThan(0);
-    expect(schedule.at(-1)).toBe(Math.max(...schedule));
+    expect(schedule[0]).toBe(250);
+    expect(schedule.at(-1)).toBe(15_000);
+    // the growth rule: every wait doubles, and the last one is the cap that
+    // repeats forever
+    for (let index = 0; index < schedule.length - 1; index += 1) {
+      expect(schedule[index + 1]).toBe(Math.min(schedule[index]! * 2, 15_000));
+    }
+    expect([...schedule]).toEqual([250, 500, 1_000, 2_000, 4_000, 8_000, 15_000]);
   });
 
   it("re-checks immediately on trigger and cancels the pending tick", () => {

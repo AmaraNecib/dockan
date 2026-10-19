@@ -245,6 +245,13 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // lock cannot overwrite that copy's data (the heartbeat alone is too slow).
   // Fail loud, never open: a missing lock must not turn the guard into a no-op.
   storeInput.writeGuard = requireHeldLock(vaultLock);
+  // #280: the holder's own lock token is stamped into every snapshot it writes,
+  // so a byte written by a former holder is recognisable and never trusted. The
+  // same fail-loud rule as the guard: no lock, no stamp, no write.
+  storeInput.writeStamp = () => {
+    if (vaultLock === undefined) throw new Error("the vault write stamp ran without a held lock");
+    return vaultLock.currentOwner().token;
+  };
   const { conn, store } = openVaultStore(storeInput);
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed

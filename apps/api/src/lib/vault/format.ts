@@ -189,12 +189,77 @@ export function formatRecoveryCode(bytes: Uint8Array): string {
 
 /** First bytes of every `dokan.db.enc` file. */
 export const VAULT_SNAPSHOT_MAGIC = Buffer.from("DKNVAULT", "ascii");
-/** One format byte after the magic; bump when the envelope changes. */
-export const VAULT_SNAPSHOT_VERSION = 1;
+/**
+ * The released envelope: `magic ‖ 1 ‖ sealed`. It carries no holder stamp, so
+ * it cannot tell a former holder's bytes from the current one's. Kept readable
+ * (#280); the holder that reads it rewrites it fenced on its next write.
+ */
+export const VAULT_SNAPSHOT_LEGACY_VERSION = 1;
+/**
+ * The fenced envelope (#280): `magic ‖ 2 ‖ stampLen(1) ‖ stamp ‖ sealed`. The
+ * stamp is the writing holder's lock token, bound into the AEAD context, so the
+ * next holder can tell that the bytes are not its own.
+ */
+export const VAULT_SNAPSHOT_VERSION = 2;
+/** Bound on a holder stamp; a lock token is 32 hex characters. */
+export const MAX_SNAPSHOT_STAMP_BYTES = 64;
+/**
+ * Enough bytes to parse the fence of any envelope. A follower reads this many
+ * bytes rather than the whole snapshot.
+ */
+export const SNAPSHOT_FENCE_PREFIX_BYTES = VAULT_SNAPSHOT_MAGIC.length + 1 + 1 + MAX_SNAPSHOT_STAMP_BYTES;
 
-/** AEAD context for the database snapshot of one vault. */
+/**
+ * AEAD context for a legacy (unfenced) snapshot of one vault. FROZEN: editing
+ * the string makes every released snapshot unreadable, so a new envelope must
+ * add a builder rather than change this one.
+ */
 export function snapshotAad(vaultId: string): string {
   return `dokan:vault:db:v${VAULT_FORMAT_VERSION}:${vaultId}`;
+}
+
+/**
+ * AEAD context for a fenced snapshot (#280): the holder's stamp is bound in, so
+ * swapping the cleartext stamp field fails the GCM tag. FROZEN like the legacy
+ * builder: the `v2` is the envelope version this AAD belongs to.
+ */
+export function fencedSnapshotAad(vaultId: string, stamp: string): string {
+  return `dokan:vault:db:v${VAULT_SNAPSHOT_VERSION}:${vaultId}:${stamp}`;
+}
+
+/** The readable envelope header: its version, its holder stamp, and where the sealed blob starts. */
+export type SnapshotFence = {
+  version: number;
+  /** the writing holder's token; undefined on the legacy (unfenced) format */
+  stamp: string | undefined;
+  /** byte offset of the `nonce ‖ ciphertext ‖ tag` blob */
+  bodyOffset: number;
+};
+
+/**
+ * Parse an envelope's fence. Returns undefined when the bytes cannot decide —
+ * too short, wrong magic, an unknown version, or an out-of-range stamp length —
+ * so a caller reading a prefix treats "undecidable" as "not mine" instead of
+ * trusting it. The stamp is cleartext; it is safe to read before decrypting,
+ * and it is useless to forge because it is authenticated by the same tag.
+ */
+export function readSnapshotFence(envelope: Uint8Array): SnapshotFence | undefined {
+  const afterMagic = VAULT_SNAPSHOT_MAGIC.length;
+  if (envelope.length < afterMagic + 1) return undefined;
+  if (!Buffer.from(envelope.subarray(0, afterMagic)).equals(VAULT_SNAPSHOT_MAGIC)) return undefined;
+  const version = envelope[afterMagic];
+  if (version === VAULT_SNAPSHOT_LEGACY_VERSION) {
+    return { version, stamp: undefined, bodyOffset: afterMagic + 1 };
+  }
+  if (version !== VAULT_SNAPSHOT_VERSION) return undefined;
+  const stampLengthOffset = afterMagic + 1;
+  if (envelope.length < stampLengthOffset + 1) return undefined;
+  const stampLength = envelope[stampLengthOffset];
+  if (stampLength === undefined || stampLength === 0 || stampLength > MAX_SNAPSHOT_STAMP_BYTES) return undefined;
+  const bodyOffset = stampLengthOffset + 1 + stampLength;
+  if (envelope.length < bodyOffset) return undefined;
+  const stamp = Buffer.from(envelope.subarray(stampLengthOffset + 1, bodyOffset)).toString("utf8");
+  return { version, stamp, bodyOffset };
 }
 
 /** AEAD context for one wrapped master key. */

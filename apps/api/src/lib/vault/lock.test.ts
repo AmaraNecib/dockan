@@ -1045,9 +1045,11 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   });
 
   it("removes its own abandoned record once reads recover, so the next instance is not blocked (Greptile P1)", async () => {
-    // the held-read budget spends transientReadRetries + 1 reads, then release
-    // spends one more; all of them fail, so the record is left behind
-    const failingReads = fastRead.transientReadRetries + 2;
+    // the held-read budget spends transientReadRetries + 1 reads, release spends
+    // one more, and the chain's FIRST attempt must fail too: recovery on the
+    // first attempt would let a single-attempt chain (no re-arm) pass. Recovery
+    // lands on attempt two, so the re-arm is load-bearing here (test-audit P2).
+    const failingReads = fastRead.transientReadRetries + 3;
     const reads = countingReader((lockPath, call) => {
       if (call <= failingReads) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
       return realRead(lockPath);

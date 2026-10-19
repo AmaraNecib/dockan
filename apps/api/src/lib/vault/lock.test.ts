@@ -247,6 +247,18 @@ describe("vault single-writer lock", () => {
     expect(refusal?.staleHeartbeatOverAlivePid).toBe(true);
   });
 
+  it("keeps a future-stamped heartbeat out of the recycled-pid story (#283)", () => {
+    // clock skew or a hand-edited record: a stamp ahead of now is not a quiet
+    // holder that stopped beating. The refusal stands (the pid answers alive),
+    // but the story must stay the honest one, so the app never sends the owner
+    // to delete `vault.lock` over a clock that merely runs ahead.
+    const options = { ...fastSteal, staleHeartbeatMs: 1000, probePid: () => "alive" as const };
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() + 5 * 60_000).toISOString() });
+    const refusal = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(refusal).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(refusal?.staleHeartbeatOverAlivePid).toBe(false);
+  });
+
   it("pins the 60s heartbeat window at its edges", () => {
     // an inconclusive probe leaves the heartbeat as the only evidence
     writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 59_000).toISOString() });
@@ -1277,6 +1289,26 @@ describe("the vault lock refusal app", () => {
     const page = await app.fetch(new Request("http://localhost/"));
     expect(page.status).toBe(503);
     expect(await page.text()).toContain("البيانات مفتوحة في نسخة أخرى");
+  });
+
+  it("serves the stale-lock page from the catch-all route, not only from the helper (#283)", async () => {
+    // the catch-all route is what an owner's browser actually hits, so a
+    // dropped `stale` argument would leave the old "close the other copy"
+    // advice on screen while the JSON routes and the helper test stayed green
+    const suspected = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath(), true));
+    const suspectedPage = await suspected.fetch(new Request("http://localhost/"));
+    expect(suspectedPage.status).toBe(503);
+    const suspectedHtml = await suspectedPage.text();
+    expect(suspectedHtml).toContain("vault.lock");
+    expect(suspectedHtml).toContain("لا تبدو نسخة أخرى من دكان");
+
+    // a live, non-stale holder must not carry the stale instruction, or the
+    // stale assertion above would pass on a page that always shows it
+    const honest = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
+    const honestPage = await honest.fetch(new Request("http://localhost/"));
+    const honestHtml = await honestPage.text();
+    expect(honestHtml).not.toContain("vault.lock");
+    expect(honestHtml).toContain("لا تحذف أي ملف");
   });
 
   it("carries the recycled-pid discriminator on the status route alone (#283)", async () => {

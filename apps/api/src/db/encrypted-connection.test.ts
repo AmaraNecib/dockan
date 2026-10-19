@@ -1060,6 +1060,43 @@ describe("snapshot fence (#280)", () => {
     expect(() => conn.raw.query("SELECT 1").get()).toThrow();
   });
 
+  it("warns, not informs, when the fence CHANGES under a live connection", async () => {
+    // The routine case — the previous session's stamp — is information, because
+    // every restart produces it. A fence that CHANGES while this connection is
+    // open is not routine: it means another process put bytes on the disk this
+    // holder is responsible for, and that is the incident the event exists for.
+    // Without the distinction the one row that matters is buried in one row per
+    // boot.
+    const former = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    former.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('shared')");
+    former.markDirty();
+    await former.persistIfDirty();
+    await former.close();
+
+    const events: string[] = [];
+    const current = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      writeStamp: () => tokenB,
+      logger: {
+        warn: (event) => events.push(`warn:${event}`),
+        info: (event) => events.push(`info:${event}`),
+      },
+    });
+    // open: the former holder's bytes, routine
+    expect(events).toEqual(["info:VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+
+    // a zombie renames ITS envelope over ours while we are open — a different
+    // holder's stamp from the one at open, which is exactly what makes the
+    // change observable — and we then act
+    const tokenC = "c".repeat(32);
+    fs.writeFileSync(snapshotPath(), buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenC));
+    await current.persistIfDirty();
+    expect(events).toContain("warn:VAULT_SNAPSHOT_FENCE_FOREIGN");
+    await current.close();
+  });
+
   it("repairs a foreign snapshot at checkpoint even when nothing changed", async () => {
     const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });
     conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");

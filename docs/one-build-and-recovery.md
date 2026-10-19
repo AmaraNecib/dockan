@@ -201,7 +201,7 @@ envelope, below). A wrapped master key is `nonce ‖ ciphertext+tag` base64 in
 characters plus a 10-bit SHA-256 checksum, grouped for transcription; a bad
 checksum fails before the KDF.
 
-**Snapshot envelope: two versions, one written.** Both start with the 8-byte
+**Snapshot envelope: two versions, v2 is what the live writer produces.** Both start with the 8-byte
 magic `"DKNVAULT"` and a one-byte version.
 
 - **v1 — read, never written.** `"DKNVAULT" ‖ 1 ‖ nonce ‖ ciphertext+tag`,

@@ -64,7 +64,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # setup-bun reads packageManager (bun@1.3.14) from package.json, so CI
+      # setup-bun reads packageManager (bun@1.4.3) from package.json, so CI
       # tracks the repo's bun pin without a second source of truth. build.rs
       # shells out to this same bun to compile the api sidecar.
       - name: Set up Bun

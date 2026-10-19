@@ -1049,6 +1049,9 @@ describe("verdictPasses", () => {
     name,
     detail: "d",
     waiver,
+    // `Verdict.waivers` is required and holds every pattern that matched. The
+    // helper takes at most one, so the array is empty or a single element.
+    waivers: waiver === null ? [] : [waiver],
   });
   const waiver: Waiver = { pattern: "t", reason: "r", line: 1 };
 

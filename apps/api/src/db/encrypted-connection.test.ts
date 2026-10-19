@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, buildEncryptedSnapshot, createEncryptedConnection, readLegacyDatabaseImage } from "./encrypted-connection";
-import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, readSnapshotFence } from "../lib/vault/format";
+import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, MAX_SNAPSHOT_STAMP_BYTES, readSnapshotFence } from "../lib/vault/format";
 
 // Every test opens an encrypted connection and writes a snapshot.
 setHeavyDefaultTimeout();
@@ -448,21 +448,29 @@ describe("snapshot fence (#280)", () => {
     await former.persistIfDirty();
     await former.close();
 
-    // a former holder's bytes: the stamp is readable, it is simply not ours
+    // A former holder's bytes: the stamp is readable, it is simply not ours.
+    // This is what every ordinary restart leaves behind, so it is reported as
+    // information rather than as an incident — a warn on every boot trains the
+    // owner to ignore the one row that would matter.
     const foreignEvents: string[] = [];
     const current = createEncryptedConnection({
       vaultId,
       masterKey,
       snapshotPath: snapshotPath(),
       writeStamp: () => tokenB,
-      logger: { warn: (event) => foreignEvents.push(event) },
+      logger: {
+        warn: (event) => foreignEvents.push(`warn:${event}`),
+        info: (event) => foreignEvents.push(`info:${event}`),
+      },
     });
-    expect(foreignEvents).toEqual(["VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+    expect(foreignEvents).toEqual(["info:VAULT_SNAPSHOT_FENCE_FOREIGN"]);
     await current.close();
 
-    // the legacy envelope carries no stamp at all, and its currency is just as
+    // The legacy envelope carries no stamp at all, and its currency is just as
     // unverifiable: it must not go quiet merely because it is the documented
-    // upgrade path
+    // upgrade path. It is also not "foreign" — no other writer wrote it, this
+    // vault simply has not been written since the upgrade — so it gets its own
+    // code, and the diagnostics filter can tell the two apart.
     fs.writeFileSync(snapshotPath(), buildEncryptedSnapshot(masterKey, vaultId, serializedImage([])));
     const legacyEvents: string[] = [];
     const upgraded = createEncryptedConnection({
@@ -470,9 +478,12 @@ describe("snapshot fence (#280)", () => {
       masterKey,
       snapshotPath: snapshotPath(),
       writeStamp: () => tokenB,
-      logger: { warn: (event) => legacyEvents.push(event) },
+      logger: {
+        warn: (event) => legacyEvents.push(`warn:${event}`),
+        info: (event) => legacyEvents.push(`info:${event}`),
+      },
     });
-    expect(legacyEvents).toEqual(["VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+    expect(legacyEvents).toEqual(["info:VAULT_SNAPSHOT_FENCE_UNSTAMPED"]);
     await upgraded.close();
   });
 
@@ -549,9 +560,66 @@ describe("snapshot fence (#280)", () => {
     expect(guardCalls).toBe(6);
     expect(diskFence()?.stamp).toBe(tokenA);
 
-    // nothing was recorded durable: with the war over the same dirty change
-    // still writes, without another markDirty()
+    // Nothing was recorded durable. The pin: the war ends, and a snapshot
+    // carrying THIS holder's stamp is put on disk by hand — the state a
+    // successful write leaves behind. The in-memory version is still dirty, so
+    // the next persist must still write. If `persistedVersion` had advanced in
+    // the failure branch, `snapshotIsCurrent()` would now be satisfied (the
+    // version matches and the fence is ours) and persistIfDirty would return
+    // without writing, leaving the hand-made envelope in place.
     atWar = false;
+    const handMade = buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["hand"]), tokenB);
+    fs.writeFileSync(snapshotPath(), handMade);
+    await conn.persistIfDirty();
+    expect(fs.readFileSync(snapshotPath()).equals(handMade)).toBe(false);
+    expect(diskFence()?.stamp).toBe(tokenB);
+    await conn.close();
+
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    // SAFETY: the test created the table with a single TEXT column
+    expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "mine" }]);
+    reopened.close();
+  });
+
+  it("treats a vanished snapshot as unverifiable, names it, and rewrites", async () => {
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    expect(diskFence()?.stamp).toBe(tokenB);
+
+    // The file is deleted under an open connection. Nothing is dirty, so the
+    // version bookkeeping alone would call the snapshot current; and if
+    // "absent" were read as "mine", the deleted file would be believed
+    // durable and the data would be gone with no log line anywhere.
+    fs.rmSync(snapshotPath());
+    await conn.persistIfDirty();
+
+    expect(fs.existsSync(snapshotPath())).toBe(true);
+    expect(diskFence()?.stamp).toBe(tokenB);
+    await conn.close();
+
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    // SAFETY: the test created the table with a single TEXT column
+    expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "mine" }]);
+    reopened.close();
+  });
+
+  it("treats bytes this build cannot parse as unverifiable and overwrites them", async () => {
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    const bytes = Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([99]), Buffer.alloc(64, 3)]);
+
+    // A newer build's envelope: the same bytes are REFUSED at open, so
+    // believing them durable here would be the one place the two disagree —
+    // the version would be recorded over a file this build cannot read, and the
+    // next unlock dies on it.
+    fs.rmSync(snapshotPath(), { force: true });
+    fs.writeFileSync(snapshotPath(), bytes);
+    expect(() => createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() })).toThrow(VaultCorruptionError);
+
     await conn.persistIfDirty();
     expect(diskFence()?.stamp).toBe(tokenB);
     await conn.close();
@@ -559,6 +627,40 @@ describe("snapshot fence (#280)", () => {
     const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
     // SAFETY: the test created the table with a single TEXT column
     expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "mine" }]);
+    reopened.close();
+  });
+
+  it("refuses a holder stamp that cannot survive the envelope's UTF-8 round trip", () => {
+    // A lone surrogate does not survive the UTF-8 round trip the envelope does.
+    // The writer would seal under one AEAD context and every reader would
+    // derive another, so the vault could never be opened again — a brick with
+    // no symptom until the next unlock. Refused at open, where the cause is
+    // still visible.
+    expect(() =>
+      createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => "\uD800" }),
+    ).toThrow("not text that survives a UTF-8 round trip");
+    expect(fs.existsSync(snapshotPath())).toBe(false);
+  });
+
+  it("refuses an empty or oversized holder stamp, and accepts the bound itself", async () => {
+    const refuses = (stamp: string): void => {
+      expect(() =>
+        createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => stamp }),
+      ).toThrow(`must be 1..${MAX_SNAPSHOT_STAMP_BYTES} bytes`);
+    };
+    refuses("");
+    refuses("x".repeat(MAX_SNAPSHOT_STAMP_BYTES + 1));
+
+    // the bound is inclusive, and a 64-byte stamp is written and read back
+    const atBound = "y".repeat(MAX_SNAPSHOT_STAMP_BYTES);
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => atBound });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    expect(diskFence()?.stamp).toBe(atBound);
+    await conn.close();
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), writeStamp: () => atBound });
+    expect(reopened.raw.query("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([{ name: "t" }]);
     reopened.close();
   });
 
@@ -672,7 +774,7 @@ describe("snapshot fence (#280)", () => {
     expect(events).toEqual(["VAULT_SNAPSHOT_FENCE_UNREADABLE"]);
   });
 
-  it("still writes, and says so, when the fence never reads", async () => {
+  it("writes without dying when the fence never reads, and says so", async () => {
     const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
     first.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
     first.markDirty();
@@ -700,17 +802,68 @@ describe("snapshot fence (#280)", () => {
         writeStamp: () => tokenA,
         logger: { warn: (event) => events.push(event) },
       });
-      // the write is owed (nothing can be shown to be ours) and it happens: the
-      // unverifiable version is never reported durable in silence
-      await expect(again.persistIfDirty()).rejects.toThrow(SnapshotPersistenceError);
+      // The write is owed (nothing can be shown to be ours) and it happens. It
+      // also SUCCEEDS: an unreadable prefix is a read failure, not evidence
+      // that another writer took the file — a replacement would have been read
+      // and named — so the committed transaction on disk must not be reported
+      // as a failed one and the process must not die over it. The version is
+      // simply not recorded durable; the next write re-seals it.
+      await again.persistIfDirty();
       expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(false);
       expect(events).toContain("VAULT_SNAPSHOT_FENCE_UNREADABLE");
+
+      // the bytes that landed are a well-formed fenced envelope of our own, so
+      // the write really did happen and the connection is not left believing a
+      // version it never wrote: with the fence readable again, one more persist
+      // has nothing to do and returns without rewriting.
+      spy.mockRestore();
+      expect(diskFence()?.stamp).toBe(tokenA);
+      const settled = fs.readFileSync(snapshotPath());
+      await again.persistIfDirty();
+      expect(fs.readFileSync(snapshotPath()).equals(settled)).toBe(true);
     } finally {
       spy.mockRestore();
     }
-    // the shutdown checkpoint would refuse for the same reason, so it is taken
-    // with the fence readable again
     await again?.close();
+  });
+
+  it("refuses to bundle a snapshot that is not this holder's", async () => {
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      headerPath: path.join(dir, "vault.json"),
+      fresh: true,
+      writeStamp: () => tokenB,
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    fs.writeFileSync(path.join(dir, "vault.json"), "{}");
+
+    // A zombie's envelope lands between checkpoint() and the read that fills
+    // the bundle. The bundle's own validator cannot see it: it derives the AEAD
+    // context from the envelope's stamp, so a foreign-stamped envelope decrypts
+    // cleanly and quick_check passes on a coherent-but-stale image. The fence
+    // on the bytes ACTUALLY bundled is the only observer that catches it, and
+    // today's backup would otherwise silently hold yesterday's transactions.
+    const zombie = buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenA);
+    // SAFETY: production calls readFileSync with a PathLike and an optional
+    // encoding, so the narrowed signature covers every call this spy receives
+    const realReadFileSync = fs.readFileSync.bind(fs) as (file: fs.PathLike, options?: string) => Buffer | string;
+    // SAFETY: the spy keeps fs.readFileSync's own overload type; the narrowed
+    // parameters are the (path, encoding) overload production calls
+    const spy = spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathLike, options?: string) => {
+      if (String(file) === snapshotPath()) return zombie;
+      return realReadFileSync(file, options);
+    }) as typeof fs.readFileSync);
+    try {
+      await expect(conn.writeBackupTo(path.join(dir, "today.dknvbak"))).rejects.toThrow(SnapshotPersistenceError);
+      expect(fs.existsSync(path.join(dir, "today.dknvbak"))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+    await conn.close();
   });
 
   it("repairs a foreign snapshot at checkpoint even when nothing changed", async () => {

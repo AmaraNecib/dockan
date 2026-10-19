@@ -10,7 +10,7 @@ import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
 import { createAppConfig, type AppConfig } from "./config";
 import { openConnection, type Connection } from "./db/connection";
-import { MissingVaultDatabaseError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
+import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
 import { openVaultStore } from "./db/vault-store";
 import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
@@ -267,6 +267,19 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
         "the encrypted snapshot write was refused: another copy owns the folder; this instance is serving the in-use refusal",
       );
       return;
+    }
+    // A fence refusal is not a disk failure either, and the message must not
+    // blame one: the bytes WERE written, and another process replaced them. The
+    // cause is on the error rather than guessed from the text, so the owner
+    // reads which of the two happened instead of "could not be written" for a
+    // file that was written three times.
+    if (error instanceof SnapshotPersistenceError && error.reason !== "write-failed") {
+      logger.error(
+        "SNAPSHOT_PERSIST_FAILED",
+        `FATAL: the encrypted snapshot was not durable (${error.reason}); exiting to avoid divergence`,
+        error,
+      );
+      process.exit(1);
     }
     logger.error("SNAPSHOT_PERSIST_FAILED", "FATAL: encrypted snapshot could not be written; exiting to avoid divergence", error);
     process.exit(1);

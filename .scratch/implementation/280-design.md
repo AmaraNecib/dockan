@@ -71,31 +71,55 @@ same tag"; that sentence was false and is replaced by this one.
 
 `encrypted-connection.ts`
 
-- `EncryptedConnectionOptions.writeStamp?: () => string` — the current holder's
-  lock token. Absent = unfenced (writes v1, exactly today's behaviour).
+- `EncryptedConnectionOptions.writeStamp?: () => string` — the holder's lock
+  token, as it is at the moment the connection OPENS (read once, not per write).
+  Absent = unfenced (writes v1, exactly today's behaviour).
+- `EncryptedConnectionOptions.logger?: StoreLogger` (`store/port.ts`) — where a
+  fence the connection cannot verify is reported. `StoreLogger.info` is the
+  level the routine cases use.
 - `buildEncryptedSnapshot(masterKey, vaultId, image, stamp?)`.
 - `openSnapshot` returns `{ image, stamp }`.
+- `SnapshotFailureReason` travels on `SnapshotPersistenceError`, so a caller can
+  tell "the disk failed" from "another writer took the file".
 
-`vault-store.ts` passes `writeStamp` through; `main.ts` supplies
-`() => vaultLock.currentOwner().token` with the same fail-loud rule as
-`requireHeldLock`. No change to `lock.ts` (that is #287's lane).
+`vault-store.ts` passes `writeStamp` and `logger` through; `main.ts` supplies
+`holderToken(vaultLock)` with the same fail-loud rule as `requireHeldLock`. No
+change to `lock.ts`'s locking (that is #287's lane), beyond exporting the
+token reader so its no-lock branch is unit testable.
+
+`packages/contracts` gains the fence event codes, and `apps/web` their Arabic
+badges: `VAULT_SNAPSHOT_FENCE_FOREIGN`, `VAULT_SNAPSHOT_FENCE_UNSTAMPED`,
+`VAULT_SNAPSHOT_FENCE_MISSING`, `VAULT_SNAPSHOT_FENCE_UNKNOWN`,
+`VAULT_SNAPSHOT_FENCE_UNREADABLE`.
 
 ## Detection points
 
 1. **Open.** A read envelope whose stamp is not the connection's own (or is
-   legacy) sets `fenceSatisfied = false`, so the next `persistIfDirty` /
-   `checkpoint` rewrites it fenced even with no mutation. The case is surfaced
-   as `VAULT_SNAPSHOT_FENCE_FOREIGN`: a load-bearing signal, since these bytes
-   were writable by a holder that is no longer the holder and their currency is
-   unverifiable.
+   legacy) sets the fence unsatisfied, so the next `persistIfDirty` /
+   `checkpoint` rewrites it fenced even with no mutation. The case is surfaced as
+   an **informational** line: `VAULT_SNAPSHOT_FENCE_FOREIGN` for another
+   holder's stamp, `VAULT_SNAPSHOT_FENCE_UNSTAMPED` for the legacy envelope with
+   no stamp at all. It is information and not a warning because the token is
+   minted per acquisition (`lock.ts`), so the bytes on disk after any clean
+   shutdown always carry the previous session's stamp: the routine restart and
+   the zombie are the same input, and nothing in the envelope can tell them
+   apart. A warning here would fire on every launch and train the owner to
+   ignore the one row that matters. The signal only becomes discriminating when
+   a holder epoch travels with the fence (a format change, tracked separately).
 2. **Before reporting durable.** The `persistNow` early-return also asks the
    disk for its stamp. A zombie overwrite after a verified write makes
    "nothing dirty" false, so the holder rewrites instead of trusting bytes it
    did not write.
 3. **After the rename.** `persistNow` re-reads the fence after `writeFileAtomic`
-   and `checkpoint` after `writeFileAtomicSync`; a foreign stamp means the
-   version just written is not what disk holds, so it is not durable and the
-   write is redone (async) or refused (sync). This is the #280 window.
+   and `checkpoint` after `writeFileAtomicSync`; a stamp that is not ours means
+   the version just written is not what disk holds, so it is not durable and the
+   write is redone (async) or refused (sync). The refusal carries which fence
+   replaced ours, and ONLY a readable replacement is a refusal — the race is
+   what the issue is about. An **unreadable** prefix is not evidence that
+   anyone took the file (a replacement would have been read and named), so that
+   case writes and returns; the version is simply left dirty and re-sealed by
+   the next write, instead of killing the process over a transaction that is on
+   disk. This is the #280 window.
 
 ## Planned tests
 
@@ -114,11 +138,25 @@ Unit (`apps/api/src/db/encrypted-connection.test.ts`, `apps/api/src/lib/vault/fo
 8. The checkpoint window (debate finding): a rename injected inside the
    synchronous write makes `checkpoint` refuse, and nothing is recorded durable.
 9. The overwrite war: a zombie that lands after every rename exhausts the three
-   attempts with `SnapshotPersistenceError`, and the version is still dirty.
-10. A foreign-stamped and a legacy envelope each surface at open as a warning.
-11. An unreadable fence is retried once — a transient `EBUSY` does not force a
-    rewrite — and a persistent one is surfaced and rewritten anyway.
+   attempts with `SnapshotPersistenceError`, and the version is still dirty —
+   pinned by putting a correctly stamped envelope on disk by hand and showing
+   the next persist still writes (a `persistedVersion` that had advanced would
+   short-circuit it).
+10. A foreign-stamped envelope surfaces at open as INFORMATION, and a legacy one
+    under its own code (`VAULT_SNAPSHOT_FENCE_UNSTAMPED`).
+11. An unreadable fence is retried exactly twice, with the write path's 50 ms
+    between the attempts: one refusal that clears inside the window is absorbed
+    with no warning and no rewrite, and a bound of one or five reds.
 12. A `close()` whose final checkpoint refuses still closes the raw handle.
+13. `openVaultStore` passes the stamp down, and `holderToken()` returns the
+    lock's own token and throws with no lock (`db/vault-store.test.ts`,
+    `lib/vault/lock.test.ts`).
+14. A vanished file and unparseable bytes are each unverifiable, named, and
+    rewritten — not believed durable.
+15. A stamp that cannot survive the UTF-8 round trip, an empty one, and one past
+    the 64-byte bound are refused at open; 64 bytes is written and read back.
+16. `writeBackupTo` refuses to bundle bytes whose fence is not the holder's,
+    checked on the buffer actually bundled.
 
 No Playwright E2E: the change is not reachable from a user flow (no UI, no
 route); the seam is the file format, exercised by unit tests.
@@ -126,9 +164,20 @@ route); the seam is the file format, exercised by unit tests.
 ## Risks and costs the PR owns
 
 - A read-back per write adds a 74-byte read. Cheap next to serialise+encrypt.
+- **A dirty persist reads the fence three times**, not once: `persistIfDirty`
+  asks whether anything is owed, `persistNow` asks again (the queue may have
+  waited), and the post-write re-read is the feature itself. The second and
+  third reads are the point of the design, and each is a 74-byte prefix read.
 - A read per `persistIfDirty` when clean. Bounded and small.
-- Unfenced (no `writeStamp`) callers keep exactly today's behaviour, so the
-  existing suite is the regression guard.
+- Unfenced (no `writeStamp`) callers keep exactly today's behaviour. That is
+  NOT the regression guard for the fenced path: the fenced path has its own
+  tests (`db/vault-store.test.ts` pins the production wiring), because an
+  unfenced caller exercises none of it.
+- A fence that cannot be read is retried twice with 50 ms between attempts, and
+  then the write proceeds with the version left dirty. It is never fatal: an
+  unreadable prefix says nothing about who wrote the bytes, and killing the
+  process over a transaction already on disk is the wrong answer to a busy
+  handle.
 - **The fence authenticates writer identity, never content currency.** It can
   say "the process that wrote this blob held token T". It cannot say "this blob
   holds the freshest acknowledged transactions", because no version travels
@@ -138,16 +187,21 @@ route); the seam is the file format, exercised by unit tests.
   1. **Detection is activity-gated.** All three points run when the holder acts.
      A zombie overwrite that lands after the holder's last write, followed by
      that holder crashing instead of closing, is served by the next holder with
-     `fenceSatisfied = false` and a `VAULT_SNAPSHOT_FENCE_FOREIGN` warning — but
-     the transactions acknowledged in between are already gone. Re-checking the
-     fence on the `lock.ts` heartbeat closes this; `lock.ts` is #287's lane, so
-     this PR states the boundary instead of patching it.
-  2. **The v1 migration window launders.** An old-build zombie renames a v1
-     envelope onto a disk holding the holder's verified v2. If the holder dies
-     before its next write, the next holder serves the v1 bytes and, on its own
-     first write, serialises that in-memory image under **its own** stamp in a
-     clean v2. From then on no holder, present or future, can tell the laundered
-     bytes from legitimate fenced data. The channel closes at the first fenced
+     an unsatisfied fence and an informational `VAULT_SNAPSHOT_FENCE_FOREIGN`
+     line — but the transactions acknowledged in between are already gone, and
+     that line is indistinguishable from an ordinary restart. Re-checking the
+     fence on the `lock.ts` heartbeat closes the timing half; only a holder
+     epoch travelling with the fence closes the diagnostic half, which is a
+     format change and a separate issue.
+  2. **Any foreign envelope launders, not only v1.** An old-build zombie renames
+     a v1 envelope onto a disk holding the holder's verified v2. If the holder
+     dies before its next write, the next holder serves the v1 bytes and, on its
+     own first write, serialises that in-memory image under **its own** stamp in
+     a clean v2. From then on no holder, present or future, can tell the
+     laundered bytes from legitimate fenced data. The same happens with a
+     foreign **v2**: it opens, it decrypts (the context comes from its own
+     stamp), it is served, and it is re-sealed under the next holder's stamp,
+     after which the evidence is gone. The channel closes at the first fenced
      write and not before: until every writer in a mixed fleet is on this build,
      one zombie rename plus an unlucky crash is a silent transaction loss.
      Reading v1 is what keeps it silent, and the alternative is bricking every

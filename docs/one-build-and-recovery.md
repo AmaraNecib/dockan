@@ -214,7 +214,13 @@ magic `"DKNVAULT"` and a one-byte version.
   `vault.lock` token (1..64 bytes), kept in the clear and bound into the AAD:
   swapping it fails the GCM tag, and a reader learns the bytes are not its own
   before decrypting. A v1 file is rewritten fenced on the holder's first write;
-  a foreign-stamped file is rewritten when it is opened.
+  a foreign-stamped file is rewritten when it is opened. The one exception is a
+  RESTORE: `extractVaultBackup()` writes the live snapshot from the bundle
+  verbatim, and a restore holds no lock, so it has no token to stamp. A restored
+  live snapshot is therefore whatever the bundle carried — a v1 envelope from a
+  legacy conversion, or a v2 carrying the dead session's stamp. The next holder
+  reads it, reports the fence it cannot verify, and rewrites it fenced on its
+  first write, which is the same path a legacy vault already takes.
 - **v1 in a backup bundle is not a fault.** `encryptLegacyBackups()` converts a
   plaintext `backups/*.db` into a `.dknvbak` bundle by calling
   `buildEncryptedSnapshot` with no stamp, so the enclosed image is a v1

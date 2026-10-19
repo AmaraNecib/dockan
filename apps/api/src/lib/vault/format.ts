@@ -245,13 +245,9 @@ export function fencedSnapshotAad(vaultId: string, stamp: string): string {
 }
 
 /** The readable envelope header: its version, its holder stamp, and where the sealed blob starts. */
-export type SnapshotFence = {
-  version: number;
-  /** the writing holder's token; undefined on the legacy (unfenced) format */
-  stamp: string | undefined;
-  /** byte offset of the `nonce ‖ ciphertext ‖ tag` blob */
-  bodyOffset: number;
-};
+export type SnapshotFence =
+  | { version: typeof VAULT_SNAPSHOT_LEGACY_VERSION; stamp: undefined; bodyOffset: number }
+  | { version: typeof VAULT_SNAPSHOT_VERSION; stamp: string; bodyOffset: number };
 
 /**
  * Parse an envelope's fence. Returns undefined when the bytes cannot decide —
@@ -277,7 +273,7 @@ export function readSnapshotFence(envelope: Uint8Array): SnapshotFence | undefin
   if (!Buffer.from(envelope.subarray(0, afterMagic)).equals(VAULT_SNAPSHOT_MAGIC)) return undefined;
   const version = envelope[afterMagic];
   if (version === VAULT_SNAPSHOT_LEGACY_VERSION) {
-    return { version, stamp: undefined, bodyOffset: afterMagic + 1 };
+    return { version: VAULT_SNAPSHOT_LEGACY_VERSION, stamp: undefined, bodyOffset: afterMagic + 1 };
   }
   if (version !== VAULT_SNAPSHOT_VERSION) return undefined;
   const stampLengthOffset = afterMagic + 1;
@@ -287,7 +283,17 @@ export function readSnapshotFence(envelope: Uint8Array): SnapshotFence | undefin
   const bodyOffset = stampLengthOffset + 1 + stampLength;
   if (envelope.length < bodyOffset) return undefined;
   const stamp = Buffer.from(envelope.subarray(stampLengthOffset + 1, bodyOffset)).toString("utf8");
-  return { version, stamp, bodyOffset };
+  return { version: VAULT_SNAPSHOT_VERSION, stamp, bodyOffset };
+}
+
+/**
+ * The AEAD context of a snapshot envelope. ONE place decides legacy versus
+ * fenced, so the writer and the reader cannot drift apart: the writer knows
+ * the stamp it is about to seal, the reader knows the stamp it read out of
+ * the envelope, and both ask here.
+ */
+export function snapshotAadFor(vaultId: string, stamp: string | undefined): string {
+  return stamp === undefined ? snapshotAad(vaultId) : fencedSnapshotAad(vaultId, stamp);
 }
 
 /**

@@ -15,13 +15,14 @@ import {
   VAULT_SNAPSHOT_LEGACY_VERSION,
   VAULT_SNAPSHOT_MAGIC,
   VAULT_SNAPSHOT_VERSION,
-  fencedSnapshotAad,
   parseVaultHeader,
   readSnapshotFence,
   snapshotAad,
+  snapshotAadFor,
   type VaultWrap,
 } from "../lib/vault/format";
 import { assertSchemaVersionSupported, readSchemaVersion } from "../lib/schema-version";
+import type { StoreLogger } from "../store/port";
 
 /**
  * The encrypted store (ADR-0008 §4.6). The running database is an in-memory
@@ -91,22 +92,28 @@ export type EncryptedConnectionOptions = {
    */
   writeGuard?: () => void;
   /**
-   * The current holder's single-writer lock token, stamped into every snapshot
-   * this connection writes (#280). A snapshot whose stamp is not this value was
+   * The holder's single-writer lock token, stamped into every snapshot this
+   * connection writes (#280). A snapshot whose stamp is not this value was
    * written by another holder, so the bytes are not this connection's and its
    * version is not durable. Absent = unfenced: the legacy envelope is written
    * and read, exactly the pre-#280 behaviour.
+   *
+   * Read ONCE, when the connection opens: the token identifies the session,
+   * and a token that rotated under a live connection would make every
+   * envelope unreadable to its own writer. The lock token is stable for the
+   * life of the lock (see `lock.ts`), so a session's stamp is the same in
+   * every snapshot it writes.
    */
   writeStamp?: () => string;
   /**
    * Where the connection reports a fence it could not verify (#280): a snapshot
    * stamped by a former holder, the unstamped legacy envelope, or a fence that
-   * would not read. Both are warnings, never refusals — an unverifiable
+   * would not read. These are warnings, never refusals — an unverifiable
    * snapshot is rewritten rather than rejected — so the log is the only signal
    * that the bytes being served may be older than the last acknowledged
    * transaction.
    */
-  logger?: { warn(event: string, message: string): void };
+  logger?: StoreLogger;
 };
 
 /** An unlock found a vault header but no encrypted database: the data is gone. */
@@ -129,11 +136,77 @@ export class VaultCorruptionError extends Error {
   }
 }
 
+/**
+ * How a snapshot write failed, in terms the caller can act on. The reason
+ * travels with the error so the process is told what happened instead of
+ * guessing: "the disk could not be written" and "another writer replaced the
+ * file" call for different responses, and a caller that only sees "write
+ * failed" blames the disk for a stolen file.
+ */
+export type SnapshotFailureReason =
+  /** the atomic write itself failed (a full disk, a refused rename) */
+  | "write-failed"
+  /** another holder's envelope landed on the one this holder wrote */
+  | "foreign"
+  /** the legacy unfenced envelope landed on the one this holder wrote */
+  | "unstamped"
+  /** the bytes on disk are not an envelope this build knows */
+  | "undecidable"
+  /** the snapshot file is gone */
+  | "absent"
+  /** the fence could not be read */
+  | "unreadable";
+
 /** A committed unit could not be written to its durable snapshot. */
 export class SnapshotPersistenceError extends Error {
-  constructor(cause: Error) {
+  constructor(
+    cause: Error,
+    readonly reason: SnapshotFailureReason = "write-failed",
+  ) {
     super(`snapshot persistence failed: ${cause.message}`);
     this.name = "SnapshotPersistenceError";
+  }
+}
+
+/**
+ * What the fence on disk says. The outcomes are deliberately distinct,
+ * because they decide three different things: whether a write is owed,
+ * whether the version may be recorded durable, and what the owner is told.
+ * Collapsing them is how a busy file ended up reported as "another writer
+ * replaced your snapshot" and how a readable failure ended in a fatal exit.
+ */
+export type FenceVerdict =
+  /** the bytes on disk carry this holder's stamp */
+  | { outcome: "mine" }
+  /** the bytes on disk carry another holder's stamp */
+  | { outcome: "foreign"; stamp: string }
+  /** the bytes on disk are the legacy envelope: no stamp at all */
+  | { outcome: "unstamped" }
+  /** the bytes on disk are not an envelope this build knows */
+  | { outcome: "undecidable" }
+  /** there is no file */
+  | { outcome: "absent" }
+  /** the file is there and could not be read */
+  | { outcome: "unreadable" };
+
+/** Why a write was refused, and the sentence that says so. */
+type FenceFailure = { reason: SnapshotFailureReason; message: string };
+
+/** The reason and the sentence a fence verdict turns into when it refuses a write. */
+function fenceFailure(verdict: FenceVerdict): FenceFailure {
+  switch (verdict.outcome) {
+    case "foreign":
+      return { reason: "foreign", message: "another writer's envelope replaced the snapshot this holder wrote" };
+    case "unstamped":
+      return { reason: "unstamped", message: "a legacy unfenced envelope replaced the snapshot this holder wrote" };
+    case "undecidable":
+      return { reason: "undecidable", message: "the bytes on disk are not a snapshot envelope this build knows" };
+    case "absent":
+      return { reason: "absent", message: "the snapshot file is gone" };
+    case "unreadable":
+      return { reason: "unreadable", message: "the snapshot fence could not be read" };
+    case "mine":
+      return { reason: "write-failed", message: "the snapshot was written but the fence is not this holder's" };
   }
 }
 
@@ -168,16 +241,39 @@ function sleepSync(ms: number): void {
  * so a reader can trust whose bytes it holds. Without one it is the legacy
  * format, exactly what every released build wrote.
  */
+/**
+ * A holder stamp that cannot be sealed is refused at OPEN, not at each write:
+ * it is a property of the holder, not of one snapshot, and a connection that
+ * can never write is a broken start, not a failed transaction.
+ */
+function assertStampUsable(stamp: string): void {
+  const stampBytes = Buffer.from(stamp, "utf8");
+  if (stampBytes.length === 0 || stampBytes.length > MAX_SNAPSHOT_STAMP_BYTES) {
+    throw new Error(`the snapshot holder stamp must be 1..${MAX_SNAPSHOT_STAMP_BYTES} bytes`);
+  }
+  // The stamp travels as cleartext bytes and is read back as UTF-8, and it is
+  // bound into the AAD. A stamp that does not survive that round trip (a lone
+  // surrogate, say) would be sealed under one AEAD context and opened under
+  // another: a vault nobody can open again, with no way to tell a corrupt file
+  // from a good one. Refused here, where the cause is still visible.
+  if (stampBytes.toString("utf8") !== stamp) {
+    throw new Error("the snapshot holder stamp is not text that survives a UTF-8 round trip");
+  }
+}
+
+/**
+ * Build the envelope. With a holder stamp it is the fenced format (#280):
+ * `magic ‖ 2 ‖ stampLen ‖ stamp ‖ sealed`, and the stamp is bound into the AAD
+ * so a reader can trust whose bytes it holds. Without one it is the legacy
+ * format, exactly what every released build wrote.
+ */
 function sealSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array, stamp: string | undefined): Buffer {
   if (stamp === undefined) {
     const sealed = seal(masterKey, image, snapshotAad(vaultId));
     return Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_LEGACY_VERSION]), sealed]);
   }
   const stampBytes = Buffer.from(stamp, "utf8");
-  if (stampBytes.length === 0 || stampBytes.length > MAX_SNAPSHOT_STAMP_BYTES) {
-    throw new Error(`the snapshot holder stamp must be 1..${MAX_SNAPSHOT_STAMP_BYTES} bytes`);
-  }
-  const sealed = seal(masterKey, image, fencedSnapshotAad(vaultId, stamp));
+  const sealed = seal(masterKey, image, snapshotAadFor(vaultId, stamp));
   return Buffer.concat([
     VAULT_SNAPSHOT_MAGIC,
     Buffer.from([VAULT_SNAPSHOT_VERSION]),
@@ -211,7 +307,7 @@ function openSnapshot(masterKey: Uint8Array, vaultId: string, envelope: Uint8Arr
   }
   const fence = readSnapshotFence(envelope);
   if (fence === undefined) throw new VaultCorruptionError("snapshot is truncated");
-  const aad = fence.stamp === undefined ? snapshotAad(vaultId) : fencedSnapshotAad(vaultId, fence.stamp);
+  const aad = snapshotAadFor(vaultId, fence.stamp);
   return { image: open(masterKey, envelope.subarray(fence.bodyOffset), aad), stamp: fence.stamp };
 }
 
@@ -238,6 +334,25 @@ function quickCheckIsOk(db: Database): boolean {
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * The verdict on one envelope's fence, with no connection state involved. An
+ * unfenced connection has no stamp to compare, so its fence is trivially its
+ * own — the same rule `readFence` applies, kept in one place.
+ */
+function fenceOfBytes(envelope: Uint8Array, expectedStamp: string | undefined): FenceVerdict {
+  if (expectedStamp === undefined) return { outcome: "mine" };
+  const fence = readSnapshotFence(envelope);
+  if (fence === undefined) return { outcome: "undecidable" };
+  if (fence.stamp === undefined) return { outcome: "unstamped" };
+  return fence.stamp === expectedStamp ? { outcome: "mine" } : { outcome: "foreign", stamp: fence.stamp };
+}
+
+/** True when two verdicts describe the same state of the disk. */
+function sameVerdict(left: FenceVerdict, right: FenceVerdict): boolean {
+  if (left.outcome === "foreign" && right.outcome === "foreign") return left.stamp === right.stamp;
+  return left.outcome === right.outcome;
+}
+
 export function createEncryptedConnection(options: EncryptedConnectionOptions): EncryptedConnection {
   const { vaultId, snapshotPath, headerPath } = options;
   // a crashed writer can leave `.dokan.db.enc.tmp-*` behind; drop them before
@@ -251,8 +366,15 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   // writes (#280); a snapshot carrying a different stamp is another holder's, so
   // its version is not durable. No callback = unfenced (the legacy envelope).
   const connectionStamp = options.writeStamp?.();
-  let fenceSatisfied = connectionStamp === undefined;
+  if (connectionStamp !== undefined) assertStampUsable(connectionStamp);
   let raw: Database;
+  /**
+   * What the disk looked like when this connection opened, and what it last
+   * showed. The routine case is the snapshot an earlier session left behind:
+   * it is reported once, as information, and a later fence that DIFFERS from
+   * it is a change under a live connection, which is an incident.
+   */
+  let lastSeenFence: FenceVerdict = { outcome: "mine" };
   if (options.seedBytes !== undefined) {
     raw = Database.deserialize(options.seedBytes);
   } else if (options.fresh !== true) {
@@ -272,19 +394,20 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     // a legacy envelope, or one stamped by a former holder, is not this
     // holder's: the first write repairs the fence (#280)
     if (connectionStamp !== undefined) {
-      fenceSatisfied = opened.stamp === connectionStamp;
+      const openedFence: FenceVerdict =
+        opened.stamp === connectionStamp
+          ? { outcome: "mine" }
+          : opened.stamp === undefined
+            ? { outcome: "unstamped" }
+            : { outcome: "foreign", stamp: opened.stamp };
+      lastSeenFence = openedFence;
       // Surfaced, never silent. These bytes were writable by a holder that is
       // no longer the holder, so the newest acknowledged transactions may be
       // missing from them — and nothing here can distinguish that from an
-      // honest handover, because the stamp carries no version to compare.
-      if (!fenceSatisfied) {
-        options.logger?.warn(
-          "VAULT_SNAPSHOT_FENCE_FOREIGN",
-          opened.stamp === undefined
-            ? "the snapshot on disk is the legacy unfenced format: it carries no holder stamp, so its currency is unverifiable and this holder rewrites it"
-            : "the snapshot on disk is stamped by a former holder: its currency is unverifiable and this holder rewrites it",
-        );
-      }
+      // honest handover, because the stamp carries no version to compare. It
+      // is also the ROUTINE case: every restart leaves the previous session's
+      // bytes on disk, so it is information, not an incident.
+      reportFence(openedFence, "info");
     }
     raw = Database.deserialize(opened.image);
   } else {
@@ -313,14 +436,16 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * report a foreign writer from it would force a full serialize+encrypt+rename
    * of a multi-megabyte snapshot over a momentary busy handle.
    */
-  function readDiskFence(): { outcome: "fence"; stamp: string | undefined } | { outcome: "absent" | "undecidable" | "unreadable" } {
+  function readDiskFence(): FenceVerdict {
     let fd: number | undefined;
     try {
       fd = fs.openSync(snapshotPath, "r");
       const head = Buffer.alloc(SNAPSHOT_FENCE_PREFIX_BYTES);
       const read = fs.readSync(fd, head, 0, head.length, 0);
       const fence = readSnapshotFence(head.subarray(0, read));
-      return fence === undefined ? { outcome: "undecidable" } : { outcome: "fence", stamp: fence.stamp };
+      if (fence === undefined) return { outcome: "undecidable" };
+      if (fence.stamp === undefined) return { outcome: "unstamped" };
+      return fence.stamp === connectionStamp ? { outcome: "mine" } : { outcome: "foreign", stamp: fence.stamp };
     } catch (error) {
       // SAFETY: the errno `code` probe is how Node reports ENOENT from open;
       // the cast only exposes the field this branch reads
@@ -338,33 +463,92 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   }
 
   /**
-   * True when the bytes on disk carry this holder's stamp (always true when
-   * unfenced). An unreadable prefix is asked twice, with the same spacing the
-   * write path uses between its attempts, so one retry can absorb a transient
-   * EBUSY: no retry is spent on a decidable answer, which cannot change by
-   * asking again.
+   * Report a fence that is not this holder's. The severity follows the case:
+   * the snapshot an earlier session left behind is what every restart
+   * produces, so it is information; a fence that changed under a live
+   * connection, a file that is gone, and a fence that would not read are
+   * incidents.
    */
-  function diskFenceIsMine(): boolean {
-    if (connectionStamp === undefined) return true;
-    for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
-      const fence = readDiskFence();
-      if (fence.outcome === "unreadable") {
-        // the file may be busy for a moment; ask again after a pause, exactly
-        // as the write path does before it gives up on a rename
-        if (attempt < FENCE_READ_ATTEMPTS) sleepSync(FENCE_READ_RETRY_DELAY_MS);
-        continue;
-      }
-      return fence.outcome === "fence" && fence.stamp === connectionStamp;
+  function reportFence(verdict: FenceVerdict, severity: "info" | "warn"): void {
+    const emit = (level: "info" | "warn", event: string, message: string): void => {
+      if (level === "info") options.logger?.info?.(event, message);
+      else options.logger?.warn(event, message);
+    };
+    switch (verdict.outcome) {
+      case "mine":
+        return;
+      case "foreign":
+        emit(
+          severity,
+          "VAULT_SNAPSHOT_FENCE_FOREIGN",
+          "the snapshot on disk is stamped by another holder: its currency is unverifiable and this holder rewrites it",
+        );
+        return;
+      case "unstamped":
+        emit(
+          severity,
+          "VAULT_SNAPSHOT_FENCE_UNSTAMPED",
+          "the snapshot on disk is the legacy unfenced format: it carries no holder stamp, so its currency is unverifiable and this holder rewrites it",
+        );
+        return;
+      case "absent":
+        emit(
+          "warn",
+          "VAULT_SNAPSHOT_FENCE_MISSING",
+          "the snapshot file is gone: the bytes on disk are unverifiable and this holder rewrites them",
+        );
+        return;
+      case "undecidable":
+        emit(
+          "warn",
+          "VAULT_SNAPSHOT_FENCE_UNKNOWN",
+          "the bytes on disk are not a snapshot envelope this build knows: they are unverifiable and this holder overwrites them",
+        );
+        return;
+      case "unreadable":
+        emit(
+          "warn",
+          "VAULT_SNAPSHOT_FENCE_UNREADABLE",
+          "the snapshot fence could not be read: the bytes on disk are unverifiable",
+        );
+        return;
     }
-    // Still unreadable: our own bytes cannot be shown to be ours, so the version
-    // is not durable and a write is owed. That is the safe direction — a
-    // redundant rewrite costs time, a version reported durable over an
+  }
+
+  /**
+   * The fence on disk, read with the retry a transient EBUSY needs.
+   *
+   * An unreadable prefix is asked twice, with the same spacing the write path
+   * uses between its attempts, so one retry can absorb a transient refusal: no
+   * retry is spent on a decidable answer, which cannot change by asking again.
+   * An unfenced connection has no stamp to compare, so its fence is trivially
+   * its own — exactly the pre-#280 behaviour.
+   */
+  function readFence(): FenceVerdict {
+    if (connectionStamp === undefined) return { outcome: "mine" };
+    for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
+      const verdict = readDiskFence();
+      if (verdict.outcome !== "unreadable") {
+        if (!sameVerdict(verdict, lastSeenFence)) {
+          reportFence(verdict, "warn");
+          lastSeenFence = verdict;
+        }
+        return verdict;
+      }
+      // the file may be busy for a moment; ask again after a pause, exactly
+      // as the write path does before it gives up on a rename
+      if (attempt < FENCE_READ_ATTEMPTS) sleepSync(FENCE_READ_RETRY_DELAY_MS);
+    }
+    // Still unreadable: our own bytes cannot be shown to be ours, so the
+    // version is not durable and a write is owed. That is the safe direction —
+    // a redundant rewrite costs time, a version reported durable over an
     // unreadable file costs the committed transaction it claimed to save.
-    options.logger?.warn(
-      "VAULT_SNAPSHOT_FENCE_UNREADABLE",
-      "the snapshot fence could not be read twice; treating the version on disk as unverified and rewriting",
-    );
-    return false;
+    const unreadable: FenceVerdict = { outcome: "unreadable" };
+    if (!sameVerdict(unreadable, lastSeenFence)) {
+      reportFence(unreadable, "warn");
+      lastSeenFence = unreadable;
+    }
+    return unreadable;
   }
 
   /**
@@ -374,7 +558,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * (#280), and a write is then still owed.
    */
   function snapshotIsCurrent(): boolean {
-    return mutationVersion === persistedVersion && fenceSatisfied && diskFenceIsMine();
+    return mutationVersion === persistedVersion && readFence().outcome === "mine";
   }
 
   async function persistNow(): Promise<void> {
@@ -396,7 +580,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         // writer for the folder
         await writeFileAtomic(snapshotPath, envelope);
       } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
+        lastError = new SnapshotPersistenceError(error instanceof Error ? error : new Error(String(error)), "write-failed");
         if (attempt < WRITE_ATTEMPTS) await delay(WRITE_RETRY_DELAY_MS);
         continue;
       }
@@ -404,19 +588,38 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // still ours, so a theft during the write is never mistaken for saved data
       options.writeGuard?.();
       // #280: a rename from the previous holder can land on top of ours in the
-      // same window. Re-read the fence; a foreign stamp means the version just
-      // written is NOT on disk, so it is not durable and the write is redone.
-      if (!diskFenceIsMine()) {
-        lastError = new Error("the snapshot was replaced by another writer's envelope");
-        continue;
+      // same window. Re-read the fence; a stamp that is not ours means the
+      // version just written is NOT on disk, so it is not durable and the
+      // write is redone.
+      const verdict = readFence();
+      if (verdict.outcome === "mine") {
+        // only now is the version durable; a mutation during the write set
+        // mutationVersion beyond `version` and schedules the next flush
+        persistedVersion = version;
+        return;
       }
-      // only now is the version durable; a mutation during the write set
-      // mutationVersion beyond `version` and schedules the next flush
-      persistedVersion = version;
-      fenceSatisfied = true;
-      return;
+      if (verdict.outcome === "unreadable") {
+        // The bytes landed; the fence could not be read back. An unreadable
+        // prefix is NOT evidence that another writer took the file — a
+        // replacement would have been read and named — so this is not the
+        // "another writer" failure, and it must not kill the process over a
+        // transaction that is on disk. The version is not recorded durable:
+        // a later write re-seals it, which is the safe direction (a version
+        // reported durable over an unreadable file costs the committed
+        // transaction it claimed to save).
+        return;
+      }
+      const failure = fenceFailure(verdict);
+      if (verdict.outcome === "foreign") {
+        options.logger?.warn(
+          "VAULT_SNAPSHOT_FENCE_FOREIGN",
+          "another writer's envelope replaced the snapshot this holder just wrote; the version is not durable",
+        );
+      }
+      lastError = new SnapshotPersistenceError(new Error(failure.message), failure.reason);
+      continue;
     }
-    throw new SnapshotPersistenceError(lastError ?? new Error("unknown write failure"));
+    throw lastError ?? new SnapshotPersistenceError(new Error("unknown write failure"));
   }
 
   const connection: EncryptedConnection = {
@@ -451,13 +654,28 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // must not overwrite a snapshot the folder's new owner already wrote
       options.writeGuard?.();
       writeFileAtomicSync(snapshotPath, sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp));
-      // #280: the synchronous path can lose the same rename race; a foreign
-      // stamp means the just-written version is not on disk, so it is refused
-      if (!diskFenceIsMine()) {
-        throw new SnapshotPersistenceError(new Error("the snapshot was replaced by another writer's envelope"));
+      // #280: the synchronous path can lose the same rename race; a stamp that
+      // is not ours means the just-written version is not on disk, so it is
+      // refused
+      const verdict = readFence();
+      if (verdict.outcome === "mine") {
+        persistedVersion = mutationVersion;
+        return;
       }
-      persistedVersion = mutationVersion;
-      fenceSatisfied = true;
+      if (verdict.outcome === "unreadable") {
+        // the bytes landed and the fence could not be read back. The write is
+        // on disk, so this is not fatal: the version is simply not recorded
+        // durable, and the next holder re-seals it.
+        return;
+      }
+      const failure = fenceFailure(verdict);
+      if (verdict.outcome === "foreign") {
+        options.logger?.warn(
+          "VAULT_SNAPSHOT_FENCE_FOREIGN",
+          "another writer's envelope replaced the snapshot this holder just wrote; the version is not durable",
+        );
+      }
+      throw new SnapshotPersistenceError(new Error(failure.message), failure.reason);
     },
     async close() {
       // wait for an in-flight async snapshot write, then checkpoint the current
@@ -512,7 +730,22 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       connection.checkpoint();
       if (headerPath === undefined) throw new Error("this vault connection has no header path; cannot build a backup");
       const headerText = fs.readFileSync(headerPath, "utf8");
+      // The bytes that are actually bundled, not the ones checkpoint() just
+      // wrote: it returns before this read, so a rename landing in between puts
+      // a zombie's older image into today's backup. The bundle validator cannot
+      // catch it — it derives the AEAD context from the envelope's own stamp,
+      // so a foreign-stamped envelope decrypts cleanly and `quick_check` passes
+      // on a coherent but stale image. The fence is the only observer that can
+      // tell, and it sees the buffer, not the file.
       const snapshot = fs.readFileSync(snapshotPath);
+      const verdict = fenceOfBytes(snapshot, connectionStamp);
+      if (verdict.outcome !== "mine") {
+        const failure = fenceFailure(verdict);
+        throw new SnapshotPersistenceError(
+          new Error(`refusing to bundle a snapshot that is not this holder's: ${failure.message}`),
+          failure.reason,
+        );
+      }
       await writeFileAtomic(destPath, createVaultBackupBundle(headerText, snapshot));
     },
   };

@@ -43,6 +43,7 @@ import type {
 } from "@dokan/contracts";
 import { ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
+import { SnapshotPersistenceError } from "../db/encrypted-connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
@@ -764,7 +765,25 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       await conn.persistIfDirty();
     } catch (error) {
       const wrapped = error instanceof Error ? error : new Error(String(error));
-      logger?.error?.("SNAPSHOT_PERSIST_FAILED", "committed data could not be written to the encrypted snapshot", wrapped);
+      // The cause travels with the error, so a fence refusal is not reported as
+      // a disk failure: the headline names what actually happened. A readable
+      // replacement is an incident in its own right — another process put bytes
+      // on top of the ones just written — and it gets the fence event code
+      // rather than the generic write-failed one.
+      const reason = error instanceof SnapshotPersistenceError ? error.reason : "write-failed";
+      if (reason === "foreign" || reason === "unstamped") {
+        logger?.warn(
+          reason === "foreign" ? "VAULT_SNAPSHOT_FENCE_FOREIGN" : "VAULT_SNAPSHOT_FENCE_UNSTAMPED",
+          `the snapshot just written was replaced before it could be recorded durable (${wrapped.message})`,
+        );
+        logger?.error?.(
+          "SNAPSHOT_PERSIST_FAILED",
+          "another writer's envelope replaced the snapshot; the committed data is not on disk",
+          wrapped,
+        );
+      } else {
+        logger?.error?.("SNAPSHOT_PERSIST_FAILED", "committed data could not be written to the encrypted snapshot", wrapped);
+      }
       conn.onFatalError?.(wrapped);
       throw wrapped;
     }

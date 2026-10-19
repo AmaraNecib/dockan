@@ -772,17 +772,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // rather than the generic write-failed one.
       const reason = error instanceof SnapshotPersistenceError ? error.reason : "write-failed";
       if (reason === "foreign" || reason === "unstamped") {
-        logger?.warn(
-          reason === "foreign" ? "VAULT_SNAPSHOT_FENCE_FOREIGN" : "VAULT_SNAPSHOT_FENCE_UNSTAMPED",
-          `the snapshot just written was replaced before it could be recorded durable (${wrapped.message})`,
-        );
         logger?.error?.(
           "SNAPSHOT_PERSIST_FAILED",
           "another writer's envelope replaced the snapshot; the committed data is not on disk",
           wrapped,
         );
       } else {
-        logger?.error?.("SNAPSHOT_PERSIST_FAILED", "committed data could not be written to the encrypted snapshot", wrapped);
+        logger?.error?.("SNAPSHOT_PERSIST_FAILED", `committed data could not be written to the encrypted snapshot (${reason})`, wrapped);
       }
       conn.onFatalError?.(wrapped);
       throw wrapped;

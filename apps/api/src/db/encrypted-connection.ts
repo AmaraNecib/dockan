@@ -577,12 +577,37 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * zombie's rename may have replaced our bytes since the last verified write
    * (#280), and a write is then still owed.
    */
+  async function readFenceAsync(): Promise<FenceVerdict> {
+    if (connectionStamp === undefined) return { outcome: "mine" };
+    for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
+      const verdict = readDiskFence();
+      if (verdict.outcome !== "unreadable") {
+        if (!sameVerdict(verdict, lastSeenFence)) {
+          reportFence(verdict, "warn");
+          lastSeenFence = verdict;
+        }
+        return verdict;
+      }
+      if (attempt < FENCE_READ_ATTEMPTS) await delay(FENCE_READ_RETRY_DELAY_MS);
+    }
+    const unreadable: FenceVerdict = { outcome: "unreadable" };
+    if (!sameVerdict(unreadable, lastSeenFence)) {
+      reportFence(unreadable, "warn");
+      lastSeenFence = unreadable;
+    }
+    return unreadable;
+  }
+
+  async function snapshotIsCurrentAsync(): Promise<boolean> {
+    return mutationVersion === persistedVersion && (await readFenceAsync()).outcome === "mine";
+  }
+
   function snapshotIsCurrent(): boolean {
     return mutationVersion === persistedVersion && readFence().outcome === "mine";
   }
 
   async function persistNow(): Promise<void> {
-    if (snapshotIsCurrent()) return;
+    if (await snapshotIsCurrentAsync()) return;
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
     if (connection.inTransaction) return;
@@ -611,7 +636,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // same window. Re-read the fence; a stamp that is not ours means the
       // version just written is NOT on disk, so it is not durable and the
       // write is redone.
-      const verdict = readFence();
+      const verdict = await readFenceAsync();
       if (verdict.outcome === "mine") {
         // only now is the version durable; a mutation during the write set
         // mutationVersion beyond `version` and schedules the next flush
@@ -626,16 +651,12 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         // transaction that is on disk. The version is not recorded durable:
         // a later write re-seals it, which is the safe direction (a version
         // reported durable over an unreadable file costs the committed
-        // transaction it claimed to save).
+        // transaction it claimed to save). Reported here, per persist, so the
+        // words match the guarantee: written, but not proven durable.
+        reportFence({ outcome: "unreadable" }, "warn");
         return;
       }
       const failure = fenceFailure(verdict);
-      if (verdict.outcome === "foreign") {
-        options.logger?.warn(
-          "VAULT_SNAPSHOT_FENCE_FOREIGN",
-          "another writer's envelope replaced the snapshot this holder just wrote; the version is not durable",
-        );
-      }
       lastError = new SnapshotPersistenceError(new Error(failure.message), failure.reason);
       continue;
     }
@@ -652,7 +673,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       mutationVersion += 1;
     },
     async persistIfDirty() {
-      if (snapshotIsCurrent()) return;
+      if (await snapshotIsCurrentAsync()) return;
       const run = persistQueue.then(() => persistNow());
       persistQueue = run.catch(() => undefined);
       await run;
@@ -685,16 +706,11 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       if (verdict.outcome === "unreadable") {
         // the bytes landed and the fence could not be read back. The write is
         // on disk, so this is not fatal: the version is simply not recorded
-        // durable, and the next holder re-seals it.
+        // durable, and the next holder re-seals it. Reported per persist.
+        reportFence({ outcome: "unreadable" }, "warn");
         return;
       }
       const failure = fenceFailure(verdict);
-      if (verdict.outcome === "foreign") {
-        options.logger?.warn(
-          "VAULT_SNAPSHOT_FENCE_FOREIGN",
-          "another writer's envelope replaced the snapshot this holder just wrote; the version is not durable",
-        );
-      }
       throw new SnapshotPersistenceError(new Error(failure.message), failure.reason);
     },
     async close() {

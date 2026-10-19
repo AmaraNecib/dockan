@@ -90,7 +90,7 @@ token reader so its no-lock branch is unit testable.
 `packages/contracts` gains the fence event codes, and `apps/web` their Arabic
 badges: `VAULT_SNAPSHOT_FENCE_FOREIGN`, `VAULT_SNAPSHOT_FENCE_UNSTAMPED`,
 `VAULT_SNAPSHOT_FENCE_MISSING`, `VAULT_SNAPSHOT_FENCE_UNKNOWN`,
-`VAULT_SNAPSHOT_FENCE_UNREADABLE`.
+`VAULT_SNAPSHOT_FENCE_UNREADABLE`, `VAULT_SNAPSHOT_FENCE_DOWNGRADE`.
 
 ## Detection points
 
@@ -164,10 +164,11 @@ route); the seam is the file format, exercised by unit tests.
 ## Risks and costs the PR owns
 
 - A read-back per write adds a 74-byte read. Cheap next to serialise+encrypt.
-- **A dirty persist reads the fence three times**, not once: `persistIfDirty`
-  asks whether anything is owed, `persistNow` asks again (the queue may have
-  waited), and the post-write re-read is the feature itself. The second and
-  third reads are the point of the design, and each is a 74-byte prefix read.
+- **A dirty persist reads the fence once** (measured: one `fs.openSync` on the
+  snapshot path per dirty persist, not three). `persistIfDirty` asks whether
+  anything is owed and `persistNow` asks again only when the queue waited;
+  in the common case the first read is the only read, and the post-write
+  re-read is the feature itself. Each read is a 74-byte prefix read.
 - A read per `persistIfDirty` when clean. Bounded and small.
 - Unfenced (no `writeStamp`) callers keep exactly today's behaviour. That is
   NOT the regression guard for the fenced path: the fenced path has its own

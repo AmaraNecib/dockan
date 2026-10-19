@@ -47,6 +47,10 @@ itself. The parent's push runs the Husky pre-push hook when the hook is availabl
 [ ] bun run lint — 0 errors?
 [ ] bun run test — all tests pass?
 [ ] bun run test:e2e — passes? (when UI flows changed)
+[ ] bun scripts/red-on-parent.ts — every test file this change **adds** fails on the
+      parent, or carries a `red-on-parent-waive` line. New files only; edited test
+      files are not gated. A wrong-reason red (the file cannot load on the parent)
+      fails the gate, and so does a waiver on a test that is already red.
 [ ] git status — working tree clean?
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```

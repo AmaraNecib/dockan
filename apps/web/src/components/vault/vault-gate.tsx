@@ -17,6 +17,7 @@ import {
   vaultUnlock,
   vaultUnlockWithRecovery,
   type VaultCleanupOutcome,
+  type VaultLockHolder,
   type VaultStatus,
 } from "@/lib/vault-client";
 
@@ -33,8 +34,16 @@ import {
  * - `in-use` — another copy of Dokan holds the data folder (#276)
  * - `stale-lock` — the folder is locked by an alive pid that stopped beating,
  *   so there may be no other copy at all (#283)
+ *
+ * The failure and what it carries are ONE value: the holder the refusal
+ * named (#274) rides with the cause, so a screen can never show a cause
+ * whose holder the status read already dropped.
  */
-export type VaultFailure = "unsupported" | "unreachable" | "in-use" | "stale-lock";
+export type VaultFailure = {
+  readonly kind: "unsupported" | "unreachable" | "in-use" | "stale-lock";
+  /** the copy that holds the data folder, when the refusal named one (#274) */
+  readonly holder?: VaultLockHolder;
+};
 
 /**
  * The refusals the gate can name exactly. Every other failed status read is
@@ -43,7 +52,7 @@ export type VaultFailure = "unsupported" | "unreachable" | "in-use" | "stale-loc
  * server that never answered. The `??` default is the safety: this screen is
  * reachable only through the one code below.
  */
-const VAULT_STATUS_FAILURES = new Map<string, VaultFailure>([
+const VAULT_STATUS_FAILURES = new Map<string, VaultFailure["kind"]>([
   ["VAULT_UNSUPPORTED", "unsupported"],
   ["VAULT_LOCKED_BY_OTHER_INSTANCE", "in-use"],
 ]);
@@ -84,7 +93,13 @@ export function useVaultStatus(): VaultHook {
         // the recycled-pid flag only ever refines the lock refusal: it must not
         // repaint an unrelated failure that happened to carry the field
         const staleLock = reason instanceof VaultRequestError && reason.staleHeartbeat && mapped === "in-use";
-        setFailure(staleLock ? "stale-lock" : mapped);
+        const kind = staleLock ? "stale-lock" : mapped;
+        // the holder rides with the cause (#274): one value, so a screen can
+        // never show a cause whose holder was dropped on the way. Only the
+        // in-use screen shows it; the stale-lock screen has its own exit
+        // (delete the lock file) and its own copy.
+        const holder = kind === "in-use" && reason instanceof VaultRequestError ? reason.holder : undefined;
+        setFailure({ kind, holder });
       });
   }, []);
 

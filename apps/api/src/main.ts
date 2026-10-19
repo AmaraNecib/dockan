@@ -27,7 +27,7 @@ import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
 import { ReclaimRetry } from "./lib/vault/reclaim-retry";
 import { isReclaimRetry } from "./lib/vault/refused-request";
-import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
+import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, vaultLockRefusalHolderText, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -822,9 +822,12 @@ function startServer(): void {
       // DOKAN_VAULT=disabled (Greptile P1): Vite kept walking the previous
       // record while the API listened somewhere else.
       if (refused) {
+        // the holder is named here, in the same shape the reclaim and the
+        // loss lines use (#274): a stuck install must be diagnosable from the
+        // log alone, and "another instance owns the folder" names no one
         logger.warn(
           "VAULT_LOCK_REFUSED",
-          `serving the in-use refusal on http://${info.address}:${info.port} (port record untouched: another instance owns the folder)`,
+          `serving the in-use refusal on http://${info.address}:${info.port} (port record untouched: another instance owns the folder; ${vaultLockRefusalHolderText(refusalError)})`,
         );
       } else {
         await publishOwnedPort(info.port);

@@ -218,6 +218,22 @@ export class VaultLockUnavailableError extends Error {
 }
 
 /**
+ * The refusal's holder, in the shape the reclaim and the loss lines use:
+ * `the holder is <host> pid <pid>` (issue #274, story 13). A refusal that names
+ * no holder — an unreadable lock file (#287), or a record that named no owner
+ * — says the holder is unknown rather than inventing one.
+ *
+ * The host is the one the lock RECORD carries, not one this process resolved:
+ * the record is the only witness to the copy that holds the folder.
+ */
+export function vaultLockRefusalHolderText(
+  error: VaultAlreadyLockedError | VaultLockUnreadableError | undefined,
+): string {
+  const holder = error instanceof VaultAlreadyLockedError ? error.owner : undefined;
+  return holder === undefined ? "the holder is unknown" : `the holder is ${holder.host} pid ${holder.pid}`;
+}
+
+/**
  * A write was refused because this process no longer owns the single-writer
  * lock (ADR-0012 clause 3). The write path asks `VaultLock.assertHeld()` at
  * the instant of each write, so it does not wait for the heartbeat timer.
@@ -917,6 +933,36 @@ function sanitizeHostForDisplay(host: string): string {
   return cleaned === "" ? VAULT_LOCK_PAGE_COPY.fallbackHost : cleaned;
 }
 
+/**
+ * The holder as the JSON envelope names it: the machine and the process, and
+ * nothing else (#274). The record is an on-disk file, so the host is stripped
+ * to the hostname charset before it reaches the wire.
+ *
+ * A host that does not survive the strip names no machine, so it names no
+ * holder: the owner cannot close a copy they cannot point at, and an empty
+ * "(machine , process 1234)" is worse than the generic copy.
+ */
+function holderForEnvelope(owner: VaultLockOwner | undefined): { host: string; pid: number } | undefined {
+  if (owner === undefined) return undefined;
+  const host = owner.host.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64);
+  if (host === "") return undefined;
+  return { host, pid: owner.pid };
+}
+
+/**
+ * The envelope the status route answers with when the folder is held. Both
+ * fields beyond the code are optional and additive: a refusal that names no
+ * holder and no recycled pid is the #276 body, and an older web build ignores
+ * what it does not know.
+ */
+type VaultLockStatusEnvelope = {
+  error: {
+    code: string;
+    staleHeartbeat?: boolean;
+    holder?: { host: string; pid: number };
+  };
+};
+
 function escapeHtml(value: string): string {
   let out = "";
   for (const char of value) {
@@ -1042,16 +1088,16 @@ export function createVaultLockRefusalApp(
   // the JSON route the app actually calls, so the web never parses the HTML
   // page: 503 with the same code /health already answers. `staleHeartbeat` is
   // the discriminator the web uses to name the lock file instead of promising
-  // a copy that may not exist (#283); it is absent for a genuine holder, so an
-  // older web build reads exactly the #276 body.
-  app.get("/api/vault/status", (c) =>
-    c.json(
-      stale
-        ? { error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }
-        : { error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } },
-      503,
-    ),
-  );
+  // a copy that may not exist (#283); it is absent for a genuine holder.
+  // `holder` names the copy the owner has to close — machine and process
+  // (#274) — so the in-app screen says what the standalone page already said.
+  // Both fields are additive: an older web build ignores what it does not
+  // know and reads the #276 body.
+  const holder = refusal.kind === "held" ? holderForEnvelope(refusal.owner) : undefined;
+  const envelope: VaultLockStatusEnvelope = { error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } };
+  if (stale) envelope.error.staleHeartbeat = true;
+  if (holder !== undefined) envelope.error.holder = holder;
+  app.get("/api/vault/status", (c) => c.json(envelope, 503));
   app.all("*", (c) => c.html(vaultLockRefusalPageHtml(refusal), 503));
   return app;
 }

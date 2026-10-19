@@ -69,6 +69,13 @@ const recoveryKeysSchema = z.object({
   keys: z.array(z.object({ id: z.string().min(1), kind: z.literal("recovery"), label: z.string().optional(), createdAt: z.string() })),
 });
 const addedKeySchema = z.object({ id: z.string().min(1), code: z.string().min(1) });
+/**
+ * The copy that holds the data folder, as the lock refusal names it (#274):
+ * the machine and the process. That is what a copy IS — the owner closes a
+ * window, and a window belongs to a machine and a process.
+ */
+export type VaultLockHolder = { host: string; pid: number };
+
 const errorEnvelopeSchema = z.object({
   error: z
     .object({
@@ -80,6 +87,13 @@ const errorEnvelopeSchema = z.object({
        * Dokan copy. Absent on every other refusal, so it never widens the copy.
        */
       staleHeartbeat: z.boolean().optional(),
+      /**
+       * The copy that holds the data folder (#274): the machine and the
+       * process, so the in-app screen can name the copy the owner has to
+       * close. A malformed holder is dropped and never fatal — the code is
+       * the cause, and one broken field must not cost it.
+       */
+      holder: z.object({ host: z.string().min(1), pid: z.number().int().positive() }).optional().catch(undefined),
     })
     .optional(),
 });
@@ -95,6 +109,8 @@ export class VaultRequestError extends Error {
     readonly retryAfterMs?: number,
     /** set only by the lock refusal's recycled-pid envelope (#283) */
     readonly staleHeartbeat = false,
+    /** the copy that holds the data folder, when the refusal named one (#274) */
+    readonly holder?: VaultLockHolder,
   ) {
     // the raw code only: UI code must translate via tError(err.code)
     super(code);
@@ -228,7 +244,12 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
   if (!response.ok) {
     // a body with no envelope (HTML, empty, truncated) is the generic refusal
     const refusal = errorEnvelopeIn(text);
-    throw new VaultRequestError(refusal?.code ?? "VAULT_UNEXPECTED", refusal?.retryAfterMs, refusal?.staleHeartbeat ?? false);
+    throw new VaultRequestError(
+      refusal?.code ?? "VAULT_UNEXPECTED",
+      refusal?.retryAfterMs,
+      refusal?.staleHeartbeat ?? false,
+      refusal?.holder,
+    );
   }
   const decoded = schema.safeParse(JSON.parse(text));
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
@@ -324,9 +345,15 @@ export async function fetchVaultStatus(): Promise<VaultStatus> {
     // code: the other-instance lock answers 503 + VAULT_LOCKED_BY_OTHER_INSTANCE
     // on this route (#275). A body that names no code names no cause — an HTML
     // refusal page, a proxy 502 — so it stays the honest "unreachable" (#276).
-    // The lock's `staleHeartbeat` flag rides along when the API has one (#283).
+    // The lock's `staleHeartbeat` flag rides along when the API has one (#283),
+    // and so does the holder's machine and process (#274).
     const refusal = errorEnvelopeIn(text);
-    throw new VaultRequestError(refusal?.code ?? "VAULT_UNREACHABLE", refusal?.retryAfterMs, refusal?.staleHeartbeat ?? false);
+    throw new VaultRequestError(
+      refusal?.code ?? "VAULT_UNREACHABLE",
+      refusal?.retryAfterMs,
+      refusal?.staleHeartbeat ?? false,
+      refusal?.holder,
+    );
   }
   const decoded = statusSchema.safeParse(JSON.parse(text));
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");

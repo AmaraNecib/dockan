@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, VaultLockUnreadableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner, type VaultLockRefusal } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, VaultLockUnreadableError, vaultLockRefusalHolderText, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner, type VaultLockRefusal } from "./lock";
 import { createAppConfig } from "../../config";
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 
@@ -1494,7 +1494,9 @@ describe("the vault lock refusal app", () => {
     const app = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
     const status = await app.fetch(new Request("http://localhost/api/vault/status"));
     expect(status.status).toBe(503);
-    expect(await status.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+    expect(await status.json()).toEqual({
+      error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", holder: { host: "shop-pc", pid: 4242 } },
+    });
 
     const health = await app.fetch(new Request("http://localhost/health"));
     expect(health.status).toBe(503);
@@ -1529,19 +1531,62 @@ describe("the vault lock refusal app", () => {
   });
 
   it("carries the recycled-pid discriminator on the status route alone (#283)", async () => {
-    // a genuine holder: the envelope is exactly the #276 body, so an older web
-    // build keeps working
+    // a genuine holder: the envelope is the #276 body plus the holder the
+    // in-app screen names (#274). An older web build ignores the extra field,
+    // so it keeps working.
     const honest = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
     const honestStatus = await honest.fetch(new Request("http://localhost/api/vault/status"));
-    expect(await honestStatus.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+    expect(await honestStatus.json()).toEqual({
+      error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", holder: { host: "shop-pc", pid: 4242 } },
+    });
 
     // a suspected recycled pid: the same code plus the story, on the route the
     // app calls; /health stays a plain refusal
     const suspected = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath(), true));
     const suspectedStatus = await suspected.fetch(new Request("http://localhost/api/vault/status"));
-    expect(await suspectedStatus.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } });
+    expect(await suspectedStatus.json()).toEqual({
+      error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true, holder: { host: "shop-pc", pid: 4242 } },
+    });
     const suspectedHealth = await suspected.fetch(new Request("http://localhost/health"));
     expect(await suspectedHealth.json()).toEqual({ ok: false, error: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+  });
+
+  it("carries the holder's machine and process on the status route (#274)", async () => {
+    // the in-app in-use screen names the copy the owner has to close; the
+    // standalone page already did (#274), the JSON route did not
+    const app = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
+    const status = await app.fetch(new Request("http://localhost/api/vault/status"));
+    expect(await status.json()).toEqual({
+      error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", holder: { host: "shop-pc", pid: 4242 } },
+    });
+  });
+
+  it("carries no holder when the record named none, or named an unusable machine (#274)", async () => {
+    // no owner in the record: there is no copy to name, so the envelope
+    // carries none and the screen keeps its generic copy
+    const nameless = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(undefined, lockPath()));
+    const namelessStatus = await nameless.fetch(new Request("http://localhost/api/vault/status"));
+    expect(await namelessStatus.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+
+    // a host that does not survive the hostname strip names no machine, so it
+    // names no holder either
+    const unusable = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError({ ...owner, host: "!!!" }, lockPath()));
+    const unusableStatus = await unusable.fetch(new Request("http://localhost/api/vault/status"));
+    expect(await unusableStatus.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+  });
+
+  it("strips a hostile host out of the holder the envelope carries (#274)", async () => {
+    // the record is an on-disk file: a hostile host must never reach the wire
+    const hostile = createVaultLockRefusalApp(
+      createAppConfig({}),
+      new VaultAlreadyLockedError({ ...owner, host: '<script>alert("x")</script>' }, lockPath()),
+    );
+    const status = await hostile.fetch(new Request("http://localhost/api/vault/status"));
+    // SAFETY: the refusal app answers this route with the status envelope
+    const body = (await status.json()) as { error: { holder?: { host: string; pid: number } } };
+    expect(body.error.holder?.host ?? "").not.toContain("<");
+    expect(body.error.holder?.host ?? "").not.toContain(">");
+    expect(body.error.holder?.pid).toBe(4242);
   });
 
   it("names the lock file on the recycled-pid page and keeps the honest page intact (#283)", () => {
@@ -1598,5 +1643,33 @@ describe("the vault lock refusal app", () => {
     expect(await ok.json()).toEqual({ ok: true, token });
     const wrong = await app.fetch(new Request("http://localhost/health-token?token=wrong"));
     expect(wrong.status).toBe(404);
+  });
+});
+
+/**
+ * The refusal log line has to name the holder, in the same shape the reclaim
+ * and the loss lines use, so a stuck install is diagnosable from the log alone
+ * (issue #274, story 13).
+ */
+describe("the refusal log line names the holder (#274)", () => {
+  const owner: VaultLockOwner = {
+    pid: 4242,
+    host: "shop-pc",
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    token: "other-owner",
+  };
+
+  it("names the machine and the process of the holder", () => {
+    expect(vaultLockRefusalHolderText(new VaultAlreadyLockedError(owner))).toBe("the holder is shop-pc pid 4242");
+  });
+
+  it("says the holder is unknown when the refusal names none", () => {
+    // an unreadable lock file (#287) has no holder at all
+    expect(vaultLockRefusalHolderText(new VaultLockUnreadableError(lockPath(), "EBUSY"))).toBe("the holder is unknown");
+    // a held lock whose record named no owner
+    expect(vaultLockRefusalHolderText(new VaultAlreadyLockedError(undefined))).toBe("the holder is unknown");
+    // and a start that has no refusal to report
+    expect(vaultLockRefusalHolderText(undefined)).toBe("the holder is unknown");
   });
 });

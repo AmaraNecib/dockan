@@ -282,6 +282,25 @@ describe("vault folder held by another instance (issue #276)", () => {
     expect(host.querySelector('[data-testid="vault-status-in-use"]')).not.toBeNull();
   });
 
+  it("names the copy that holds the folder, machine and process (#274)", async () => {
+    vaultStatusResponse = async () =>
+      Response.json(
+        { error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", holder: { host: "shop-pc", pid: 4242 } } },
+        { status: 503 },
+      );
+    const host = await mountAuthGateFor('[data-testid="vault-status-in-use"]');
+    const text = host.querySelector('[data-testid="vault-status-in-use"]')?.textContent ?? "";
+    // the owner has to know WHICH copy to close, so the machine and the
+    // process are named the way the standalone page names them
+    expect(text).toContain("shop-pc");
+    expect(text).toContain("4242");
+    // the ASCII runs are isolated, or the RTL sentence reorders them
+    expect(text).toContain("\u2066shop-pc\u2069");
+    expect(text).toContain("\u20664242\u2069");
+    // the sentence still closes the copy, so the owner knows what to do
+    expect(text).toContain("أغلق النسخة الأخرى");
+  });
+
   it("retries the refusal into the gate once the folder is free", async () => {
     let calls = 0;
     vaultStatusResponse = async () => {

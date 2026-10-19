@@ -359,3 +359,29 @@ describe("opening-balance save count follows the Arabic plural rules (issue 255)
     expect(i18n.t("supplierOpeningSave", { count: 200 })).toBe("حفظ 200 تسوية");
   });
 });
+
+/**
+ * #274 — the in-use screen names the copy that holds the data folder. The
+ * sentence is the standalone refusal page's own, so the app and the page name
+ * the same thing (story 15), and the machine and the process are interpolated
+ * into it.
+ */
+describe("the in-use copy names the copy that holds the folder (issue #274)", () => {
+  it("renders the holder's machine and process in Arabic", () => {
+    const copy = i18n.t("vaultLockHeldBy", { host: "shop-pc", pid: 4242 });
+    expect(copy).toMatch(/[\u0600-\u06FF]/);
+    expect(copy).toContain("shop-pc");
+    expect(copy).toContain("4242");
+    // the copy still says what to do, or the owner knows the holder and not
+    // the way out
+    expect(copy).toContain("أغلق النسخة الأخرى");
+  });
+
+  it("keeps the code copy for a refusal that names no holder", () => {
+    // the code key stays the fallback: an older api names no holder, and the
+    // sentence without one is still true
+    const copy = i18n.t("VAULT_LOCKED_BY_OTHER_INSTANCE");
+    expect(copy).toMatch(/[\u0600-\u06FF]/);
+    expect(copy).not.toContain("shop-pc");
+  });
+});

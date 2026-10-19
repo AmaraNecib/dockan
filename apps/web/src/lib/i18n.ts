@@ -17,7 +17,7 @@ export const PHONE_EXAMPLE_INTL = "+213550123123";
 
 /** U+2066/U+2069: isolate an ASCII run inside an RTL sentence, or its leading
  * `+` is a neutral run and the sign can render displaced. */
-const ltrIsolate = (value: string): string => `\u2066${value}\u2069`;
+export const ltrIsolate = (value: string): string => `\u2066${value}\u2069`;
 
 const resources = {
   ar: {
@@ -379,6 +379,11 @@ const resources = {
       VAULT_DATABASE_MISSING: "ملف البيانات المشفّر مفقود. استعد نسخة احتياطية سليمة أو تواصل مع الدعم.",
       VAULT_LAST_RECOVERY_KEY: "لا يمكن حذف آخر مفتاح استرداد؛ فهو طريق الاستعادة الوحيد عند نسيان كلمة المرور.",
       VAULT_LOCKED_BY_OTHER_INSTANCE: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+      // issue #274 — the refusal names the copy that holds the folder, so the
+      // owner knows WHICH window to close. The same sentence the standalone
+      // refusal page shows (الجهاز {host}، العملية {pid}).
+      vaultLockHeldBy:
+        "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز {{host}}، العملية {{pid}}). أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
       VAULT_LOOPBACK_REQUIRED: "لحماية بياناتك، لا يمكن إدخال كلمة المرور أو مفتاح الاسترداد عبر الشبكة. افتح دكان على الجهاز نفسه.",
       VAULT_MALFORMED_RESPONSE: "تعذّر تنفيذ العملية: رد غير متوقع من الخادم. أعد المحاولة.",
       VAULT_RESET_FAILED: "تعذّر تعيين كلمة المرور الجديدة. أعد المحاولة.",

@@ -169,6 +169,35 @@ describe("vault status and logout", () => {
     await expect(fetchVaultStatus()).rejects.toMatchObject({ staleHeartbeat: false });
   });
 
+  it("carries the lock refusal's holder, so the screen can name the copy (#274)", async () => {
+    routes.set(
+      "/api/vault/status",
+      () =>
+        Response.json(
+          { error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", holder: { host: "shop-pc", pid: 4242 } } },
+          { status: 503 },
+        ),
+    );
+    await expect(fetchVaultStatus()).rejects.toMatchObject({
+      code: "VAULT_LOCKED_BY_OTHER_INSTANCE",
+      holder: { host: "shop-pc", pid: 4242 },
+    });
+  });
+
+  it("reads a refusal with no holder as one, never as a holder of its own (#274)", async () => {
+    // an older api names no holder: the screen keeps its generic copy
+    routes.set("/api/vault/status", () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 }));
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ holder: undefined });
+
+    // a half-built holder is not a holder: the gate must not show a machine
+    // with no process or a process with no machine
+    routes.set(
+      "/api/vault/status",
+      () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", holder: { host: "shop-pc" } } }, { status: 503 }),
+    );
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ holder: undefined });
+  });
+
   it("reads an HTML refusal page and a code-less 5xx as unreachable, never as a named cause (#276)", async () => {
     // a build older than #275 answers the route with the Arabic refusal page
     routes.set(

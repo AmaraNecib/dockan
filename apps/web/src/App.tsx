@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useTranslation } from "react-i18next";
 
 import { authClient, useSession } from "./lib/auth-client";
-import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
+import { authErrorKey, ltrIsolate, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
 import { AuthErrorAlert, authFieldKey, useAuthReporter } from "./lib/auth-errors";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
-import { readVaultSessionToken, requestVaultReclaim } from "./lib/vault-client";
+import { readVaultSessionToken, requestVaultReclaim, type VaultLockHolder } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
 import { readSetupToken } from "./lib/setup-token";
@@ -63,9 +63,9 @@ export function RequireSession({ children }: { children: ReactNode }) {
   // plaintext) and falls through to the auth screens. A refusal that names a
   // cause gets its own screen; any other failure shows RETRY, never the legacy
   // login (finding 5).
-  if (vault.failure === "in-use") return <VaultLockedByOtherInstance onRetry={retryRefusedFolder} />;
-  if (vault.failure === "stale-lock") return <VaultLockStaleHeartbeat onRetry={vault.refresh} />;
-  if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
+  if (vault.failure?.kind === "in-use") return <VaultLockedByOtherInstance holder={vault.failure.holder} onRetry={retryRefusedFolder} />;
+  if (vault.failure?.kind === "stale-lock") return <VaultLockStaleHeartbeat onRetry={vault.refresh} />;
+  if (vault.failure?.kind === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
   if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
   return <LegacySessionGate>{children}</LegacySessionGate>;
 }
@@ -107,10 +107,19 @@ function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
  * instead of being told to start a server that is already answering. Retry is
  * the same call: it succeeds once that copy has released the folder, and it
  * never becomes an unlock form while the refusal stands (#276).
+ *
+ * The refusal names the holder — its machine and its process (#274) — so the
+ * owner can tell WHICH copy to close when several are open. A refusal that
+ * named no holder keeps the sentence without one: naming a copy nobody can
+ * point at is worse than naming none.
  */
-function VaultLockedByOtherInstance({ onRetry }: { onRetry: () => void }) {
+function VaultLockedByOtherInstance({ holder, onRetry }: { holder: VaultLockHolder | undefined; onRetry: () => void }) {
   const { t } = useTranslation();
-  return <VaultStatusScreen message={t("VAULT_LOCKED_BY_OTHER_INSTANCE")} testId="vault-status-in-use" onRetry={onRetry} />;
+  const message =
+    holder === undefined
+      ? t("VAULT_LOCKED_BY_OTHER_INSTANCE")
+      : t("vaultLockHeldBy", { host: ltrIsolate(holder.host), pid: ltrIsolate(String(holder.pid)) });
+  return <VaultStatusScreen message={message} testId="vault-status-in-use" onRetry={onRetry} />;
 }
 
 /**

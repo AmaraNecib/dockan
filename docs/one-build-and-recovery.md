@@ -360,3 +360,39 @@ encryption on.
 - **Vendor fallback as a hash** — rejected: a hash needs no secret, so anyone could
   forge a reset.
 - **Encrypt the whole database** — deferred: it just moves the key-storage problem.
+
+## 9. Stuck install: the manual recovery
+
+An install that is already stuck cannot repair itself: the app is what refuses
+the start. Its data folder holds `vault.lock`, the single-writer lock file, and
+the refusal says the data folder is in use until that file names a holder that
+is gone.
+
+The one manual step, for whoever supports the install:
+
+1. Close every copy of Dokan that can reach that folder — on the machine the
+   owner reports, and on any other machine the data folder has been used from
+   (a portable stick carried between machines).
+2. Open the data folder: the one that holds `dokan.db.enc`, `vault/` and
+   `backups/`. A portable install keeps it in the `data/` folder beside the
+   executable, an installed build in the app-data folder the OS gives the app,
+   and a dev run in `DOKAN_DATA_DIR` (or `data/` beside the running process).
+3. Delete `vault.lock` — that file and nothing else.
+4. Start Dokan again. It opens the folder.
+
+Deleting `vault.lock` is safe only while no other copy holds the folder. The
+file is what keeps two copies from writing the same data, so removing it with
+another copy running lets that copy and this one write the same encrypted
+snapshot. That is why step 1 comes first, and why "no other copy is open" is
+the condition rather than a guess.
+
+Nothing else in the data folder may be touched: `dokan.db.enc` is the shop's
+data, `vault/` holds the wrapped keys, and `backups/` holds the copies the
+owner can restore from. Deleting any of them loses data that no reinstall
+brings back.
+
+This step exists for the installs that cannot reach a build carrying the
+reclaim. A build that has it takes over a lock whose holder is provably gone,
+and a refused start takes the folder by itself once the other copy closes, so
+the manual step is only needed by an install stuck on a build from before that
+landed. ADR-0012 states the liveness rule the reclaim depends on.

@@ -280,6 +280,27 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(html).not.toContain("لا تحذف أي ملف");
   });
 
+  itHeavy("the refusal log line names the holder's machine and process (#274)", async () => {
+    // story 13: a stuck install is diagnosable from the log alone, so the
+    // refusal line names the holder the way the reclaim and the loss lines do
+    api = startApi(port);
+    await waitForHealth(port);
+    const lockFile = path.join(dir, "vault.lock");
+    // SAFETY: the lock record is JSON written by the running sidecar
+    const held = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number; host: string };
+
+    const secondPort = await freePort();
+    second = startApi(secondPort);
+    // no request to the refused instance: a request would call reclaim.trigger()
+    await waitForLog("VAULT_LOCK_REFUSED");
+
+    const refusalLine = readLogs()
+      .split("\n")
+      .find((line) => line.includes("VAULT_LOCK_REFUSED"));
+    expect(refusalLine).toBeDefined();
+    expect(refusalLine).toContain(`the holder is ${held.host} pid ${held.pid}`);
+  });
+
   itHeavy("a plaintext start still publishes its port record (greptile P1 on #298)", async () => {
     // DOKAN_VAULT=disabled never takes a vault lock, so keying publication off
     // `vaultLock` left plaintext starts with no `.dokan-port` at all: the dev

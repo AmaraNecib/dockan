@@ -71,6 +71,38 @@ describe("vault reclaim retry (#277)", () => {
     expect([...schedule]).toEqual([250, 500, 1_000, 2_000, 4_000, 8_000, 15_000]);
   });
 
+  it("keeps the loop alive when an attempt breaks its contract and throws", () => {
+    const clock = fakeScheduler();
+    const seen: (Owner | undefined)[] = [];
+    let attempts = 0;
+    const retry = new ReclaimRetry<Owner>({
+      attempt: () => {
+        attempts += 1;
+        throw new Error("the attempt threw instead of reporting a refusal");
+      },
+      onAcquired: () => {},
+      onRefused: (owner) => seen.push(owner),
+      backoffMs: [10, 20],
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    // the scheduled tick must not let the exception escape into the timer
+    retry.start();
+    expect(() => clock.fireNext()).not.toThrow();
+    expect(attempts).toBe(1);
+    expect(retry.taken).toBe(false);
+    // the failure is reported as a refusal, so the caller can see the loop ran
+    expect(seen).toEqual([undefined]);
+    // and the cadence continues: the next tick is still on the schedule
+    expect(clock.delays).toEqual([10, 20]);
+
+    // a deliberate retry is guarded the same way
+    expect(() => retry.trigger()).not.toThrow();
+    expect(retry.taken).toBe(false);
+    expect(seen).toEqual([undefined, undefined]);
+  });
+
   it("re-checks immediately on trigger and cancels the pending tick", () => {
     const clock = fakeScheduler();
     const seen: (Owner | undefined)[] = [];

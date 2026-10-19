@@ -121,7 +121,16 @@ export class ReclaimRetry<TOwner> {
     if (this.acquired || this.inFlight) return this.acquired;
     this.inFlight = true;
     try {
-      const result = this.options.attempt();
+      let result: ReclaimAttemptResult<TOwner>;
+      try {
+        result = this.options.attempt();
+      } catch {
+        // The attempt broke its half of the contract ("must not throw: report
+        // failure as ok:false"). The exception must not escape into the timer
+        // callback, where it would kill the loop and strand the refusal: the
+        // failure is reported as a refusal instead, and the cadence continues.
+        result = { ok: false, owner: undefined };
+      }
       if (result.ok) {
         this.acquired = true;
         this.cancelPending();

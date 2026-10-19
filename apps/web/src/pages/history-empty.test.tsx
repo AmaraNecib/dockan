@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import i18n from "../lib/i18n";
+import { LEDGER_REFETCH_MS } from "../lib/freshness";
 import { mountWithProviders, unmountAllMountedPages } from "../tests/page-harness";
 import { routerMock } from "../tests/router-mock";
 
@@ -19,6 +20,8 @@ interface MovementFixture {
 }
 
 let movements: MovementFixture[] = [];
+/** counts the ledger reads, so the tick is observable */
+let historyFetches = 0;
 
 // NOTE: mock.module is process-global (see tests/router-mock.tsx); this file
 // owns the whole @/lib/rpc seam for its duration.
@@ -27,7 +30,10 @@ mock.module("@/lib/rpc", () => ({
     itemsHistory: {
       queryOptions: () => ({
         queryKey: ["itemsHistory"],
-        queryFn: async () => ({ movements, total: movements.length }),
+        queryFn: async () => {
+          historyFetches += 1;
+          return { movements, total: movements.length };
+        },
       }),
       queryKey: () => ["itemsHistory"],
     },
@@ -40,6 +46,7 @@ const { ItemHistoryPage } = await import("./stock");
 describe("ItemHistoryPage empty state (issue #96)", () => {
   beforeEach(() => {
     movements = [];
+    historyFetches = 0;
     document.body.innerHTML = "";
   });
 
@@ -77,5 +84,41 @@ describe("ItemHistoryPage empty state (issue #96)", () => {
     await page.poll(() => page.query("history-table") !== null, "history-table");
 
     expect(page.query("history-empty")).toBeNull();
+  });
+});
+
+/**
+ * #295 — the running stock column on the ledger screen is a hot counter too:
+ * a sale or an adjustment posted in another window has to show up here without
+ * the owner reloading the page.
+ */
+describe("the ledger screen's tick (#295)", () => {
+  beforeEach(() => {
+    movements = [];
+    historyFetches = 0;
+    document.body.innerHTML = "";
+  });
+
+  afterEach(async () => {
+    await unmountAllMountedPages();
+    document.body.innerHTML = "";
+  });
+
+  it("carries the ledger tick on the query, background flag included", async () => {
+    // the wiring, not the runtime effect: happy-dom has no hidden tab, so the
+    // behaviour itself is measured in the e2e (#295). Deleting the tick from
+    // the page fails here; so does dropping the background flag.
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => historyFetches >= 1, "history fetch");
+    const observer = page.queryClient.getQueryCache().find({ queryKey: ["itemsHistory"] })?.observers[0];
+    expect(observer?.options.refetchInterval).toBe(LEDGER_REFETCH_MS);
+    // a window that is visible but unfocused never sends a focus event, so
+    // the tick only runs there because the flag says so
+    expect(observer?.options.refetchIntervalInBackground).toBe(true);
+  });
+
+  it("refetches the ledger on the tick, so the running stock converges", async () => {
+    const page = await mountWithProviders(<ItemHistoryPage refreshMs={20} />);
+    await page.poll(() => historyFetches >= 2, "history refetch");
   });
 });

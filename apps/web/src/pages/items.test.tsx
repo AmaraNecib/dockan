@@ -426,7 +426,16 @@ afterEach(() => {
 describe("items list hot counter (#295)", () => {
   it("polls the items list so the stock column converges without an invalidation", async () => {
     await mount({ refreshMs: 20 }); // 20ms refresh keeps the test fast
-    await waitFor(() => itemsListFetches >= 2);
+    await waitFor(() => itemsListFetches >= 1);
+    // another window posts a sale: the fixture's number moves
+    items[0]!.stockOnHand = 7;
+    // the COLUMN converges, not merely the read: a page that polls and then
+    // renders the stale number would satisfy "the list was read twice"
+    await waitFor(() => {
+      const row = rowByCell("بطارية");
+      const cell = row.querySelector<HTMLElement>('[data-testid="stock-after-cell"]');
+      return cell?.textContent?.includes("7") === true;
+    });
   });
 
   it("carries the background polling flag on the query", async () => {

@@ -339,6 +339,20 @@ describe("DashboardPage summary (issue 84)", () => {
     await page.unmount();
   });
 
+  it("carries the caller's interval and the background flag on the shared count", async () => {
+    // the wiring, not the runtime effect: happy-dom has no hidden tab, so the
+    // behaviour itself is measured in the e2e (#295). Deleting the interval
+    // fails here, and so does dropping the background flag.
+    const page = await mount(queryClient, { refreshMs: 20 });
+    expect(await waitFor(() => pendingFetchCount >= 1)).toBe(true);
+    const observer = queryClient.getQueryCache().find({ queryKey: ["returnsPendingCount"] })?.observers[0];
+    expect(observer?.options.refetchInterval).toBe(20);
+    // the badge lives in the shell, in the window the owner is NOT looking
+    // at: the tick only runs there because the flag says so
+    expect(observer?.options.refetchIntervalInBackground).toBe(true);
+    await page.unmount();
+  });
+
   it("refetches the shared pending-return count when another surface invalidates it", async () => {
     const page = await mount(queryClient);
     expect(await waitFor(() => pendingFetchCount >= 1)).toBe(true);

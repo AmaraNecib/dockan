@@ -213,9 +213,15 @@ export const SNAPSHOT_FENCE_PREFIX_BYTES = VAULT_SNAPSHOT_MAGIC.length + 1 + 1 +
  * AEAD context for a legacy (unfenced) snapshot of one vault. FROZEN: editing
  * the string makes every released snapshot unreadable, so a new envelope must
  * add a builder rather than change this one.
+ *
+ * The `v1` is a **literal** for the same reason `fencedSnapshotAad`'s `v2` is:
+ * interpolating the header-version constant would move this context the day the
+ * header format moves, and every released snapshot is sealed under it. The
+ * header version is free to bump; this string is not. `format.test.ts` scans
+ * this body for the literal and for the absence of the constant.
  */
 export function snapshotAad(vaultId: string): string {
-  return `dokan:vault:db:v${VAULT_FORMAT_VERSION}:${vaultId}`;
+  return `dokan:vault:db:v1:${vaultId}`;
 }
 
 /**
@@ -284,9 +290,14 @@ export function readSnapshotFence(envelope: Uint8Array): SnapshotFence | undefin
   return { version, stamp, bodyOffset };
 }
 
-/** AEAD context for one wrapped master key. */
+/**
+ * AEAD context for one wrapped master key. FROZEN, and written as a literal
+ * for the reason `snapshotAad` is: every wrapped key in every `vault.json` is
+ * sealed under `wrap:v1`, so a header-version bump must not move it. Pinned by
+ * a source scan in `format.test.ts`.
+ */
 export function wrapAad(vaultId: string, kind: VaultWrap["kind"]): string {
-  return `dokan:vault:wrap:v${VAULT_FORMAT_VERSION}:${vaultId}:${kind}`;
+  return `dokan:vault:wrap:v1:${vaultId}:${kind}`;
 }
 
 /**

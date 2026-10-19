@@ -70,7 +70,18 @@ const recoveryKeysSchema = z.object({
 });
 const addedKeySchema = z.object({ id: z.string().min(1), code: z.string().min(1) });
 const errorEnvelopeSchema = z.object({
-  error: z.object({ code: z.string().optional(), retryAfterMs: z.number().optional() }).optional(),
+  error: z
+    .object({
+      code: z.string().optional(),
+      retryAfterMs: z.number().optional(),
+      /**
+       * The lock refusal's recycled-pid discriminator (#283): an alive pid whose
+       * recorded heartbeat is many windows stale, so there may be no other
+       * Dokan copy. Absent on every other refusal, so it never widens the copy.
+       */
+      staleHeartbeat: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -82,6 +93,8 @@ export class VaultRequestError extends Error {
   constructor(
     readonly code: string,
     readonly retryAfterMs?: number,
+    /** set only by the lock refusal's recycled-pid envelope (#283) */
+    readonly staleHeartbeat = false,
   ) {
     // the raw code only: UI code must translate via tError(err.code)
     super(code);
@@ -183,7 +196,11 @@ export function stripVaultFragment(): void {
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
 }
 
-type VaultErrorBody = { error?: { code?: string; retryAfterMs?: number } };
+/**
+ * The envelope type comes from the schema, not a hand copy: the schema is the
+ * one place that decides which fields a refusal may carry.
+ */
+type VaultErrorBody = z.infer<typeof errorEnvelopeSchema>;
 
 /**
  * The error envelope of a failed response, or undefined when the body is not
@@ -211,7 +228,7 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
   if (!response.ok) {
     // a body with no envelope (HTML, empty, truncated) is the generic refusal
     const refusal = errorEnvelopeIn(text);
-    throw new VaultRequestError(refusal?.code ?? "VAULT_UNEXPECTED", refusal?.retryAfterMs);
+    throw new VaultRequestError(refusal?.code ?? "VAULT_UNEXPECTED", refusal?.retryAfterMs, refusal?.staleHeartbeat ?? false);
   }
   const decoded = schema.safeParse(JSON.parse(text));
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
@@ -288,7 +305,9 @@ export async function fetchVaultStatus(): Promise<VaultStatus> {
     // code: the other-instance lock answers 503 + VAULT_LOCKED_BY_OTHER_INSTANCE
     // on this route (#275). A body that names no code names no cause — an HTML
     // refusal page, a proxy 502 — so it stays the honest "unreachable" (#276).
-    throw new VaultRequestError(errorEnvelopeIn(text)?.code ?? "VAULT_UNREACHABLE");
+    // The lock's `staleHeartbeat` flag rides along when the API has one (#283).
+    const refusal = errorEnvelopeIn(text);
+    throw new VaultRequestError(refusal?.code ?? "VAULT_UNREACHABLE", refusal?.retryAfterMs, refusal?.staleHeartbeat ?? false);
   }
   const decoded = statusSchema.safeParse(JSON.parse(text));
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");

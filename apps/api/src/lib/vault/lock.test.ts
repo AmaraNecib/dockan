@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLockOwner } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner } from "./lock";
 import { createAppConfig } from "../../config";
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 
@@ -115,6 +115,17 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<v
   }
 }
 
+/** The VaultAlreadyLockedError a refused acquire threw, or undefined when it did not throw. */
+function refusalFrom(acquire: () => VaultLock): VaultAlreadyLockedError | undefined {
+  try {
+    acquire();
+    return undefined;
+  } catch (error) {
+    if (error instanceof VaultAlreadyLockedError) return error;
+    throw error;
+  }
+}
+
 /**
  * A pid the OS is guaranteed to answer `ESRCH` for: spawn a child and reap it.
  * The probe tests must not hang their outcome on whether a hardcoded pid
@@ -199,6 +210,74 @@ describe("vault single-writer lock", () => {
     expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "alive" })).toThrow(VaultAlreadyLockedError);
   });
 
+  it("names a recycled pid only once the recorded heartbeat is several windows stale (#283)", () => {
+    // An alive pid over a quiet heartbeat is the recycled-pid box. The refusal
+    // decision stands either way; only the story differs, so the flag is true
+    // only once the heartbeat is past the several-windows threshold.
+    const options = { ...fastSteal, staleHeartbeatMs: 1000, probePid: () => "alive" as const };
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 2_000).toISOString() });
+    const recent = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(recent).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(recent?.staleHeartbeatOverAlivePid).toBe(false);
+    fs.rmSync(lockPath(), { force: true });
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 5_000).toISOString() });
+    const recycled = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(recycled?.staleHeartbeatOverAlivePid).toBe(true);
+  });
+
+  it("pins the recycled-pid threshold at three default heartbeat windows on both sides (#283)", () => {
+    // The threshold is `staleHeartbeatMs` x 3 and the default window is 60s, so
+    // the boundary is 180s. Both sides matter: raise the multiplier and a
+    // genuinely recycled pid stops being named; lower it and a holder
+    // suspended for three minutes is told to delete a live lock file. The
+    // 2s/5s pair above runs at `staleHeartbeatMs: 1000` and so pins neither
+    // edge of the shipped default.
+    const options = { ...fastSteal, probePid: () => "alive" as const };
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 179_000).toISOString() });
+    const inside = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(inside).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(inside?.staleHeartbeatOverAlivePid).toBe(false);
+    fs.rmSync(lockPath(), { force: true });
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 181_000).toISOString() });
+    const past = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(past).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(past?.staleHeartbeatOverAlivePid).toBe(true);
+  });
+
+  it("does not claim a recycled pid when the refusal rests on a heartbeat (#283)", () => {
+    const options = { ...fastSteal, staleHeartbeatMs: 1000, probePid: () => "unknown" as const };
+    // An inconclusive probe defers to a FRESH heartbeat: it refuses, but the
+    // evidence is the heartbeat, not an alive pid that may have been recycled.
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date().toISOString() });
+    const inconclusive = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(inconclusive).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(inconclusive?.staleHeartbeatOverAlivePid).toBe(false);
+    // A foreign host never reads an alive pid: its heartbeat is the evidence.
+    writeLock({ host: "another-machine", heartbeatAt: new Date().toISOString() });
+    const foreign = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(foreign?.staleHeartbeatOverAlivePid).toBe(false);
+  });
+
+  it("refuses an unparseable heartbeat over an alive pid as a recycled one (#283)", () => {
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: "not a stamp" });
+    const refusal = refusalFrom(() =>
+      acquireVaultLock(dir, { ...fastSteal, staleHeartbeatMs: 1000, probePid: () => "alive" as const }),
+    );
+    expect(refusal?.staleHeartbeatOverAlivePid).toBe(true);
+  });
+
+  it("keeps a future-stamped heartbeat out of the recycled-pid story (#283)", () => {
+    // clock skew or a hand-edited record: a stamp ahead of now is not a quiet
+    // holder that stopped beating. The refusal stands (the pid answers alive),
+    // but the story must stay the honest one, so the app never sends the owner
+    // to delete `vault.lock` over a clock that merely runs ahead.
+    const options = { ...fastSteal, staleHeartbeatMs: 1000, probePid: () => "alive" as const };
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() + 5 * 60_000).toISOString() });
+    const refusal = refusalFrom(() => acquireVaultLock(dir, options));
+    expect(refusal).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(refusal?.staleHeartbeatOverAlivePid).toBe(false);
+  });
+
   it("pins the 60s heartbeat window at its edges", () => {
     // an inconclusive probe leaves the heartbeat as the only evidence
     writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 59_000).toISOString() });
@@ -273,6 +352,26 @@ describe("vault single-writer lock", () => {
     // SAFETY: the test wrote this JSON itself above
     const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
     expect(owner.token).toBe("still-ours");
+  });
+
+  it("names the lock file at the post-settle check too, not only the first look (#283)", () => {
+    // `acquireVaultLock` classifies the holder twice: before the settle window
+    // and again immediately before the rename. Both throws carry the
+    // recycled-pid story, so dropping it from the second one would send a botched
+    // boot back to "close the other copy" for a pid that looks recycled.
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString(), token: "quiet" });
+    // first look: gone, so the first check does not throw and the settle window
+    // runs; the second look answers alive over the same quiet heartbeat
+    let probes = 0;
+    const probePid = (): "gone" | "alive" => (probes++ === 0 ? "gone" : "alive");
+    const refusal = refusalFrom(() => acquireVaultLock(dir, { ...fastSteal, stealSettleMs: 20, probePid }));
+    expect(probes).toBeGreaterThanOrEqual(2);
+    expect(refusal).toBeInstanceOf(VaultAlreadyLockedError);
+    expect(refusal?.staleHeartbeatOverAlivePid).toBe(true);
+    // the record is untouched: the reclaim was abandoned, not raced
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe("quiet");
   });
 
   it("reclaims an unreadable lock file instead of blocking forever", () => {
@@ -523,6 +622,29 @@ describe("vault single-writer lock", () => {
     expect(html).not.toContain("<script");
     // the record is still identified, stripped to the hostname charset
     expect(html).toContain("imgsrcxonerroralert1");
+  });
+
+  it("escapes a hostile lock-record host in the stale page too (#283)", () => {
+    // The stale template shares `sanitizeHostForDisplay` and `escapeHtml` with
+    // the honest one, but nothing pinned that: interpolating the host straight
+    // into `staleOwnerTemplate` would keep the honest-page test above green.
+    const html = vaultLockRefusalPageHtml(
+      {
+        pid: 4242,
+        host: '<img src=x onerror="alert(1)">',
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "t",
+      },
+      true,
+    );
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("onerror=");
+    expect(html).not.toContain("<script");
+    // the holder is still named, so escaping is not simply dropping it
+    expect(html).toContain("imgsrcxonerroralert1");
+    expect(html).toContain("4242");
+    expect(html).toContain("vault.lock");
   });
 
   it("treats a lock record with an over-long host as unreadable (round-5)", () => {
@@ -1229,6 +1351,56 @@ describe("the vault lock refusal app", () => {
     const page = await app.fetch(new Request("http://localhost/"));
     expect(page.status).toBe(503);
     expect(await page.text()).toContain("البيانات مفتوحة في نسخة أخرى");
+  });
+
+  it("serves the stale-lock page from the catch-all route, not only from the helper (#283)", async () => {
+    // the catch-all route is what an owner's browser actually hits, so a
+    // dropped `stale` argument would leave the old "close the other copy"
+    // advice on screen while the JSON routes and the helper test stayed green
+    const suspected = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath(), true));
+    const suspectedPage = await suspected.fetch(new Request("http://localhost/"));
+    expect(suspectedPage.status).toBe(503);
+    const suspectedHtml = await suspectedPage.text();
+    expect(suspectedHtml).toContain("vault.lock");
+    expect(suspectedHtml).toContain("لا تبدو نسخة أخرى من دكان");
+
+    // a live, non-stale holder must not carry the stale instruction, or the
+    // stale assertion above would pass on a page that always shows it
+    const honest = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
+    const honestPage = await honest.fetch(new Request("http://localhost/"));
+    const honestHtml = await honestPage.text();
+    expect(honestHtml).not.toContain("vault.lock");
+    expect(honestHtml).toContain("لا تحذف أي ملف");
+  });
+
+  it("carries the recycled-pid discriminator on the status route alone (#283)", async () => {
+    // a genuine holder: the envelope is exactly the #276 body, so an older web
+    // build keeps working
+    const honest = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
+    const honestStatus = await honest.fetch(new Request("http://localhost/api/vault/status"));
+    expect(await honestStatus.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+
+    // a suspected recycled pid: the same code plus the story, on the route the
+    // app calls; /health stays a plain refusal
+    const suspected = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath(), true));
+    const suspectedStatus = await suspected.fetch(new Request("http://localhost/api/vault/status"));
+    expect(await suspectedStatus.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } });
+    const suspectedHealth = await suspected.fetch(new Request("http://localhost/health"));
+    expect(await suspectedHealth.json()).toEqual({ ok: false, error: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+  });
+
+  it("names the lock file on the recycled-pid page and keeps the honest page intact (#283)", () => {
+    const suspected = vaultLockRefusalPageHtml(owner, true);
+    expect(suspected).toContain("vault.lock");
+    expect(suspected).toContain("لا تبدو نسخة أخرى من دكان");
+    expect(suspected).toContain("shop-pc");
+    expect(suspected).toContain("4242");
+    expect(suspected).not.toContain("لا تحذف أي ملف");
+    // the honest page keeps its story, whose hint asks for no file deletion
+    const honest = vaultLockRefusalPageHtml(owner);
+    expect(honest).toContain("البيانات مفتوحة في نسخة أخرى");
+    expect(honest).toContain("لا تحذف أي ملف");
+    expect(honest).not.toContain("vault.lock");
   });
 
   it("echoes the boot token so the shell keeps verifying the child", async () => {

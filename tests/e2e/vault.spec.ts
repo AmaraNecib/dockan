@@ -350,6 +350,28 @@ test("a second instance on this folder: the browser is told the folder is in use
   await expect(page.getByTestId("vault-passphrase")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
 });
 
+test("a lock held by an alive pid that stopped beating names the lock file (#283)", async ({ page }) => {
+  // The API sets `staleHeartbeat` when the recorded pid answers alive while the
+  // heartbeat is several windows old, the recycled-pid box (lock.test.ts proves
+  // the emission). That state cannot be forced through a live second instance,
+  // so the wire body is built here and replayed through the SPA; the screen the
+  // owner would read is what is under test.
+  await page.route("**/api/vault/status", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }),
+    }),
+  );
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  const stale = page.getByTestId("vault-status-stale-lock");
+  await expect(stale).toBeVisible();
+  await expect(stale).toHaveText(
+    "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+  );
+  await expect(page.getByTestId("vault-status-in-use")).toHaveCount(0);
+});
+
 test("a genuinely unreachable server keeps the server-down copy (#276)", async ({ page }) => {
   // the status call dies at the client, which is the honest "server down" case
   await page.route("**/api/vault/status", (route) => route.abort("failed"));

@@ -141,10 +141,11 @@ whether the debate happens. Run them in that order, each as its own sub-agent,
 before the lane reports.
 
 - **The lenses run on a different model than the author.** Author lanes run
-  `zen-proxy/deepseek-v4.1-flash-free`; the three lenses run
-  `zen-proxy/glm-5.3-flash-free` (both via `zen-proxy`; the `opencode*` routes
-  have an expired key). A model reviewing its own diff shares the blind spots the
-  lens exists to catch, so the reviewer is never the author.
+  `opencode-go/deepseek-v4.1-flash`; the three lenses run
+  `opencode-go/glm-5.3-flash`. A model reviewing its own diff shares the blind spots the
+  lens exists to catch, so the reviewer is never the author. Both are paid models on the
+  owner's OpenCode Go subscription, chosen on 2026-10-19 after the free tier began refusing
+  this box's IP; `opencode-go/minimax-m3.1-flash-free` is the free fallback if one is down.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.

@@ -20,10 +20,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
+import * as gateModule from "./red-on-parent";
 import {
   bunOnlyRefusal,
   classifyFileRun,
@@ -116,11 +117,12 @@ function runGateFixture(
   fixture: Fixture,
   extraEnv: Record<string, string> = {},
   extraArgs: string[] = [],
+  timeoutMs = 120_000,
 ): GateOutput {
   const result = spawnSync(process.execPath, [GATE, "--base", fixture.base, ...extraArgs], {
     cwd: fixture.repo,
     encoding: "utf8",
-    timeout: 120_000,
+    timeout: timeoutMs,
     env: { ...process.env, RED_ON_PARENT_CACHE: fixture.cache, ...extraEnv },
   });
   return { status: result.status, stdout: `${result.stdout ?? ""}${result.stderr ?? ""}` };
@@ -364,11 +366,26 @@ describe("moved", () => {
     }
   });
 
-  test("an uncommitted test file is reported, not silently skipped", () => {
-    const fixture = createFixture([PKG, HELPER], []);
+  test("an uncommitted test file fails the gate, it does not pass quietly", () => {
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/red.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
     try {
-      // The gate reads HEAD, so this file is invisible to it. Saying nothing
-      // would be a silent pass on the exact file the author is about to commit.
+      // The gate reads HEAD, so this file is invisible to it. Naming it was
+      // not enough — the run exited 0, so the file that was about to be
+      // committed was judged by nothing while the report said PASS.
       writeFiles(fixture.repo, [
         {
           path: "packages/core/src/late.test.ts",
@@ -376,9 +393,46 @@ describe("moved", () => {
         },
       ]);
       const { status, stdout } = runGateFixture(fixture);
-      expect(stdout).toContain("WARNING");
       expect(stdout).toContain("packages/core/src/late.test.ts");
-      expect(status).toBe(0);
+      expect(stdout).toContain("PROBLEMS");
+      // The committed file is judged and passes, so the exit code is the
+      // unjudged one that decides this run.
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a staged test file fails the gate too", () => {
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/red.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    try {
+      // Staged is not committed: HEAD does not hold the file, so the gate
+      // cannot judge it. A run that printed PASS over it judged nothing.
+      writeFiles(fixture.repo, [
+        {
+          path: "packages/core/src/staged.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("staged", () => {\n  expect(1).toBe(2);\n});\n`,
+        },
+      ]);
+      git(fixture.repo, ["add", "packages/core/src/staged.test.ts"]);
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("packages/core/src/staged.test.ts");
+      expect(status).toBe(1);
     } finally {
       fixture.cleanup();
     }
@@ -488,18 +542,40 @@ describe("a file whose workspace owns a bunfig.toml", () => {
     path: "apps/web/preload.ts",
     text: `(globalThis as { document?: { createElement: (tag: string) => unknown } }).document = {\n  createElement: () => ({}),\n};\n`,
   };
+  // The red has to come from the change, not from a line that fails on both
+  // sides: a test that is red on the change too is a broken test, and the gate
+  // now says so (see "a test that is red on the change as well fails the
+  // gate" below).
+  const WEB_HELPER_BEFORE: File = {
+    path: "apps/web/src/helper.ts",
+    text: `export function guard(n: number): number {
+  if (n <= 0) throw new Error("zero");
+  return n;
+}
+`,
+  };
+  const WEB_HELPER_AFTER: File = {
+    path: "apps/web/src/helper.ts",
+    text: `export function guard(n: number): number {
+  if (n <= 0) throw new Error("ZERO");
+  return n;
+}
+`,
+  };
 
   test("runs from that workspace, so the preload's globals exist", () => {
     const fixture = createFixture(
-      [PKG, BUNFIG, PRELOAD],
+      [PKG, BUNFIG, PRELOAD, WEB_HELPER_BEFORE],
       [
+        WEB_HELPER_AFTER,
         {
           path: "apps/web/src/preload.test.ts",
           text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
 const host = (globalThis as { document: { createElement: (tag: string) => unknown } }).document.createElement("div");
 test("the preload defined document", () => {
   expect(host).toBeDefined();
-  expect(1).toBe(2);
+  expect(() => guard(0)).toThrow("ZERO");
 });
 `,
         },
@@ -677,10 +753,14 @@ describe("the hook-throws fixture, where a grep-based gate is wrong", () => {
 import { guard } from "./helper";
 describe("hooky", () => {
   beforeEach(() => {
-    throw new Error("hook boom");
+    try {
+      guard(0);
+    } catch (error) {
+      if ((error as Error).message === "zero") throw new Error("hook boom");
+    }
   });
   test("never gets to assert", () => {
-    expect(guard(1)).toBe(2);
+    expect(guard(1)).toBe(1);
   });
 });
 `,
@@ -956,11 +1036,9 @@ describe("classifyFileRun", () => {
   test("a waived missing junit report passes (the rename case)", () => {
     // A whole-file waiver cannot be judged against the parent, which produced
     // nothing. The names the change registers are the only list it has.
-    const { verdicts, usedWaiverLines } = classifyFileRun(
-      run(null, "SyntaxError: x"),
-      [waiver],
-      ["gr keeps a positive number"],
-    );
+    const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver], [
+      { name: "keeps a positive number", classname: "gr", status: "passed", failureType: null, assertions: null },
+    ]);
     expect(verdicts[0]?.name).toBe("WRONG_REASON_RED");
     expect(verdicts[0]?.waiver).toEqual(waiver);
     expect(verdicts.every(verdictPasses)).toBe(true);
@@ -971,12 +1049,30 @@ describe("classifyFileRun", () => {
     // Before this, `waivers[0]` was attached whatever it named and every waiver
     // was marked used, so this exact input printed PASS with nothing judged.
     const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver], [
-      "some other test",
+      { name: "some other test", classname: "", status: "passed", failureType: null, assertions: null },
     ]);
     expect(verdicts[0]?.waiver).toBeNull();
-    expect(verdicts[0]?.detail).toContain("no waiver here names a test the change registers");
+    expect(verdicts[0]?.detail).toContain("no waiver names it");
     expect(verdicts.every(verdictPasses)).toBe(false);
     expect([...usedWaiverLines]).toEqual([]);
+  });
+
+  test("a waiver excuses only the test it names", () => {
+    // A file that cannot load on the parent has no parent-side test list, so
+    // the change-side names are all the gate has. One waiver naming one of
+    // them used to excuse the whole file, and the other test was never judged.
+    const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver], [
+      { name: "keeps a positive number", classname: "gr", status: "passed", failureType: null, assertions: null },
+      { name: "already worked", classname: "other", status: "passed", failureType: null, assertions: null },
+    ]);
+    expect(verdicts.map((verdict) => verdict.test)).toEqual([
+      "gr keeps a positive number",
+      "other already worked",
+    ]);
+    expect(verdicts[0]?.waiver).toEqual(waiver);
+    expect(verdicts[1]?.waiver).toBeNull();
+    expect(verdicts.every(verdictPasses)).toBe(false);
+    expect([...usedWaiverLines]).toEqual([7]);
   });
 
   test("a skipped test pins nothing", () => {
@@ -1269,6 +1365,7 @@ describe("red-on-parent round 7", () => {
       stdoutByFile: new Map(),
       problems: [],
       uncommitted: [],
+      skipped: [],
     };
     const { verdicts, usedWaiverLines } = classifyFileRun(
       { file: "packages/core/src/cart.test.ts", junit: xml, stdout: "", error: "" },
@@ -1280,5 +1377,276 @@ describe("red-on-parent round 7", () => {
     expect(report).toContain("line 5, line 6");
     expect(report).toContain("broad reason");
     expect(report).toContain("narrow reason");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 8 — the findings the debate and the test audit filed against the
+// gate's fail-closed paths. Every one of them ended in a PASS that judged
+// nothing, or in a report that said something the code could not back.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 8", () => {
+  test("a test that is red on the change as well fails the gate", () => {
+    // The change leaves the helper broken and adds a test that is red on the
+    // parent AND on the change. The gate read only the parent's status, so it
+    // certified the test as RIGHT-REASON RED — a broken test, pinning nothing.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_BEFORE },
+        {
+          path: "packages/core/src/red.test.ts",
+          text: `import { describe, expect, test } from "bun:test";
+import { guard } from "./helper";
+describe("guard", () => {
+  test("rejects zero", () => {
+    expect(() => guard(0)).toThrow("ZERO");
+  });
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RED-ON-CHANGE");
+      expect(stdout).toContain("fails on the change as well");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a hung test run is RUN INCOMPLETE, and no waiver covers it", () => {
+    // The timeout has to be injectable, or this fixture would wait two minutes
+    // to prove the same thing. A run that did not finish is not a load error
+    // and no waiver excuses it: a waiver says why a test is green on the
+    // parent, and a timeout says nothing at all.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/hang.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("hangs", async () => {
+  expect(guard(1)).toBe(1);
+  await new Promise(() => {});
+});
+// red-on-parent-waive: "hangs" — a waiver cannot excuse a run that never finished
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(
+        fixture,
+        { RED_ON_PARENT_TEST_TIMEOUT_MS: "1500" },
+        [],
+        20_000,
+      );
+      expect(stdout).toContain("RUN-INCOMPLETE");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("the test timeout is read from the environment", () => {
+    const original = process.env.RED_ON_PARENT_TEST_TIMEOUT_MS;
+    try {
+      process.env.RED_ON_PARENT_TEST_TIMEOUT_MS = "1500";
+      expect(gateModule.testTimeoutMs()).toBe(1500);
+      process.env.RED_ON_PARENT_TEST_TIMEOUT_MS = "not a number";
+      expect(gateModule.testTimeoutMs()).toBe(120_000);
+    } finally {
+      if (original === undefined) delete process.env.RED_ON_PARENT_TEST_TIMEOUT_MS;
+      else process.env.RED_ON_PARENT_TEST_TIMEOUT_MS = original;
+    }
+  });
+
+  test("a waiver that matches no test fails the gate", () => {
+    // The stray waiver excuses nothing, so the run has to fail: the file is
+    // red on the parent, and the waiver is a claim about a test that is not
+    // there. The unit case below pins the branch; this one pins the wiring.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/stale.test.ts",
+          text: `import { describe, expect, test } from "bun:test";
+import { guard } from "./helper";
+describe("stale", () => {
+  test("rejects zero", () => {
+    expect(() => guard(0)).toThrow("ZERO");
+  });
+});
+// red-on-parent-waive: "no such test" — stale: the test was renamed
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("WAIVER-MISFILED");
+      expect(stdout).toContain("matches no test");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a waiver that matched nothing is WAIVER MISFILED", () => {
+    const waiver: Waiver = { pattern: "no such test", reason: "stale", line: 9 };
+    const verdicts = unusedWaiverVerdicts("packages/core/src/x.test.ts", [waiver], new Set());
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]?.name).toBe("WAIVER_MISFILED");
+    expect(verdicts[0]?.detail).toContain("matches no test");
+    expect(verdicts.every(verdictPasses)).toBe(false);
+  });
+
+  test("a waiver excuses only the test it names", () => {
+    // The file cannot load on the parent, so the gate has no parent-side test
+    // list; the names the change registers are all it has. A waiver naming one
+    // of them used to excuse the whole file, and the other test was never
+    // judged and never named.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        {
+          path: "packages/core/src/helper.ts",
+          text: `${HELPER_AFTER}
+export function brandNew(n: number): number {
+  return n;
+}
+`,
+        },
+        {
+          path: "packages/core/src/mixed.test.ts",
+          text: `import { describe, expect, test } from "bun:test";
+import { brandNew } from "./helper";
+describe("mixed", () => {
+  test("pins the new behaviour", () => {
+    expect(brandNew(1)).toBe(1);
+  });
+});
+describe("other", () => {
+  test("already worked", () => {
+    expect(1).toBe(1);
+  });
+});
+// red-on-parent-waive: "mixed pins the new behaviour" — rename: the test moved with the file
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("WRONG-REASON-RED");
+      // The unjudged sibling has to be named: a waiver that names one test says
+      // nothing about the next one.
+      expect(stdout).toContain("other already worked");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a test file outside the gate's scope is named, not silently ignored", () => {
+    // The gate on its own pull request adds `scripts/red-on-parent.test.ts` and
+    // gates nothing. The report has to say which files it did not gate: "no
+    // added test files" reads as "this change adds no tests", which is a
+    // different claim.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "scripts/outside.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("outside", () => {\n  expect(1).toBe(1);\n});\n`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("scripts/outside.test.ts");
+      expect(stdout).toContain("skipped test files");
+      expect(stdout).toContain("added test files: 0");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("the manifest names a copied file as soon as it is copied", () => {
+    // The manifest is written on every copy, not after the loop: a run that
+    // dies half way has to leave the copied file named, or the next run
+    // inherits it — and `bun test <path>` is a substring filter over the
+    // discovered files, so an orphan is picked up by a later run.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-manifest-"));
+    const worktree = join(dir, "wt");
+    const manifest = join(dir, "base.copied.json");
+    mkdirSync(worktree, { recursive: true });
+    const copied: string[] = [];
+    try {
+      gateModule.copyIntoBaseWorktree(
+        manifest,
+        worktree,
+        "packages/core/src/x.test.ts",
+        "content",
+        copied,
+      );
+      expect(gateModule.readManifest(manifest)).toEqual(["packages/core/src/x.test.ts"]);
+      expect(existsSync(join(worktree, "packages/core/src/x.test.ts"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a manifest path that escapes the worktree names nothing", () => {
+    const worktree = join(tmpdir(), "wt");
+    expect(gateModule.manifestTarget(worktree, "packages/core/src/x.test.ts")).toBe(
+      join(resolve(worktree), "packages/core/src/x.test.ts"),
+    );
+    expect(gateModule.manifestTarget(worktree, "../victim.txt")).toBeNull();
+    expect(gateModule.manifestTarget(worktree, "packages/../../victim.txt")).toBeNull();
+    expect(gateModule.manifestTarget(worktree, "")).toBeNull();
+  });
+
+  test("a manifest path that escapes the worktree deletes nothing", () => {
+    // The manifest lives in a shared temp directory, so an entry in it is not
+    // a path the gate may delete: `join` normalises `..`, and the file it
+    // names would be outside the worktree.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/red.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    try {
+      runGateFixture(fixture);
+      const victim = join(fixture.cache, "victim.txt");
+      writeFileSync(victim, "keep me");
+      writeFileSync(
+        join(fixture.cache, `${fixture.base}.copied.json`),
+        JSON.stringify(["../victim.txt"]),
+      );
+      runGateFixture(fixture);
+      expect(existsSync(victim)).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

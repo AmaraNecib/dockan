@@ -58,7 +58,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 const BUN = process.execPath;
 
@@ -80,7 +80,7 @@ export function bunOnlyRefusal(
   return "red-on-parent: run this with bun, not node — every parent-side run spawns `bun test` from process.execPath, and under node each file reads as a whole-file load failure\n";
 }
 const WAIVER_MARKER = "red-on-parent-waive";
-const TEST_TIMEOUT_MS = 120_000;
+const DEFAULT_TEST_TIMEOUT_MS = 120_000;
 const GIT_TIMEOUT_MS = 60_000;
 /** The cold `bun install` in the base worktree. Inside the lock, so the lock
  * wait budget has to cover it. */
@@ -129,6 +129,7 @@ export type WaiverParse = {
 
 export type VerdictName =
   | "RIGHT_REASON_RED"
+  | "RED_ON_CHANGE"
   | "WRONG_REASON_RED"
   | "NOT_ON_PARENT"
   | "GREEN_ON_PARENT"
@@ -332,6 +333,9 @@ export function verdictPasses(verdict: Verdict): boolean {
     case "NOT_ON_PARENT":
     case "GREEN_ON_PARENT":
       return verdict.waiver !== null;
+    // A test that is red on the change is broken, and a waiver says why a test
+    // is green on the parent: it cannot excuse a broken test.
+    case "RED_ON_CHANGE":
     case "WAIVER_MISFILED":
     case "RUN_INCOMPLETE":
       return false;
@@ -438,7 +442,7 @@ function failureReason(result: TestResult): string {
 export function classifyFileRun(
   run: FileRun,
   waivers: Waiver[],
-  changeNames: string[] = [],
+  changeResults: TestResult[] = [],
 ): Classification {
   const used = new Set<number>();
   const verdicts: Verdict[] = [];
@@ -467,25 +471,45 @@ export function classifyFileRun(
     // registers, and that is the only list available here. This used to attach
     // `waivers[0]` whatever it named and mark every waiver used, so a file that
     // never loaded printed PASS with no test judged at all.
-    const covers = (waiver: Waiver): boolean => {
-      const re = new RegExp(waiver.pattern, "u");
-      return changeNames.some((name) => re.test(name));
-    };
-    const covering = waivers.filter(covers);
-    const waiver = covering[0] ?? null;
-    for (const candidate of covering) used.add(candidate.line);
-    const explainsNothing =
-      waiver === null && waivers.length > 0
-        ? ` — and no waiver here names a test the change registers (${changeNames.join(", ") || "none found"})`
-        : "";
-    verdicts.push({
-      file: run.file,
-      test: "(whole file)",
-      name: "WRONG_REASON_RED",
-      detail: `${reason}${waiver === null ? explainsNothing : ` — covered by the waiver on line ${waiver.line}`}`,
-      waiver,
-      waivers: covering,
-    });
+    //
+    // A waiver names the tests it excuses, not the file it sits in. With the
+    // change-side names in hand, every test is judged on its own: the ones a
+    // waiver names are excused, the ones no waiver names stay unexcused and
+    // fail. `.some` over the change-side names used to excuse the whole file
+    // for one waiver, and the other tests in it were never judged and never
+    // named — the broad file-level skip the design doc forbids.
+    if (changeResults.length === 0) {
+      const explainsNothing =
+        waivers.length > 0
+          ? " — and no waiver here names a test the change registers (none found)"
+          : "";
+      verdicts.push({
+        file: run.file,
+        test: "(whole file)",
+        name: "WRONG_REASON_RED",
+        detail: `${reason}${explainsNothing}`,
+        waiver: null,
+        waivers: [],
+      });
+      return { verdicts, usedWaiverLines: used };
+    }
+    for (const result of changeResults) {
+      const matching = waivers.filter((candidate) => matches(candidate, result));
+      const waiver = matching[0] ?? null;
+      for (const candidate of matching) used.add(candidate.line);
+      verdicts.push({
+        file: run.file,
+        test: displayName(result),
+        name: "WRONG_REASON_RED",
+        detail: `${reason} — the parent never ran this test, so nothing was judged there${
+          waiver === null
+            ? ", and no waiver names it"
+            : ` — covered by the waiver on line ${waiver.line}`
+        }`,
+        waiver,
+        waivers: matching,
+      });
+    }
     return { verdicts, usedWaiverLines: used };
   }
 
@@ -615,6 +639,25 @@ export function isGatedTestPath(path: string): boolean {
   return /\.test\.[cm]?[jt]sx?$/u.test(normalized);
 }
 
+/** A test file of any kind, gated or not. */
+export function isTestLikePath(path: string): boolean {
+  return /\.(test|spec)\.[cm]?[jt]sx?$/u.test(path.replaceAll("\\", "/"));
+}
+
+/** Why the gate does not gate this path, or null when the path is in scope. */
+export function skipReason(path: string): string | null {
+  const normalized = path.replaceAll("\\", "/");
+  if (!/^(apps|packages)\//u.test(normalized)) return "outside apps/ and packages/";
+  if (normalized.includes("/e2e/") || normalized.includes("/tests/e2e/")) {
+    return "under an e2e directory";
+  }
+  if (/\.spec\.[cm]?[jt]sx?$/u.test(normalized)) return "a Playwright spec";
+  return null;
+}
+
+/** A test file the diff touches and the gate does not gate. */
+export type SkippedTestFile = { path: string; reason: string };
+
 // ---------------------------------------------------------------------------
 // Git and the base worktree
 // ---------------------------------------------------------------------------
@@ -683,7 +726,7 @@ function runFrom(root: string, file: string, junitPath: string): CommandResult {
     BUN,
     ["test", here.path, "--reporter=junit", `--reporter-outfile=${junitPath}`],
     here.cwd,
-    TEST_TIMEOUT_MS,
+    testTimeoutMs(),
   );
 }
 
@@ -715,19 +758,86 @@ function manifestPath(repo: string, baseSha: string): string {
   return join(cacheRoot(repo), `${baseSha}.copied.json`);
 }
 
-function readManifest(path: string): string[] {
+/** Write the list of files copied into the base worktree. */
+export function writeManifest(path: string, copied: string[]): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(copied, null, 2)}\n`);
+}
+
+export function readManifest(path: string): string[] {
   if (!existsSync(path)) return [];
-  // SAFETY: this script writes the manifest as a JSON array of repo-relative
-  // path strings. A corrupt file can only under-clear copies, and every path it
-  // could name was already proved absent at the base before it was copied.
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as string[];
-  return Array.isArray(parsed) ? parsed : [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    // The gate writes this file, so a manifest it cannot read was written by
+    // something else. The run cannot clear what it does not know about, and it
+    // cannot safely guess either: it says so and stops.
+    throw new GateError(`the copy manifest at ${path} is not readable JSON`);
+  }
+  if (!Array.isArray(parsed)) return [];
+  // SAFETY: the gate writes this file as a JSON array of path strings, and
+  // that is the contract this cast states. Every entry is checked again
+  // against the worktree before it names a file, so an entry that is not a
+  // usable path can remove nothing.
+  return (parsed as string[]).filter((entry) => entry.length > 0);
+}
+
+/**
+ * The file a manifest entry names, or null when it names something outside the
+ * worktree.
+ *
+ * The manifest lives under the cache root, which is a shared temp directory
+ * unless `RED_ON_PARENT_CACHE` says otherwise, so an entry in it is not a path
+ * the gate may delete: `join` normalises `..`, and an entry like
+ * `../../../apps/api/src/index.ts` would delete a file outside the worktree.
+ */
+export function manifestTarget(worktree: string, relative: string): string | null {
+  if (relative.length === 0) return null;
+  const root = resolve(worktree);
+  let target: string;
+  try {
+    target = resolve(root, relative);
+  } catch {
+    // A hand-edited manifest can hold something that is not a path at all. It
+    // names no file, so nothing is removed.
+    return null;
+  }
+  if (target === root) return null;
+  return target.startsWith(`${root}${sep}`) ? target : null;
+}
+
+/**
+ * Copy one added file into the base worktree and name it in the manifest.
+ *
+ * The manifest is written on every copy, not after the loop: a run that dies
+ * half way — a `git show` that fails, an interrupt — would otherwise leave the
+ * copied files in the cached worktree with nothing naming them, and the next
+ * run's `bun test <path>` (a substring filter over the discovered files) would
+ * pick the orphan up and judge a file that is not part of the change.
+ */
+export function copyIntoBaseWorktree(
+  manifest: string,
+  worktree: string,
+  file: string,
+  source: string,
+  copied: string[],
+): void {
+  const destination = join(worktree, file);
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, source);
+  copied.push(file);
+  writeManifest(manifest, copied);
 }
 
 function clearPreviousCopies(repo: string, worktree: string, baseSha: string): void {
   const manifest = manifestPath(repo, baseSha);
   for (const relative of readManifest(manifest)) {
-    rmSync(join(worktree, relative), { force: true });
+    const target = manifestTarget(worktree, relative);
+    // A path that resolves outside the worktree names nothing the gate may
+    // delete, so it is skipped rather than removed.
+    if (target === null) continue;
+    rmSync(target, { force: true });
   }
   rmSync(manifest, { force: true });
 }
@@ -889,6 +999,20 @@ function ensureBaseNodeModules(worktree: string): string {
 // The run
 // ---------------------------------------------------------------------------
 
+/**
+ * How long a `bun test` run may take before the gate calls it unfinished.
+ *
+ * `RED_ON_PARENT_TEST_TIMEOUT_MS` overrides it. A hard-coded two minutes
+ * cannot be tested: a fixture whose test hangs would have to wait that long
+ * to prove that a run that did not finish is RUN INCOMPLETE and that no
+ * waiver covers it.
+ */
+export function testTimeoutMs(): number {
+  const override = Number.parseInt(process.env.RED_ON_PARENT_TEST_TIMEOUT_MS ?? "", 10);
+  if (Number.isInteger(override) && override > 0) return override;
+  return DEFAULT_TEST_TIMEOUT_MS;
+}
+
 export class GateError extends Error {}
 
 export type GateOptions = {
@@ -909,6 +1033,8 @@ export type GateRun = {
   problems: string[];
   /** Test files in the working tree that HEAD does not hold: the gate cannot see them. */
   uncommitted: string[];
+  /** Test files the diff touches that the gate does not gate, with the reason. */
+  skipped: SkippedTestFile[];
 };
 
 function resolveBase(repo: string, requested: string | null): string {
@@ -927,15 +1053,8 @@ function resolveBase(repo: string, requested: string | null): string {
 }
 
 export function addedTestFiles(repo: string, mergeBase: string, head: string): string[] {
-  // `-z`: git quotes any path holding a non-ASCII byte, and a quoted
-  // `"packages/core/src/caf\303\251.test.ts"` fails `isGatedTestPath` on both
-  // its leading quote and its trailing one, so such a file would be skipped in
-  // silence. NUL separation carries the raw bytes, so nothing is trimmed here.
-  const changed = gitText(repo, ["diff", "--name-only", "-z", "--no-renames", mergeBase, head])
-    .split("\0")
-    .filter((path) => path.length > 0);
   const added: string[] = [];
-  for (const path of changed) {
+  for (const path of changedPaths(repo, mergeBase, head)) {
     if (!isGatedTestPath(path)) continue;
     // Present at the parent => an edited file, never gated. Absent => added.
     if (git(repo, ["cat-file", "-e", `${mergeBase}:${path}`]).ok) continue;
@@ -944,18 +1063,58 @@ export function addedTestFiles(repo: string, mergeBase: string, head: string): s
   return added.sort();
 }
 
+/** The paths the diff touches, with the raw bytes of every name. */
+function changedPaths(repo: string, mergeBase: string, head: string): string[] {
+  // `-z`: git quotes any path holding a non-ASCII byte, and a quoted
+  // `"packages/core/src/caf\303\251.test.ts"` fails `isGatedTestPath` on both
+  // its leading quote and its trailing one, so such a file would be skipped in
+  // silence. NUL separation carries the raw bytes, so nothing is trimmed here.
+  return gitText(repo, ["diff", "--name-only", "-z", "--no-renames", mergeBase, head])
+    .split("\0")
+    .filter((path) => path.length > 0);
+}
+
 /**
- * Test files the working tree holds but HEAD does not. The gate reads HEAD, so
- * an uncommitted test file is invisible to it — a silent pass if nobody says so.
+ * The test files the diff touches that the gate does not gate, with the reason.
+ *
+ * The report used to say "no added test files" whether the diff added none or
+ * added five outside the gate's scope, so a change that added a test the gate
+ * never looked at read as a change that added no test at all. This gate on its
+ * own pull request is the case: it adds `scripts/red-on-parent.test.ts` and
+ * gates nothing.
+ */
+export function skippedTestFiles(
+  repo: string,
+  mergeBase: string,
+  head: string,
+): SkippedTestFile[] {
+  const added = new Set(addedTestFiles(repo, mergeBase, head));
+  const skipped: SkippedTestFile[] = [];
+  for (const path of changedPaths(repo, mergeBase, head)) {
+    if (added.has(path)) continue;
+    if (!isTestLikePath(path)) continue;
+    skipped.push({ path, reason: skipReason(path) ?? "edited, not added" });
+  }
+  return skipped;
+}
+
+/**
+ * Test files the working tree holds that HEAD does not. The gate reads HEAD, so
+ * an uncommitted test file is invisible to it — and a run that judged nothing
+ * must not pass.
  */
 export function uncommittedTestFiles(repo: string): string[] {
   // `-z` for the same reason as `addedTestFiles`: porcelain quotes a non-ASCII
   // path, and the quoting hides it from `isGatedTestPath`.
-  return gitText(repo, ["status", "--porcelain", "-z", "--no-renames"])
+  const entries = gitText(repo, ["status", "--porcelain", "-z", "--no-renames"])
     .split("\0")
     .filter((entry) => entry.length > 3)
     .map((entry) => entry.slice(3))
     .filter((path) => isGatedTestPath(path));
+  // A file HEAD holds is either edited or deleted: the gate reads HEAD, and an
+  // edited test file is out of scope by design. A file HEAD does NOT hold is
+  // invisible to the gate, and that is the case that must not pass quietly.
+  return entries.filter((path) => !git(repo, ["cat-file", "-e", `HEAD:${path}`]).ok);
 }
 
 /** The file's content as of `head`, not as of the working tree. */
@@ -1005,7 +1164,7 @@ function changeSideResults(
 export function lockWaitBudget(fileCount: number): number {
   const override = Number.parseInt(process.env.RED_ON_PARENT_LOCK_WAIT_MS ?? "", 10);
   if (Number.isInteger(override) && override > 0) return override;
-  return INSTALL_TIMEOUT_MS + fileCount * TEST_TIMEOUT_MS + LOCK_WAIT_SLACK_MS;
+  return INSTALL_TIMEOUT_MS + fileCount * testTimeoutMs() + LOCK_WAIT_SLACK_MS;
 }
 
 export function runGate(options: GateOptions): GateRun {
@@ -1013,18 +1172,31 @@ export function runGate(options: GateOptions): GateRun {
   const baseSha = gitText(repo, ["merge-base", options.base, head]).trim();
   const uncommitted = uncommittedTestFiles(repo);
   const files = addedTestFiles(repo, baseSha, head);
+  const skipped = skippedTestFiles(repo, baseSha, head);
+  // A test file the working tree holds and HEAD does not is invisible to the
+  // gate: it is neither in the diff nor in the commit the gate reads. Naming
+  // it was not enough — the run exited 0, so the file that was about to be
+  // committed was judged by nothing. It is a problem now: any entry here fails
+  // the run.
+  const uncommittedProblems = uncommitted.map(
+    (path) =>
+      `${path}: is in the working tree but not in HEAD, so the gate cannot judge it — commit it and run again`,
+  );
   // `merge-base(base, head)` is `head` itself when the base already contains the
   // change, so the diff is empty and the gate would print PASS having judged
   // nothing — indistinguishable from "this change adds no test". `--base HEAD`
   // after a local merge, or a gate wired into the target branch's own push job,
-  // both land here and both look green forever. The one exception is the case the
-  // uncommitted WARNING already explains: HEAD is the base because the change's
-  // test file was never committed, which the gate reports by name instead.
+  // both land here and both look green forever.
   const headSha = gitText(repo, ["rev-parse", "--verify", `${head}^{commit}`]).trim();
-  const baseContainsHead =
-    git(repo, ["merge-base", "--is-ancestor", headSha, options.base]).ok &&
-    !(headSha === baseSha && uncommitted.length > 0);
+  const baseContainsHead = git(repo, ["merge-base", "--is-ancestor", headSha, options.base]).ok;
   if (files.length === 0) {
+    const problems: string[] = [];
+    if (baseContainsHead) {
+      problems.push(
+        `--base ${options.base} already contains ${head}: there is no change to gate, so this run would pass having judged nothing. Point --base at the branch this change targets.`,
+      );
+    }
+    for (const problem of uncommittedProblems) problems.push(problem);
     return {
       baseSha,
       worktree: "(none)",
@@ -1033,12 +1205,9 @@ export function runGate(options: GateOptions): GateRun {
       files,
       verdicts: [],
       stdoutByFile: new Map(),
-      problems: baseContainsHead
-        ? [
-            `--base ${options.base} already contains ${head}: there is no change to gate, so this run would pass having judged nothing. Point --base at the branch this change targets.`,
-          ]
-        : [],
+      problems,
       uncommitted,
+      skipped,
     };
   }
   // Two runs from the same checkout and the same base share this worktree, and
@@ -1049,7 +1218,7 @@ export function runGate(options: GateOptions): GateRun {
   const lockWaitMs = lockWaitBudget(files.length);
   const release = acquireWorktreeLock(join(cacheRoot(repo), `wt-${baseSha}.lock`), lockWaitMs);
   try {
-    return gateBaseWorktree({ repo, head, baseSha, files, uncommitted, fresh });
+    return gateBaseWorktree({ repo, head, baseSha, files, uncommitted, skipped, fresh });
   } finally {
     release();
   }
@@ -1062,17 +1231,22 @@ function gateBaseWorktree(input: {
   baseSha: string;
   files: string[];
   uncommitted: string[];
+  skipped: SkippedTestFile[];
   fresh: boolean;
 }): GateRun {
-  const { repo, head, baseSha, files, uncommitted, fresh } = input;
+  const { repo, head, baseSha, files, uncommitted, skipped, fresh } = input;
   const { path: worktree, created } = ensureBaseWorktree(repo, baseSha, fresh);
   const installLog = ensureBaseNodeModules(worktree);
 
   const outDir = mkdtempSync(join(tmpdir(), "dokan-red-on-parent-junit-"));
   const verdicts: Verdict[] = [];
   const stdoutByFile = new Map<string, string>();
-  const problems: string[] = [];
+  const problems: string[] = uncommitted.map(
+    (path) =>
+      `${path}: is in the working tree but not in HEAD, so the gate cannot judge it — commit it and run again`,
+  );
   const copied: string[] = [];
+  const manifest = manifestPath(repo, baseSha);
   // The parent side runs the file *at `head`*, copied into the base worktree.
   // The change side has to run the checkout's own modules, so it can only
   // enumerate the tests of the commit that is checked out. Reviewing any other
@@ -1096,10 +1270,7 @@ function gateBaseWorktree(input: {
   try {
     for (const file of files) {
       const source = readAtRevision(repo, head, file);
-      const destination = join(worktree, file);
-      mkdirSync(dirname(destination), { recursive: true });
-      writeFileSync(destination, source);
-      copied.push(file);
+      copyIntoBaseWorktree(manifest, worktree, file, source, copied);
 
       const junitPath = join(outDir, `${copied.length}.xml`);
       rmSync(junitPath, { force: true });
@@ -1130,22 +1301,35 @@ function gateBaseWorktree(input: {
       const changeResults = enumerateChange
         ? changeSideResults(repo, file, join(outDir, `${copied.length}-change.xml`), problems)
         : [];
-      const classified = classifyFileRun(
-        fileRun,
-        parsed.waivers,
-        changeResults.flatMap((changeResult) => [changeResult.name, displayName(changeResult)]),
-      );
+      const classified = classifyFileRun(fileRun, parsed.waivers, changeResults);
       const unregistered =
         parentResults.length === 0
           ? { verdicts: [], usedWaiverLines: new Set<number>() }
           : unregisteredVerdicts(file, parentResults, changeResults, parsed.waivers);
       verdicts.push(...classified.verdicts, ...unregistered.verdicts);
+      // A test that is red on the change as well is a broken test: it pins
+      // nothing, and the guide used to promise that a right-reason red "passes
+      // on the change" while nothing read the change side's status. The
+      // change's own run is already made, so its statuses cost nothing to read.
+      const notOnParent = new Set(unregistered.verdicts.map((verdict) => verdict.test));
+      for (const changeResult of changeResults) {
+        if (changeResult.status !== "failed") continue;
+        const test = displayName(changeResult);
+        // A test the parent never reported is already reported as NOT ON
+        // PARENT; two rows for one test would say the same thing twice.
+        if (notOnParent.has(test)) continue;
+        verdicts.push({
+          file,
+          test,
+          name: "RED_ON_CHANGE",
+          detail:
+            "the test fails on the change as well, so it pins nothing the parent can be asked about",
+          waiver: null,
+          waivers: [],
+        });
+      }
       const usedLines = new Set([...classified.usedWaiverLines, ...unregistered.usedWaiverLines]);
       verdicts.push(...unusedWaiverVerdicts(file, parsed.waivers, usedLines));
-    }
-    if (copied.length > 0) {
-      mkdirSync(dirname(manifestPath(repo, baseSha)), { recursive: true });
-      writeFileSync(manifestPath(repo, baseSha), `${JSON.stringify(copied, null, 2)}\n`);
     }
   } finally {
     rmSync(outDir, { recursive: true, force: true });
@@ -1161,6 +1345,7 @@ function gateBaseWorktree(input: {
     stdoutByFile,
     problems,
     uncommitted,
+    skipped,
   };
 }
 
@@ -1175,6 +1360,14 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
     fixes: [
       "nothing — keep the test as it is",
       "do not waive it: a waiver on a right-reason red is misfiled and the gate will say so",
+    ],
+  },
+  {
+    name: "RED_ON_CHANGE",
+    title: "the test fails on the change as well, so it pins nothing",
+    fixes: [
+      "run the test in your checkout and fix it — a test that is red on the change is broken, whatever the parent says",
+      "if your working tree has uncommitted changes, commit them and run the gate again: the change's own run reads the working tree, not the commit",
     ],
   },
   {
@@ -1233,11 +1426,19 @@ export function renderReport(run: GateRun, problems: string[]): string {
   );
   if (run.uncommitted.length > 0) {
     lines.push(
-      `WARNING: ${run.uncommitted.length} test file(s) in the working tree are not in HEAD, so the gate cannot see them. Commit first: ${run.uncommitted.join(", ")}`,
+      `NOT JUDGED: ${run.uncommitted.length} test file(s) in the working tree are not in HEAD, so the gate cannot see them. Commit first: ${run.uncommitted.join(", ")}`,
     );
   }
   if (files === 0) {
-    lines.push("no added test files: nothing to gate");
+    lines.push("no added test files this gate covers: nothing to gate");
+    lines.push("added test files: 0");
+    // The files the gate decided not to gate are named, with the reason. "No
+    // added test files" used to cover both "this change adds no test" and "this
+    // change adds five tests the gate never looked at".
+    if (run.skipped.length > 0) {
+      lines.push("skipped test files:");
+      for (const entry of run.skipped) lines.push(`  ${entry.path} — ${entry.reason}`);
+    }
     // A run that judged nothing still owes its problems: an empty diff is the
     // shape a misconfigured `--base` produces, and swallowing the reason here is
     // what turned that misconfiguration into a green result.
@@ -1305,6 +1506,13 @@ export function renderReport(run: GateRun, problems: string[]): string {
 
   const counts = countVerdicts(run.verdicts);
   lines.push("", `added test files: ${files} · ${summaryLine(counts)}`);
+  // The files the gate decided not to gate are named, with the reason: a
+  // change that added a test the gate never looked at must not read as a
+  // change that added no test.
+  if (run.skipped.length > 0) {
+    lines.push("skipped test files:");
+    for (const entry of run.skipped) lines.push(`  ${entry.path} — ${entry.reason}`);
+  }
   const failed = failing.length > 0 || problems.length > 0;
   lines.push(failed ? "red-on-parent: FAIL" : "red-on-parent: PASS");
   return `${lines.join("\n")}\n`;
@@ -1337,6 +1545,7 @@ function countVerdicts(verdicts: Verdict[]): Map<VerdictName, number> {
 function summaryLine(counts: Map<VerdictName, number>): string {
   const order: VerdictName[] = [
     "RIGHT_REASON_RED",
+    "RED_ON_CHANGE",
     "WRONG_REASON_RED",
     "NOT_ON_PARENT",
     "GREEN_ON_PARENT",

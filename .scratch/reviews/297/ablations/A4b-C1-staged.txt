@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+429 |           text: `import { expect, test } from "bun:test";\ntest("staged", () => {\n  expect(1).toBe(2);\n});\n`,
+430 |         },
+431 |       ]);
+432 |       git(fixture.repo, ["add", "packages/core/src/staged.test.ts"]);
+433 |       const { status, stdout } = runGateFixture(fixture);
+434 |       expect(stdout).toContain("packages/core/src/staged.test.ts");
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "packages/core/src/staged.test.ts"
+Received: "red-on-parent: base eaadebb0090a (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-DbOtGo\\wt-eaadebb0090ab844e61c554337ab7d03298f21dd, created)\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:434:22)
+(fail) red-on-parent gate fixtures > a staged test file fails the gate too [1149.05ms]
+
+ 0 pass
+ 73 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [1171.00ms]

@@ -1,0 +1,268 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+(pass) red-on-parent gate fixtures > RIGHT-REASON RED: an assertion red on the parent passes the gate [1004.80ms]
+(pass) red-on-parent gate fixtures > WRONG-REASON RED: a file that cannot load on the parent fails the gate [918.09ms]
+(pass) red-on-parent gate fixtures > GREEN ON PARENT: a test that passes on the parent fails the gate [952.26ms]
+(pass) red-on-parent gate fixtures > WAIVER MISFILED: a waiver on a test that is already red fails the gate [1279.72ms]
+(pass) red-on-parent gate fixtures > GREEN ON PARENT, waived: the escape hatch passes the gate [1337.13ms]
+(pass) red-on-parent gate fixtures > WRONG-REASON RED, waived: a rename whose import only resolves on the change passes [1055.19ms]
+392 |           text: `import { expect, test } from "bun:test";\ntest("late", () => {\n  expect(1).toBe(2);\n});\n`,
+393 |         },
+394 |       ]);
+395 |       const { status, stdout } = runGateFixture(fixture);
+396 |       expect(stdout).toContain("packages/core/src/late.test.ts");
+397 |       expect(stdout).toContain("PROBLEMS");
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "PROBLEMS"
+Received: "red-on-parent: base a27d00ddc50d (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-Gkf5R4\\wt-a27d00ddc50d1a8a4c1b3ff04842de3562dd4912, created)\nWARNING: 1 test file(s) in the working tree are not in HEAD, so the gate cannot see them. Commit first: packages/core/src/late.test.ts\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:397:22)
+(fail) red-on-parent gate fixtures > an uncommitted test file fails the gate, it does not pass quietly [1614.64ms]
+430 |         },
+431 |       ]);
+432 |       git(fixture.repo, ["add", "packages/core/src/staged.test.ts"]);
+433 |       const { status, stdout } = runGateFixture(fixture);
+434 |       expect(stdout).toContain("packages/core/src/staged.test.ts");
+435 |       expect(status).toBe(1);
+                           ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:435:22)
+(fail) red-on-parent gate fixtures > a staged test file fails the gate too [1135.69ms]
+(pass) red-on-parent gate fixtures > edited test files are never gated [710.84ms]
+(pass) red-on-parent gate fixtures > a test the change registers and the parent does not is NOT ON PARENT [1295.73ms]
+(pass) red-on-parent gate fixtures > a non-ASCII file name is gated, not silently skipped [1390.18ms]
+(pass) a file whose workspace owns a bunfig.toml > runs from that workspace, so the preload's globals exist [1112.76ms]
+(pass) --head > an annotated tag aimed at the checked-out commit is the same commit [1155.81ms]
+(pass) --head > an annotated tag on another commit is still reported [1188.41ms]
+(pass) the base worktree lock > a lock left behind by a dead process does not block the gate [1273.17ms]
+(pass) the base worktree lock > a cold cache directory is created before the lock is taken [1178.38ms]
+(pass) the base worktree lock > a lock held by a live run waits, then refuses, and says which lock [1765.44ms]
+(pass) the base worktree lock > two runs on one base both produce a verdict instead of colliding [2042.07ms]
+(pass) the hook-throws fixture, where a grep-based gate is wrong > a beforeEach throw is WRONG-REASON RED even though it prints `(fail)` [1164.14ms]
+(pass) the trap a grep-based gate falls into > a grep-based gate calls the hook fixture RIGHT-REASON RED [0.13ms]
+(pass) the trap a grep-based gate falls into > the gate calls it WRONG-REASON RED on the assertion counter, not the reporter [0.96ms]
+(pass) parseJunit > reads status, failure type and the describe chain [0.18ms]
+(pass) parseJunit > a testcase with no assertions attribute parses it as null [0.17ms]
+(pass) parseJunit > the display name is the chain bun's -t filter matches [0.11ms]
+(pass) parseJunit > a test with no describe has the bare name for both [0.03ms]
+(pass) parseWaivers > reads the pattern and the reason [0.37ms]
+(pass) parseWaivers > accepts single quotes and an ASCII dash [0.15ms]
+(pass) parseWaivers > a missing reason is a problem, not a waiver [0.06ms]
+(pass) parseWaivers > a marker with no quoted name is a problem [0.05ms]
+(pass) parseWaivers > an invalid regex is a problem [0.17ms]
+(pass) parseWaivers > marks each waiver with its own line [0.08ms]
+(pass) parseWaivers > reads a CRLF file, which is what a Windows checkout gives [0.06ms]
+(pass) isGatedTestPath > gates new unit tests under apps and packages [0.14ms]
+(pass) isGatedTestPath > never gates specs, e2e files, or anything outside apps and packages [0.05ms]
+(pass) classifyFileRun > passed on the parent is GREEN ON PARENT and needs a waiver [0.15ms]
+(pass) classifyFileRun > passed on the parent with a waiver passes [0.34ms]
+(pass) classifyFileRun > an AssertionError is RIGHT REASON RED [0.09ms]
+(pass) classifyFileRun > a non-assertion throw is WRONG REASON RED [0.10ms]
+(pass) classifyFileRun > a bare AssertionError with no assertion evaluated is WRONG REASON RED (a bun 1.3.14 hook throw) [0.09ms]
+(pass) classifyFileRun > a bare AssertionError with an assertion evaluated is RIGHT REASON RED (a bun 1.3.14 real red) [0.08ms]
+(pass) classifyFileRun > a waived AssertionError is WAIVER MISFILED [0.16ms]
+(pass) classifyFileRun > a missing junit report is a whole-file WRONG REASON RED [0.14ms]
+1038 |     // nothing. The names the change registers are the only list it has.
+1039 |     const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver], [
+1040 |       { name: "keeps a positive number", classname: "gr", status: "passed", failureType: null, assertions: null },
+1041 |     ]);
+1042 |     expect(verdicts[0]?.name).toBe("WRONG_REASON_RED");
+1043 |     expect(verdicts[0]?.waiver).toEqual(waiver);
+                                       ^
+error: expect(received).toEqual(expected)
+
+- {
+-   "line": 7,
+-   "pattern": "gr keeps a positive number",
+-   "reason": "pre-existing",
+- }
++ null
+
+- Expected  - 5
++ Received  + 1
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1043:33)
+(fail) classifyFileRun > a waived missing junit report passes (the rename case) [1.12ms]
+1050 |     // was marked used, so this exact input printed PASS with nothing judged.
+1051 |     const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver], [
+1052 |       { name: "some other test", classname: "", status: "passed", failureType: null, assertions: null },
+1053 |     ]);
+1054 |     expect(verdicts[0]?.waiver).toBeNull();
+1055 |     expect(verdicts[0]?.detail).toContain("no waiver names it");
+                                       ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "no waiver names it"
+Received: "bun wrote no junit report, so the file did not run to completion — and no waiver here names a test the change registers ([object Object])"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1055:33)
+(fail) classifyFileRun > a waiver naming no test the change registers explains nothing [0.45ms]
+1063 |     // them used to excuse the whole file, and the other test was never judged.
+1064 |     const { verdicts, usedWaiverLines } = classifyFileRun(run(null, "SyntaxError: x"), [waiver], [
+1065 |       { name: "keeps a positive number", classname: "gr", status: "passed", failureType: null, assertions: null },
+1066 |       { name: "already worked", classname: "other", status: "passed", failureType: null, assertions: null },
+1067 |     ]);
+1068 |     expect(verdicts.map((verdict) => verdict.test)).toEqual([
+                                                           ^
+error: expect(received).toEqual(expected)
+
+  [
+-   "gr keeps a positive number",
+-   "other already worked",
++   "(whole file)",
+  ]
+
+- Expected  - 2
++ Received  + 1
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1068:53)
+(fail) classifyFileRun > a waiver excuses only the test it names [0.74ms]
+(pass) classifyFileRun > a skipped test pins nothing [0.10ms]
+(pass) classifyFileRun > a junit report with no testcase is a failure [0.06ms]
+(pass) classifyFileRun > a run that did not finish is RUN INCOMPLETE, and no waiver covers it [0.07ms]
+(pass) unregisteredVerdicts > names the test the parent never reported [0.26ms]
+(pass) unregisteredVerdicts > a waiver on that test covers it, and is marked used [0.13ms]
+(pass) unregisteredVerdicts > a test the parent already reported is not restated [0.04ms]
+(pass) unregisteredVerdicts > every waiver matching an unregistered test is marked used [0.18ms]
+(pass) unregisteredVerdicts > a name the parent reported once does not cover a second case on the change [0.13ms]
+(pass) verdictPasses > only a right-reason red passes on its own [0.09ms]
+(pass) verdictPasses > a waiver carries a wrong-reason red and a green, and nothing else [0.07ms]
+(pass) decodeXml > decodes the entities a test name can carry, amp last [0.04ms]
+(pass) red-on-parent round 5 > a lock with no pid is reclaimed once it is older than the grace [1.25ms]
+(pass) red-on-parent round 5 > a broad waiver does not swallow the narrower one [0.28ms]
+(pass) red-on-parent round 5 > a line that mentions the marker is neither a waiver nor a problem [0.13ms]
+(pass) red-on-parent round 5 > the gate refuses to run under node [0.07ms]
+red-on-parent: run this with bun, not node — every parent-side run spawns `bun test` from process.execPath, and under node each file reads as a whole-file load failure
+(pass) red-on-parent round 5 > main refuses under node before it reads an argument [0.83ms]
+(pass) red-on-parent round 6 > a sibling file the substring filter also ran is not judged as this one [0.36ms]
+(pass) red-on-parent round 6 > --base that already contains head reports a problem, not a green run [564.97ms]
+(pass) red-on-parent round 7 > two waivers matching one test both reach the report [0.96ms]
+1408 |         },
+1409 |       ],
+1410 |     );
+1411 |     try {
+1412 |       const { status, stdout } = runGateFixture(fixture);
+1413 |       expect(stdout).toContain("RED-ON-CHANGE");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "RED-ON-CHANGE"
+Received: "red-on-parent: base e46ec27ca248 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-OTq1rv\\wt-e46ec27ca24874239249cca13b753083eea91244, created)\n\nFILE                           TEST                VERDICT             WAIVED\npackages/core/src/red.test.ts  guard rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1413:22)
+(fail) red-on-parent round 8 > a test that is red on the change as well fails the gate [1191.74ms]
+1445 |         fixture,
+1446 |         { RED_ON_PARENT_TEST_TIMEOUT_MS: "1500" },
+1447 |         [],
+1448 |         20_000,
+1449 |       );
+1450 |       expect(stdout).toContain("RUN-INCOMPLETE");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "RUN-INCOMPLETE"
+Received: "red-on-parent: base 83c233818f25 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-j9zTjO\\wt-83c233818f2594b7e4f1f2446a0a3dde063c7c31, created)\n\nFILE                            TEST          VERDICT             WAIVED\npackages/core/src/hang.test.ts  hangs         WRONG-REASON-RED    line 7\n\nWAIVERS (a reviewer reads these in the diff)\n  packages/core/src/hang.test.ts:7  \"hangs\" — a waiver cannot excuse a run that never finished\n\nVERDICT GUIDE\n  WRONG REASON RED — the test could not be evaluated on the parent (load error, or a non-assertion throw)\n    1. land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken\n    2. or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`\n    3. if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`\n\nadded test files: 1 · 0 right reason red · 1 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1450:22)
+(fail) red-on-parent round 8 > a hung test run is RUN INCOMPLETE, and no waiver covers it [12657.78ms]
+1456 | 
+1457 |   test("the test timeout is read from the environment", () => {
+1458 |     const original = process.env.RED_ON_PARENT_TEST_TIMEOUT_MS;
+1459 |     try {
+1460 |       process.env.RED_ON_PARENT_TEST_TIMEOUT_MS = "1500";
+1461 |       expect(gateModule.testTimeoutMs()).toBe(1500);
+                               ^
+TypeError: gateModule.testTimeoutMs is not a function. (In 'gateModule.testTimeoutMs()', 'gateModule.testTimeoutMs' is undefined)
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1461:25)
+(fail) red-on-parent round 8 > the test timeout is read from the environment [1.06ms]
+(pass) red-on-parent round 8 > a waiver that matches no test fails the gate [1431.48ms]
+(pass) red-on-parent round 8 > a waiver that matched nothing is WAIVER MISFILED [0.16ms]
+1546 |     try {
+1547 |       const { status, stdout } = runGateFixture(fixture);
+1548 |       expect(stdout).toContain("WRONG-REASON-RED");
+1549 |       // The unjudged sibling has to be named: a waiver that names one test says
+1550 |       // nothing about the next one.
+1551 |       expect(stdout).toContain("other already worked");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "other already worked"
+Received: "red-on-parent: base 7e12e2479be1 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-w6gWKI\\wt-7e12e2479be1dc5e7ddcafb451456e043c956cc9, created)\n\nFILE                             TEST          VERDICT             WAIVED\npackages/core/src/mixed.test.ts  (whole file)  WRONG-REASON-RED    line 13\n\nWAIVERS (a reviewer reads these in the diff)\n  packages/core/src/mixed.test.ts:13  \"mixed pins the new behaviour\" — rename: the test moved with the file\n\nVERDICT GUIDE\n  WRONG REASON RED — the test could not be evaluated on the parent (load error, or a non-assertion throw)\n    1. land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken\n    2. or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`\n    3. if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`\n\nadded test files: 1 · 0 right reason red · 1 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1551:22)
+(fail) red-on-parent round 8 > a waiver excuses only the test it names [1172.52ms]
+1570 |         },
+1571 |       ],
+1572 |     );
+1573 |     try {
+1574 |       const { status, stdout } = runGateFixture(fixture);
+1575 |       expect(stdout).toContain("scripts/outside.test.ts");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "scripts/outside.test.ts"
+Received: "red-on-parent: base 1fbdd8c7c98b (worktree (none), cached)\nno added test files: nothing to gate\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1575:22)
+(fail) red-on-parent round 8 > a test file outside the gate's scope is named, not silently ignored [699.52ms]
+1590 |     const worktree = join(dir, "wt");
+1591 |     const manifest = join(dir, "base.copied.json");
+1592 |     mkdirSync(worktree, { recursive: true });
+1593 |     const copied: string[] = [];
+1594 |     try {
+1595 |       gateModule.copyIntoBaseWorktree(
+                        ^
+TypeError: gateModule.copyIntoBaseWorktree is not a function. (In 'gateModule.copyIntoBaseWorktree(manifest, worktree, "packages/core/src/x.test.ts", "content", copied)', 'gateModule.copyIntoBaseWorktree' is undefined)
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1595:18)
+(fail) red-on-parent round 8 > the manifest names a copied file as soon as it is copied [1.34ms]
+1606 |     }
+1607 |   });
+1608 | 
+1609 |   test("a manifest path that escapes the worktree names nothing", () => {
+1610 |     const worktree = join(tmpdir(), "wt");
+1611 |     expect(gateModule.manifestTarget(worktree, "packages/core/src/x.test.ts")).toBe(
+                             ^
+TypeError: gateModule.manifestTarget is not a function. (In 'gateModule.manifestTarget(worktree, "packages/core/src/x.test.ts")', 'gateModule.manifestTarget' is undefined)
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1611:23)
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree names nothing [0.33ms]
+1642 |       writeFileSync(
+1643 |         join(fixture.cache, `${fixture.base}.copied.json`),
+1644 |         JSON.stringify(["../victim.txt"]),
+1645 |       );
+1646 |       runGateFixture(fixture);
+1647 |       expect(existsSync(victim)).toBe(true);
+                                        ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1647:34)
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree deletes nothing [1692.84ms]
+
+13 tests failed:
+(fail) red-on-parent gate fixtures > an uncommitted test file fails the gate, it does not pass quietly [1614.64ms]
+(fail) red-on-parent gate fixtures > a staged test file fails the gate too [1135.69ms]
+(fail) classifyFileRun > a waived missing junit report passes (the rename case) [1.12ms]
+(fail) classifyFileRun > a waiver naming no test the change registers explains nothing [0.45ms]
+(fail) classifyFileRun > a waiver excuses only the test it names [0.74ms]
+(fail) red-on-parent round 8 > a test that is red on the change as well fails the gate [1191.74ms]
+(fail) red-on-parent round 8 > a hung test run is RUN INCOMPLETE, and no waiver covers it [12657.78ms]
+(fail) red-on-parent round 8 > the test timeout is read from the environment [1.06ms]
+(fail) red-on-parent round 8 > a waiver excuses only the test it names [1172.52ms]
+(fail) red-on-parent round 8 > a test file outside the gate's scope is named, not silently ignored [699.52ms]
+(fail) red-on-parent round 8 > the manifest names a copied file as soon as it is copied [1.34ms]
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree names nothing [0.33ms]
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree deletes nothing [1692.84ms]
+
+ 61 pass
+ 13 fail
+ 176 expect() calls
+Ran 74 tests across 1 file. [43.05s]

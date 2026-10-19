@@ -1,0 +1,9 @@
+RED  A1-F1-red-on-change: 0 pass, 1 fail — F1: a test that fails on the change as well is reported as RED_ON_CHANGE
+RED  A2-F2-no-timeout: 0 pass, 1 fail — F2: a hung test is stopped and reported as RUN_INCOMPLETE
+RED  A3-F3-unused-waiver: 0 pass, 2 fail — F3: a waiver that matches no test is reported as WAIVER-MISFILED
+RED  A4-C1-uncommitted: 0 pass, 1 fail — C1: an uncommitted test file fails the run instead of warning
+RED  A4b-C1-staged: 0 pass, 1 fail — C1: a staged test file fails the run instead of warning
+RED  A5-C2-waiver-scope: 0 pass, 2 fail — C2: a waiver excuses the test it names, and only that test
+RED  A6-C3-skipped: 0 pass, 1 fail — C3: a test file the gate does not gate is named in the report
+RED  A7-C4-manifest: 0 pass, 1 fail — C4: the manifest is written on every copy, so a half-dead run leaves no orphan
+RED  A8-C5-containment: 0 pass, 2 fail — C5: a manifest path that leaves the worktree names nothing and deletes nothing

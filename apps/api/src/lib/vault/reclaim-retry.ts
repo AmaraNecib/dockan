@@ -132,6 +132,11 @@ export class ReclaimRetry<TOwner> {
         result = { ok: false, owner: undefined };
       }
       if (result.ok) {
+        // A loop that was stopped while this attempt was running reports no
+        // acquisition: the caller is shutting down, and an acquisition
+        // reported now would publish a port record for a listener that is
+        // already closing. The folder is released by the owner's exit hook.
+        if (this.stopped) return false;
         this.acquired = true;
         this.cancelPending();
         this.options.onAcquired();

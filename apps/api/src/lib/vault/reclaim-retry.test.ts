@@ -104,6 +104,37 @@ describe("vault reclaim retry (#277)", () => {
     expect(clock.pending()).toBe(1);
   });
 
+  it("reports no acquisition when the loop is stopped while an attempt runs", () => {
+    const clock = fakeScheduler();
+    let acquired = 0;
+    let attempts = 0;
+    let retry: ReclaimRetry<Owner>;
+    retry = new ReclaimRetry<Owner>({
+      attempt: () => {
+        attempts += 1;
+        // the shutdown stops the loop while this attempt is still running
+        retry.stop();
+        return { ok: true };
+      },
+      onAcquired: () => {
+        acquired += 1;
+      },
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    retry.start();
+    clock.fireNext();
+    expect(attempts).toBe(1);
+    // the attempt took the folder, but the loop was stopped: nothing is
+    // reported, so the caller never publishes a port record for a listener
+    // that is already closing
+    expect(acquired).toBe(0);
+    expect(retry.taken).toBe(false);
+    // and the loop does not re-arm itself after a stop
+    expect(clock.pending()).toBe(0);
+  });
+
   it("keeps the loop alive when an attempt breaks its contract and throws", () => {
     const clock = fakeScheduler();
     const seen: (Owner | undefined)[] = [];

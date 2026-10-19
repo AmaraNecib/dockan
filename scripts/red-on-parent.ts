@@ -858,6 +858,10 @@ function clearPreviousCopies(repo: string, worktree: string, baseSha: string): v
     // A path that resolves outside the worktree names nothing the gate may
     // delete, so it is skipped rather than removed.
     if (target === null) continue;
+    // A manifest entry may name a directory. `rmSync` on a directory without
+    // `recursive` throws EISDIR and kills the run before any verdict is
+    // printed, so skip directory entries instead of removing them.
+    if (existsSync(target) && statSync(target).isDirectory()) continue;
     rmSync(target, { force: true });
   }
   rmSync(manifest, { force: true });
@@ -973,6 +977,7 @@ function ensureBaseWorktree(
     rmSync(worktree, { recursive: true, force: true });
     git(repo, ["worktree", "prune"]);
   }
+  rmSync(manifestPath(repo, baseSha), { force: true });
   mkdirSync(dirname(worktree), { recursive: true });
   const added = git(repo, ["worktree", "add", "--detach", worktree, baseSha]);
   if (!added.ok) {
@@ -1127,7 +1132,7 @@ export function skippedTestFiles(
 export function uncommittedTestFiles(repo: string): string[] {
   // `-z` for the same reason as `addedTestFiles`: porcelain quotes a non-ASCII
   // path, and the quoting hides it from `isGatedTestPath`.
-  const entries = gitText(repo, ["status", "--porcelain", "-z", "--no-renames"])
+  const entries = gitText(repo, ["status", "--porcelain", "-z", "--no-renames", "-uall"])
     .split("\0")
     .filter((entry) => entry.length > 3)
     .map((entry) => entry.slice(3))
@@ -1350,7 +1355,14 @@ function gateBaseWorktree(input: {
         });
       }
       const usedLines = new Set([...classified.usedWaiverLines, ...unregistered.usedWaiverLines]);
-      verdicts.push(...unusedWaiverVerdicts(file, parsed.waivers, usedLines));
+      // A waiver can only be judged against tests the run actually enumerated.
+      // When nothing was enumerated (a load failure with no change-side names,
+      // or a run that could not judge the file), a waiver naming a real test
+      // must not be reported misfiled: we do not know whether it names a real
+      // test or not.
+      if (changeResults.length > 0) {
+        verdicts.push(...unusedWaiverVerdicts(file, parsed.waivers, usedLines));
+      }
     }
   } finally {
     rmSync(outDir, { recursive: true, force: true });

@@ -289,7 +289,46 @@ describe("vault single-writer lock over a live sidecar", () => {
   // acquisition when the loop is stopped while an attempt runs"), and the
   // ordering in beginShutdown is defence in depth on top of it.
 
-  itHeavy("a refused sidecar takes the folder by itself once the holder is killed (#277)", async () => {
+  itHeavy("an unreadable lock file serves the standalone page and starts no retry loop (#298)", async () => {
+    // vault.lock is a DIRECTORY: the path exists, so the read is not ENOENT,
+    // and readFileSync fails with EISDIR. That is the unreadable refusal
+    // (#287), a different branch from the held one: the page names the file
+    // and says what to delete, and NOTHING changes until the owner acts, so
+    // there is no point in a retry loop.
+    const lockFile = path.join(dir, "vault.lock");
+    fs.mkdirSync(lockFile);
+
+    api = startApi(port);
+    // the standalone refusal page, on the port this instance was given
+    await waitForLog("VAULT_LOCK_REFUSED");
+    const page = await fetch(`http://127.0.0.1:${port}/`);
+    const html = await page.text();
+    expect(page.status).toBe(503);
+    expect(html).toContain("تعذّر قراءة ملف القفل في مجلد البيانات");
+    // the standalone page owns no port record: it does not own the folder
+    expect(fs.existsSync(path.join(dir, "run", ".dokan-port"))).toBe(false);
+
+    // the folder becomes acquirable: the directory is gone
+    fs.rmSync(lockFile, { recursive: true, force: true });
+
+    // The BRANCH, not the page: the unreadable refusal has no reclaim loop,
+    // so the instance keeps serving the page and never takes the folder. A
+    // retry loop would have taken it on its next tick (250 ms), and the page
+    // alone would not have shown it.
+    const reclaimDeadline = Date.now() + 3_000;
+    while (Date.now() < reclaimDeadline) {
+      if (fs.existsSync(lockFile)) break;
+      await sleep(100);
+    }
+    expect(fs.existsSync(lockFile)).toBe(false);
+    const still = await fetch(`http://127.0.0.1:${port}/`);
+    expect(still.status).toBe(503);
+    expect(await still.text()).toContain("تعذّر قراءة ملف القفل في مجلد البيانات");
+    // and the reclaim never ran: main.ts logs that only when it does
+    expect(readLogs()).not.toContain("the refused instance took the data folder");
+  });
+
+  itHeavy("a refused start takes the folder by itself once the holder is killed (#277)", async () => {
     const secondPort = await freePort();
     const thirdPort = await freePort();
     const lockFile = path.join(dir, "vault.lock");

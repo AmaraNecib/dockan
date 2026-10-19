@@ -19,6 +19,8 @@ let dir: string;
 let port: number;
 let api: ChildProcessWithoutNullStreams | undefined;
 let second: ChildProcessWithoutNullStreams | undefined;
+/** A third child, for the two-waiters race. */
+let third: ChildProcessWithoutNullStreams | undefined;
 /** The last stderr the api child wrote, so a failed wait names the exit path. */
 let apiStderr = "";
 
@@ -63,6 +65,16 @@ async function waitForLog(needle: string, timeoutMs = 20_000): Promise<void> {
   for (;;) {
     if (readLogs().includes(needle)) return;
     if (Date.now() >= deadline) throw new Error(`the api never logged ${needle}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/** Wait for N log lines carrying `needle`, making NO request. */
+async function waitForLogCount(needle: string, count: number, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (readLogs().split(needle).length - 1 >= count) return;
+    if (Date.now() >= deadline) throw new Error(`the api never logged ${needle} ${count} times`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -167,6 +179,8 @@ afterEach(async () => {
   api = undefined;
   await hardKillAndWait(second);
   second = undefined;
+  await hardKillAndWait(third);
+  third = undefined;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -277,7 +291,10 @@ describe("vault single-writer lock over a live sidecar", () => {
 
   itHeavy("a refused sidecar takes the folder by itself once the holder is killed (#277)", async () => {
     const secondPort = await freePort();
+    const thirdPort = await freePort();
     const lockFile = path.join(dir, "vault.lock");
+    const portFile = path.join(dir, "run", ".dokan-port");
+    const registryDir = path.join(dir, "run", ".dokan-port.registry");
     api = startApi(port);
     await waitForHealth(port);
 
@@ -293,8 +310,19 @@ describe("vault single-writer lock over a live sidecar", () => {
     if (refusedPid === undefined) throw new Error("the refused sidecar has no pid");
     expect(held.pid).not.toBe(refusedPid);
 
+    // A THIRD sidecar is refused as well: two waiters, one folder (#298).
+    // The second refusal is counted in the log, never asked for over HTTP.
+    const otherChild = startApi(thirdPort);
+    third = otherChild;
+    const otherPid = otherChild.pid;
+    if (otherPid === undefined) throw new Error("the second refused sidecar has no pid");
+    await waitForLogCount("VAULT_LOCK_REFUSED", 2);
+    // neither waiter holds the folder while the holder is alive
+    // SAFETY: the lock record is JSON written by the running sidecar
+    expect((JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number }).pid).toBe(held.pid);
+
     // kill the holder without a clean release: its lock stays behind, stale.
-    // The refused instance must reclaim it on its own backoff, no restart.
+    // The refused instances must reclaim it on their own backoff, no restart.
     const holder = api;
     api = undefined;
     await hardKillAndWait(holder);
@@ -304,8 +332,8 @@ describe("vault single-writer lock over a live sidecar", () => {
     // let the test pass without the automatic backoff doing anything. Reading
     // the file observes only what the loop did by itself.
     const deadline = Date.now() + 30_000;
+    let ownerPid: number | undefined;
     for (;;) {
-      let ownerPid: number | undefined;
       try {
         // SAFETY: the lock record is JSON written by a running sidecar, and a
         // pid is optional in this test's view — a record without one simply is
@@ -314,18 +342,47 @@ describe("vault single-writer lock over a live sidecar", () => {
       } catch {
         ownerPid = undefined;
       }
-      if (ownerPid === refusedPid) break;
+      if (ownerPid === refusedPid || ownerPid === otherPid) break;
       if (Date.now() >= deadline) throw new Error(`refused sidecar never took the folder; stderr: ${apiStderr}`);
       await sleep(100);
     }
 
-    // it now owns the folder: the vault gate serves instead of the refusal and
-    // the lock record names this process
-    const status = await fetch(`http://127.0.0.1:${secondPort}/api/vault/status`);
-    expect(status.status).not.toBe(503);
+    // EXACTLY ONE of the two waiters owns the folder (#298): the loser is
+    // refused by the winner's live record, not by a lucky read
+    expect(ownerPid === refusedPid || ownerPid === otherPid).toBe(true);
+    const winnerPort = ownerPid === refusedPid ? secondPort : thirdPort;
+    const loserPort = ownerPid === refusedPid ? thirdPort : secondPort;
+    const loserPid = ownerPid === refusedPid ? otherPid : refusedPid;
+
+    // the winner owns the folder: the vault gate serves instead of the refusal
+    // and the lock record names it
+    expect((await fetch(`http://127.0.0.1:${winnerPort}/api/vault/status`)).status).not.toBe(503);
     // SAFETY: the lock record is JSON written by the reclaiming sidecar
-    const now = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number };
-    expect(now.pid).toBe(refusedPid);
+    expect((JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number }).pid).toBe(ownerPid);
+
+    // the loser still refuses, and it says WHO holds the folder
+    const loserStatus = await fetch(`http://127.0.0.1:${loserPort}/api/vault/status`);
+    expect(loserStatus.status).toBe(503);
+    // SAFETY: the refusal app serves this JSON shape by contract
+    const loserBody = (await loserStatus.json()) as { error?: { code?: string } };
+    expect(loserBody.error?.code).toBe("VAULT_LOCKED_BY_OTHER_INSTANCE");
+
+    // the loser never deleted the winner's record
+    expect(fs.existsSync(lockFile)).toBe(true);
+    // SAFETY: the lock record is JSON written by the reclaiming sidecar
+    expect((JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number }).pid).toBe(ownerPid);
+
+    // and the loser published no port record: no registry entry of its own, and
+    // the canonical record names the winner
+    expect(fs.existsSync(path.join(registryDir, String(loserPid)))).toBe(false);
+    expect(fs.existsSync(path.join(registryDir, String(ownerPid)))).toBe(true);
+    const publishDeadline = Date.now() + 10_000;
+    for (;;) {
+      if (fs.existsSync(portFile) && fs.readFileSync(portFile, "utf8") === String(winnerPort)) break;
+      if (Date.now() >= publishDeadline) break;
+      await sleep(100);
+    }
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(winnerPort));
   });
 
   itHeavy("a refused start takes the folder once the holder CLOSES cleanly (#277)", async () => {

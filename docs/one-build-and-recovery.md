@@ -208,13 +208,20 @@ magic `"DKNVAULT"` and a one-byte version.
   sealed with AAD `dokan:vault:db:v1:<vaultId>`. Every released vault is in
   this shape, so it stays readable. It carries no writer stamp, so a former
   holder's bytes cannot be told from the current holder's.
-- **v2 — what every new write produces.** `"DKNVAULT" ‖ 2 ‖ stampLen ‖ stamp ‖
-  nonce ‖ ciphertext+tag`, sealed with AAD
+- **v2 — what every new write of the live snapshot produces.** `"DKNVAULT" ‖ 2
+  ‖ stampLen ‖ stamp ‖ nonce ‖ ciphertext+tag`, sealed with AAD
   `dokan:vault:db:v2:<vaultId>:<stamp>`. The stamp is the writing process's
   `vault.lock` token (1..64 bytes), kept in the clear and bound into the AAD:
   swapping it fails the GCM tag, and a reader learns the bytes are not its own
   before decrypting. A v1 file is rewritten fenced on the holder's first write;
   a foreign-stamped file is rewritten when it is opened.
+- **v1 in a backup bundle is not a fault.** `encryptLegacyBackups()` converts a
+  plaintext `backups/*.db` into a `.dknvbak` bundle by calling
+  `buildEncryptedSnapshot` with no stamp, so the enclosed image is a v1
+  envelope. A backup is a point-in-time copy that no process ever holds a lock
+  for, so there is no writer token to bind and nothing to fence; the bundle is
+  written once and read once. Do not treat a v1 envelope inside a `.dknvbak` as
+  malformed or as an un-migrated live snapshot.
 
 Both snapshot contexts and the wrap context are frozen string literals in
 `format.ts`. The `v1` and `v2` are written out rather than interpolated from a

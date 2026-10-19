@@ -561,10 +561,10 @@ describe("snapshot fence (#280)", () => {
     await first.close();
     const written = fs.readFileSync(snapshotPath());
 
-    // One transient failure on the snapshot path only. If the read were called
-    // foreign on the first failure, a healthy, correctly stamped snapshot would
-    // be serialized, encrypted and renamed again: the nonce is random, so the
-    // rewrite is visible as different bytes.
+    // The snapshot path refuses the first two opens with EBUSY and then behaves.
+    // One durability check asks twice (that is the retry under test), so a
+    // healthy, correctly stamped snapshot must survive it untouched: a rewrite
+    // is visible, because the nonce is random.
     // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
     // it passes exactly (path, "r"); the narrowed signature names that one call
     // so the spy can delegate to the real open
@@ -573,7 +573,7 @@ describe("snapshot fence (#280)", () => {
     // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
     // parameters are the (path, flags) overload production calls
     const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
-      if (String(file) === snapshotPath() && failures === 0) {
+      if (String(file) === snapshotPath() && failures < 2) {
         failures += 1;
         throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
       }
@@ -587,7 +587,8 @@ describe("snapshot fence (#280)", () => {
     } finally {
       spy.mockRestore();
     }
-    expect(failures).toBe(1);
+    // both refusals were spent inside the one check, so the check asked twice
+    expect(failures).toBe(2);
   });
 
   it("still writes, and says so, when the fence never reads", async () => {

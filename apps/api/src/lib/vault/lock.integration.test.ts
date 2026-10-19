@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
@@ -34,7 +34,7 @@ async function freePort(): Promise<number> {
   });
 }
 
-function startApi(onPort: number): ChildProcessWithoutNullStreams {
+function startApi(onPort: number, extraEnv: NodeJS.ProcessEnv = {}): ChildProcessWithoutNullStreams {
   const child = spawn("bun", ["src/main.ts"], {
     cwd: path.join(import.meta.dir, "..", "..", ".."),
     env: {
@@ -42,6 +42,7 @@ function startApi(onPort: number): ChildProcessWithoutNullStreams {
       DOKAN_DATA_DIR: dir,
       DOKAN_PORT: String(onPort),
       DOKAN_PORT_ROOT: path.join(dir, "run"),
+      ...extraEnv,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -49,6 +50,21 @@ function startApi(onPort: number): ChildProcessWithoutNullStreams {
     apiStderr = `${apiStderr}${chunk.toString()}`.slice(-4_000);
   });
   return child;
+}
+
+/**
+ * Wait for a log line, making NO request. Every request to a refused instance
+ * calls `reclaim.trigger()`, so a `/health` poll would seed the retry chain and
+ * a test that then waited for the reclaim would pass even with the automatic
+ * loop removed (greptile P2 on #298). Reading the log observes the boot only.
+ */
+async function waitForLog(needle: string, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (readLogs().includes(needle)) return;
+    if (Date.now() >= deadline) throw new Error(`the api never logged ${needle}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /** Everything the running api child logged, for assertions and failure text. */
@@ -194,6 +210,37 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect((await fetch(`http://127.0.0.1:${port}/health`)).ok).toBe(true);
   });
 
+  itHeavy("a plaintext start still publishes its port record (greptile P1 on #298)", async () => {
+    // DOKAN_VAULT=disabled never takes a vault lock, so keying publication off
+    // `vaultLock` left plaintext starts with no `.dokan-port` at all: the dev
+    // proxy kept walking a stale record while the api listened elsewhere.
+    const plaintextPort = await freePort();
+    const portFile = path.join(dir, "run", ".dokan-port");
+    api = startApi(plaintextPort, { DOKAN_VAULT: "disabled" });
+    await waitForHealth(plaintextPort);
+
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(portFile); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(fs.existsSync(portFile)).toBe(true);
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(plaintextPort));
+  });
+
+  // A process-level race cannot be pinned honestly: the backoff reaches 15s
+  // while shutdown exits after 3s, so a test that waits for the tick either
+  // flakes or proves nothing. Pin the ORDER instead, which is the whole fix.
+  it("shutdown stops the reclaim loop before closing the listener (greptile P2 on #298)", () => {
+    const source = fs.readFileSync(path.join(import.meta.dir, "..", "..", "main.ts"), "utf8");
+    const start = source.indexOf("function beginShutdown(): void {");
+    expect(start).toBeGreaterThan(-1);
+    const body = source.slice(start, source.indexOf('process.on("SIGINT"', start));
+    const stopped = body.indexOf("reclaim?.stop();");
+    const closed = body.indexOf("server?.close();");
+    expect(stopped).toBeGreaterThan(-1);
+    expect(closed).toBeGreaterThan(-1);
+    expect(stopped).toBeLessThan(closed);
+  });
+
   itHeavy("a refused sidecar takes the folder by itself once the holder is killed (#277)", async () => {
     const secondPort = await freePort();
     const lockFile = path.join(dir, "vault.lock");
@@ -203,7 +250,9 @@ describe("vault single-writer lock over a live sidecar", () => {
     // the second sidecar is refused on its own port and must not hold the lock
     const refusedChild = startApi(secondPort);
     second = refusedChild;
-    await waitForRefusal(secondPort);
+    // the refusal is observed in the log, not over HTTP: one request would call
+    // reclaim.trigger() and hand the test a retry it did not ask for
+    await waitForLog("VAULT_LOCK_REFUSED");
     // SAFETY: the lock record is JSON written by the running sidecar
     const held = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number };
     const refusedPid = refusedChild.pid;
@@ -216,10 +265,22 @@ describe("vault single-writer lock over a live sidecar", () => {
     api = undefined;
     await hardKillAndWait(holder);
 
+    // Watch the LOCK FILE, never the refusal server (Greptile P2): every request
+    // to the refused instance calls reclaim.trigger(), so polling /health would
+    // let the test pass without the automatic backoff doing anything. Reading
+    // the file observes only what the loop did by itself.
     const deadline = Date.now() + 30_000;
     for (;;) {
-      const health = await fetch(`http://127.0.0.1:${secondPort}/health`).catch(() => undefined);
-      if (health?.ok === true) break;
+      let ownerPid: number | undefined;
+      try {
+        // SAFETY: the lock record is JSON written by a running sidecar, and a
+        // pid is optional in this test's view — a record without one simply is
+        // not the reclaim, so `undefined` is a correct answer here
+        ownerPid = (JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid?: number }).pid;
+      } catch {
+        ownerPid = undefined;
+      }
+      if (ownerPid === refusedPid) break;
       if (Date.now() >= deadline) throw new Error(`refused sidecar never took the folder; stderr: ${apiStderr}`);
       await sleep(100);
     }

@@ -163,6 +163,7 @@ const resources = {
       logEvent_WEB_UI_SERVE_FAILED: "فشل تقديم واجهة الويب",
       logEvent_SESSION_SECRET_REGENERATED: "تجديد سرّ الجلسات",
       logEvent_VAULT_LOCK_RECLAIMED: "أُعيد أخذ قفل الكتابة",
+      logEvent_VAULT_LOCK_REFUSED: "البيانات قيد الاستعمال — انتظار إغلاق النسخة الأخرى",
       logEvent_VAULT_UNLOCK_FAILED: "فشل فتح الخزنة",
       logEvent_VAULT_RECOVERY_FAILED: "فشل الفتح بمفتاح استرداد",
       logEvent_VAULT_CHANGE_PASSPHRASE_FAILED: "فشل تغيير كلمة مرور الخزنة",

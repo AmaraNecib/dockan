@@ -11,7 +11,7 @@ import { Amount } from "@/components/ui/amount";
 import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
-import { hotCounterRefresh } from "../lib/freshness";
+import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
 import { orpc } from "../lib/rpc";
 import { inputClass } from "@/components/ui/input";
 import { usePagination } from "../hooks/use-pagination";
@@ -324,8 +324,9 @@ export function ItemHistoryPage() {
     ...orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }),
     // #295 — the running stock column on this screen is a hot counter too: a
     // sale or an adjustment posted in another window has to show up here
-    // without the owner reloading the page
-    ...hotCounterRefresh(),
+    // without the owner reloading the page. The ledger read is slower than
+    // the counters' (see LEDGER_REFETCH_MS)
+    ...hotCounterRefresh(LEDGER_REFETCH_MS),
   });
   // rows the date-ordered list draws below a correction that was recorded after
   // them (issue 151): a future-dated purchase the owner would otherwise read as

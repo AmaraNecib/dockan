@@ -35,14 +35,14 @@ SQLite file.
 
 | Area | Change |
 |---|---|
-| `apps/api/src/lib/stock-adjustment.ts` (new) | The identity of one stock adjustment (item, kind, signed delta, the cost the request *expressed*, the reason) and the 30s window inside which a second copy of it is a repeat. Two fields join the identity only when the caller expressed them: a **server-stamped** `occurredAt` cannot tell a retry apart (two identical requests would differ on it — the trap #177 closed for supplier adjustments), and an inflow's **derived** cost is not part of what the request said (the server derives it at posting time, and the first posting moves the average). A caller-supplied date IS part of the identity: two adjustments dated differently are two actions. |
+| `apps/api/src/lib/stock-adjustment.ts` (new) | The identity of one stock adjustment (item, kind, signed delta, the cost the request *expressed*, the reason) and the 30s window inside which a second copy of it is a repeat. Two fields join the identity only when the caller expressed them: a **server-stamped** `occurredAt` cannot tell a retry apart (two identical requests would differ on it — the trap #177 closed for supplier adjustments), and a cost the **server would have derived anyway** is not part of what the request said. The second one matters more than it looks: the web pre-fills the cost field with the item's current cost, and a focus refetch refreshes that pre-fill, so a retry after the average moved carries a different number that means exactly the same thing. A cost of the owner's own (different from the current one) IS part of the identity: "add five at 300" is not "add five". A caller-supplied date IS part of the identity too: two adjustments dated differently are two actions. |
 | `apps/api/src/rpc/router.ts` | `stockAddManual` now posts inside `withTransactionImmediate` and refuses a repeat with `ORPCError("CONFLICT", { message: "STOCK_ADJUSTMENT_DUPLICATE" })`. The write lock comes first: the guard reads and then writes, so a deferred transaction would let a second writer's read land on a stale snapshot. |
 | `apps/api/src/store/port.ts`, `drizzle-store.ts` | One new read, `listStockMovementsSince(itemId, recordedAfter)`: the movements **recorded** after a local stamp, in insertion order. The window is applied in sql, so the guard reads the handful of rows inside it rather than the whole ledger. The comparison against the recorded rows happens in the guard, not in the store — the identity is business policy, not a query. |
 | `apps/web/src/lib/freshness.ts` (new) | The bounded tick the hot counters ride: `HOT_COUNTER_REFETCH_MS = 5_000`, and `hotCounterRefresh(refreshMs)` — the tick plus `refetchIntervalInBackground`, because the unfocused window is the case the tick exists for. |
 | `apps/web/src/pages/items.tsx` | The items table (stock on hand) polls on that tick. It had no interval at all: the stock column only moved on a focus event or an explicit invalidation. |
-| `apps/web/src/pages/dashboard.tsx` | The landing summary (today's sales, low stock) polls on the same tick, shortened from 60s. The same `REFRESH_MS` also rides the shared pending-return count (the shell badge) and the onboarding checklist, which the old comment documented as deliberate at 60s. The measurement below says the reads are cheap enough that 5s costs nothing measurable. |
-| `apps/web/src/pages/stock.tsx` | An item's history (the running stock column) polls on the tick too: a sale or an adjustment posted in another window has to show up without a reload. |
-| `apps/web/src/lib/pending-returns.ts` | The shared count carries `refetchIntervalInBackground` as well — the badge lives in the shell, which is on screen in the window the owner is *not* looking at. |
+| `apps/web/src/pages/dashboard.tsx` | The landing summary (today's sales, low stock) polls on the same tick, shortened from 60s. The same `REFRESH_MS` also rides the shared pending-return count and the onboarding checklist, which the old comment documented as deliberate at 60s. |
+| `apps/web/src/pages/stock.tsx` | An item's history (the running stock column) polls too, on a slower tick (15s, `LEDGER_REFETCH_MS`): the history read re-reads the whole ledger and projects it, so its cost grows with the shop's history, and the store serializes its calls on one connection — a fast tick there would hold the queue a sale write waits on. |
+| `apps/web/src/lib/pending-returns.ts`, `components/app/app-shell.tsx` | The shared count carries `refetchIntervalInBackground` and the shell badge asks for the hot bound: the badge lives in the shell, which is on screen in the window the owner is *not* looking at. |
 | `apps/web/src/lib/i18n.ts` | The refusal gets a message the owner can act on: `STOCK_ADJUSTMENT_DUPLICATE` → "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين. غيّر سبب التعديل أو أعد المحاولة بعد قليل." |
 
 ## Why 5 seconds
@@ -56,13 +56,15 @@ Two bounds, and only one of them is the server's.
   core on those reads; two windows about twice that. The api answers on the
   loopback interface and both reads are local sql over a local file. There is
   no committed benchmark for the numbers, so treat them as one measurement,
-  not a promise.
+  not a promise. Two more reads ride the tick — the pending-return count and
+  the onboarding checklist (both tiny) — and the item history has a 15s tick
+  of its own, because its cost grows with the ledger.
 - **Human cost.** A stock number at most five seconds behind is a number the
   owner can act on. The same number at sixty seconds is one they have to
   re-check by hand — which is the complaint #294 records.
 
-The measured convergence in the e2e: the background window showed the new
-numbers **4984ms** after the sale. The elapsed time is a *measurement*, not
+The measured convergence in the e2e (one run, one machine): the background
+window showed the new numbers **4963ms** after the sale. The elapsed time is a *measurement*, not
 the proof: the tick's phase against the sale is arbitrary, so a fast
 convergence would not mean a focus refetch happened. The proof is the
 isolation — the reader tab never flipped to visible, was never reloaded and
@@ -112,7 +114,14 @@ fail (exit 1).
   The same escape hatch applies: a different reason, or a moment later.
 - **The polling multiplies read load with the number of open windows.**
   Bounded and measured above; it is off in the vault's read-only paths (a
-  read never marks the store dirty).
+  read never marks the store dirty). The item history is the one read whose
+  cost grows with the shop, which is why it ticks on its own slower bound.
+- **A duplicated SALE is still posted twice.** The guard covers
+  `stockAddManual` only. `invoicesCreate` has no repeat guard, and giving it
+  one is a second slice of this ticket, not this one.
+- **The headless e2e never hides a tab.** The reader reports `visible` for
+  the whole run, so the hidden-tab branch of `refetchIntervalInBackground`
+  is not exercised there; what the spec shows is the unfocused window.
 - **`refetchIntervalInBackground` keeps a hidden tab reading.** That is the
   point, and it is one small query per tick.
 - **The 5s tick is a behaviour change on the dashboard** (was 60s), and it

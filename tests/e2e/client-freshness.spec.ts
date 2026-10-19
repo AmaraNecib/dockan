@@ -16,6 +16,12 @@ import { signIn } from "./auth-helpers";
  * made it. This test keeps window B in the background and asserts the
  * convergence anyway.
  *
+ * WHAT THIS DOES NOT SHOW. The headless runner never hides a tab — the
+ * reader reports `visible` for the whole test — so the HIDDEN-tab branch of
+ * `refetchIntervalInBackground` is not exercised here. What the spec does
+ * show is the unfocused window: the reader was never the focused tab and
+ * never flipped to visible, and the tick carried the change anyway.
+ *
  * HOW THE TICK IS PROVEN, not the focus event. TanStack v5's focus manager
  * listens to `visibilitychange`, not `focus`: it refetches when the document
  * becomes visible. So the counter that matters is the number of
@@ -155,6 +161,7 @@ test("a sale in one window moves the hot counters in the other, with no reload",
   });
   const visibility = await reader.evaluate(() => document.visibilityState);
   expect(readerEvents.visibleFlips).toBe(0);
+  expect(readerEvents.focusEvents).toBe(0);
   const measurement = `converged in ${elapsedMs}ms; reader visibility=${visibility}, focus events=${readerEvents.focusEvents}, visibility flips=${readerEvents.visibleFlips}`;
   // the measurement is the point of the spec: it lands in the test output
   console.log(`#295 measurement: ${measurement}`);

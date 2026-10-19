@@ -473,7 +473,7 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     }
     expect(refused).not.toBeNull();
     expect(refused!.code).toBe("CONFLICT");
-    expect(refused!.message).toContain("STOCK_ADJUSTMENT_DUPLICATE");
+    expect(refused!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
 
     // the first write survived: ONE movement, and the stock moved once
     const history = await client.itemsHistory({ itemId: item.id });
@@ -518,7 +518,7 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     }
     expect(refused).not.toBeNull();
     expect(refused!.code).toBe("CONFLICT");
-    expect(refused!.message).toContain("STOCK_ADJUSTMENT_DUPLICATE");
+    expect(refused!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
 
     // two movements, not three: the repeat was not applied
     const history = await client.itemsHistory({ itemId: item.id });
@@ -552,6 +552,66 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.movements).toHaveLength(2);
     expect(history.stockOnHand).toBe(10);
+    // the premise of this test: the first post was recorded with the cost the
+    // server derived, and the second post moved the average
+    expect(history.movements[0]!.unitCost).toBe(100);
+    expect(history.movements[1]!.unitCost).toBe(300);
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.costPrice).toBe(200);
+  });
+
+  it("refuses a repeat that carries the re-derived cost", async () => {
+    // the web pre-fills the cost field with the item's current cost, and a
+    // focus refetch refreshes that pre-fill: the retry then carries the
+    // average the FIRST posting moved it to. The cost says the same thing
+    // the server would have derived, so it is not part of the identity
+    const item = await makeItem("تسوية-بتكلفة-محدّثة");
+
+    // window A records the adjustment at the item's cost (100)
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // the other window moves the average with a cost of its own (300)
+    await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 300, reason: "delivery" });
+    // the average moved to 200, so window B's pre-filled cost is 200
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.costPrice).toBe(200);
+
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: row.costPrice, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(10);
+  });
+
+  it("refuses one of two posts that arrive at the same time", async () => {
+    // the v1 multi-client shape: two windows save at once. The store
+    // serializes the two calls, so the first write stands and the second is
+    // refused — the same outcome as posting them one after the other
+    const item = await makeItem("تسوية-متزامنة");
+
+    const results = await Promise.allSettled([
+      client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" }),
+      secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected");
+    expect(rejected).toBeDefined();
+    // SAFETY: a rejected oRPC call carries the server error with `code` and `message`
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      code: "CONFLICT",
+      message: "STOCK_ADJUSTMENT_DUPLICATE",
+    });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(1);
+    expect(history.stockOnHand).toBe(5);
   });
 });
 

@@ -51,11 +51,12 @@ export interface StockAdjustment {
   /** signed quantity: positive = stock in, negative = stock out */
   readonly delta: number;
   /**
-   * The unit cost the request expressed, or undefined when it expressed none
-   * (an inflow at the item's cost, or an outflow — the seam records those
-   * costless). undefined means "not part of the identity".
+   * The unit cost the request expressed, or undefined when it expressed
+   * nothing the server would not have derived (an inflow at the item's cost,
+   * or an outflow — the seam records those costless). undefined means "not
+   * part of the identity".
    */
-  readonly unitCost: number | null | undefined;
+  readonly unitCost: number | undefined;
   readonly reason: string | null;
   /**
    * The business date the CALLER supplied, or null when the server stamps it.
@@ -82,18 +83,29 @@ export function repeatCutoff(now: Date = new Date()): string {
 /**
  * The unit cost a request EXPRESSES — what goes into the identity.
  *
- * An outflow is recorded costless by the posting seam, so its cost is not
- * part of the identity. A correction with no cost is a no-op and is recorded
- * as one. An inflow with no explicit cost means "at the item's cost", and the
- * server derives that at posting time, so it is left out of the identity
- * (see the module doc).
+ * The cost is part of the identity only when it carries information the
+ * server would not have derived on its own:
+ *
+ *   - an outflow is recorded costless by the posting seam, so its cost says
+ *     nothing;
+ *   - an inflow with no cost means "at the item's cost";
+ *   - an inflow whose cost IS the item's current cost says the same thing
+ *     the server would have derived — and the web pre-fills the cost field
+ *     with exactly that number, so a retry after the average moved would
+ *     otherwise carry a different cost and slip past the guard.
+ *
+ * A cost of the owner's own (different from the current one) is part of the
+ * identity: "add five at 300" is not "add five".
  */
 export function expressUnitCost(
   delta: number,
-  unitCost: number | null | undefined
-): number | null | undefined {
+  unitCost: number | null | undefined,
+  derivedCost: number
+): number | undefined {
   if (delta < 0) return undefined;
-  if (delta === 0) return unitCost ?? null;
+  if (unitCost === undefined) return undefined;
+  if (unitCost === null) return undefined;
+  if (unitCost === derivedCost) return undefined;
   return unitCost;
 }
 

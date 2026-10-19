@@ -210,7 +210,7 @@ mock.module("@/lib/rpc", () => ({
           if (stockRefuses !== null) {
             // the api refuses a repeated adjustment with a CONFLICT whose
             // message is the code the web translates (#295)
-            throw Object.assign(new Error(stockRefuses), { code: "CONFLICT" });
+            throw new Error(stockRefuses);
           }
           return { id: "movement-1" };
         },

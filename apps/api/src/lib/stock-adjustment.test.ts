@@ -68,14 +68,20 @@ describe("stock adjustment identity (#295)", () => {
   });
 
   it("treats an outflow as costless, whatever the request sent", () => {
-    expect(expressUnitCost(-5, 120)).toBeUndefined();
-    expect(expressUnitCost(-5, undefined)).toBeUndefined();
+    expect(expressUnitCost(-5, 120, 100)).toBeUndefined();
+    expect(expressUnitCost(-5, undefined, 100)).toBeUndefined();
     expect(matchesAdjustment(adjustment({ delta: -5, unitCost: undefined }), recorded({ delta: -5, unitCost: null }))).toBe(true);
   });
 
-  it("records a correction with no cost as the no-op it is", () => {
-    expect(expressUnitCost(0, undefined)).toBeNull();
-    expect(expressUnitCost(0, 120)).toBe(120);
+  it("leaves out a cost the server would have derived anyway", () => {
+    // the web pre-fills the cost field with the item's current cost, so a
+    // retry after the average moved carries a different number that means
+    // the same thing
+    expect(expressUnitCost(5, 100, 100)).toBeUndefined();
+    expect(expressUnitCost(5, undefined, 100)).toBeUndefined();
+    expect(expressUnitCost(-5, 100, 100)).toBeUndefined();
+    // a cost of the owner's own is part of the identity
+    expect(expressUnitCost(5, 300, 100)).toBe(300);
   });
 
   it("keeps a caller-supplied business date and drops a server-stamped one", () => {

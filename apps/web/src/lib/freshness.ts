@@ -31,6 +31,17 @@
 export const HOT_COUNTER_REFETCH_MS = 5_000;
 
 /**
+ * The tick for an item's ledger, slower than the counters'.
+ *
+ * The history read re-reads the WHOLE ledger and projects it, so its cost
+ * grows with the shop's history, and the store serializes its calls on one
+ * connection — a tick that holds that queue delays the sale writes waiting
+ * on it. The running stock column still has to converge; a ledger is not a
+ * counter, and fifteen seconds is a number an owner can act on.
+ */
+export const LEDGER_REFETCH_MS = 15_000;
+
+/**
  * The query options every hot counter carries.
  *
  * `refreshMs` is injectable so a test can run the same wiring on a fast

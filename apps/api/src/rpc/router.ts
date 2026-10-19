@@ -668,8 +668,9 @@ export function createRpcRouter(deps: RpcDeps) {
         // #295 — a money path that READS before it WRITES takes the write lock
         // first (the same reason the sale, payment and return paths use
         // `withTransactionImmediate`): the guard below compares the request
-        // with the movement that was recorded last, and a deferred transaction
-        // would let a second writer's read land on a stale snapshot.
+        // with every movement recorded inside the repeat window, and a
+        // deferred transaction would let a second writer's read land on a
+        // stale snapshot.
         return deps.store.withTransactionImmediate(async (tx) => {
           const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);
           if (item === undefined) {
@@ -687,7 +688,7 @@ export function createRpcRouter(deps: RpcDeps) {
             itemId: item.id,
             kind: input.kind,
             delta: input.delta,
-            unitCost: expressUnitCost(input.delta, input.unitCost),
+            unitCost: expressUnitCost(input.delta, input.unitCost, item.costPrice),
             reason: input.reason ?? null,
             occurredAt: input.occurredAt ?? null,
           };

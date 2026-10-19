@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, VaultLockUnreadableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner, type VaultLockRefusal } from "./lock";
 import { createAppConfig } from "../../config";
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 
@@ -26,6 +26,63 @@ afterEach(() => {
 
 const lockPath = (): string => path.join(dir, "vault.lock");
 const fastSteal = { readRetries: 1, readRetryDelayMs: 1, stealSettleMs: 5 } as const;
+
+/**
+ * Make reads of the lock file fail with a non-ENOENT errno, the way an
+ * antivirus scan, a network drive or a rename in flight does (#287). `matches`
+ * selects the paths to fail, so a test can fail the record at `vault.lock`, its
+ * renamed-aside reclaim copy, or both. The real read is captured before the spy
+ * so unrelated reads still work and the test can inspect the file after
+ * `restore`.
+ */
+function spyLockReadFailure(matches: (target: string) => boolean, code = "EBUSY"): () => void {
+  const originalRead = fs.readFileSync;
+  // SAFETY: fs.readFileSync is overloaded (string when an encoding is given,
+  // Buffer otherwise); this helper only intercepts the lock module's utf8
+  // reads, so the captured original is used through the string overload.
+  const readUtf8 = originalRead as (file: fs.PathLike, ...args: unknown[]) => string;
+  const spy = spyOn(fs, "readFileSync").mockImplementation(
+    // SAFETY: bun types the mock as the callee's whole overload set; this
+    // implementation forwards every read that does not match to the original.
+    ((target: fs.PathLike, ...args: unknown[]) => {
+      if (matches(String(target))) {
+        throw Object.assign(new Error(`${code}: simulated lock-file read failure`), { code });
+      }
+      return readUtf8(target, ...args);
+    }) as typeof fs.readFileSync,
+  );
+  return () => spy.mockRestore();
+}
+
+/**
+ * A read fault that fails the first matching attempt and lets the next one
+ * through, so every `readOwner` window at `readRetries: 1` is one failed
+ * attempt followed by a readable one (#287). Unlike `spyLockReadFailure`,
+ * which fails every matching read, this models the intermittent sharing
+ * violation the sticky `blocked` flag exists for: a later readable but
+ * malformed read in the same window must not clear the failure before it.
+ */
+function spyLockIntermittentReadFailure(matches: (target: string) => boolean, code = "EBUSY"): () => void {
+  const originalRead = fs.readFileSync;
+  // SAFETY: see spyLockReadFailure: only the lock module's utf8 reads are intercepted.
+  const readUtf8 = originalRead as (file: fs.PathLike, ...args: unknown[]) => string;
+  let failNext = true;
+  const spy = spyOn(fs, "readFileSync").mockImplementation(
+    // SAFETY: bun types the mock as the callee's whole overload set; this
+    // implementation forwards every read that does not match to the original.
+    ((target: fs.PathLike, ...args: unknown[]) => {
+      if (matches(String(target))) {
+        if (failNext) {
+          failNext = false;
+          throw Object.assign(new Error(`${code}: simulated lock-file read failure`), { code });
+        }
+        failNext = true;
+      }
+      return readUtf8(target, ...args);
+    }) as typeof fs.readFileSync,
+  );
+  return () => spy.mockRestore();
+}
 
 function writeLock(overrides: Partial<{ pid: number; host: string; heartbeatAt: string; token: string }>): void {
   fs.writeFileSync(
@@ -124,6 +181,11 @@ function refusalFrom(acquire: () => VaultLock): VaultAlreadyLockedError | undefi
     if (error instanceof VaultAlreadyLockedError) return error;
     throw error;
   }
+}
+
+/** The page's held variant, which every refusal-page test below builds by hand. */
+function heldRefusal(owner: VaultLockOwner | undefined, staleHeartbeatOverAlivePid = false): VaultLockRefusal {
+  return { kind: "held", owner, staleHeartbeatOverAlivePid };
 }
 
 /**
@@ -381,6 +443,94 @@ describe("vault single-writer lock", () => {
     lock.release();
   });
 
+  it("refuses a reclaim and leaves a live record alone when every read fails with a non-ENOENT errno (#287)", () => {
+    const record = JSON.stringify({
+      pid: process.pid,
+      host: os.hostname(),
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      token: "live-holder",
+    });
+    fs.writeFileSync(lockPath(), record);
+    // the read fails on the record AND on any renamed-aside copy, as a
+    // sustained sharing violation does; "no owner" is then unprovable and the
+    // reclaim must not touch the file at all
+    const restore = spyLockReadFailure((target) => target.startsWith(lockPath()));
+    try {
+      // every read failed, so no holder can be named: the refusal is the
+      // unreadable-lock one, not a claim that an instance holds the folder
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultLockUnreadableError);
+      expect(fs.existsSync(lockPath())).toBe(true);
+    } finally {
+      restore();
+    }
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe(record);
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("puts back a renamed-aside record it could not read instead of unlinking it (#287)", () => {
+    fs.writeFileSync(lockPath(), "{ not json");
+    // the record at vault.lock reads (malformed, so reclaimable), but its
+    // renamed-aside copy cannot be read: the reclaim must restore it, never
+    // delete an inode it failed to identify
+    const restore = spyLockReadFailure((target) => target.includes(".reclaim-"));
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+    } finally {
+      restore();
+    }
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("withholds a reclaim when a read in the window failed, even if the renamed copy reads (#287)", () => {
+    // a live holder that created its record but has not written it yet: the
+    // record's own read fails, while the renamed copy reads as an empty
+    // (malformed) file. Only the blocked flag stops the unlink
+    fs.writeFileSync(lockPath(), "");
+    const restore = spyLockReadFailure((target) => target === lockPath());
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultLockUnreadableError);
+    } finally {
+      restore();
+    }
+    expect(fs.existsSync(lockPath())).toBe(true);
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("keeps refusing a reclaim when the settled read fails once and a later read in the same window reads malformed content (#287)", () => {
+    // a holder's record hidden by an intermittent read fault: the first read
+    // attempt errors, the retry reads bytes that are not a lock record. If that
+    // readable retry cleared `blocked`, this attempt would rename the file
+    // aside and unlink it — the eviction #287 exists to stop.
+    fs.writeFileSync(lockPath(), "{ still not a lock record");
+    const restore = spyLockIntermittentReadFailure((target) => target === lockPath());
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultLockUnreadableError);
+    } finally {
+      restore();
+    }
+    // not renamed aside, not deleted, not replaced by a fresh acquisition
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ still not a lock record");
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("puts back a renamed-aside record whose first read failed and retry read only malformed content (#287)", () => {
+    // the record at vault.lock reads (malformed, so reclaimable), but its
+    // renamed-aside copy's first read fails while the retry reads malformed
+    // bytes: the earlier failure must keep the reclaim from unlinking an inode
+    // it could not identify.
+    fs.writeFileSync(lockPath(), "{ not json");
+    const restore = spyLockIntermittentReadFailure((target) => target.includes(".reclaim-"));
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+    } finally {
+      restore();
+    }
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
   it("fails loudly, never a silent no-op, when the lock cannot be created", () => {
     const spy = spyOn(fs, "openSync").mockImplementation(() => {
       throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
@@ -417,13 +567,15 @@ describe("vault single-writer lock", () => {
   });
 
   it("states the Arabic refusal with the holder identity", () => {
-    const html = vaultLockRefusalPageHtml({
-      pid: 4242,
-      host: "shop-pc",
-      startedAt: new Date().toISOString(),
-      heartbeatAt: new Date().toISOString(),
-      token: "t",
-    });
+    const html = vaultLockRefusalPageHtml(
+      heldRefusal({
+        pid: 4242,
+        host: "shop-pc",
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "t",
+      }),
+    );
     expect(html).toContain("البيانات مفتوحة في نسخة أخرى");
     expect(html).toContain("shop-pc");
     expect(html).toContain("4242");
@@ -610,13 +762,15 @@ describe("vault single-writer lock", () => {
   });
 
   it("escapes a hostile lock-record host in the refusal page (round-5)", () => {
-    const html = vaultLockRefusalPageHtml({
-      pid: 7,
-      host: '<img src=x onerror="alert(1)">',
-      startedAt: new Date().toISOString(),
-      heartbeatAt: new Date().toISOString(),
-      token: "t",
-    });
+    const html = vaultLockRefusalPageHtml(
+      heldRefusal({
+        pid: 7,
+        host: '<img src=x onerror="alert(1)">',
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "t",
+      }),
+    );
     expect(html).not.toContain("<img");
     expect(html).not.toContain("onerror=");
     expect(html).not.toContain("<script");
@@ -629,14 +783,16 @@ describe("vault single-writer lock", () => {
     // the honest one, but nothing pinned that: interpolating the host straight
     // into `staleOwnerTemplate` would keep the honest-page test above green.
     const html = vaultLockRefusalPageHtml(
-      {
-        pid: 4242,
-        host: '<img src=x onerror="alert(1)">',
-        startedAt: new Date().toISOString(),
-        heartbeatAt: new Date().toISOString(),
-        token: "t",
-      },
-      true,
+      heldRefusal(
+        {
+          pid: 4242,
+          host: '<img src=x onerror="alert(1)">',
+          startedAt: new Date().toISOString(),
+          heartbeatAt: new Date().toISOString(),
+          token: "t",
+        },
+        true,
+      ),
     );
     expect(html).not.toContain("<img");
     expect(html).not.toContain("onerror=");
@@ -1002,54 +1158,53 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   }, 10_000);
 
   it("bounds the boot-path read attempts even when a knob asks for ten thousand", () => {
-    // acquisition reads through the same clamped budget: three readOwner calls,
-    // each capped at 100 retries, is ~303 reads. A mutant that reverts the boot
-    // path to the raw knob does 10 001 x 3
+    // acquisition reads through the same clamped budget: every readOwner call is
+    // capped at 100 retries, so the refusal below is a few hundred reads, not
+    // 10 001 per call. #287: every read here fails, so nothing may be renamed
+    // aside and the boot refuses rather than unlinking an unattested record
     const reads = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
     });
     fs.writeFileSync(lockPath(), "{ not json");
     const startedAt = Date.now();
-    const lock = acquireVaultLock(dir, {
-      readRetries: 10_000,
-      readRetryDelayMs: 0,
-      stealSettleMs: 1,
-      readLockFile: reads.readLockFile,
-      logger: reads.logger,
-      onLost: () => undefined,
-    });
-    try {
-      expect(reads.state.reads).toBeLessThan(400);
-      expect(Date.now() - startedAt).toBeLessThan(3_000);
-      expect(lock.currentOwner().pid).toBe(process.pid);
-    } finally {
-      lock.release();
-    }
+    expect(() =>
+      acquireVaultLock(dir, {
+        readRetries: 10_000,
+        readRetryDelayMs: 0,
+        stealSettleMs: 1,
+        readLockFile: reads.readLockFile,
+        logger: reads.logger,
+        onLost: () => undefined,
+      }),
+    ).toThrow(VaultLockUnreadableError);
+    expect(reads.state.reads).toBeLessThan(1_000);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    // the refusal renamed nothing: the record is still exactly where it was
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
   }, 10_000);
 
   it("bounds the boot-path read delay even when a knob asks for five seconds", () => {
-    // three readOwner calls, each with one retry folded to 500 ms: ~1.5 s. A
-    // mutant that reverts the boot path to the raw knob sleeps 3 x 5 s
+    // every readOwner call folds the knob to the 500 ms ceiling, so the refusal
+    // path's handful of calls is a few seconds, not 5 s per call. #287: every
+    // read fails, so the refusal is the outcome
     const reads = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
     });
     fs.writeFileSync(lockPath(), "{ not json");
     const startedAt = Date.now();
-    const lock = acquireVaultLock(dir, {
-      readRetries: 1,
-      readRetryDelayMs: 5_000,
-      stealSettleMs: 1,
-      readLockFile: reads.readLockFile,
-      logger: reads.logger,
-      onLost: () => undefined,
-    });
-    try {
-      expect(Date.now() - startedAt).toBeLessThan(3_000);
-      expect(reads.state.reads).toBeLessThan(20);
-      expect(lock.currentOwner().pid).toBe(process.pid);
-    } finally {
-      lock.release();
-    }
+    expect(() =>
+      acquireVaultLock(dir, {
+        readRetries: 1,
+        readRetryDelayMs: 5_000,
+        stealSettleMs: 1,
+        readLockFile: reads.readLockFile,
+        logger: reads.logger,
+        onLost: () => undefined,
+      }),
+    ).toThrow(VaultLockUnreadableError);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(reads.state.reads).toBeLessThan(20);
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
   }, 30_000);
 
   it("caps the whole retry window even when a knob asks for hours", () => {
@@ -1390,17 +1545,49 @@ describe("the vault lock refusal app", () => {
   });
 
   it("names the lock file on the recycled-pid page and keeps the honest page intact (#283)", () => {
-    const suspected = vaultLockRefusalPageHtml(owner, true);
+    const suspected = vaultLockRefusalPageHtml(heldRefusal(owner, true));
     expect(suspected).toContain("vault.lock");
     expect(suspected).toContain("لا تبدو نسخة أخرى من دكان");
     expect(suspected).toContain("shop-pc");
     expect(suspected).toContain("4242");
     expect(suspected).not.toContain("لا تحذف أي ملف");
     // the honest page keeps its story, whose hint asks for no file deletion
-    const honest = vaultLockRefusalPageHtml(owner);
+    const honest = vaultLockRefusalPageHtml(heldRefusal(owner));
     expect(honest).toContain("البيانات مفتوحة في نسخة أخرى");
     expect(honest).toContain("لا تحذف أي ملف");
     expect(honest).not.toContain("vault.lock");
+  });
+
+  it("names the lock file on the unreadable page and asks for no instance that does not exist (#287)", async () => {
+    // the state the code-review lens found: the file is there, no read could
+    // attest to it, so no holder can be named. The held page would tell the
+    // owner to close a copy that is not running and to delete no file, which
+    // leaves no way out at all.
+    const path = lockPath();
+    const error = new VaultLockUnreadableError(path, "EBUSY");
+    const page = vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: path });
+    expect(page).toContain(path);
+    expect(page).toContain("تعذّر قراءة ملف القفل");
+    // the one exit is deleting that single file, so the blanket ban must be gone
+    expect(page).not.toContain("لا تحذف أي ملف");
+    expect(page).toContain("احذف ملف vault.lock وحده");
+    // and it must not claim a copy holds the folder
+    expect(page).not.toContain("البيانات مفتوحة في نسخة أخرى");
+    // the app's JSON route stays the honest code with no stale flag: an
+    // unreadable file is not a recycled pid
+    const app = createVaultLockRefusalApp(createAppConfig({}), error);
+    const status = await app.fetch(new Request("http://localhost/api/vault/status"));
+    expect(status.status).toBe(503);
+    expect(await status.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+    const html = await app.fetch(new Request("http://localhost/"));
+    expect(await html.text()).toContain(path);
+  });
+
+  it("escapes a hostile lock path before it reaches the unreadable page (#287)", () => {
+    const hostile = { kind: "unreadable", lockPath: '/data/<script>alert("x")</script>/vault.lock' } as const;
+    const page = vaultLockRefusalPageHtml(hostile);
+    expect(page).not.toContain("<script>");
+    expect(page).toContain("&lt;script&gt;");
   });
 
   it("echoes the boot token so the shell keeps verifying the child", async () => {

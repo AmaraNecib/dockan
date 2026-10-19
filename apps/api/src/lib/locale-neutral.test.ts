@@ -47,7 +47,7 @@ const ALLOWED_ARABIC = [
   {
     file: "apps/api/src/lib/vault/lock.ts",
     reason: "standalone pre-boot lock-refusal page: served before the web bundle, so its copy is embedded in VAULT_LOCK_PAGE_COPY",
-    pattern: /^\s+(title|heading|hint|staleHint|fallbackHost|unknownOwner|ownerTemplate|staleOwnerTemplate): /,
+    pattern: /^\s+(title|heading|hint|staleHint|unreadableHint|fallbackHost|unknownOwner|ownerTemplate|staleOwnerTemplate|unreadableTemplate): /,
   },
 ];
 

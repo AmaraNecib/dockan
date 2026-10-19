@@ -941,8 +941,15 @@ function gateBaseWorktree(input: {
   // enumerate the tests of the commit that is checked out. Reviewing any other
   // commit would compare the requested revision's parent list against today's
   // tests, and a test that vanishes between them would escape NOT_ON_PARENT.
+  // `head` arrives as whatever the author typed: a branch, a short sha, a tag.
+  // An annotated tag has its own object id, so a plain `rev-parse` on one
+  // returns that id and not the commit it points at — the check then tells an
+  // author to check out the very commit they are already on. `^{commit}` peels
+  // every ref kind to a commit, and `--verify` stops a path that happens to
+  // share a ref's name from resolving. The base is resolved the same way.
   const checkoutDiffers =
-    gitText(repo, ["rev-parse", head]).trim() !== gitText(repo, ["rev-parse", "HEAD"]).trim();
+    gitText(repo, ["rev-parse", "--verify", `${head}^{commit}`]).trim() !=
+    gitText(repo, ["rev-parse", "HEAD"]).trim();
   if (checkoutDiffers) {
     problems.push(
       `--head ${head} is not the checked-out commit, so the tests it registers cannot be enumerated — check that commit out, or drop --head`,
@@ -1129,7 +1136,11 @@ export function renderReport(run: GateRun, problems: string[]): string {
   }
 
   if (problems.length > 0) {
-    lines.push("", "WAIVER LINE PROBLEMS");
+    // A waiver-line problem and a run problem (a `--base` or `--head` the gate
+    // cannot use) both land here, and only the first kind is about a waiver.
+    // Waiver entries name their own file and line, so one accurate heading
+    // covers both without misfiling a ref problem under a waiver heading.
+    lines.push("", "PROBLEMS (any entry here fails the run)");
     for (const problem of problems) lines.push(`  ${problem}`);
   }
 

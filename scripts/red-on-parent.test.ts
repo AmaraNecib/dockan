@@ -105,8 +105,12 @@ type GateOutput = {
   stdout: string;
 };
 
-function runGateFixture(fixture: Fixture, extraEnv: Record<string, string> = {}): GateOutput {
-  const result = spawnSync(process.execPath, [GATE, "--base", fixture.base], {
+function runGateFixture(
+  fixture: Fixture,
+  extraEnv: Record<string, string> = {},
+  extraArgs: string[] = [],
+): GateOutput {
+  const result = spawnSync(process.execPath, [GATE, "--base", fixture.base, ...extraArgs], {
     cwd: fixture.repo,
     encoding: "utf8",
     timeout: 120_000,
@@ -496,6 +500,76 @@ test("the preload defined document", () => {
       expect(stdout).toContain("RIGHT-REASON-RED");
       expect(stdout).not.toContain("WRONG-REASON-RED");
       expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("--head", () => {
+  const taggedFixture = () =>
+    createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/red.test.ts",
+          text: `import { describe, expect, test } from "bun:test";
+import { guard } from "./helper";
+describe("guard", () => {
+  test("rejects zero", () => {
+    expect(() => guard(0)).toThrow("ZERO");
+  });
+});
+`,
+        },
+      ],
+    );
+
+  const tag = (repo: string, name: string, target: string) =>
+    git(repo, [
+      "-c",
+      "user.email=gate@fixture.invalid",
+      "-c",
+      "user.name=gate fixture",
+      "tag",
+      "-a",
+      name,
+      "-m",
+      "annotated on purpose, so its object id is not the commit id",
+      target,
+    ]);
+
+  test("an annotated tag aimed at the checked-out commit is the same commit", () => {
+    const fixture = taggedFixture();
+    try {
+      tag(fixture.repo, "at-head", "HEAD");
+      const { status, stdout } = runGateFixture(fixture, {}, ["--head", "at-head"]);
+      // Unpeeled, `rev-parse at-head` is the tag object's id, so the gate sent
+      // the author off to check out the commit they were already sitting on.
+      expect(stdout).not.toContain("is not the checked-out commit");
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("an annotated tag on another commit is still reported", () => {
+    const fixture = taggedFixture();
+    try {
+      tag(fixture.repo, "at-change", "HEAD");
+      writeFiles(fixture.repo, [{ path: "packages/core/README.md", text: "not a test\n" }]);
+      commitAll(fixture.repo, "moves HEAD past the tagged commit");
+      const { status, stdout } = runGateFixture(fixture, {}, ["--head", "at-change"]);
+      expect(stdout).toContain("is not the checked-out commit");
+      // A ref problem is not a waiver problem; it used to print under a
+      // "WAIVER LINE PROBLEMS" heading, which sends the author to the wrong file.
+      expect(stdout).not.toContain("WAIVER LINE PROBLEMS");
+      // A `--head` whose tests cannot be enumerated is a problem, and a run with
+      // a problem fails closed: the NOT ON PARENT check never ran, so a pass
+      // here would be a pass on a check that was skipped.
+      expect(status).toBe(1);
     } finally {
       fixture.cleanup();
     }

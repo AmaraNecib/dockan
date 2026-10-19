@@ -45,7 +45,12 @@ import { errnoCode, probePidLiveness, type PidLiveness, type PidLivenessProbe } 
  * fails closed. `ENOENT` and a different owner's token still lose the lock at
  * once, so this is not a new way to strand the folder. `release()` never
  * unlinks a record it could not read, for the same reason: an unreadable file
- * may be a new owner's.
+ * may be a new owner's. When `onLost` keeps the process alive after a loss
+ * (the refusal path), the release it could not complete is owed, not dropped:
+ * the process retries the cleanup on a capped backoff and unlinks the record
+ * only once a read confirms it is still ours (#281, Greptile P1). A live pid
+ * with an old heartbeat is still left alone — that is a suspended holder, not
+ * a dead one (ADR-0012).
  */
 
 export type VaultLockOwner = {
@@ -86,6 +91,13 @@ const MAX_RETRY_ATTEMPTS = 100;
 const MAX_RETRY_DELAY_MS = 500;
 /** One held-lock read sequence may block for at most this long, whatever the knobs. */
 const MAX_HELD_RETRY_WINDOW_MS = 1_000;
+/**
+ * The deferred cleanup of an unreadable record never reads faster than this
+ * once its backoff has grown: a long-lived refusal process retries for as long
+ * as it stays alive, so the interval between its reads needs a ceiling
+ * (Greptile P1).
+ */
+const MAX_OWED_RELEASE_DELAY_MS = 30_000;
 /**
  * How many distinct error codes the loss reason spells out. The attempt ceiling
  * (101) already bounds the assembled reason, but 101 distinct hostile codes are
@@ -198,8 +210,17 @@ function lockFileReader(options: VaultLockOptions): VaultLockFileReader {
   return options.readLockFile ?? ((lockPath: string) => fs.readFileSync(lockPath, "utf8"));
 }
 
-/** The held-lock retry loop's real clock and sleep; the defaults for `now`/`sleep`. */
-const realNow = (): number => Date.now();
+/**
+ * The held-lock retry loop's real clock and sleep; the defaults for
+ * `now`/`sleep`. The clock is `performance.now()`: it only moves forward, so a
+ * wall-clock step (an NTP correction, a user changing the date) cannot spend
+ * the one-second budget before a second of real time has passed and fail-stop
+ * a healthy holder (#281, Greptile P2). The heartbeat comparison at
+ * `heartbeatIsFresh` deliberately stays on `Date.now()`: a persisted
+ * `heartbeatAt` carries wall time, and a monotonic reading cannot be compared
+ * to it across processes or restarts.
+ */
+const realNow = (): number => performance.now();
 const realSleep = (milliseconds: number): void => Bun.sleepSync(milliseconds);
 
 function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileRead {
@@ -379,6 +400,7 @@ export class VaultLock {
   private fd: number | undefined;
   private owner: VaultLockOwner;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private owedReleaseTimer: ReturnType<typeof setTimeout> | undefined;
   private released = false;
 
   constructor(
@@ -476,18 +498,63 @@ export class VaultLock {
     this.fd = undefined;
     const read = readOwnerOnce(this.path, lockFileReader(this.options));
     // an unreadable record is never unlinked: the token cannot be compared, so
-    // the file may be a new owner's (#281). The cost is a stale file, which the
-    // next boot reclaims through the pid probe; the cost of deleting it would be
-    // dropping a fresh owner's lock. ONE read only, deliberately: release runs
-    // from the exit hook, and sleeping there to chase a file this process is
-    // about to stop caring about is worse than leaving it (critic N3).
-    if (read.kind === "unreadable") return;
+    // the file may be a new owner's (#281). The synchronous release stays ONE
+    // read — it runs from the exit hook, and sleeping there to chase a file
+    // this process is about to stop caring about is worse than leaving it
+    // (critic N3) — but when the process stays alive (the refusal path) it owes
+    // the cleanup, so it arms the deferred retry that can confirm the token
+    // later (Greptile P1).
+    if (read.kind === "unreadable") {
+      if (this.options.onLost !== undefined) this.armOwedRelease();
+      return;
+    }
     if (read.kind === "owner" && read.owner.token !== this.owner.token) return;
     try {
       fs.unlinkSync(this.path);
     } catch {
       /* already gone */
     }
+  }
+
+  /**
+   * Retry the cleanup this process still owes after `release()` could not read
+   * its own record (#281, Greptile P1). The refusal path keeps the process
+   * alive to serve the refusal page, and `holderIsLive()` answers "alive" for
+   * a live pid whatever the heartbeat age, so this process's abandoned record
+   * would refuse every later instance until a human stops it. The token is
+   * compared on every attempt: the file is removed only once a successful read
+   * shows it is still ours, a gone file is left to the unlink's own ENOENT, and
+   * another owner's record ends the retry untouched. Armed only when `onLost`
+   * is set, which is exactly the module's "process continues" case. Unref'd, so
+   * it never keeps a closing process alive.
+   */
+  private armOwedRelease(): void {
+    if (this.owedReleaseTimer !== undefined) return;
+    // the held-read delay is reused as the first owed-retry delay: both mean
+    // "how long to wait before re-reading an unreadable lock", and the floor
+    // stops a 0 ms knob from turning the retry into a spin
+    let delay = Math.max(
+      1,
+      retryBudget(this.options.transientReadRetryDelayMs, DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS, MAX_RETRY_DELAY_MS),
+    );
+    const attempt = (): void => {
+      this.owedReleaseTimer = undefined;
+      const read = readOwnerOnce(this.path, lockFileReader(this.options));
+      if (read.kind === "unreadable") {
+        delay = Math.min(MAX_OWED_RELEASE_DELAY_MS, Math.max(delay + 1, delay * 2));
+        this.owedReleaseTimer = setTimeout(attempt, delay);
+        this.owedReleaseTimer.unref?.();
+        return;
+      }
+      if (read.kind === "owner" && read.owner.token !== this.owner.token) return;
+      try {
+        fs.unlinkSync(this.path);
+      } catch {
+        /* already gone */
+      }
+    };
+    this.owedReleaseTimer = setTimeout(attempt, delay);
+    this.owedReleaseTimer.unref?.();
   }
 }
 

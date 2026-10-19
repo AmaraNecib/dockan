@@ -103,6 +103,19 @@ function controlledClock(): ControlledClock {
 }
 
 /**
+ * Poll `predicate` until it holds or the timeout expires. The owed-release
+ * retry runs on a real `setTimeout`, so the test that observes it polls instead
+ * of sleeping for a fixed slice and hoping.
+ */
+async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) throw new Error("timed out waiting for the condition");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/**
  * A pid the OS is guaranteed to answer `ESRCH` for: spawn a child and reap it.
  * The probe tests must not hang their outcome on whether a hardcoded pid
  * happens to exist on the runner.
@@ -987,13 +1000,18 @@ describe("a transient lock-file read error is not theft (#281)", () => {
       logger: reads.logger,
       onLost: (reason) => lost.push(reason),
     });
+    const acquiredHeartbeatAt = lock.currentOwner().heartbeatAt;
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(lost).toEqual([]);
     expect(reads.state.reads).toBeGreaterThan(1);
-    // the heartbeat kept writing: the record still names us
+    // the heartbeat kept writing: the record still names us AND its stamp moved
+    // past what acquisition wrote. The token alone would stay green for a
+    // holder that recovered from the read error and then stopped refreshing,
+    // because acquisition already wrote that token (Greptile P2).
     // SAFETY: the test wrote this JSON itself in acquireVaultLock
-    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string; heartbeatAt: string };
     expect(owner.token).toBe(lock.currentOwner().token);
+    expect(Date.parse(owner.heartbeatAt)).toBeGreaterThan(Date.parse(acquiredHeartbeatAt));
     lock.release();
   });
 
@@ -1024,6 +1042,68 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     // new owner's, and a stale file is still reclaimable by the pid probe
     expect(reads.state.reads).toBe(1);
     expect(fs.existsSync(lockPath())).toBe(true);
+  });
+
+  it("removes its own abandoned record once reads recover, so the next instance is not blocked (Greptile P1)", async () => {
+    // the held-read budget spends transientReadRetries + 1 reads, then release
+    // spends one more; all of them fail, so the record is left behind
+    const failingReads = fastRead.transientReadRetries + 2;
+    const reads = countingReader((lockPath, call) => {
+      if (call <= failingReads) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const first = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => first.assertHeld()).toThrow(VaultLockLostError);
+    expect(lost).toHaveLength(1);
+    expect(reads.state.readsAtLoss).toBe(fastRead.transientReadRetries + 1);
+    // the release read failed too, so the record is still there...
+    expect(fs.existsSync(lockPath())).toBe(true);
+    // ...but this process stays alive and owes the cleanup, so a later read
+    // that succeeds removes its OWN record
+    await waitUntil(() => !fs.existsSync(lockPath()));
+    expect(fs.existsSync(lockPath())).toBe(false);
+    // the first lock was never stopped; a second instance takes the folder now
+    const second = acquireVaultLock(dir, { ...fastRead, readLockFile: reads.readLockFile, logger: reads.logger });
+    expect(second.currentOwner().pid).toBe(process.pid);
+    second.release();
+  });
+
+  it("keeps the one-second budget when the wall clock jumps mid-retry (Greptile P2)", () => {
+    // The budget measures ELAPSED time, so this is not an elapsed-time test:
+    // the real default clock and sleep drive the loop and only `Date.now` is
+    // jumped, from inside the read seam. A forward wall-clock step lands on the
+    // second read; the production clock must not read it, or a healthy holder
+    // fails closed before its second of patience is up. `options.now` still
+    // overrides the source, so the controlledClock tests stay in charge.
+    let jumped = false;
+    const reads = countingReader((lockPath, call) => {
+      if (call === 2) jumped = true;
+      if (call <= 5) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lock = acquireVaultLock(dir, {
+      transientReadRetries: 20,
+      transientReadRetryDelayMs: 1,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: () => undefined,
+    });
+    const realDateNow = Date.now;
+    const dateSpy = spyOn(Date, "now").mockImplementation(() => (jumped ? realDateNow() + 10 ** 9 : realDateNow()));
+    try {
+      expect(() => lock.assertHeld()).not.toThrow();
+      // every retry ran: the jumped wall clock did not end the sequence
+      expect(reads.state.reads).toBe(6);
+    } finally {
+      dateSpy.mockRestore();
+      lock.release();
+    }
   });
 });
 

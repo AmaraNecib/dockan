@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
@@ -117,6 +117,17 @@ async function hardKillAndWait(child: ChildProcessWithoutNullStreams | undefined
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A test that needs a CLEAN process exit. Only POSIX delivers SIGTERM to a
+ * child: on Windows Bun's kill terminates the child outright, so the shutdown
+ * hook never runs there and whatever the exit leaves behind is a crash, not a
+ * close. CI runs the api suite on ubuntu, where these run.
+ */
+function itPosix(name: string, fn: () => void | Promise<void>): void {
+  if (process.platform === "win32") it.skip(name, fn);
+  else itHeavy(name, fn);
+}
 
 /** The JSON envelope the RPC/vault routes accept. */
 type JsonBody = { json: Record<string, string> } | { passphrase: string };
@@ -315,6 +326,121 @@ describe("vault single-writer lock over a live sidecar", () => {
     // SAFETY: the lock record is JSON written by the reclaiming sidecar
     const now = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number };
     expect(now.pid).toBe(refusedPid);
+  });
+
+  itHeavy("a refused start takes the folder once the holder CLOSES cleanly (#277)", async () => {
+    // The headline of #277 is the CLOSE story: the other copy closes, the
+    // close unlinks vault.lock, and the refused start takes the folder on its
+    // next tick. The hard-kill story (the lock stays behind, stale) is a
+    // different branch of acquireVaultLock and is covered by the test above.
+    //
+    // The holder is THIS process, because a clean close is what release() does
+    // and that runs on every platform. The process-level version (a SIGTERM
+    // that runs the child's exit hook) is the POSIX test below.
+    const secondPort = await freePort();
+    const lockFile = path.join(dir, "vault.lock");
+    const holder = acquireVaultLock(dir);
+    expect(fs.existsSync(lockFile)).toBe(true);
+
+    // the second sidecar is refused on its own port and must not hold the lock
+    const refusedChild = startApi(secondPort);
+    second = refusedChild;
+    await waitForLog("VAULT_LOCK_REFUSED");
+    const refusedPid = refusedChild.pid;
+    if (refusedPid === undefined) throw new Error("the refused sidecar has no pid");
+    // the holder is still the owner while it is alive
+    // SAFETY: the lock record is JSON written by this process
+    expect((JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number }).pid).toBe(process.pid);
+
+    // the holder CLOSES: release() is exactly what the exit hook runs on a
+    // clean exit, and it unlinks the record
+    holder.release();
+
+    // the CLOSE story: the lock file is GONE, not stale. A hard kill would
+    // have left it behind, and the waiter would have had to reclaim it.
+    expect(fs.existsSync(lockFile)).toBe(false);
+
+    // the waiter's next tick sees ENOENT and takes the folder on the FIRST
+    // attempt: the exclusive create succeeds, with no stale-reclaim path
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      let ownerPid: number | undefined;
+      try {
+        // SAFETY: the lock record is JSON written by the reclaiming sidecar
+        ownerPid = (JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid?: number }).pid;
+      } catch {
+        ownerPid = undefined;
+      }
+      if (ownerPid === refusedPid) break;
+      if (Date.now() >= deadline) {
+        throw new Error(`refused sidecar never took the closed folder; stderr: ${apiStderr}`);
+      }
+      await sleep(100);
+    }
+
+    // it took the folder by the exclusive create, not by stealing a stale
+    // record: the reclaim path in lock.ts logs that separately
+    expect(readLogs()).not.toContain("reclaimed a stale lock");
+    expect(readLogs()).not.toContain("reclaimed an unreadable lock");
+    // and it now serves the vault gate instead of the refusal
+    const status = await fetch(`http://127.0.0.1:${secondPort}/api/vault/status`);
+    expect(status.status).not.toBe(503);
+  });
+
+  itPosix("a refused start takes the folder once the holder's process EXITS cleanly (#277)", async () => {
+    // The same close story one level up: the holder is a separate process and
+    // it closes through its own shutdown, so the lock file is unlinked by the
+    // child's exit hook and not by a release() in this test.
+    //
+    // POSIX only: on Windows Bun's kill terminates the child outright, the
+    // shutdown hook never runs, and whatever the exit leaves behind is a
+    // crash, not a close. CI runs the api suite on ubuntu.
+    const secondPort = await freePort();
+    const lockFile = path.join(dir, "vault.lock");
+    api = startApi(port);
+    await waitForHealth(port);
+
+    // the second sidecar is refused on its own port and must not hold the lock
+    const refusedChild = startApi(secondPort);
+    second = refusedChild;
+    await waitForLog("VAULT_LOCK_REFUSED");
+    const refusedPid = refusedChild.pid;
+    if (refusedPid === undefined) throw new Error("the refused sidecar has no pid");
+
+    // the holder CLOSES: SIGTERM runs its shutdown, which releases the lock
+    const holder = api;
+    api = undefined;
+    holder.kill("SIGTERM");
+    await new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+
+    // the CLOSE story: the lock file is GONE, not stale
+    expect(fs.existsSync(lockFile)).toBe(false);
+
+    // the waiter's next tick sees ENOENT and takes the folder on the FIRST
+    // attempt: the exclusive create succeeds, with no stale-reclaim path
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      let ownerPid: number | undefined;
+      try {
+        // SAFETY: the lock record is JSON written by the reclaiming sidecar
+        ownerPid = (JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid?: number }).pid;
+      } catch {
+        ownerPid = undefined;
+      }
+      if (ownerPid === refusedPid) break;
+      if (Date.now() >= deadline) {
+        throw new Error(`refused sidecar never took the closed folder; stderr: ${apiStderr}`);
+      }
+      await sleep(100);
+    }
+
+    // it took the folder by the exclusive create, not by stealing a stale
+    // record: the reclaim path in lock.ts logs that separately
+    expect(readLogs()).not.toContain("reclaimed a stale lock");
+    expect(readLogs()).not.toContain("reclaimed an unreadable lock");
+    // and it now serves the vault gate instead of the refusal
+    const status = await fetch(`http://127.0.0.1:${secondPort}/api/vault/status`);
+    expect(status.status).not.toBe(503);
   });
 
   itHeavy("a running instance that loses the folder refuses on its own port instead of exiting (ADR-0012)", async () => {

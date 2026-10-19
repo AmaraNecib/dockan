@@ -1,8 +1,8 @@
 # #295 — Client freshness: a sale in one window must show in the other
 
 **Branch:** `t3/295-client-freshness-1` · **Base:** `bff7a1a`
-**Commits:** `f4856e0` (the change) → `6f39a41` (the debate fixes) → the evidence
-commit
+**Commits:** `f4856e0` (the change) → `6f39a41` (the debate fixes) → `97c9612`
+(the evidence) → `f16890d` (the test-audit and code-review fixes)
 **Tier:** Standard. **Status:** lane done — committed, not pushed, no PR, no merge.
 
 ## The two questions, answered first
@@ -113,9 +113,10 @@ input schema is exactly the contracts change criterion 4 forbids.
 | Command | Result |
 |---|---|
 | `bun test apps/api/src/lib/stock-adjustment.test.ts` | 8 pass, 0 fail |
-| `bun test apps/api/src/rpc/router.test.ts` | 261 pass, 0 fail |
+| `bun test apps/api/src/rpc/router.test.ts` | 263 pass, 0 fail |
 | `bun test apps/api/src/store/stock-ledger-store.test.ts` | 7 pass, 0 fail |
 | `bun test` (in `apps/web`) — `src/pages/items.test.tsx` | 58 pass, 0 fail |
+| `bun test` (in `apps/web`) — `items.test.tsx` + `dashboard.test.tsx` | 95 pass, 0 fail |
 | `bun run test` (full unit suite, heavy queue) | api 1076, web 1432, scripts 97 — **0 fail** |
 | `bun run test:e2e` (heavy queue) | **104 passed (6.7m)** |
 | `bun run lint` | 0 errors |
@@ -127,7 +128,8 @@ input schema is exactly the contracts change criterion 4 forbids.
 - the API guard disabled → the router test fails (exit 1);
 - the web tick removed → the two hot-counter tests fail (exit 1);
 - the guard narrowed back to "the newest movement only" → the two new router
-  tests fail (exit 1).
+  tests fail (exit 1);
+- dropping the derived-cost rule → the re-derived-cost test fails (exit 1).
 
 ## Deliberately left alone
 
@@ -158,4 +160,12 @@ input schema is exactly the contracts change criterion 4 forbids.
   (never the author's model). Two blockers and five majors came out of it;
   all are fixed in `6f39a41`. Evidence:
   `.scratch/reviews/295/6f39a41-debate.md`.
-- **Test-audit** and **code-review** — see the evidence files next to it.
+- **Test-audit** — round 1 found 5 things to fix and 9 gaps; the five fixes
+  are in `f16890d` (the exact refusal message, the premise of the no-cost
+  test, a concurrent-post test, the e2e's focus isolation, the cost rule).
+  Round-1 output: `.scratch/reviews/295/round1-test-audit.md`.
+- **Code-review** — round 1: standards *met with gaps*, spec *met with gaps*;
+  the gaps are fixed in `f16890d`. Round-1 output:
+  `.scratch/reviews/295/round1-code-review.md`.
+- Round 2 of both lenses runs against `f16890d`; its evidence files land
+  next to the round-1 ones.

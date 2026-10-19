@@ -140,12 +140,17 @@ still decides how much scrutiny a failure mode deserves; it no longer decides
 whether the debate happens. Run them in that order, each as its own sub-agent,
 before the lane reports.
 
-- **One model runs the lanes and the lenses (owner decision, 2026-10-19).** Author lanes and the
-  three lenses all run `opencode-go/deepseek-v4.1-flash`, on the owner's OpenCode Go subscription.
-  The earlier rule asked for a different model on the lens side, because a model reviewing its own
-  diff shares the blind spots the lens exists to catch; with one model a lens is a fresh read of
-  the diff, not an independent one, and its report has to say so. The free fallback is
-  `opencode-go/minimax-m3.1-flash-free`.
+- **The lenses run on a different model than the author.** Author lanes run
+  `opencode-go/deepseek-v4.1-flash`; the three lenses run
+  `zen-proxy/minimax-m3.1-flash-free`. A model reviewing its own diff shares the blind spots the
+  lens exists to catch, so the reviewer is never the author. The owner named these two on
+  2026-10-19 after the free tier began refusing this box's IP: the author model is a paid one on the
+  OpenCode Go subscription, the lens model is free, reached through `zen-proxy`. The same MiniMax
+  model is advertised as `opencode-go/minimax-m3.1-flash-free`, but that route answered a CLI probe
+  and then returned `404 status code (no body)` from a real sub-agent run, so use the `zen-proxy`
+  one. `zen-proxy/beam-free` is the next free reviewer to reach for when MiniMax is down or a round
+  wants a third opinion. Free lenses have no parallelism cap, so a review round can go as wide as
+  the work needs; DeepSeek is the fallback when a free route fails.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.

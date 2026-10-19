@@ -194,6 +194,45 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect((await fetch(`http://127.0.0.1:${port}/health`)).ok).toBe(true);
   });
 
+  itHeavy("a refused sidecar takes the folder by itself once the holder is killed (#277)", async () => {
+    const secondPort = await freePort();
+    const lockFile = path.join(dir, "vault.lock");
+    api = startApi(port);
+    await waitForHealth(port);
+
+    // the second sidecar is refused on its own port and must not hold the lock
+    const refusedChild = startApi(secondPort);
+    second = refusedChild;
+    await waitForRefusal(secondPort);
+    // SAFETY: the lock record is JSON written by the running sidecar
+    const held = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number };
+    const refusedPid = refusedChild.pid;
+    if (refusedPid === undefined) throw new Error("the refused sidecar has no pid");
+    expect(held.pid).not.toBe(refusedPid);
+
+    // kill the holder without a clean release: its lock stays behind, stale.
+    // The refused instance must reclaim it on its own backoff, no restart.
+    const holder = api;
+    api = undefined;
+    await hardKillAndWait(holder);
+
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const health = await fetch(`http://127.0.0.1:${secondPort}/health`).catch(() => undefined);
+      if (health?.ok === true) break;
+      if (Date.now() >= deadline) throw new Error(`refused sidecar never took the folder; stderr: ${apiStderr}`);
+      await sleep(100);
+    }
+
+    // it now owns the folder: the vault gate serves instead of the refusal and
+    // the lock record names this process
+    const status = await fetch(`http://127.0.0.1:${secondPort}/api/vault/status`);
+    expect(status.status).not.toBe(503);
+    // SAFETY: the lock record is JSON written by the reclaiming sidecar
+    const now = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number };
+    expect(now.pid).toBe(refusedPid);
+  });
+
   itHeavy("a running instance that loses the folder refuses on its own port instead of exiting (ADR-0012)", async () => {
     api = startApi(port);
     await waitForHealth(port);

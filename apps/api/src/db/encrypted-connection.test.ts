@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { setHeavyDefaultTimeout } from "../test-support/heavy";
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
@@ -430,6 +430,229 @@ describe("snapshot fence (#280)", () => {
     fs.writeFileSync(snapshotPath(), bytes);
 
     expect(() => createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() })).toThrow(VaultCorruptionError);
+  });
+
+  it("surfaces at open the snapshot it cannot verify, instead of deciding silently", async () => {
+    const former = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    former.raw.exec("CREATE TABLE t(a TEXT)");
+    former.markDirty();
+    await former.persistIfDirty();
+    await former.close();
+
+    // a former holder's bytes: the stamp is readable, it is simply not ours
+    const foreignEvents: string[] = [];
+    const current = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      writeStamp: () => tokenB,
+      logger: { warn: (event) => foreignEvents.push(event) },
+    });
+    expect(foreignEvents).toEqual(["VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+    await current.close();
+
+    // the legacy envelope carries no stamp at all, and its currency is just as
+    // unverifiable: it must not go quiet merely because it is the documented
+    // upgrade path
+    fs.writeFileSync(snapshotPath(), buildEncryptedSnapshot(masterKey, vaultId, serializedImage([])));
+    const legacyEvents: string[] = [];
+    const upgraded = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      writeStamp: () => tokenB,
+      logger: { warn: (event) => legacyEvents.push(event) },
+    });
+    expect(legacyEvents).toEqual(["VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+    await upgraded.close();
+  });
+
+  it("falsification: a rename in the checkpoint window is refused, never recorded durable", async () => {
+    const zombieEnvelope = buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenA);
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+
+    // The synchronous path has one guard before its write and none after it, so
+    // the injection goes where the window is: inside the atomic write, after its
+    // rename and before the fence re-read.
+    const realRename = fs.renameSync.bind(fs);
+    let injected = 0;
+    // SAFETY: the spy is typed with fs.renameSync's own PathLike overload, and
+    // production passes exactly those two arguments
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      realRename(from, to);
+      if (String(to) === snapshotPath()) {
+        injected += 1;
+        fs.writeFileSync(snapshotPath(), zombieEnvelope);
+      }
+    }) as typeof fs.renameSync);
+    let refused: unknown;
+    try {
+      conn.checkpoint();
+    } catch (error) {
+      refused = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(injected).toBe(1);
+    expect(refused).toBeInstanceOf(SnapshotPersistenceError);
+    // the sync path cannot redo a write, so it refuses and the zombie's bytes
+    // stand. What must not happen is the version it just wrote being recorded
+    // durable while disk holds someone else's envelope.
+    expect(diskFence()?.stamp).toBe(tokenA);
+
+    // nothing was marked durable, so the next write repairs the fence with no
+    // further mutation
+    await conn.persistIfDirty();
+    expect(diskFence()?.stamp).toBe(tokenB);
+    await conn.close();
+
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    // SAFETY: the test created the table with a single TEXT column
+    expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "mine" }]);
+    reopened.close();
+  });
+
+  it("gives up after three attempts when every write is overwritten (overwrite war)", async () => {
+    const zombieEnvelope = buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenA);
+    let guardCalls = 0;
+    let atWar = true;
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeStamp: () => tokenB,
+      writeGuard: () => {
+        guardCalls += 1;
+        // the post-write guard runs after every rename: a zombie that keeps
+        // landing replaces each version the holder just wrote
+        if (atWar && guardCalls % 2 === 0) fs.writeFileSync(snapshotPath(), zombieEnvelope);
+      },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+
+    await expect(conn.persistIfDirty()).rejects.toThrow(SnapshotPersistenceError);
+    // three attempts, each with a guard before and after its rename
+    expect(guardCalls).toBe(6);
+    expect(diskFence()?.stamp).toBe(tokenA);
+
+    // nothing was recorded durable: with the war over the same dirty change
+    // still writes, without another markDirty()
+    atWar = false;
+    await conn.persistIfDirty();
+    expect(diskFence()?.stamp).toBe(tokenB);
+    await conn.close();
+
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    // SAFETY: the test created the table with a single TEXT column
+    expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "mine" }]);
+    reopened.close();
+  });
+
+  it("retries an unreadable fence once before calling the file another writer's", async () => {
+    const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    first.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    first.markDirty();
+    await first.persistIfDirty();
+    await first.close();
+    const written = fs.readFileSync(snapshotPath());
+
+    // One transient failure on the snapshot path only. If the read were called
+    // foreign on the first failure, a healthy, correctly stamped snapshot would
+    // be serialized, encrypted and renamed again: the nonce is random, so the
+    // rewrite is visible as different bytes.
+    // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
+    // it passes exactly (path, "r"); the narrowed signature names that one call
+    // so the spy can delegate to the real open
+    const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
+    let failures = 0;
+    // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
+    // parameters are the (path, flags) overload production calls
+    const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
+      if (String(file) === snapshotPath() && failures === 0) {
+        failures += 1;
+        throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      }
+      return realOpenSync(file, flags);
+    }) as typeof fs.openSync);
+    try {
+      const again = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), writeStamp: () => tokenA });
+      await again.persistIfDirty();
+      expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(true);
+      await again.close();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(failures).toBe(1);
+  });
+
+  it("still writes, and says so, when the fence never reads", async () => {
+    const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    first.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    first.markDirty();
+    await first.persistIfDirty();
+    await first.close();
+    const written = fs.readFileSync(snapshotPath());
+
+    // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
+    // it passes exactly (path, "r"); the narrowed signature names that one call
+    // so the spy can delegate to the real open
+    const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
+    // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
+    // parameters are the (path, flags) overload production calls
+    const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
+      if (String(file) === snapshotPath()) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      return realOpenSync(file, flags);
+    }) as typeof fs.openSync);
+    const events: string[] = [];
+    let again: ReturnType<typeof createEncryptedConnection> | undefined;
+    try {
+      again = createEncryptedConnection({
+        vaultId,
+        masterKey,
+        snapshotPath: snapshotPath(),
+        writeStamp: () => tokenA,
+        logger: { warn: (event) => events.push(event) },
+      });
+      // the write is owed (nothing can be shown to be ours) and it happens: the
+      // unverifiable version is never reported durable in silence
+      await expect(again.persistIfDirty()).rejects.toThrow(SnapshotPersistenceError);
+      expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(false);
+      expect(events).toContain("VAULT_SNAPSHOT_FENCE_UNREADABLE");
+    } finally {
+      spy.mockRestore();
+    }
+    // the shutdown checkpoint would refuse for the same reason, so it is taken
+    // with the fence readable again
+    await again?.close();
+  });
+
+  it("closes the raw handle even when the final checkpoint refuses", async () => {
+    const zombieEnvelope = buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenA);
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+
+    const realRename = fs.renameSync.bind(fs);
+    // SAFETY: the spy is typed with fs.renameSync's own PathLike overload, and
+    // production passes exactly those two arguments
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      realRename(from, to);
+      if (String(to) === snapshotPath()) fs.writeFileSync(snapshotPath(), zombieEnvelope);
+    }) as typeof fs.renameSync);
+    try {
+      await expect(conn.close()).rejects.toThrow(SnapshotPersistenceError);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // the refusal is the last thing close() does, and the cleanup ran anyway:
+    // the connection's handle is shut, so its memory image cannot be read again
+    expect(() => conn.raw.query("SELECT 1").get()).toThrow();
   });
 });
 

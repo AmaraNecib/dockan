@@ -240,8 +240,19 @@ export type SnapshotFence = {
  * Parse an envelope's fence. Returns undefined when the bytes cannot decide —
  * too short, wrong magic, an unknown version, or an out-of-range stamp length —
  * so a caller reading a prefix treats "undecidable" as "not mine" instead of
- * trusting it. The stamp is cleartext; it is safe to read before decrypting,
- * and it is useless to forge because it is authenticated by the same tag.
+ * trusting it. The stamp is cleartext, which is safe to read before decrypting.
+ *
+ * What the stamp does and does not prove, stated plainly, because the weaker
+ * reading was written here first and is false. Binding the stamp into the AEAD
+ * context makes the cleartext field tamper-evident: swapping one envelope's
+ * stamp for another fails the GCM tag, which is all the AAD-swap test claims.
+ * It does not bind the stamp to an identity. A process holding the master key
+ * and the folder reads the current holder's token out of `vault.lock` and mints
+ * a validly fenced envelope under that stamp — the post-write re-read then
+ * sees "mine" and records the overwrite as durable, undetected. So the fence
+ * discriminates a *helpless* former holder, one that sealed with the token it
+ * held at acquire time and stays recognisable forever, and NOT a deliberately
+ * malicious one. Nothing in this file holds back a writer that means it.
  */
 export function readSnapshotFence(envelope: Uint8Array): SnapshotFence | undefined {
   const afterMagic = VAULT_SNAPSHOT_MAGIC.length;

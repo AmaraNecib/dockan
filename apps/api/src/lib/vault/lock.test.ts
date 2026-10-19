@@ -1145,54 +1145,53 @@ describe("a transient lock-file read error is not theft (#281)", () => {
   }, 10_000);
 
   it("bounds the boot-path read attempts even when a knob asks for ten thousand", () => {
-    // acquisition reads through the same clamped budget: three readOwner calls,
-    // each capped at 100 retries, is ~303 reads. A mutant that reverts the boot
-    // path to the raw knob does 10 001 x 3
+    // acquisition reads through the same clamped budget: every readOwner call is
+    // capped at 100 retries, so the refusal below is a few hundred reads, not
+    // 10 001 per call. #287: every read here fails, so nothing may be renamed
+    // aside and the boot refuses rather than unlinking an unattested record
     const reads = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
     });
     fs.writeFileSync(lockPath(), "{ not json");
     const startedAt = Date.now();
-    const lock = acquireVaultLock(dir, {
-      readRetries: 10_000,
-      readRetryDelayMs: 0,
-      stealSettleMs: 1,
-      readLockFile: reads.readLockFile,
-      logger: reads.logger,
-      onLost: () => undefined,
-    });
-    try {
-      expect(reads.state.reads).toBeLessThan(400);
-      expect(Date.now() - startedAt).toBeLessThan(3_000);
-      expect(lock.currentOwner().pid).toBe(process.pid);
-    } finally {
-      lock.release();
-    }
+    expect(() =>
+      acquireVaultLock(dir, {
+        readRetries: 10_000,
+        readRetryDelayMs: 0,
+        stealSettleMs: 1,
+        readLockFile: reads.readLockFile,
+        logger: reads.logger,
+        onLost: () => undefined,
+      }),
+    ).toThrow(VaultAlreadyLockedError);
+    expect(reads.state.reads).toBeLessThan(1_000);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    // the refusal renamed nothing: the record is still exactly where it was
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
   }, 10_000);
 
   it("bounds the boot-path read delay even when a knob asks for five seconds", () => {
-    // three readOwner calls, each with one retry folded to 500 ms: ~1.5 s. A
-    // mutant that reverts the boot path to the raw knob sleeps 3 x 5 s
+    // every readOwner call folds the knob to the 500 ms ceiling, so the refusal
+    // path's handful of calls is a few seconds, not 5 s per call. #287: every
+    // read fails, so the refusal is the outcome
     const reads = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
     });
     fs.writeFileSync(lockPath(), "{ not json");
     const startedAt = Date.now();
-    const lock = acquireVaultLock(dir, {
-      readRetries: 1,
-      readRetryDelayMs: 5_000,
-      stealSettleMs: 1,
-      readLockFile: reads.readLockFile,
-      logger: reads.logger,
-      onLost: () => undefined,
-    });
-    try {
-      expect(Date.now() - startedAt).toBeLessThan(3_000);
-      expect(reads.state.reads).toBeLessThan(20);
-      expect(lock.currentOwner().pid).toBe(process.pid);
-    } finally {
-      lock.release();
-    }
+    expect(() =>
+      acquireVaultLock(dir, {
+        readRetries: 1,
+        readRetryDelayMs: 5_000,
+        stealSettleMs: 1,
+        readLockFile: reads.readLockFile,
+        logger: reads.logger,
+        onLost: () => undefined,
+      }),
+    ).toThrow(VaultAlreadyLockedError);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(reads.state.reads).toBeLessThan(20);
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
   }, 30_000);
 
   it("caps the whole retry window even when a knob asks for hours", () => {

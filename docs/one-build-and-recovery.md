@@ -216,11 +216,20 @@ magic `"DKNVAULT"` and a one-byte version.
   before decrypting. A v1 file is rewritten fenced on the holder's first write;
   a foreign-stamped file is rewritten when it is opened. The one exception is a
   RESTORE: `extractVaultBackup()` writes the live snapshot from the bundle
-  verbatim, and a restore holds no lock, so it has no token to stamp. A restored
+  verbatim. The restore DOES hold the single-writer lock — it calls
+  `acquireVaultLock(dataDir)` and `lock.assertHeld()` around the write — so it
+  has a token. But a token alone is not enough: the bundle's snapshot was
+  sealed under whatever master key produced it, and the restore has no master
+  key to re-seal it under, so it cannot stamp a fresh envelope; it can only
+  copy bytes. A restored
   live snapshot is therefore whatever the bundle carried — a v1 envelope from a
   legacy conversion, or a v2 carrying the dead session's stamp. The next holder
   reads it, reports the fence it cannot verify, and rewrites it fenced on its
   first write, which is the same path a legacy vault already takes.
+  Do not "fix" this exception by stamping the lock token onto a restored
+  snapshot: that would break restores of legacy bundles, which is the case the
+  exception exists for. The lock being held is not the gating condition; the
+  missing master key is.
 - **v1 in a backup bundle is not a fault.** `encryptLegacyBackups()` converts a
   plaintext `backups/*.db` into a `.dknvbak` bundle by calling
   `buildEncryptedSnapshot` with no stamp, so the enclosed image is a v1

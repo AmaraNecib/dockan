@@ -16,10 +16,9 @@ import { signIn } from "./auth-helpers";
  * made it. This test keeps window B in the background and asserts the
  * convergence anyway.
  *
- * WHAT THIS DOES NOT SHOW. The headless runner never hides a tab — the
- * reader reports `visible` for the whole test — so the HIDDEN-tab branch of
- * `refetchIntervalInBackground` is not exercised here. What the spec does
- * show is the unfocused window: the reader was never the focused tab and
+ * WHAT THIS DOES NOT SHOW. The headless runner never hides a tab, so the
+ * reader fakes its own hidden document (see below). What the spec shows is
+ * the unfocused, hidden window: the reader was never the focused tab and
  * never flipped to visible, and the tick carried the change anyway.
  *
  * HOW THE TICK IS PROVEN, not the focus event. TanStack v5's focus manager
@@ -125,6 +124,13 @@ test("a sale in one window moves the hot counters in the other, with no reload",
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") counter.__visibleFlips += 1;
     });
+    // the reader is a BACKGROUND tab. The headless runner never hides a tab,
+    // so the document says so itself — TanStack's focus manager reads
+    // document.visibilityState, and the interval only runs in a hidden
+    // document when refetchIntervalInBackground is set. Without this, the
+    // spec would stay green with that flag deleted, and the ticket's
+    // central claim would be pinned nowhere but an option object.
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
   });
   const salesBefore = await readSalesCount(reader);
 

@@ -11,6 +11,7 @@ import { Amount } from "@/components/ui/amount";
 import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
+import { hotCounterRefresh } from "../lib/freshness";
 import { orpc } from "../lib/rpc";
 import { inputClass } from "@/components/ui/input";
 import { usePagination } from "../hooks/use-pagination";
@@ -319,7 +320,13 @@ export function ItemHistoryPage() {
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
   const pager = usePagination();
-  const history = useQuery(orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }));
+  const history = useQuery({
+    ...orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }),
+    // #295 — the running stock column on this screen is a hot counter too: a
+    // sale or an adjustment posted in another window has to show up here
+    // without the owner reloading the page
+    ...hotCounterRefresh(),
+  });
   // rows the date-ordered list draws below a correction that was recorded after
   // them (issue 151): a future-dated purchase the owner would otherwise read as
   // one that never moved the average

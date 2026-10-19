@@ -1,4 +1,6 @@
-import type { MovementKind } from "@dokan/contracts";
+import type { MovementKind, StockMovement } from "@dokan/contracts";
+
+import { localDateTime } from "./logger";
 
 /**
  * #295 — the identity of one stock adjustment, and the window inside which a
@@ -10,13 +12,22 @@ import type { MovementKind } from "@dokan/contracts";
  * moves twice for one intention: a double-clicked save, a lost response
  * re-sent as the same action (the #115 rule), or the same form open in two
  * windows. The ledger cannot tell that second movement from a genuine one,
- * so the guard compares the incoming request against what was just recorded.
+ * so the guard compares the incoming request against what was recorded
+ * recently.
  *
- * WHAT THE IDENTITY IS. The five fields that make two adjustments the same
- * action: the item, the kind, the signed quantity, the unit cost and the
- * reason. The timestamp is NOT part of it — the server stamps `occurredAt` per
- * request, so two identical requests would differ on it and never match (the
- * trap #177 closed for supplier adjustments with its `serverStamped` rule).
+ * WHAT THE IDENTITY IS. The fields that make two adjustments the same action:
+ * the item, the kind, the signed quantity, the unit cost and the reason. Two
+ * of those join only when the CALLER expressed them:
+ *
+ *   - the business date: a server-stamped date cannot tell a retry apart,
+ *     because two identical requests would differ on it and never match (the
+ *     trap #177 closed for supplier adjustments with its `serverStamped`
+ *     rule). A caller-supplied date IS part of the identity.
+ *   - the unit cost: an inflow that carried no cost means "at the item's
+ *     cost", and the server derives that cost at posting time. A derived
+ *     value is not part of what the request expressed, so it is not part of
+ *     the identity — otherwise the first posting would move the average and
+ *     the retry would compute a different cost and slip past the guard.
  */
 
 /**
@@ -27,7 +38,9 @@ import type { MovementKind } from "@dokan/contracts";
  * covers both with room to spare, while a deliberate second adjustment — the
  * owner carrying in two batches of the same item — is typed, not fired, and
  * lands outside the window. The refusal says what happened, so an operator
- * who means it twice submits again a moment later.
+ * who means it twice submits again a moment later, or changes the reason: a
+ * different reason is a different action, and the reason box is the escape
+ * hatch the predicate actually offers.
  */
 export const REPEAT_WINDOW_MS = 30_000;
 
@@ -37,56 +50,67 @@ export interface StockAdjustment {
   readonly kind: MovementKind;
   /** signed quantity: positive = stock in, negative = stock out */
   readonly delta: number;
-  /** per-unit cost of an inflow; null for an outflow */
-  readonly unitCost: number | null;
-  readonly reason: string | null;
-}
-
-/** A movement as the guard sees it: its identity and when it was recorded. */
-export interface RecordedAdjustment {
-  readonly adjustment: StockAdjustment;
   /**
-   * The movement's RECORDING stamp, "YYYY-MM-DD HH:mm:ss" in the server's
-   * local time — not its business date. A backdated adjustment still records
-   * now, and it is "now" that decides whether a later request is a repeat.
+   * The unit cost the request expressed, or undefined when it expressed none
+   * (an inflow at the item's cost, or an outflow — the seam records those
+   * costless). undefined means "not part of the identity".
    */
-  readonly recordedAt: string;
+  readonly unitCost: number | null | undefined;
+  readonly reason: string | null;
+  /**
+   * The business date the CALLER supplied, or null when the server stamps it.
+   *
+   * A server-stamped date is not part of the identity: two identical
+   * requests would carry different stamps and never match. A caller-supplied
+   * date is: two adjustments dated differently are two actions.
+   */
+  readonly occurredAt: string | null;
 }
 
 /**
- * The unit cost a request will be RECORDED with.
- *
- * An inflow without a cost takes the item's cached average cost and an
- * outflow never carries one — the same defaults the posting seam applies, so
- * the guard compares the cost the ledger will hold, not the one the request
- * happened to spell out.
- */
-export function effectiveUnitCost(delta: number, unitCost: number | undefined, cachedCost: number): number | null {
-  if (delta > 0) return unitCost ?? cachedCost;
-  if (delta < 0) return null;
-  return unitCost ?? null;
-}
-
-/** The identity of one action. Stable across processes and free of ordering. */
-export function stockAdjustmentSignature(adjustment: StockAdjustment): string {
-  return JSON.stringify([adjustment.itemId, adjustment.kind, adjustment.delta, adjustment.unitCost, adjustment.reason]);
-}
-
-/**
- * Whether `last` is the same action as `incoming`, recorded inside the
+ * The local stamp of "now minus the window" — the lower bound of the repeat
  * window.
  *
- * `cutoff` is the local stamp of "now minus the window"; both stamps share
- * one fixed-width format and one timezone, so the comparison is chronological
- * without any date parsing.
+ * The format is the server's local "YYYY-MM-DDTHH:mm:ss" (the same one
+ * `createdAt` stores), fixed width and one timezone, so the store can compare
+ * it against a recorded stamp without parsing a date.
  */
-export function isRepeatedAdjustment(
-  last: RecordedAdjustment | undefined,
-  incoming: StockAdjustment,
-  cutoff: string,
-): boolean {
-  if (last === undefined) return false;
-  // older than the window: a genuine second adjustment
-  if (last.recordedAt <= cutoff) return false;
-  return stockAdjustmentSignature(last.adjustment) === stockAdjustmentSignature(incoming);
+export function repeatCutoff(now: Date = new Date()): string {
+  return localDateTime(new Date(now.getTime() - REPEAT_WINDOW_MS));
+}
+
+/**
+ * The unit cost a request EXPRESSES — what goes into the identity.
+ *
+ * An outflow is recorded costless by the posting seam, so its cost is not
+ * part of the identity. A correction with no cost is a no-op and is recorded
+ * as one. An inflow with no explicit cost means "at the item's cost", and the
+ * server derives that at posting time, so it is left out of the identity
+ * (see the module doc).
+ */
+export function expressUnitCost(
+  delta: number,
+  unitCost: number | null | undefined
+): number | null | undefined {
+  if (delta < 0) return undefined;
+  if (delta === 0) return unitCost ?? null;
+  return unitCost;
+}
+
+/**
+ * Whether `recorded` is the same action as `request`.
+ *
+ * The request leads: the fields it did not express (a server-stamped date, an
+ * inflow's derived cost) are not compared, and everything it did express is
+ * compared field by field — so a null reason or a null cost matches only a
+ * null, and an adjustment with a reason never matches one without.
+ */
+export function matchesAdjustment(request: StockAdjustment, recorded: StockMovement): boolean {
+  if (request.itemId !== recorded.itemId) return false;
+  if (request.kind !== recorded.kind) return false;
+  if (request.delta !== recorded.delta) return false;
+  if (request.unitCost !== undefined && request.unitCost !== recorded.unitCost) return false;
+  if (request.reason !== recorded.reason) return false;
+  // a server-stamped date is not part of the identity; a caller-supplied one is
+  return request.occurredAt === null || request.occurredAt === recorded.occurredAt;
 }

@@ -104,7 +104,8 @@
         "stock-ledger.spec.ts",
         "pagination.spec.ts",
         "arabic-search.spec.ts",
-        "01-empty-states.spec.ts"
+        "01-empty-states.spec.ts",
+        "client-freshness.spec.ts"
       ]
     },
     {
@@ -229,9 +230,9 @@
       "specs": ["vault.spec.ts"]
     },
     {
-      "$comment": "the dashboard carries onboarding and the low-stock view",
+      "$comment": "the dashboard carries onboarding and the low-stock view; client-freshness.spec.ts measures the dashboard's hot counters against a second window (#295)",
       "match": ["apps/web/src/pages/dashboard.tsx", "apps/web/src/pages/dashboard.test.tsx"],
-      "specs": ["00-onboarding.spec.ts", "items-categories.spec.ts"]
+      "specs": ["00-onboarding.spec.ts", "items-categories.spec.ts", "client-freshness.spec.ts"]
     },
     {
       "$comment": "auth is the one API area with dedicated specs; the rest of apps/api is critical",

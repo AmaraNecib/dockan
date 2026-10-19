@@ -429,11 +429,13 @@ describe("items list hot counter (#295)", () => {
     await waitFor(() => itemsListFetches >= 2);
   });
 
-  it("keeps polling while the window is in the background", async () => {
+  it("carries the background polling flag on the query", async () => {
     const { queryClient } = await mount({ refreshMs: 20 });
     await waitFor(() => itemsListFetches >= 1);
     // the options the page handed the query carry the background flag: a
-    // window that is visible but unfocused never sends a focus event
+    // window that is visible but unfocused never sends a focus event. This
+    // pins the wiring, not the runtime effect — happy-dom has no hidden tab,
+    // so the behaviour is measured in the e2e (#295).
     const observer = queryClient.getQueryCache().find({ queryKey: ["items"] })?.observers[0];
     expect(observer?.options.refetchInterval).toBe(20);
     expect(observer?.options.refetchIntervalInBackground).toBe(true);

@@ -92,6 +92,36 @@ describe("stock movements — persistence + ordering", () => {
     expect(pair[0]!.seq).toBeLessThan(pair[1]!.seq);
   });
 
+  it("reads only the movements recorded after a cutoff, in insertion order", async () => {
+    // the #295 repeat window: the guard needs the movements RECORDED after a
+    // stamp, in the order they were written — a backdated movement is
+    // recorded now, and the business date does not order the window
+    const item = await makeItem("ledger-window");
+    await store.insertStockMovement({
+      itemId: item.id,
+      kind: "PURCHASE",
+      delta: 10,
+      unitCost: 500,
+      reason: null,
+      ref: null,
+      occurredAt: "2025-05-01T10:00:00",
+    });
+    await store.insertStockMovement({
+      itemId: item.id,
+      kind: "MANUAL_ADJUSTMENT",
+      delta: -2,
+      unitCost: null,
+      reason: "كسّر",
+      ref: null,
+      occurredAt: "2025-05-02T10:00:00",
+    });
+
+    const inside = await store.listStockMovementsSince(item.id, "2020-01-01T00:00:00");
+    expect(inside.map((r) => r.delta)).toEqual([10, -2]);
+    const outside = await store.listStockMovementsSince(item.id, "2099-01-01T00:00:00");
+    expect(outside).toHaveLength(0);
+  });
+
   it("counts movements per item only", async () => {
     const a = await makeItem("ledger-item-2");
     const b = await makeItem("ledger-item-3");

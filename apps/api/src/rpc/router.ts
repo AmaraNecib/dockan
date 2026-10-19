@@ -13,7 +13,7 @@ import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
 import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
-import { effectiveUnitCost, isRepeatedAdjustment, REPEAT_WINDOW_MS, type RecordedAdjustment, type StockAdjustment } from "../lib/stock-adjustment";
+import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
@@ -289,27 +289,6 @@ async function postStock(tx: StorePort, spec: StockMovementSpec) {
   return posted!;
 }
 
-/**
- * #295 — the item's most recently RECORDED movement, which is the one a
- * repeated request has to be compared against.
- *
- * "Recorded", not "dated": the store orders the ledger by business date, so a
- * backdated adjustment sits earlier in that list than the movement that
- * follows it. The guard asks "what was written last", which is the rowid
- * (the store's `seq`), not the business date.
- */
-async function lastRecordedMovement(tx: StorePort, itemId: string): Promise<RecordedAdjustment | undefined> {
-  const newest = await tx.lastStockMovement(itemId);
-  if (newest === undefined) return undefined;
-  const adjustment: StockAdjustment = {
-    itemId: newest.itemId,
-    kind: newest.kind,
-    delta: newest.delta,
-    unitCost: newest.unitCost,
-    reason: newest.reason,
-  };
-  return { adjustment, recordedAt: newest.createdAt };
-}
 
 /**
  * #256 — the customer's total outstanding debt, read through the same store
@@ -708,12 +687,16 @@ export function createRpcRouter(deps: RpcDeps) {
             itemId: item.id,
             kind: input.kind,
             delta: input.delta,
-            unitCost: effectiveUnitCost(input.delta, input.unitCost, item.costPrice),
+            unitCost: expressUnitCost(input.delta, input.unitCost),
             reason: input.reason ?? null,
+            occurredAt: input.occurredAt ?? null,
           };
-          const last = await lastRecordedMovement(tx, item.id);
-          const cutoff = localDateTime(new Date(Date.now() - REPEAT_WINDOW_MS));
-          if (isRepeatedAdjustment(last, incoming, cutoff)) {
+          // EVERY movement recorded inside the window, not only the newest
+          // one: a sale or a correction posted between the two copies would
+          // otherwise push the row the guard is looking for out of sight, and
+          // the stock would move twice for one intention.
+          const recent = await tx.listStockMovementsSince(item.id, repeatCutoff());
+          if (recent.some((recorded) => matchesAdjustment(incoming, recorded))) {
             throw new ORPCError("CONFLICT", { message: "STOCK_ADJUSTMENT_DUPLICATE" });
           }
           // The seam owns the whole sequence: it defaults an inflow's cost to

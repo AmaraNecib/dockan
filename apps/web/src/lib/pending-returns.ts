@@ -17,5 +17,12 @@ export const PENDING_RETURNS_REFRESH_MS = 60_000;
  * read is never rendered as "nothing pending" (round-2 finding 1).
  */
 export function usePendingReturnsCount(refreshMs: number = PENDING_RETURNS_REFRESH_MS) {
-  return useQuery({ ...orpc.returnsPendingCount.queryOptions(), refetchInterval: refreshMs });
+  return useQuery({
+    ...orpc.returnsPendingCount.queryOptions(),
+    refetchInterval: refreshMs,
+    // the badge lives in the shell, which is on screen in the window the owner
+    // is NOT looking at — the same reason the hot counters tick in the
+    // background (#295)
+    refetchIntervalInBackground: true,
+  });
 }

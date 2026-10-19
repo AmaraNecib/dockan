@@ -14,8 +14,17 @@ import { signIn } from "./auth-helpers";
  * it cannot cover is a window that stays visible but unfocused: no focus
  * event fires, so the number on screen stays exactly as old as the last read
  * made it. This test keeps window B in the background and asserts the
- * convergence anyway, and it counts window B's focus events to prove the
- * focus path was not what carried the change.
+ * convergence anyway.
+ *
+ * HOW THE TICK IS PROVEN, not the focus event. TanStack v5's focus manager
+ * listens to `visibilitychange`, not `focus`: it refetches when the document
+ * becomes visible. So the counter that matters is the number of
+ * visibility-changes that made the reader VISIBLE — zero means the focus path
+ * never fired, and with no reload, no interaction and no mutation in the
+ * reader window, the bounded tick is the only refetch trigger left. The
+ * elapsed time is reported as a measurement, not asserted as a bound: the
+ * tick's phase relative to the sale is arbitrary, so a fast convergence would
+ * not mean a focus refetch happened.
  *
  * The numbers that must move are the two hot counters: today's sales (the
  * count on the dashboard card) and the stock on hand (the item's row in the
@@ -91,18 +100,24 @@ test("a sale in one window moves the hot counters in the other, with no reload",
     },
   });
 
-  // window B: a second tab in the same session, and a counter for the focus
-  // events it must not receive
+  // window B: a second tab in the same session, and counters for the events
+  // it must not receive
   const reader = await context.newPage();
   await reader.goto("/");
   await expect(reader.getByTestId("dashboard-page")).toBeVisible();
   await reader.evaluate(() => {
-    // SAFETY: the page installs this counter on its own window and reads it
-    // back later in the same test; the cast names the property it added
-    const counter = window as Window & { __focusEvents: number };
+    // SAFETY: the page installs these counters on its own window and reads
+    // them back later in the same test; the cast names the properties it added
+    const counter = window as Window & { __focusEvents: number; __visibleFlips: number };
     counter.__focusEvents = 0;
+    counter.__visibleFlips = 0;
     window.addEventListener("focus", () => {
       counter.__focusEvents += 1;
+    });
+    // the event TanStack v5's focus manager actually listens to: it refetches
+    // when the document becomes visible
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") counter.__visibleFlips += 1;
     });
   });
   const salesBefore = await readSalesCount(reader);
@@ -130,15 +145,17 @@ test("a sale in one window moves the hot counters in the other, with no reload",
   const lowStockRow = reader.getByTestId("dashboard-low-stock-list").getByRole("listitem").filter({ hasText: itemName });
   await expect(lowStockRow).toContainText("5 / 5");
 
-  // the focus path did not do this: window B took no focus event, and it was
-  // a background tab while the numbers moved
-  const focusEvents = await reader.evaluate(() => {
-    // SAFETY: see above — the page installed the counter before the test read it
-    return (window as Window & { __focusEvents: number }).__focusEvents;
+  // the focus path did not do this: window B never became visible again, so
+  // TanStack's focus manager never refetched it, and it was a background tab
+  // while the numbers moved
+  const readerEvents = await reader.evaluate(() => {
+    // SAFETY: see above — the page installed the counters before the test read them
+    const counter = window as Window & { __focusEvents: number; __visibleFlips: number };
+    return { focusEvents: counter.__focusEvents, visibleFlips: counter.__visibleFlips };
   });
   const visibility = await reader.evaluate(() => document.visibilityState);
-  expect(focusEvents).toBe(0);
-  const measurement = `converged in ${elapsedMs}ms; reader visibility=${visibility}, focus events=${focusEvents}`;
+  expect(readerEvents.visibleFlips).toBe(0);
+  const measurement = `converged in ${elapsedMs}ms; reader visibility=${visibility}, focus events=${readerEvents.focusEvents}, visibility flips=${readerEvents.visibleFlips}`;
   // the measurement is the point of the spec: it lands in the test output
   console.log(`#295 measurement: ${measurement}`);
   testInfo.annotations.push({ type: "measurement", description: measurement });

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type {
   Activity,
   Category,
@@ -1606,18 +1606,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .orderBy(stockMovements.occurredAt, sql`rowid`);
       return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
     },
-    async lastStockMovement(itemId) {
-      // rowid DESC: the movement recorded last, whatever business date it
-      // carries (a backdated adjustment is still recorded now)
+    async listStockMovementsSince(itemId, recordedAfter) {
+      // the #295 repeat window: only the movements RECORDED after the cutoff
+      // (created_at), in insertion order. created_at is the server's local
+      // "YYYY-MM-DDTHH:mm:ss", the same format the cutoff uses, so the
+      // comparison is chronological without any date parsing.
       const rows = await db
         .select({ ...movementCols, seq: sql<number>`rowid` })
         .from(stockMovements)
-        .where(eq(stockMovements.itemId, itemId))
-        .orderBy(sql`rowid DESC`)
-        .limit(1);
-      const row = rows[0];
-      if (row === undefined) return undefined;
-      return { ...toMovement(row), seq: Number(row.seq) };
+        .where(and(eq(stockMovements.itemId, itemId), gt(stockMovements.createdAt, recordedAfter)))
+        .orderBy(sql`rowid`);
+      return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
     },
     async countStockMovements(itemId) {
       return db.$count(stockMovements, eq(stockMovements.itemId, itemId));

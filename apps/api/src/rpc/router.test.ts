@@ -495,6 +495,64 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     expect(history.movements).toHaveLength(3);
     expect(history.stockOnHand).toBe(13);
   });
+
+  it("refuses the repeat even when another movement landed in between", async () => {
+    // the guard compares against EVERY movement recorded inside the window,
+    // not only the newest one: a sale or a correction posted between the two
+    // copies would otherwise push the row the guard looks for out of sight,
+    // and the stock would move twice for one intention
+    const item = await makeItem("تسوية-بينها");
+
+    // window A records the adjustment
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // the other window sells or corrects the item in between
+    await secondClient.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, reason: "delivery" });
+
+    // window B posts the SAME action as window A
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+    expect(refused!.message).toContain("STOCK_ADJUSTMENT_DUPLICATE");
+
+    // two movements, not three: the repeat was not applied
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(7);
+  });
+
+  it("refuses a no-cost repeat after the item's average moved", async () => {
+    // an inflow that carried no cost means "at the item's cost", and the
+    // server derives that cost at posting time — the first posting moves the
+    // average, so a derived cost inside the identity would let the retry
+    // through and the stock would move twice for one intention
+    const item = await makeItem("تسوية-بلا-تكلفة");
+
+    // window A records the adjustment, with no cost of its own
+    await client.stockAddManual({ itemId: item.id, delta: 5, reason: "count" });
+    // the other window moves the average with a cost of its own
+    await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 300, reason: "delivery" });
+
+    // window B re-sends the SAME action
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(10);
+  });
 });
 
 describe("stock ledger — backdated inflows (greptile P1)", () => {

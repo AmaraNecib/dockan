@@ -277,12 +277,13 @@ export interface StorePort {
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
   listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
   /**
-   * The movement recorded LAST, in insertion order (seq = rowid) — not in
-   * business-date order. A backdated adjustment is recorded now, so "what was
-   * written last" is the rowid, and the repeat guard (#295) needs that one row
-   * rather than the whole ledger.
+   * The movements recorded AFTER a local stamp, in insertion order — the
+   * #295 repeat window. The stamp is the server's local
+   * "YYYY-MM-DDTHH:mm:ss", the same format `createdAt` stores, so the
+   * comparison is chronological without any date parsing. A backdated
+   * adjustment is still recorded now, so it lands in the window too.
    */
-  lastStockMovement(itemId: string): Promise<(StockMovement & { seq: number }) | undefined>;
+  listStockMovementsSince(itemId: string, recordedAfter: string): Promise<Array<StockMovement & { seq: number }>>;
   countStockMovements(itemId: string): Promise<number>;
 
   // --- purchase linkage (ticket 29) ----------------------------------------

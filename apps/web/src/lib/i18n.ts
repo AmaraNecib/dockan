@@ -442,7 +442,7 @@ const resources = {
       STOCK_NEGATIVE: "الكمية غير متوفرة في المخزون",
       // #295 — the same stock adjustment was posted twice (a second window, a
       // double-clicked save, a re-sent request). The first one stands.
-      STOCK_ADJUSTMENT_DUPLICATE: "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين",
+      STOCK_ADJUSTMENT_DUPLICATE: "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين. غيّر سبب التعديل أو أعد المحاولة بعد قليل.",
       // ticket 29 — purchase intake + deferred linking
       purchasesTitle: "فاتورة شراء جديدة",
       purchasesNew: "شراء جديد",

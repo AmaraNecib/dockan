@@ -210,6 +210,36 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect((await fetch(`http://127.0.0.1:${port}/health`)).ok).toBe(true);
   });
 
+  itHeavy("a refused start serves the recycled-pid page, not the close-the-other-copy one (greptile P1 on #298)", async () => {
+    // A lock left by a process whose pid now belongs to something else: the pid
+    // answers alive, the heartbeat is many windows old. The refusal is real, but
+    // "close the other copy" is advice the owner cannot follow — there may be no
+    // other copy. Startup used to reduce the refusal to its holder, which threw
+    // that story away; the page must keep it.
+    const stalePort = await freePort();
+    const started = new Date(Date.now() - 200_000).toISOString();
+    fs.writeFileSync(
+      path.join(dir, "vault.lock"),
+      JSON.stringify({
+        pid: process.pid, // alive: the pid probe answers, so only the heartbeat says "gone"
+        host: os.hostname(),
+        startedAt: started,
+        heartbeatAt: started,
+        token: "recycled-pid",
+      }),
+    );
+
+    api = startApi(stalePort);
+    // no request until the page is up: a request would call reclaim.trigger()
+    await waitForLog("VAULT_LOCK_REFUSED");
+    const page = await fetch(`http://127.0.0.1:${stalePort}/`);
+    const html = await page.text();
+    expect(html).toContain("لا تبدو نسخة أخرى من دكان");
+    expect(html).toContain("vault.lock");
+    // and NOT the advice that does not apply
+    expect(html).not.toContain("لا تحذف أي ملف");
+  });
+
   itHeavy("a plaintext start still publishes its port record (greptile P1 on #298)", async () => {
     // DOKAN_VAULT=disabled never takes a vault lock, so keying publication off
     // `vaultLock` left plaintext starts with no `.dokan-port` at all: the dev

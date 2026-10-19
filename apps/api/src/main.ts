@@ -71,8 +71,15 @@ let lockLost = false;
  * even when the lock record's owner could not be read.
  */
 let refused = false;
-/** The holder named to the owner while refused (may be unknown). */
-let refusalOwner: VaultLockOwner | undefined;
+/**
+ * The refusal this instance is serving, kept whole rather than reduced to its
+ * holder (greptile P1 on #298): a recycled-pid lock and an unreadable lock file
+ * each carry their own recovery instructions, and collapsing either into "close
+ * the other copy" tells the owner to do something that does not exist. The
+ * automatic retry cannot clear a recycled pid (the pid answers alive) and
+ * cannot clear an unreadable file at all, so the story is the only exit.
+ */
+let refusalError: VaultAlreadyLockedError | VaultLockUnreadableError | undefined;
 /** The reclaim loop while refused; cleared once this instance owns the folder. */
 let reclaim: ReclaimRetry<VaultLockOwner> | undefined;
 if (config.vault === "on") {
@@ -84,7 +91,7 @@ if (config.vault === "on") {
       // its own listener with the refusal and keeps trying to take the folder,
       // so closing the holder lets the owner in without a restart (#277).
       refused = true;
-      refusalOwner = error.owner;
+      refusalError = error;
     } else if (error instanceof VaultLockUnreadableError) {
       // NOT the same state, and deliberately not retried (#287): the lock file
       // exists but cannot be parsed or read, so nothing will change until the
@@ -155,11 +162,16 @@ function buildOverlay(api: RequestHandler | undefined): RequestHandler {
  * boot-token echo stays, so the desktop shell keeps verifying this child
  * instead of treating the refusal as a dead sidecar.
  */
-function buildLockRefusalHandler(holder: VaultLockOwner | undefined): RequestHandler {
+function buildLockRefusalHandler(
+  refusal: VaultAlreadyLockedError | VaultLockUnreadableError | undefined,
+): RequestHandler {
   // the holder-free variant takes no path: there is no lock file to name when
   // this instance never held the folder, and an empty-string sentinel would be
-  // worse than omitting it
-  const app = createVaultLockRefusalApp(config, new VaultAlreadyLockedError(holder));
+  // worse than omitting it. A refusal already read (held with its recycled-pid
+  // flag, or unreadable with its path) is served as it was read, so the page
+  // keeps the instructions that fit the case (greptile P1 on #298).
+  const error = refusal ?? new VaultAlreadyLockedError(undefined);
+  const app = createVaultLockRefusalApp(config, error);
   return (request, env) => app.fetch(request, env);
 }
 
@@ -173,7 +185,7 @@ function buildLockRefusalHandler(holder: VaultLockOwner | undefined): RequestHan
  */
 function onLockLost(_reason: string, holder?: VaultLockOwner): void {
   lockLost = true;
-  activeHandler = buildLockRefusalHandler(holder);
+  activeHandler = buildLockRefusalHandler(holder === undefined ? undefined : new VaultAlreadyLockedError(holder));
 }
 
 /**
@@ -184,14 +196,22 @@ function onLockLost(_reason: string, holder?: VaultLockOwner): void {
  */
 function buildRefusedHandler(): RequestHandler {
   let cached: RequestHandler | undefined;
-  let cachedOwnerToken: string | undefined;
+  let cachedStory: string | undefined;
   const serveRefusal: RequestHandler = (request, env) => {
     reclaim?.trigger();
     const current = activeHandler;
     if (current !== serveRefusal) return current(request, env);
-    if (cached === undefined || cachedOwnerToken !== refusalOwner?.token) {
-      cachedOwnerToken = refusalOwner?.token;
-      cached = buildLockRefusalHandler(refusalOwner);
+    // the cache key covers the whole refusal, not only the holder: held →
+    // unreadable with no owner token would otherwise keep serving the old page
+    const story =
+      refusalError === undefined
+        ? "none"
+        : refusalError instanceof VaultLockUnreadableError
+          ? `unreadable:${refusalError.lockPath}`
+          : `held:${refusalError.owner?.token ?? "unknown"}:${String(refusalError.staleHeartbeatOverAlivePid)}`;
+    if (cached === undefined || cachedStory !== story) {
+      cachedStory = story;
+      cached = buildLockRefusalHandler(refusalError);
     }
     return cached(request, env);
   };
@@ -215,7 +235,21 @@ async function reclaimUntilOwned(): Promise<void> {
           vaultLock = acquireVaultLock(config.dataDir, { logger, onLost: onLockLost });
           return { ok: true };
         } catch (error) {
-          if (error instanceof VaultAlreadyLockedError) return { ok: false, owner: error.owner };
+          if (error instanceof VaultAlreadyLockedError) {
+            // keep the whole refusal, not only its holder: the recycled-pid
+            // story changes what the page tells the owner to do, and a retry
+            // can never clear that lock because the pid answers alive
+            refusalError = error;
+            return { ok: false, owner: error.owner };
+          }
+          if (error instanceof VaultLockUnreadableError) {
+            // a lock that was readable at boot and is not now: the page must
+            // name the file and say what to delete, not tell the owner to close
+            // a copy that may not exist (greptile P1 on #298). The retry stays
+            // on, because an EBUSY read can clear itself.
+            refusalError = error;
+            return { ok: false, owner: undefined };
+          }
           if (!unavailableLogged) {
             unavailableLogged = true;
             logger.error(
@@ -224,14 +258,15 @@ async function reclaimUntilOwned(): Promise<void> {
               error instanceof Error ? error : new Error(String(error)),
             );
           }
-          return { ok: false, owner: refusalOwner };
+          return { ok: false, owner: refusalError instanceof VaultAlreadyLockedError ? refusalError.owner : undefined };
         }
       },
-      onRefused: (owner) => {
-        refusalOwner = owner;
+      onRefused: () => {
+        // the refusal itself is recorded in `attempt` above; this hook only
+        // exists so the loop can report the holder it saw
       },
       onAcquired: () => {
-        refusalOwner = undefined;
+        refusalError = undefined;
         reclaim = undefined;
         logger.info("VAULT_LOCK_RECLAIMED", "the refused instance took the data folder; serving the vault gate");
         activeHandler = buildOverlay(undefined);

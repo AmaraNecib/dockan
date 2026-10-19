@@ -434,6 +434,34 @@ if ("brandNew" in helper) {
       fixture.cleanup();
     }
   });
+  test("a non-ASCII file name is gated, not silently skipped", () => {
+    // `git diff --name-only` quotes a path holding a non-ASCII byte, and the
+    // quoted form fails `isGatedTestPath` at both ends — so without `-z` this
+    // file is gated by nobody and the author is never told.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/café.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("café.test.ts");
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });
 
 describe("a file whose workspace owns a bunfig.toml", () => {
@@ -491,6 +519,22 @@ test("rejects zero", () => {
       const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
       mkdirSync(lockPath, { recursive: true });
       writeFileSync(join(lockPath, "pid"), "4999999\n");
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a cold cache directory is created before the lock is taken", () => {
+    const fixture = createFixture([PKG, HELPER], [{ path: "packages/core/src/helper.ts", text: HELPER_AFTER }, redTest]);
+    try {
+      // The fixtures normally hand the gate a cache directory that already
+      // exists, which is exactly why the first-run crash slipped past them:
+      // `mkdirSync(lockPath)` needs its parent, and on a real first run there is
+      // none.
+      rmSync(fixture.cache, { recursive: true, force: true });
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain("RIGHT-REASON-RED");
       expect(status).toBe(0);
@@ -881,6 +925,18 @@ describe("unregisteredVerdicts", () => {
 
   test("a test the parent already reported is not restated", () => {
     expect(unregisteredVerdicts("f", parent, parent, []).verdicts).toEqual([]);
+  });
+
+  test("a name the parent reported once does not cover a second case on the change", () => {
+    const one = parseJunit(
+      `<testsuites><testsuite><testcase name="case 1" classname="each" /></testsuite></testsuites>`,
+    );
+    const two = parseJunit(
+      `<testsuites><testsuite><testcase name="case 1" classname="each" /><testcase name="case 1" classname="each" /></testsuite></testsuites>`,
+    );
+    const { verdicts } = unregisteredVerdicts("f", one, two, []);
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]?.name).toBe("NOT_ON_PARENT");
   });
 });
 

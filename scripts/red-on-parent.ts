@@ -444,10 +444,21 @@ export function unregisteredVerdicts(
 ): Classification {
   const used = new Set<number>();
   const verdicts: Verdict[] = [];
-  const onParent = new Set(parentResults.map((result) => displayName(result)));
+  // Counts, not a set. A loop can register the same display name more than once
+  // on the change and only once on the parent; a set would answer "covered" for
+  // every occurrence and the extra case would never be judged.
+  const onParent = new Map<string, number>();
+  for (const result of parentResults) {
+    const name = displayName(result);
+    onParent.set(name, (onParent.get(name) ?? 0) + 1);
+  }
   for (const result of changeResults) {
     const test = displayName(result);
-    if (onParent.has(test)) continue;
+    const remaining = onParent.get(test) ?? 0;
+    if (remaining > 0) {
+      onParent.set(test, remaining - 1);
+      continue;
+    }
     const waiver = firstWaiver(waivers, result);
     if (waiver !== null) used.add(waiver.line);
     verdicts.push({
@@ -656,6 +667,10 @@ function lockHolderIsGone(lockPath: string): boolean {
  * overrides it, which is how the lock's refusal is pinned in milliseconds.
  */
 function acquireWorktreeLock(lockPath: string, lockWaitMs: number): () => void {
+  // The cache root does not exist on a cold first run, and `mkdirSync(lockPath)`
+  // stays non-recursive because that is exactly what makes it the exclusive
+  // acquire. Create the lock's parent first, never the lock itself.
+  mkdirSync(dirname(lockPath), { recursive: true });
   const deadline = Date.now() + lockWaitMs;
   for (;;) {
     try {
@@ -727,7 +742,14 @@ function ensureBaseWorktree(
 function ensureBaseNodeModules(worktree: string): string {
   const lock = join(worktree, "bun.lock");
   const modules = join(worktree, "node_modules");
-  if (existsSync(modules) || !existsSync(lock)) return "";
+  const marker = join(modules, ".red-on-parent-installed");
+  if (!existsSync(lock)) return "";
+  // A failed or interrupted install leaves `node_modules` behind, so its
+  // existence is not proof that the install finished: reusing it produces
+  // missing-module failures that look like the parent's fault. Only the marker
+  // a completed install writes is that proof, and it lives inside the directory
+  // it describes, so a rebuilt worktree cannot inherit a stale one.
+  if (existsSync(marker)) return "";
   const install = run(BUN, ["install", "--frozen-lockfile"], worktree, INSTALL_TIMEOUT_MS);
   if (!install.ok) {
     throw new GateError(
@@ -736,6 +758,8 @@ function ensureBaseNodeModules(worktree: string): string {
       }`,
     );
   }
+  mkdirSync(modules, { recursive: true });
+  writeFileSync(marker, `${process.pid}\n`);
   return install.stdout.trim();
 }
 
@@ -781,10 +805,13 @@ function resolveBase(repo: string, requested: string | null): string {
 }
 
 export function addedTestFiles(repo: string, mergeBase: string, head: string): string[] {
-  const changed = gitText(repo, ["diff", "--name-only", "--no-renames", mergeBase, head])
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  // `-z`: git quotes any path holding a non-ASCII byte, and a quoted
+  // `"packages/core/src/caf\303\251.test.ts"` fails `isGatedTestPath` on both
+  // its leading quote and its trailing one, so such a file would be skipped in
+  // silence. NUL separation carries the raw bytes, so nothing is trimmed here.
+  const changed = gitText(repo, ["diff", "--name-only", "-z", "--no-renames", mergeBase, head])
+    .split("\0")
+    .filter((path) => path.length > 0);
   const added: string[] = [];
   for (const path of changed) {
     if (!isGatedTestPath(path)) continue;
@@ -800,9 +827,12 @@ export function addedTestFiles(repo: string, mergeBase: string, head: string): s
  * an uncommitted test file is invisible to it — a silent pass if nobody says so.
  */
 export function uncommittedTestFiles(repo: string): string[] {
-  return gitText(repo, ["status", "--porcelain", "--no-renames"])
-    .split("\n")
-    .map((line) => line.slice(3).trim())
+  // `-z` for the same reason as `addedTestFiles`: porcelain quotes a non-ASCII
+  // path, and the quoting hides it from `isGatedTestPath`.
+  return gitText(repo, ["status", "--porcelain", "-z", "--no-renames"])
+    .split("\0")
+    .filter((entry) => entry.length > 3)
+    .map((entry) => entry.slice(3))
     .filter((path) => isGatedTestPath(path));
 }
 
@@ -906,6 +936,18 @@ function gateBaseWorktree(input: {
   const stdoutByFile = new Map<string, string>();
   const problems: string[] = [];
   const copied: string[] = [];
+  // The parent side runs the file *at `head`*, copied into the base worktree.
+  // The change side has to run the checkout's own modules, so it can only
+  // enumerate the tests of the commit that is checked out. Reviewing any other
+  // commit would compare the requested revision's parent list against today's
+  // tests, and a test that vanishes between them would escape NOT_ON_PARENT.
+  const checkoutDiffers =
+    gitText(repo, ["rev-parse", head]).trim() !== gitText(repo, ["rev-parse", "HEAD"]).trim();
+  if (checkoutDiffers) {
+    problems.push(
+      `--head ${head} is not the checked-out commit, so the tests it registers cannot be enumerated — check that commit out, or drop --head`,
+    );
+  }
 
   try {
     for (const file of files) {
@@ -939,7 +981,7 @@ function gateBaseWorktree(input: {
       // restate it once per test.
       const parentResults = junit === null ? [] : parseJunit(junit);
       const changeResults =
-        parentResults.length === 0
+        parentResults.length === 0 || checkoutDiffers
           ? []
           : changeSideResults(repo, file, join(outDir, `${copied.length}-change.xml`), problems);
       const unregistered = unregisteredVerdicts(file, parentResults, changeResults, parsed.waivers);

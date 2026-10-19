@@ -26,6 +26,7 @@ import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
 import { ReclaimRetry } from "./lib/vault/reclaim-retry";
+import { isReclaimRetry } from "./lib/vault/refused-request";
 import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
@@ -81,7 +82,7 @@ let refused = false;
  */
 let refusalError: VaultAlreadyLockedError | VaultLockUnreadableError | undefined;
 /** The reclaim loop while refused; cleared once this instance owns the folder. */
-let reclaim: ReclaimRetry<VaultLockOwner> | undefined;
+let reclaim: ReclaimRetry | undefined;
 if (config.vault === "on") {
   try {
     vaultLock = acquireVaultLock(config.dataDir, { logger, onLost: onLockLost });
@@ -189,18 +190,29 @@ function onLockLost(_reason: string, holder?: VaultLockOwner): void {
 }
 
 /**
- * The handler a refused start serves (#277). Every request is also a
- * deliberate retry: it asks the folder again before answering, so the screen's
- * retry is never slower than the automatic backoff. When the reclaim wins,
- * `onAcquired` swaps in the vault gate and this request is answered through it.
+ * The handler a refused start serves (#277). Only the owner's explicit retry
+ * (`POST /api/vault/reclaim`) asks the folder again, so the screen's retry is
+ * never slower than the automatic backoff. Ordinary requests are served as-is:
+ * a request that also triggered would cancel and re-arm the armed tick, and a
+ * client polling faster than the cap would then hold the automatic reclaim off
+ * indefinitely with the attempt rate set by the client (greptile P2 on #298).
+ * The retry is answered with `{ ok, taken }`; when it takes the folder, the
+ * handler is answered through the vault gate from the request after it.
  */
 function buildRefusedHandler(): RequestHandler {
   let cached: RequestHandler | undefined;
   let cachedStory: string | undefined;
   const serveRefusal: RequestHandler = (request, env) => {
-    reclaim?.trigger();
     const current = activeHandler;
     if (current !== serveRefusal) return current(request, env);
+    if (isReclaimRetry(request.method, request.url)) {
+      const taken = reclaim?.trigger() ?? false;
+      // 200 either way: the ask itself succeeded, and `taken` is the answer.
+      // A 503 here would read as a failed request when the retry did exactly
+      // what it could, and the screen would show the refusal as a transport
+      // error on top of itself.
+      return Response.json({ ok: true, taken });
+    }
     // the cache key covers the whole refusal, not only the holder: held →
     // unreadable with no owner token would otherwise keep serving the old page
     const story =
@@ -219,17 +231,18 @@ function buildRefusedHandler(): RequestHandler {
 }
 
 /**
- * Retry the reclaim while the refusal is served (#277): bounded backoff, one
- * attempt per tick, and an immediate re-check on every request. Resolves once
- * this instance owns the folder, without a restart and without a second
- * listener (the handler swaps on the server already bound).
+ * Retry the reclaim while the refusal is served (#277): bounded backoff and one
+ * attempt per tick, driven by the schedule alone, plus an immediate re-check
+ * when the owner posts the retry route. Resolves once this instance owns the
+ * folder, without a restart and without a second listener (the handler swaps on
+ * the server already bound).
  */
 async function reclaimUntilOwned(): Promise<void> {
   await new Promise<void>((resolve) => {
     // VaultLockUnavailableError during a retry is logged once, never per tick:
     // a folder that stays unwritable must not grow the log without bound.
     let unavailableLogged = false;
-    const loop = new ReclaimRetry<VaultLockOwner>({
+    const loop = new ReclaimRetry({
       attempt: () => {
         try {
           vaultLock = acquireVaultLock(config.dataDir, { logger, onLost: onLockLost });
@@ -238,9 +251,12 @@ async function reclaimUntilOwned(): Promise<void> {
           if (error instanceof VaultAlreadyLockedError) {
             // keep the whole refusal, not only its holder: the recycled-pid
             // story changes what the page tells the owner to do, and a retry
-            // can never clear that lock because the pid answers alive
+            // can never clear that lock because the pid answers alive. The
+            // refusal is recorded HERE, on the way past, rather than reported
+            // back through the loop: the loop schedules, it does not carry
+            // findings (greptile S4 on #298).
             refusalError = error;
-            return { ok: false, owner: error.owner };
+            return { ok: false };
           }
           if (error instanceof VaultLockUnreadableError) {
             // a lock that was readable at boot and is not now: the page must
@@ -248,7 +264,7 @@ async function reclaimUntilOwned(): Promise<void> {
             // a copy that may not exist (greptile P1 on #298). The retry stays
             // on, because an EBUSY read can clear itself.
             refusalError = error;
-            return { ok: false, owner: undefined };
+            return { ok: false };
           }
           if (!unavailableLogged) {
             unavailableLogged = true;
@@ -258,12 +274,8 @@ async function reclaimUntilOwned(): Promise<void> {
               error instanceof Error ? error : new Error(String(error)),
             );
           }
-          return { ok: false, owner: refusalError instanceof VaultAlreadyLockedError ? refusalError.owner : undefined };
+          return { ok: false };
         }
-      },
-      onRefused: () => {
-        // the refusal itself is recorded in `attempt` above; this hook only
-        // exists so the loop can report the holder it saw
       },
       onAcquired: () => {
         refusalError = undefined;
@@ -1014,9 +1026,12 @@ if (config.vault === "on") {
  * and the single-writer lock gate (issue #142).
  *
  * The schema gate is the only instance on the folder, so it publishes the
- * shared `.dokan-port` record the proxy reads. The lock-refusal instance does
- * NOT: it does not own the folder, and publishing would point the first
- * instance's clients at the refusal server (round-7 finding 2).
+ * shared `.dokan-port` record the proxy reads. A refusal that does not own the
+ * folder does NOT publish: publishing would point the first instance's clients
+ * at the refusal server (round-7 finding 2). Its message therefore says only
+ * that the record was left alone, never WHY — the cause lives in the event the
+ * caller passes, and blaming another copy here put the held refusal's words on
+ * the unreadable one's row (greptile P1 on #298).
  * Never returns: the process stays up while the owner reads the page.
  */
 async function serveRefusalServer(
@@ -1059,7 +1074,7 @@ async function serveRefusalServer(
         event,
         publish
           ? `serving a refusal page on http://${info.address}:${info.port}`
-          : `serving a refusal page on http://${info.address}:${info.port} (port record untouched: another instance owns the folder)`,
+          : `serving a refusal page on http://${info.address}:${info.port} (port record untouched)`,
       );
     },
   );
@@ -1095,9 +1110,14 @@ async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVer
  * The unreadable-lock refusal (#287): the file exists but cannot be parsed or
  * read, so no vault file is opened and the owner is told which file to remove.
  * A held lock does NOT come here — it takes the retry path above instead.
+ *
+ * It carries its OWN event, not the held refusal's (greptile P1 on #298): the
+ * two refusals have different remedies, and one badge cannot name both. The
+ * held badge says to wait for the other copy; this one says the lock file could
+ * not be read. The log row must agree with the page, which names the file.
  */
 async function serveLockRefusal(config: AppConfig, error: VaultLockUnreadableError): Promise<never> {
   // another instance may own the shared port record; this page must not
   // overwrite it (round-7 finding 2)
-  return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_REFUSED", { publishPortRecord: false });
+  return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_UNREADABLE", { publishPortRecord: false });
 }

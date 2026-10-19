@@ -55,10 +55,9 @@ function startApi(onPort: number, extraEnv: NodeJS.ProcessEnv = {}): ChildProces
 }
 
 /**
- * Wait for a log line, making NO request. Every request to a refused instance
- * calls `reclaim.trigger()`, so a `/health` poll would seed the retry chain and
- * a test that then waited for the reclaim would pass even with the automatic
- * loop removed (greptile P2 on #298). Reading the log observes the boot only.
+ * Wait for a log line, making NO request. Reading the log observes the boot
+ * only, so a test that waits for the reclaim cannot pass on an attempt a
+ * request seeded instead of one the automatic schedule made.
  */
 async function waitForLog(needle: string, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -85,6 +84,22 @@ function readLogs(): string {
   return fs.existsSync(logsDir)
     ? fs.readdirSync(logsDir).map((name) => fs.readFileSync(path.join(logsDir, name), "utf8")).join("\n")
     : "";
+}
+
+/** The log as rows, so a test can assert on ONE event's own words. */
+function readLogEntries(): { event?: string; message?: string }[] {
+  return readLogs()
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => {
+      try {
+        // SAFETY: the api's own JSONL row shape
+        return JSON.parse(line) as { event?: string; message?: string };
+      } catch {
+        // a half-written line at the tail: not a row this test can read
+        return {};
+      }
+    });
 }
 
 async function waitForHealth(onPort: number, timeoutMs = 20_000): Promise<void> {
@@ -255,7 +270,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     );
 
     api = startApi(stalePort);
-    // no request until the page is up: a request would call reclaim.trigger()
+    // no request until the page is up: the page is what this test reads
     await waitForLog("VAULT_LOCK_REFUSED");
     const page = await fetch(`http://127.0.0.1:${stalePort}/`);
     const html = await page.text();
@@ -289,6 +304,50 @@ describe("vault single-writer lock over a live sidecar", () => {
   // acquisition when the loop is stopped while an attempt runs"), and the
   // ordering in beginShutdown is defence in depth on top of it.
 
+  itHeavy("the explicit retry route asks the folder while a poll never does (#298)", async () => {
+    // #277's second acceptance criterion: "the retry on the screen re-checks
+    // immediately rather than waiting for the next backoff tick". It used to be
+    // met by hooking EVERY request, which made a poll cancel and re-arm the
+    // backoff (greptile P2 on #298). The retry is now a route of its own, and a
+    // status poll is not it.
+    const refusedPort = await freePort();
+    const holder = acquireVaultLock(dir);
+    second = startApi(refusedPort);
+    await waitForLog("VAULT_LOCK_REFUSED");
+
+    // the folder is still held, so the retry asks and is told the folder did
+    // not follow: the request itself succeeded, which is what the owner's
+    // button needs to hear
+    const asked = await fetch(`http://127.0.0.1:${refusedPort}/api/vault/reclaim`, { method: "POST" });
+    expect(asked.status).toBe(200);
+    expect(await asked.json()).toEqual({ ok: true, taken: false });
+    // SAFETY: the lock record is JSON written by this process
+    expect((JSON.parse(fs.readFileSync(path.join(dir, "vault.lock"), "utf8")) as { pid: number }).pid).toBe(process.pid);
+
+    // the app's own polling route is NOT the retry: a status poll leaves the
+    // holder in peace and never takes the folder
+    const polled = await fetch(`http://127.0.0.1:${refusedPort}/api/vault/status`);
+    expect(polled.status).toBe(503);
+    expect(readLogs()).not.toContain("the refused instance took the data folder");
+
+    // release the folder and let the loop have it, so the child is closed
+    // cleanly by afterEach
+    holder.release();
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      let ownerPid: number | undefined;
+      try {
+        // SAFETY: the lock record is JSON written by the reclaiming sidecar
+        ownerPid = (JSON.parse(fs.readFileSync(path.join(dir, "vault.lock"), "utf8")) as { pid?: number }).pid;
+      } catch {
+        ownerPid = undefined;
+      }
+      if (ownerPid === second.pid) break;
+      if (Date.now() >= deadline) throw new Error(`refused sidecar never took the closed folder; stderr: ${apiStderr}`);
+      await sleep(100);
+    }
+  });
+
   itHeavy("an unreadable lock file serves the standalone page and starts no retry loop (#298)", async () => {
     // vault.lock is a DIRECTORY: the path exists, so the read is not ENOENT,
     // and readFileSync fails with EISDIR. That is the unreadable refusal
@@ -299,8 +358,17 @@ describe("vault single-writer lock over a live sidecar", () => {
     fs.mkdirSync(lockFile);
 
     api = startApi(port);
+    // greptile P1 on #298: this refusal is about a lock FILE, not about another
+    // copy. The log row must name what the page names, and it must not be the
+    // held refusal's event: the two have different remedies.
+    await waitForLog("VAULT_LOCK_UNREADABLE");
+    const unreadableRows = readLogEntries().filter((entry) => entry.event === "VAULT_LOCK_UNREADABLE");
+    expect(unreadableRows).toHaveLength(1);
+    // the row must not diagnose a second copy: nothing here read a holder, and
+    // the page sends the owner to the lock file instead
+    expect(unreadableRows[0]?.message).not.toContain("another instance owns the folder");
+    expect(readLogEntries().some((entry) => entry.event === "VAULT_LOCK_REFUSED")).toBe(false);
     // the standalone refusal page, on the port this instance was given
-    await waitForLog("VAULT_LOCK_REFUSED");
     const page = await fetch(`http://127.0.0.1:${port}/`);
     const html = await page.text();
     expect(page.status).toBe(503);
@@ -340,8 +408,9 @@ describe("vault single-writer lock over a live sidecar", () => {
     // the second sidecar is refused on its own port and must not hold the lock
     const refusedChild = startApi(secondPort);
     second = refusedChild;
-    // the refusal is observed in the log, not over HTTP: one request would call
-    // reclaim.trigger() and hand the test a retry it did not ask for
+    // the refusal is observed in the log, not over HTTP: a request is not a
+    // retry any more, but the log is still the only observer that cannot
+    // disturb what it watches
     await waitForLog("VAULT_LOCK_REFUSED");
     // SAFETY: the lock record is JSON written by the running sidecar
     const held = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number };
@@ -366,10 +435,9 @@ describe("vault single-writer lock over a live sidecar", () => {
     api = undefined;
     await hardKillAndWait(holder);
 
-    // Watch the LOCK FILE, never the refusal server (Greptile P2): every request
-    // to the refused instance calls reclaim.trigger(), so polling /health would
-    // let the test pass without the automatic backoff doing anything. Reading
-    // the file observes only what the loop did by itself.
+    // Watch the LOCK FILE, never the refusal server: reading the file observes
+    // only what the loop did by itself, so the test cannot pass on an attempt
+    // something other than the schedule set off.
     const deadline = Date.now() + 30_000;
     let ownerPid: number | undefined;
     for (;;) {

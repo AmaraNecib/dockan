@@ -103,12 +103,26 @@ let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> =
  */
 const originalFetch = globalThis.fetch;
 let vaultStatusResponse: () => Promise<Response> = async () => new Response("not found", { status: 404 });
+/**
+ * Every vault route the app called, in order, as `METHOD pathname`. The retry
+ * ORDER is the point (#298): the folder must be asked before the status is read.
+ */
+let vaultCalls: string[] = [];
 
 beforeEach(() => {
+  vaultCalls = [];
   globalThis.fetch = Object.assign(
     async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = input instanceof Request ? input.url : String(input);
-      if (new URL(url, "http://localhost").pathname === "/api/vault/status") return vaultStatusResponse();
+      const pathname = new URL(url, "http://localhost").pathname;
+      if (pathname === "/api/vault/status") {
+        vaultCalls.push(`GET ${pathname}`);
+        return vaultStatusResponse();
+      }
+      if (pathname === "/api/vault/reclaim") {
+        vaultCalls.push(`POST ${pathname}`);
+        return Response.json({ ok: true, taken: false });
+      }
       return originalFetch(input, init);
     },
     { preconnect: originalFetch.preconnect },
@@ -247,6 +261,25 @@ describe("vault folder held by another instance (issue #276)", () => {
     expect(host.querySelector('[data-testid="vault-status-unavailable"]')).toBeNull();
     // the legacy login must not appear behind a refusal either
     expect(host.querySelector("form")).toBeNull();
+  });
+
+  it("asks the refused instance to re-check before it re-reads the status (#298)", async () => {
+    // greptile P2 on #298: the retry is a route of its own. When every request
+    // also ran a reclaim, a poll cancelled and re-armed the instance's backoff
+    // tick, so the retry on this screen was satisfied by the poll rather than by
+    // the button. The button must post the retry route, and it must do so before
+    // it reads the status again, or it shows the refusal it just cleared.
+    vaultStatusResponse = async () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 });
+    const host = await mountAuthGateFor('[data-testid="vault-status-in-use"]');
+    vaultCalls = [];
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="vault-status-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(vaultCalls[0]).toBe("POST /api/vault/reclaim");
+    expect(vaultCalls).toContain("GET /api/vault/status");
+    // ...and the refusal is still the refusal: the folder did not move
+    expect(host.querySelector('[data-testid="vault-status-in-use"]')).not.toBeNull();
   });
 
   it("retries the refusal into the gate once the folder is free", async () => {

@@ -24,12 +24,14 @@ import { signIn } from "./auth-helpers";
  * HOW THE TICK IS PROVEN, not the focus event. TanStack v5's focus manager
  * listens to `visibilitychange`, not `focus`: it refetches when the document
  * becomes visible. So the counter that matters is the number of
- * visibility-changes that made the reader VISIBLE — zero means the focus path
- * never fired, and with no reload, no interaction and no mutation in the
- * reader window, the bounded tick is the only refetch trigger left. The
- * elapsed time is reported as a measurement, not asserted as a bound: the
- * tick's phase relative to the sale is arbitrary, so a fast convergence would
- * not mean a focus refetch happened.
+ * visibility-changes that found the reader VISIBLE — zero means the focus
+ * path never fired, and with no reload, no interaction and no mutation in
+ * the reader window, the bounded tick is the only refetch trigger left. That
+ * counter reads the BROWSER's own state, not the hidden one the reader
+ * pretends to have, so it can count; a counter reading the pretended state
+ * could never fail. The elapsed time is reported as a measurement, not
+ * asserted as a bound: the tick's phase relative to the sale is arbitrary,
+ * so a fast convergence would not mean a focus refetch happened.
  *
  * The numbers that must move are the two hot counters: today's sales (the
  * count on the dashboard card) and the stock on hand (the item's row in the
@@ -111,18 +113,37 @@ test("a sale in one window moves the hot counters in the other, with no reload",
   await reader.goto("/");
   await expect(reader.getByTestId("dashboard-page")).toBeVisible();
   await reader.evaluate(() => {
+    // The reader's OWN visibility state, read from the prototype rather than
+    // from the document. The patch below shadows `document.visibilityState`
+    // on this instance, so a counter that reads the document would always
+    // read "hidden" and could never count anything — the counter has to see
+    // what the BROWSER says, which is the only thing that can contradict it.
+    const nativeVisibility = (): string => {
+      const getter = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")?.get;
+      return getter?.call(document) ?? "unknown";
+    };
     // SAFETY: the page installs these counters on its own window and reads
     // them back later in the same test; the cast names the properties it added
-    const counter = window as Window & { __focusEvents: number; __visibleFlips: number };
+    const counter = window as Window & {
+      __focusEvents: number;
+      __visibilityEvents: number;
+      __visibleFlips: number;
+      __nativeStates: string[];
+    };
     counter.__focusEvents = 0;
+    counter.__visibilityEvents = 0;
     counter.__visibleFlips = 0;
+    counter.__nativeStates = [];
     window.addEventListener("focus", () => {
       counter.__focusEvents += 1;
     });
     // the event TanStack v5's focus manager actually listens to: it refetches
     // when the document becomes visible
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") counter.__visibleFlips += 1;
+      counter.__visibilityEvents += 1;
+      const native = nativeVisibility();
+      counter.__nativeStates.push(native);
+      if (native === "visible") counter.__visibleFlips += 1;
     });
     // the reader is a BACKGROUND tab. The headless runner never hides a tab,
     // so the document says so itself — TanStack's focus manager reads
@@ -157,18 +178,48 @@ test("a sale in one window moves the hot counters in the other, with no reload",
   const lowStockRow = reader.getByTestId("dashboard-low-stock-list").getByRole("listitem").filter({ hasText: itemName });
   await expect(lowStockRow).toContainText("5 / 5");
 
-  // the focus path did not do this: window B never became visible again, so
+  // the focus path did not do this: window B never became visible, so
   // TanStack's focus manager never refetched it, and it was a background tab
-  // while the numbers moved
+  // while the numbers moved.
+  //
+  // The counters read the BROWSER's own visibility state, not the patched one
+  // the app sees: a counter that read the patched getter could never count
+  // anything, because every event would read "hidden" and the assertion
+  // could not fail (test-audit finding 6).
   const readerEvents = await reader.evaluate(() => {
     // SAFETY: see above — the page installed the counters before the test read them
-    const counter = window as Window & { __focusEvents: number; __visibleFlips: number };
-    return { focusEvents: counter.__focusEvents, visibleFlips: counter.__visibleFlips };
+    const counter = window as Window & {
+      __focusEvents: number;
+      __visibilityEvents: number;
+      __visibleFlips: number;
+      __nativeStates: string[];
+    };
+    return {
+      focusEvents: counter.__focusEvents,
+      visibilityEvents: counter.__visibilityEvents,
+      visibleFlips: counter.__visibleFlips,
+      nativeStates: counter.__nativeStates,
+    };
   });
+  // the browser's own state, for the record
+  const nativeVisibility = await reader.evaluate(() => {
+    const getter = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")?.get;
+    return getter?.call(document) ?? "unknown";
+  });
+  // the app's own view of the reader: hidden. This is the proof, and it is
+  // stronger than the counters — with the reader hidden, the focus manager
+  // sees `isFocused() === false` and the interval only runs because
+  // refetchIntervalInBackground says so.
   const visibility = await reader.evaluate(() => document.visibilityState);
+  expect(visibility).toBe("hidden");
+  // the reader was never seen visible: no visibilitychange ever found it
+  // visible, so the focus path had nothing to refetch on
   expect(readerEvents.visibleFlips).toBe(0);
+  // and it never took focus. The counter is installed after goto(), so it
+  // counts the focus events that arrive from here on — this test never
+  // clicks the reader.
   expect(readerEvents.focusEvents).toBe(0);
-  const measurement = `converged in ${elapsedMs}ms; reader visibility=${visibility}, focus events=${readerEvents.focusEvents}, visibility flips=${readerEvents.visibleFlips}`;
+  const measurement = `converged in ${elapsedMs}ms; reader visibility=${visibility} (browser says ${nativeVisibility}), focus events=${readerEvents.focusEvents}, visibility events=${readerEvents.visibilityEvents}, visible flips=${readerEvents.visibleFlips}, native states=${readerEvents.nativeStates.join(",")}`;
   // the measurement is the point of the spec: it lands in the test output
   console.log(`#295 measurement: ${measurement}`);
   testInfo.annotations.push({ type: "measurement", description: measurement });

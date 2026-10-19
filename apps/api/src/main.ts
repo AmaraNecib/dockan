@@ -24,7 +24,7 @@ import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypt
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
-import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
+import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -78,7 +78,7 @@ if (config.vault === "on") {
       },
     });
   } catch (error) {
-    if (error instanceof VaultAlreadyLockedError) await serveLockRefusal(config, error);
+    if (error instanceof VaultAlreadyLockedError || error instanceof VaultLockUnreadableError) await serveLockRefusal(config, error);
     logger.error(
       "VAULT_LOCK_FAILED",
       "the vault data folder could not be locked",
@@ -882,11 +882,14 @@ async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVer
 }
 
 /**
- * The second instance on one vault folder: the lock was refused, so no vault
- * file is opened and the owner reads why. The first instance keeps running
- * untouched.
+ * The second instance on one vault folder: the lock was refused — another copy
+ * holds it, or its file could not be read at all — so no vault file is opened
+ * and the owner reads why. The first instance keeps running untouched.
  */
-async function serveLockRefusal(config: AppConfig, error: VaultAlreadyLockedError): Promise<never> {
+async function serveLockRefusal(
+  config: AppConfig,
+  error: VaultAlreadyLockedError | VaultLockUnreadableError,
+): Promise<never> {
   // the first instance owns the folder and the shared port record; this
   // second instance must not overwrite it (round-7 finding 2)
   return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_REFUSED", { publishPortRecord: false });

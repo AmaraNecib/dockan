@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, VaultLockUnreadableError, vaultLockRefusalPageHtml, type VaultLock, type VaultLockOwner, type VaultLockRefusal } from "./lock";
 import { createAppConfig } from "../../config";
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 
@@ -181,6 +181,11 @@ function refusalFrom(acquire: () => VaultLock): VaultAlreadyLockedError | undefi
     if (error instanceof VaultAlreadyLockedError) return error;
     throw error;
   }
+}
+
+/** The page's held variant, which every refusal-page test below builds by hand. */
+function heldRefusal(owner: VaultLockOwner | undefined, staleHeartbeatOverAlivePid = false): VaultLockRefusal {
+  return { kind: "held", owner, staleHeartbeatOverAlivePid };
 }
 
 /**
@@ -452,7 +457,9 @@ describe("vault single-writer lock", () => {
     // reclaim must not touch the file at all
     const restore = spyLockReadFailure((target) => target.startsWith(lockPath()));
     try {
-      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+      // every read failed, so no holder can be named: the refusal is the
+      // unreadable-lock one, not a claim that an instance holds the folder
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultLockUnreadableError);
       expect(fs.existsSync(lockPath())).toBe(true);
     } finally {
       restore();
@@ -483,7 +490,7 @@ describe("vault single-writer lock", () => {
     fs.writeFileSync(lockPath(), "");
     const restore = spyLockReadFailure((target) => target === lockPath());
     try {
-      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultLockUnreadableError);
     } finally {
       restore();
     }
@@ -499,7 +506,7 @@ describe("vault single-writer lock", () => {
     fs.writeFileSync(lockPath(), "{ still not a lock record");
     const restore = spyLockIntermittentReadFailure((target) => target === lockPath());
     try {
-      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultLockUnreadableError);
     } finally {
       restore();
     }
@@ -560,13 +567,15 @@ describe("vault single-writer lock", () => {
   });
 
   it("states the Arabic refusal with the holder identity", () => {
-    const html = vaultLockRefusalPageHtml({
-      pid: 4242,
-      host: "shop-pc",
-      startedAt: new Date().toISOString(),
-      heartbeatAt: new Date().toISOString(),
-      token: "t",
-    });
+    const html = vaultLockRefusalPageHtml(
+      heldRefusal({
+        pid: 4242,
+        host: "shop-pc",
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "t",
+      }),
+    );
     expect(html).toContain("البيانات مفتوحة في نسخة أخرى");
     expect(html).toContain("shop-pc");
     expect(html).toContain("4242");
@@ -753,13 +762,15 @@ describe("vault single-writer lock", () => {
   });
 
   it("escapes a hostile lock-record host in the refusal page (round-5)", () => {
-    const html = vaultLockRefusalPageHtml({
-      pid: 7,
-      host: '<img src=x onerror="alert(1)">',
-      startedAt: new Date().toISOString(),
-      heartbeatAt: new Date().toISOString(),
-      token: "t",
-    });
+    const html = vaultLockRefusalPageHtml(
+      heldRefusal({
+        pid: 7,
+        host: '<img src=x onerror="alert(1)">',
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "t",
+      }),
+    );
     expect(html).not.toContain("<img");
     expect(html).not.toContain("onerror=");
     expect(html).not.toContain("<script");
@@ -772,14 +783,16 @@ describe("vault single-writer lock", () => {
     // the honest one, but nothing pinned that: interpolating the host straight
     // into `staleOwnerTemplate` would keep the honest-page test above green.
     const html = vaultLockRefusalPageHtml(
-      {
-        pid: 4242,
-        host: '<img src=x onerror="alert(1)">',
-        startedAt: new Date().toISOString(),
-        heartbeatAt: new Date().toISOString(),
-        token: "t",
-      },
-      true,
+      heldRefusal(
+        {
+          pid: 4242,
+          host: '<img src=x onerror="alert(1)">',
+          startedAt: new Date().toISOString(),
+          heartbeatAt: new Date().toISOString(),
+          token: "t",
+        },
+        true,
+      ),
     );
     expect(html).not.toContain("<img");
     expect(html).not.toContain("onerror=");
@@ -1163,7 +1176,7 @@ describe("a transient lock-file read error is not theft (#281)", () => {
         logger: reads.logger,
         onLost: () => undefined,
       }),
-    ).toThrow(VaultAlreadyLockedError);
+    ).toThrow(VaultLockUnreadableError);
     expect(reads.state.reads).toBeLessThan(1_000);
     expect(Date.now() - startedAt).toBeLessThan(3_000);
     // the refusal renamed nothing: the record is still exactly where it was
@@ -1188,7 +1201,7 @@ describe("a transient lock-file read error is not theft (#281)", () => {
         logger: reads.logger,
         onLost: () => undefined,
       }),
-    ).toThrow(VaultAlreadyLockedError);
+    ).toThrow(VaultLockUnreadableError);
     expect(Date.now() - startedAt).toBeLessThan(10_000);
     expect(reads.state.reads).toBeLessThan(20);
     expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
@@ -1532,17 +1545,49 @@ describe("the vault lock refusal app", () => {
   });
 
   it("names the lock file on the recycled-pid page and keeps the honest page intact (#283)", () => {
-    const suspected = vaultLockRefusalPageHtml(owner, true);
+    const suspected = vaultLockRefusalPageHtml(heldRefusal(owner, true));
     expect(suspected).toContain("vault.lock");
     expect(suspected).toContain("لا تبدو نسخة أخرى من دكان");
     expect(suspected).toContain("shop-pc");
     expect(suspected).toContain("4242");
     expect(suspected).not.toContain("لا تحذف أي ملف");
     // the honest page keeps its story, whose hint asks for no file deletion
-    const honest = vaultLockRefusalPageHtml(owner);
+    const honest = vaultLockRefusalPageHtml(heldRefusal(owner));
     expect(honest).toContain("البيانات مفتوحة في نسخة أخرى");
     expect(honest).toContain("لا تحذف أي ملف");
     expect(honest).not.toContain("vault.lock");
+  });
+
+  it("names the lock file on the unreadable page and asks for no instance that does not exist (#287)", async () => {
+    // the state the code-review lens found: the file is there, no read could
+    // attest to it, so no holder can be named. The held page would tell the
+    // owner to close a copy that is not running and to delete no file, which
+    // leaves no way out at all.
+    const path = lockPath();
+    const error = new VaultLockUnreadableError(path, "EBUSY");
+    const page = vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: path });
+    expect(page).toContain(path);
+    expect(page).toContain("تعذّر قراءة ملف القفل");
+    // the one exit is deleting that single file, so the blanket ban must be gone
+    expect(page).not.toContain("لا تحذف أي ملف");
+    expect(page).toContain("احذف ملف vault.lock وحده");
+    // and it must not claim a copy holds the folder
+    expect(page).not.toContain("البيانات مفتوحة في نسخة أخرى");
+    // the app's JSON route stays the honest code with no stale flag: an
+    // unreadable file is not a recycled pid
+    const app = createVaultLockRefusalApp(createAppConfig({}), error);
+    const status = await app.fetch(new Request("http://localhost/api/vault/status"));
+    expect(status.status).toBe(503);
+    expect(await status.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+    const html = await app.fetch(new Request("http://localhost/"));
+    expect(await html.text()).toContain(path);
+  });
+
+  it("escapes a hostile lock path before it reaches the unreadable page (#287)", () => {
+    const hostile = { kind: "unreadable", lockPath: '/data/<script>alert("x")</script>/vault.lock' } as const;
+    const page = vaultLockRefusalPageHtml(hostile);
+    expect(page).not.toContain("<script>");
+    expect(page).toContain("&lt;script&gt;");
   });
 
   it("echoes the boot token so the shell keeps verifying the child", async () => {

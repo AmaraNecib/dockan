@@ -186,6 +186,24 @@ export class VaultAlreadyLockedError extends Error {
   }
 }
 
+/**
+ * The lock file EXISTS and could not be read (#287): every read in the boot's
+ * window failed with an errno that is not `ENOENT` (a Windows sharing
+ * violation, an I/O error), so no holder can be named — and the folder may
+ * well be free. It is not a `VaultAlreadyLockedError`: that refusal claims an
+ * instance on this folder and tells the owner to close it, while here the one
+ * exit is the file itself. The errno rides along so the boot's log says why.
+ */
+export class VaultLockUnreadableError extends Error {
+  constructor(
+    readonly lockPath: string,
+    readonly code: string | undefined,
+  ) {
+    super(`the data-folder lock at ${lockPath} could not be read (${code ?? "unknown"})`);
+    this.name = "VaultLockUnreadableError";
+  }
+}
+
 /** The lock could not be created at all (permissions, read-only media, ...). */
 export class VaultLockUnavailableError extends Error {
   constructor(
@@ -774,10 +792,25 @@ function reclaimStaleLock(
 }
 
 /**
+ * The refusal a read that settled the boot deserves. A read in which ANY
+ * attempt failed for a reason other than ENOENT cannot name a holder, so it
+ * gets the unreadable-lock refusal instead of a claim that another instance
+ * holds the folder (#287): with every read failing, `VaultAlreadyLockedError`
+ * would name no owner and tell the owner to close a copy that does not exist.
+ */
+function refusalForRead(read: OwnerRead, lockPath: string): Error {
+  return read.blocked
+    ? new VaultLockUnreadableError(lockPath, read.code)
+    : new VaultAlreadyLockedError(read.owner, lockPath);
+}
+
+/**
  * Acquire the single-writer lock for `dataDir`. Throws
- * `VaultAlreadyLockedError` when a live instance holds it, and
- * `VaultLockUnavailableError` when the lock file cannot be created at all
- * (read-only media, permissions). It never returns without the lock.
+ * `VaultAlreadyLockedError` when a live instance holds it,
+ * `VaultLockUnreadableError` when the lock file is there and no read could
+ * attest to it, and `VaultLockUnavailableError` when the lock file cannot be
+ * created at all (read-only media, permissions). It never returns without the
+ * lock.
  */
 export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}): VaultLock {
   const lockPath = path.join(dataDir, "vault.lock");
@@ -821,11 +854,11 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
     }
     const outcome = reclaimStaleLock(lockPath, settled, options);
     if (outcome === "raced") {
-      throw new VaultAlreadyLockedError(readOwner(lockPath, options).owner, lockPath);
+      throw refusalForRead(readOwner(lockPath, options), lockPath);
     }
     if (outcome === "retry") continue;
   }
-  throw new VaultAlreadyLockedError(readOwner(lockPath, options).owner, lockPath);
+  throw refusalForRead(readOwner(lockPath, options), lockPath);
 }
 
 /** Locks still held by this process; the single exit hook releases them all. */
@@ -862,6 +895,14 @@ const VAULT_LOCK_PAGE_COPY = {
    */
   staleHint: "لا تُعدّل بيانات المتجر. إن تأكدت من عدم وجود نسخة أخرى مفتوحة، احذف ملف vault.lock وحده.",
   staleOwnerTemplate: "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان (الجهاز {host}، العملية {pid}). إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+  /**
+   * The unreadable-lock story (#287): the file is there and no read could
+   * attest to it, so no holder can be named and the folder may well be free.
+   * The hint here cannot say "delete no file" — the message names the one file,
+   * and deleting it is half of the only recovery the owner has.
+   */
+  unreadableHint: "لا تُعدّل بيانات المتجر. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock وحده.",
+  unreadableTemplate: "تعذّر قراءة ملف القفل في مجلد البيانات: {path}. أغلق أي نسخة أخرى من دكان إن كانت مفتوحة، وإن لم تكن هناك نسخة مفتوحة فاحذف ملف vault.lock وحده ثم أعد فتح التطبيق.",
 } as const;
 
 /**
@@ -887,15 +928,32 @@ function escapeHtml(value: string): string {
   return out;
 }
 
-/** The Arabic refusal shown when another instance owns the folder. */
-export function vaultLockRefusalMessage(owner: VaultLockOwner | undefined, staleHeartbeatOverAlivePid = false): string {
-  if (owner === undefined) return VAULT_LOCK_PAGE_COPY.unknownOwner;
-  const template = staleHeartbeatOverAlivePid ? VAULT_LOCK_PAGE_COPY.staleOwnerTemplate : VAULT_LOCK_PAGE_COPY.ownerTemplate;
-  return template.replace("{host}", sanitizeHostForDisplay(owner.host)).replace("{pid}", String(owner.pid));
+/**
+ * What a lock refusal is about, named once for the page and for its caller. A
+ * held folder is a holder to name — or one that no record named; an unreadable
+ * lock file (#287) is the third variant: no holder can be named, and the page
+ * carries the path to the one file whose removal is the exit.
+ */
+export type VaultLockRefusal =
+  | { readonly kind: "held"; readonly owner: VaultLockOwner | undefined; readonly staleHeartbeatOverAlivePid: boolean }
+  | { readonly kind: "unreadable"; readonly lockPath: string };
+
+/** The Arabic refusal the page shows for the refusal's variant. */
+export function vaultLockRefusalMessage(refusal: VaultLockRefusal): string {
+  if (refusal.kind === "unreadable") return VAULT_LOCK_PAGE_COPY.unreadableTemplate.replace("{path}", refusal.lockPath);
+  if (refusal.owner === undefined) return VAULT_LOCK_PAGE_COPY.unknownOwner;
+  const template = refusal.staleHeartbeatOverAlivePid ? VAULT_LOCK_PAGE_COPY.staleOwnerTemplate : VAULT_LOCK_PAGE_COPY.ownerTemplate;
+  return template.replace("{host}", sanitizeHostForDisplay(refusal.owner.host)).replace("{pid}", String(refusal.owner.pid));
+}
+
+/** The small print under the refusal: the copy that says what may be deleted. */
+function vaultLockRefusalHint(refusal: VaultLockRefusal): string {
+  if (refusal.kind === "unreadable") return VAULT_LOCK_PAGE_COPY.unreadableHint;
+  return refusal.staleHeartbeatOverAlivePid ? VAULT_LOCK_PAGE_COPY.staleHint : VAULT_LOCK_PAGE_COPY.hint;
 }
 
 /** Standalone Arabic page for the second instance (mirrors the schema page). */
-export function vaultLockRefusalPageHtml(owner: VaultLockOwner | undefined, staleHeartbeatOverAlivePid = false): string {
+export function vaultLockRefusalPageHtml(refusal: VaultLockRefusal): string {
   return `<!doctype html>
 <html lang="ar" dir="rtl">
   <head>
@@ -913,8 +971,8 @@ export function vaultLockRefusalPageHtml(owner: VaultLockOwner | undefined, stal
   <body>
     <main>
       <h1>${escapeHtml(VAULT_LOCK_PAGE_COPY.heading)}</h1>
-      <p>${escapeHtml(vaultLockRefusalMessage(owner, staleHeartbeatOverAlivePid))}</p>
-      <p class="hint">${escapeHtml(staleHeartbeatOverAlivePid ? VAULT_LOCK_PAGE_COPY.staleHint : VAULT_LOCK_PAGE_COPY.hint)}</p>
+      <p>${escapeHtml(vaultLockRefusalMessage(refusal))}</p>
+      <p class="hint">${escapeHtml(vaultLockRefusalHint(refusal))}</p>
     </main>
   </body>
 </html>
@@ -960,9 +1018,18 @@ export function connectionToCloseAtShutdown<T>(
  * answers 503, and everything else is the Arabic lock page. The API, store and
  * vault gate never start.
  */
-export function createVaultLockRefusalApp(config: AppConfig, error: VaultAlreadyLockedError): Hono {
+export function createVaultLockRefusalApp(
+  config: AppConfig,
+  error: VaultAlreadyLockedError | VaultLockUnreadableError,
+): Hono {
   const app = new Hono();
-  const stale = error.staleHeartbeatOverAlivePid;
+  const refusal: VaultLockRefusal =
+    error instanceof VaultLockUnreadableError
+      ? { kind: "unreadable", lockPath: error.lockPath }
+      : { kind: "held", owner: error.owner, staleHeartbeatOverAlivePid: error.staleHeartbeatOverAlivePid };
+  // the recycled-pid flag only ever refines a held refusal: an unreadable lock
+  // file is a different cause with its own page, not a stale heartbeat
+  const stale = refusal.kind === "held" && refusal.staleHeartbeatOverAlivePid;
   app.get("/health-token", (c) => {
     if (config.bootToken !== undefined && tokenMatches(c.req.query("token"), config.bootToken)) {
       return c.json({ ok: true, token: config.bootToken });
@@ -983,6 +1050,6 @@ export function createVaultLockRefusalApp(config: AppConfig, error: VaultAlready
       503,
     ),
   );
-  app.all("*", (c) => c.html(vaultLockRefusalPageHtml(error.owner, stale), 503));
+  app.all("*", (c) => c.html(vaultLockRefusalPageHtml(refusal), 503));
   return app;
 }

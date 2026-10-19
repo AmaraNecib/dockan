@@ -392,17 +392,18 @@ describe("hooky", () => {
     );
     try {
       const { status, stdout } = runGateFixture(fixture);
-      // The trap: the same `(fail) <name>` text a real assertion red prints.
-      expect(stdout).toContain("(fail) hooky > never gets to assert");
       // The gate's answer, and the reason for it: the test body never ran, so
       // it never rejected the missing behaviour. Wording on purpose that does
       // not move between bun versions: on 1.3.14 (the repo pin) junit types a
       // hook throw `AssertionError` exactly like a real red, and only the
       // `assertions="0"` counter gives it away; on 1.4.2 the type says `Error`.
+      //
+      // What the gate prints is its verdict and an excerpt of the transcript
+      // starting at the first `error:` line, so the reporter's `(fail)` line is
+      // deliberately NOT in this output. The trap is asserted against a captured
+      // transcript instead — see "the trap a grep-based gate falls into" below.
       expect(stdout).toContain("WRONG-REASON-RED");
       expect(stdout).toContain("before evaluating the test body");
-      // A grep-based gate would pass this fixture. That is what it must not do.
-      expect(naiveGrepVerdict(stdout)).toBe("RIGHT_REASON_RED");
       expect(status).toBe(1);
     } finally {
       fixture.cleanup();
@@ -413,6 +414,41 @@ describe("hooky", () => {
 // ---------------------------------------------------------------------------
 // The parsing and classification rules
 // ---------------------------------------------------------------------------
+
+describe("the trap a grep-based gate falls into", () => {
+  // A transcript as bun 1.3.14 (the repo pin) prints it for the hook-throws
+  // fixture: the reporter writes the same `(fail) <name>` line a real assertion
+  // red writes, while junit records `assertions="0"` because the body never ran.
+  // The gate must not read the reporter. A grep-based gate does, and passes a
+  // fixture that proves nothing.
+  const hookTranscript = [
+    "(fail) hooky > never gets to assert [0.42ms]",
+    "error: hook boom",
+    "      at <anonymous> (/tmp/wt/packages/core/src/hook.test.ts:5:32)",
+  ].join("\n");
+  const hookJunit = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="1">
+  <testsuite name="hook.test.ts" tests="1">
+    <testcase name="never gets to assert" classname="hooky" file="hook.test.ts" line="5" assertions="0">
+      <failure type="AssertionError" />
+    </testcase>
+  </testsuite>
+</testsuites>`;
+
+  test("a grep-based gate calls the hook fixture RIGHT-REASON RED", () => {
+    expect(naiveGrepVerdict(hookTranscript)).toBe("RIGHT_REASON_RED");
+  });
+
+  test("the gate calls it WRONG-REASON RED on the assertion counter, not the reporter", () => {
+    const [result] = parseJunit(hookJunit);
+    expect(result?.assertions).toBe(0);
+    const classified = classifyFileRun(
+      { file: "hook.test.ts", junit: hookJunit, stdout: hookTranscript, error: "" },
+      [],
+    );
+    expect(classified.verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+  });
+});
 
 describe("parseJunit", () => {
   const sample = `<?xml version="1.0" encoding="UTF-8"?>

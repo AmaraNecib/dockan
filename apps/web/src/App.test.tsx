@@ -298,6 +298,50 @@ describe("vault folder held by another instance (issue #276)", () => {
   });
 });
 
+describe("vault folder locked by a recycled pid (issue #283)", () => {
+  it("names the lock file, and never the close-the-copy story, when the refusal is flagged", async () => {
+    vaultStatusResponse = async () =>
+      Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }, { status: 503 });
+    const host = await mountAuthGateFor('[data-testid="vault-status-stale-lock"]');
+    expect(host.querySelector('[data-testid="vault-status-stale-lock"]')?.textContent).toBe(
+      "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+    );
+    expect(host.querySelector('[data-testid="vault-status-in-use"]')).toBeNull();
+    expect(host.querySelector("form")).toBeNull();
+  });
+
+  it("keeps the in-use copy for a genuine holder, and never claims a recycled pid elsewhere", async () => {
+    // no flag: #276's story stays, and the flag must not widen an unrelated
+    // code that happens to carry the field
+    vaultStatusResponse = async () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 });
+    const genuine = await mountAuthGateFor('[data-testid="vault-status-in-use"]');
+    expect(genuine.querySelector('[data-testid="vault-status-stale-lock"]')).toBeNull();
+
+    vaultStatusResponse = async () => Response.json({ error: { code: "VAULT_UNEXPECTED", staleHeartbeat: true } }, { status: 503 });
+    const other = await mountAuthGateFor('[data-testid="vault-status-unavailable"]');
+    expect(other.querySelector('[data-testid="vault-status-stale-lock"]')).toBeNull();
+    expect(other.querySelector('[data-testid="vault-status-in-use"]')).toBeNull();
+  });
+
+  it("retries out of the stale-lock screen into the gate once the lock is gone", async () => {
+    let calls = 0;
+    vaultStatusResponse = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }, { status: 503 });
+      }
+      return Response.json({ mode: "vault", state: "locked", legacyDatabase: false, recoveryKeyCount: 0, lockedForMs: 0, unlocked: false });
+    };
+    const host = await mountAuthGateFor('[data-testid="vault-status-stale-lock"]');
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="vault-status-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-status-stale-lock"]')).toBeNull();
+  });
+});
+
 describe("vault owner gate retry (round-7 finding 4)", () => {
   it("auto-retries a failed needsSetup check instead of hanging on the loading screen", async () => {
     needsSetupFailures = 1;

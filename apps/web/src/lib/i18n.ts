@@ -400,6 +400,8 @@ const resources = {
       vaultForgotPassphrase: "نسيت كلمة المرور؟ استخدم مفتاح الاسترداد",
       vaultBackToPassphrase: "رجوع لكلمة المرور",
       vaultLockedWait: "محاولات خاطئة كثيرة. أعد المحاولة بعد {{seconds}} ثانية.",
+      vaultLockStaleHeartbeat:
+        "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
       vaultRecoveryUnlockTitle: "فتح بمفتاح الاسترداد",
       vaultRecoveryUnlockHint: "أدخل مفتاح الاسترداد الذي حفظته عند إنشاء الخزنة.",
       vaultRecoveryField: "مفتاح الاسترداد",

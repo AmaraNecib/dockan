@@ -31,8 +31,10 @@ import {
  * - `unsupported` — no vault route at all: the legacy plaintext build
  * - `unreachable` — nothing answered, or answered without naming a cause
  * - `in-use` — another copy of Dokan holds the data folder (#276)
+ * - `stale-lock` — the folder is locked by an alive pid that stopped beating,
+ *   so there may be no other copy at all (#283)
  */
-export type VaultFailure = "unsupported" | "unreachable" | "in-use";
+export type VaultFailure = "unsupported" | "unreachable" | "in-use" | "stale-lock";
 
 /**
  * The refusals the gate can name exactly. Every other failed status read is
@@ -49,7 +51,8 @@ const VAULT_STATUS_FAILURES = new Map<string, VaultFailure>([
 type VaultHook = {
   status: VaultStatus | undefined;
   /** "unsupported" = legacy build; "unreachable" = show retry, never login;
-   *  "in-use" = another copy holds the folder (#276) */
+   *  "in-use" = another copy holds the folder (#276); "stale-lock" = the lock's
+   *  pid stopped beating and may be recycled (#283) */
   failure: VaultFailure | undefined;
   setStatus: (status: VaultStatus) => void;
   refresh: () => void;
@@ -77,7 +80,11 @@ export function useVaultStatus(): VaultHook {
       .catch((reason) => {
         if (!aliveRef.current) return;
         const code = reason instanceof VaultRequestError ? reason.code : "VAULT_UNREACHABLE";
-        setFailure(VAULT_STATUS_FAILURES.get(code) ?? "unreachable");
+        const mapped = VAULT_STATUS_FAILURES.get(code) ?? "unreachable";
+        // the recycled-pid flag only ever refines the lock refusal: it must not
+        // repaint an unrelated failure that happened to carry the field
+        const staleLock = reason instanceof VaultRequestError && reason.staleHeartbeat && mapped === "in-use";
+        setFailure(staleLock ? "stale-lock" : mapped);
       });
   }, []);
 

@@ -160,10 +160,16 @@ export class VaultAlreadyLockedError extends Error {
    * `lockPath` is optional: a live holder identified by its own record needs no
    * path to be named (the refusal page shows the holder), and inventing an
    * empty-string sentinel at those call sites would be worse than omitting it.
+   *
+   * `staleHeartbeatOverAlivePid` is the refusal's story, not its decision: the
+   * pid answers alive but the record has not beat in several windows, so the
+   * pid is probably recycled and there may be no other Dokan copy at all. The
+   * refusal still refuses; only the copy names the lock file as the exit.
    */
   constructor(
     readonly owner: VaultLockOwner | undefined,
     readonly lockPath?: string,
+    readonly staleHeartbeatOverAlivePid = false,
   ) {
     super(
       owner === undefined
@@ -315,20 +321,54 @@ function heartbeatIsFresh(owner: VaultLockOwner, options: VaultLockOptions): boo
 }
 
 /**
- * True when the recorded holder is (or may be) still running.
+ * A live Dokan beats every 10s, so a heartbeat this many staleness windows old
+ * is not a holder that paused: the recorded process stopped beating long ago
+ * and the pid the OS answers for probably belongs to something else.
+ */
+const PID_REUSE_HEARTBEAT_WINDOWS = 3;
+
+/**
+ * True when the recorded heartbeat is older than the suspicion window. An
+ * unparseable stamp counts as stale; a stamp in the future does not, because a
+ * foreign clock running ahead is not evidence of a recycled pid.
+ */
+function heartbeatIsStaleByWindows(owner: VaultLockOwner, options: VaultLockOptions): boolean {
+  const heartbeat = Date.parse(owner.heartbeatAt);
+  if (!Number.isFinite(heartbeat)) return true;
+  const age = Date.now() - heartbeat;
+  if (age < 0) return false;
+  return age > (options.staleHeartbeatMs ?? 60_000) * PID_REUSE_HEARTBEAT_WINDOWS;
+}
+
+/** How a recorded holder reads right now: the refusal decision, plus its story. */
+type HolderVerdict = {
+  /** the old `holderIsLive` answer, unchanged: refuse when this is true */
+  live: boolean;
+  /** true only for an alive pid whose recorded heartbeat is many windows stale */
+  staleHeartbeatOverAlivePid: boolean;
+};
+
+/**
+ * The refusal decision and the reason it reads that way.
  *
  * On this host the pid probe is exact whenever it answers: no throw is alive,
  * `ESRCH` is gone, and anything else is inconclusive, so the recorded
  * heartbeat decides. A pid that answers as alive still wins over an old
  * heartbeat (the round-5 rule); only the unknowable case changes (ADR-0012).
+ * That same "alive pid wins with an old heartbeat" case is the recycled-pid
+ * story, so it carries a second answer without changing `live`.
  */
-function holderIsLive(owner: VaultLockOwner, options: VaultLockOptions): boolean {
-  if (owner.host !== os.hostname()) return heartbeatIsFresh(owner, options);
+function holderVerdict(owner: VaultLockOwner, options: VaultLockOptions): HolderVerdict {
+  if (owner.host !== os.hostname()) {
+    return { live: heartbeatIsFresh(owner, options), staleHeartbeatOverAlivePid: false };
+  }
   const probe = options.probePid ?? probePidLiveness;
   const liveness: PidLiveness = probe(owner.pid);
-  if (liveness === "alive") return true;
-  if (liveness === "gone") return false;
-  return heartbeatIsFresh(owner, options);
+  if (liveness === "alive") {
+    return { live: true, staleHeartbeatOverAlivePid: heartbeatIsStaleByWindows(owner, options) };
+  }
+  if (liveness === "gone") return { live: false, staleHeartbeatOverAlivePid: false };
+  return { live: heartbeatIsFresh(owner, options), staleHeartbeatOverAlivePid: false };
 }
 
 /** What the holder's own read of its lock file established (#281). */
@@ -705,7 +745,10 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
       if (errnoCode(wrapped) !== "EEXIST") throw new VaultLockUnavailableError(wrapped, lockPath);
     }
     const existing = readOwner(lockPath, options);
-    if (existing !== undefined && holderIsLive(existing, options)) throw new VaultAlreadyLockedError(existing, lockPath);
+    if (existing !== undefined) {
+      const verdict = holderVerdict(existing, options);
+      if (verdict.live) throw new VaultAlreadyLockedError(existing, lockPath, verdict.staleHeartbeatOverAlivePid);
+    }
     // stale (dead same-host PID, quiet foreign heartbeat, or unreadable):
     // settle so a near-simultaneous reclaimer is likely decided, then re-read
     // and re-check IMMEDIATELY before the rename. Without the second check a
@@ -713,7 +756,10 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
     // from; a lost race refuses this boot instead of acquiring over it.
     Bun.sleepSync(options.stealSettleMs ?? 200);
     const settled = readOwner(lockPath, options);
-    if (settled !== undefined && holderIsLive(settled, options)) throw new VaultAlreadyLockedError(settled, lockPath);
+    if (settled !== undefined) {
+      const verdict = holderVerdict(settled, options);
+      if (verdict.live) throw new VaultAlreadyLockedError(settled, lockPath, verdict.staleHeartbeatOverAlivePid);
+    }
     const outcome = reclaimStaleLock(lockPath, settled, options);
     if (outcome === "raced") {
       throw new VaultAlreadyLockedError(readOwner(lockPath, options), lockPath);
@@ -750,6 +796,13 @@ const VAULT_LOCK_PAGE_COPY = {
   fallbackHost: "جهاز غير معروف",
   unknownOwner: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
   ownerTemplate: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز {host}، العملية {pid}). أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+  /**
+   * The recycled-pid story: the holder named here answers alive but stopped
+   * beating, so there may be no other Dokan copy. The hint cannot say "delete
+   * no file", and the message must name the lock file as the one exit.
+   */
+  staleHint: "لا تُعدّل بيانات المتجر. إن تأكدت من عدم وجود نسخة أخرى مفتوحة، احذف ملف vault.lock وحده.",
+  staleOwnerTemplate: "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان (الجهاز {host}، العملية {pid}). إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
 } as const;
 
 /**
@@ -776,15 +829,14 @@ function escapeHtml(value: string): string {
 }
 
 /** The Arabic refusal shown when another instance owns the folder. */
-export function vaultLockRefusalMessage(owner: VaultLockOwner | undefined): string {
+export function vaultLockRefusalMessage(owner: VaultLockOwner | undefined, staleHeartbeatOverAlivePid = false): string {
   if (owner === undefined) return VAULT_LOCK_PAGE_COPY.unknownOwner;
-  return VAULT_LOCK_PAGE_COPY.ownerTemplate
-    .replace("{host}", sanitizeHostForDisplay(owner.host))
-    .replace("{pid}", String(owner.pid));
+  const template = staleHeartbeatOverAlivePid ? VAULT_LOCK_PAGE_COPY.staleOwnerTemplate : VAULT_LOCK_PAGE_COPY.ownerTemplate;
+  return template.replace("{host}", sanitizeHostForDisplay(owner.host)).replace("{pid}", String(owner.pid));
 }
 
 /** Standalone Arabic page for the second instance (mirrors the schema page). */
-export function vaultLockRefusalPageHtml(owner: VaultLockOwner | undefined): string {
+export function vaultLockRefusalPageHtml(owner: VaultLockOwner | undefined, staleHeartbeatOverAlivePid = false): string {
   return `<!doctype html>
 <html lang="ar" dir="rtl">
   <head>
@@ -802,8 +854,8 @@ export function vaultLockRefusalPageHtml(owner: VaultLockOwner | undefined): str
   <body>
     <main>
       <h1>${escapeHtml(VAULT_LOCK_PAGE_COPY.heading)}</h1>
-      <p>${escapeHtml(vaultLockRefusalMessage(owner))}</p>
-      <p class="hint">${escapeHtml(VAULT_LOCK_PAGE_COPY.hint)}</p>
+      <p>${escapeHtml(vaultLockRefusalMessage(owner, staleHeartbeatOverAlivePid))}</p>
+      <p class="hint">${escapeHtml(staleHeartbeatOverAlivePid ? VAULT_LOCK_PAGE_COPY.staleHint : VAULT_LOCK_PAGE_COPY.hint)}</p>
     </main>
   </body>
 </html>
@@ -851,6 +903,7 @@ export function connectionToCloseAtShutdown<T>(
  */
 export function createVaultLockRefusalApp(config: AppConfig, error: VaultAlreadyLockedError): Hono {
   const app = new Hono();
+  const stale = error.staleHeartbeatOverAlivePid;
   app.get("/health-token", (c) => {
     if (config.bootToken !== undefined && tokenMatches(c.req.query("token"), config.bootToken)) {
       return c.json({ ok: true, token: config.bootToken });
@@ -859,8 +912,18 @@ export function createVaultLockRefusalApp(config: AppConfig, error: VaultAlready
   });
   app.get("/health", (c) => c.json({ ok: false, error: "VAULT_LOCKED_BY_OTHER_INSTANCE" }, 503));
   // the JSON route the app actually calls, so the web never parses the HTML
-  // page: 503 with the same code /health already answers
-  app.get("/api/vault/status", (c) => c.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, 503));
-  app.all("*", (c) => c.html(vaultLockRefusalPageHtml(error.owner), 503));
+  // page: 503 with the same code /health already answers. `staleHeartbeat` is
+  // the discriminator the web uses to name the lock file instead of promising
+  // a copy that may not exist (#283); it is absent for a genuine holder, so an
+  // older web build reads exactly the #276 body.
+  app.get("/api/vault/status", (c) =>
+    c.json(
+      stale
+        ? { error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }
+        : { error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } },
+      503,
+    ),
+  );
+  app.all("*", (c) => c.html(vaultLockRefusalPageHtml(error.owner, stale), 503));
   return app;
 }

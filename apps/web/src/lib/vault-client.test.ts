@@ -155,6 +155,20 @@ describe("vault status and logout", () => {
     await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
   });
 
+  it("carries the lock refusal's recycled-pid discriminator (#283)", async () => {
+    routes.set(
+      "/api/vault/status",
+      () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }, { status: 503 }),
+    );
+    await expect(fetchVaultStatus()).rejects.toMatchObject({
+      code: "VAULT_LOCKED_BY_OTHER_INSTANCE",
+      staleHeartbeat: true,
+    });
+    // an unflagged refusal reads false, so the gate keeps #276's copy
+    routes.set("/api/vault/status", () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 }));
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ staleHeartbeat: false });
+  });
+
   it("reads an HTML refusal page and a code-less 5xx as unreachable, never as a named cause (#276)", async () => {
     // a build older than #275 answers the route with the Arabic refusal page
     routes.set(

@@ -55,6 +55,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
   // cause gets its own screen; any other failure shows RETRY, never the legacy
   // login (finding 5).
   if (vault.failure === "in-use") return <VaultLockedByOtherInstance onRetry={vault.refresh} />;
+  if (vault.failure === "stale-lock") return <VaultLockStaleHeartbeat onRetry={vault.refresh} />;
   if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
   if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
   return <LegacySessionGate>{children}</LegacySessionGate>;
@@ -101,6 +102,17 @@ function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
 function VaultLockedByOtherInstance({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation();
   return <VaultStatusScreen message={t("VAULT_LOCKED_BY_OTHER_INSTANCE")} testId="vault-status-in-use" onRetry={onRetry} />;
+}
+
+/**
+ * The folder is locked by an alive pid that stopped beating (#283), which most
+ * likely means a dead holder's pid the OS recycled. There may be no other Dokan
+ * copy to close, so the copy names the lock file as the exit, under the one
+ * condition that keeps it safe: the owner first confirms no other copy is open.
+ */
+function VaultLockStaleHeartbeat({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
+  return <VaultStatusScreen message={t("vaultLockStaleHeartbeat")} testId="vault-status-stale-lock" onRetry={onRetry} />;
 }
 
 /** Owner provisioning after the vault is open (no separate login exists). */

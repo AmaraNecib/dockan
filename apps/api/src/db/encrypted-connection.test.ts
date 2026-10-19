@@ -301,6 +301,20 @@ describe("snapshot fence (#280)", () => {
 
   const diskFence = () => readSnapshotFence(fs.readFileSync(snapshotPath()));
 
+  /**
+   * A zombie's write, in the shape a real one has: a temp file renamed over the
+   * snapshot. A truncating `writeFileSync` is not what the race produces — the
+   * production writer renames atomically — so an injection that truncates can
+   * hide a window that a real rename opens.
+   */
+  function renameZombieEnvelope(envelope: Buffer, rename: typeof fs.renameSync = fs.renameSync.bind(fs)): void {
+    const temp = path.join(dir, `.dokan.db.enc.tmp-zombie-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    fs.writeFileSync(temp, envelope);
+    // the caller passes the real rename when renameSync is itself spied on, so
+    // the zombie's write cannot recurse into the spy
+    rename(temp, snapshotPath());
+  }
+
   it("stamps the writing holder's token into the envelope it writes", async () => {
     const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
     conn.raw.exec("CREATE TABLE t(a TEXT)");
@@ -397,7 +411,7 @@ describe("snapshot fence (#280)", () => {
         // recorded: the exact instant a zombie's in-flight rename lands
         if (guardCalls % 2 === 0 && !zombieRenamed) {
           zombieRenamed = true;
-          fs.writeFileSync(snapshotPath(), zombieEnvelope);
+          renameZombieEnvelope(zombieEnvelope);
         }
       },
     });
@@ -521,7 +535,11 @@ describe("snapshot fence (#280)", () => {
       realRename(from, to);
       if (String(to) === snapshotPath()) {
         injected += 1;
-        fs.writeFileSync(snapshotPath(), zombieEnvelope);
+        // the zombie's own write is a rename, not a truncation: the window
+        // under test is two renames racing, and only a rename reproduces it.
+        // The real rename is passed because renameSync is what is being spied
+        // on, so the zombie's write must not recurse into the spy.
+        renameZombieEnvelope(zombieEnvelope, realRename);
       }
     }) as typeof fs.renameSync);
     let refused: unknown;
@@ -566,7 +584,7 @@ describe("snapshot fence (#280)", () => {
         guardCalls += 1;
         // the post-write guard runs after every rename: a zombie that keeps
         // landing replaces each version the holder just wrote
-        if (atWar && guardCalls % 2 === 0) fs.writeFileSync(snapshotPath(), zombieEnvelope);
+        if (atWar && guardCalls % 2 === 0) renameZombieEnvelope(zombieEnvelope);
       },
     });
     conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
@@ -1077,7 +1095,7 @@ describe("snapshot fence (#280)", () => {
     // production passes exactly those two arguments
     const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
       realRename(from, to);
-      if (String(to) === snapshotPath()) fs.writeFileSync(snapshotPath(), zombieEnvelope);
+      if (String(to) === snapshotPath()) renameZombieEnvelope(zombieEnvelope, realRename);
     }) as typeof fs.renameSync);
     try {
       await expect(conn.close()).rejects.toThrow(SnapshotPersistenceError);

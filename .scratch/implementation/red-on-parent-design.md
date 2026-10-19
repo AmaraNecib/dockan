@@ -25,19 +25,50 @@ never as a pass.
 
 ---
 
-## 1. What bun actually does (measured in a scratch directory, bun 1.4.2; repo pins `packageManager: bun@1.3.14`)
+## 1. What bun actually does (measured in a scratch directory on 1.4.2 and re-measured on 1.4.3, which is the repo's `packageManager` pin)
 
-Probes ran in `D:\tmp\bunprobe` (outside the repo). Each printed the raw output
-and `PIPESTATUS[0]`. Summary table first, evidence below.
+Probes ran in `D:\tmp\bunprobe` (round 1, bun 1.4.2) and in a scratch directory
+under `.scratch/tmp/` (round 3, the downloaded 1.4.3 binary), both outside the
+tracked tree. Each printed the raw output and `PIPESTATUS[0]`. Summary table
+first, evidence below. **The pin at `bff7a1a9` and later is `bun@1.4.3`** — an
+earlier version of this doc said 1.3.14, which no CI run has ever used.
 
-| Question measured | Answer on bun 1.4.2 |
+Round 3 re-measured the junit shapes on the pinned 1.4.3, because the whole
+premise of this design is measured semantics and the earlier table named a
+version the repo does not run:
+
+| test shape | junit `type` on 1.4.3 | `assertions` |
+| --- | --- | --- |
+| `expect(1).toBe(2)` | `AssertionError` | 1 |
+| `expect(...).toThrow("ZERO")` mismatch | `AssertionError` | 1 |
+| `assert.equal(1, 2)` (node:assert) | `AssertionError` | 0 |
+| `throw new Error("boom")` in the test body | `Error` | 0 |
+| `throw new Error("x")` in `beforeEach` | `Error` | 0 |
+| `throw new Error("x")` in `beforeAll` | `Error` | 0 |
+| `expect.fail(...)` | `TypeError` (`expect.fail is not a function`) | 0 |
+
+Consequence for the rule: on 1.4.3 the failure `type` alone separates a hook
+throw from an assertion red, and the `assertions` counter separates nothing (it
+is 0 for a `node:assert` red as well). The gate therefore decides on `type`. A
+counter rule was in the shipped code for one round on the strength of a 1.3.14
+probe where every failure was typed `AssertionError`; on the pin it misread a
+genuine `node:assert` red as a wrong-reason red. That is the kind of fact this
+doc's own refusal rule exists to stop.
+
+The residual hole, stated because junit cannot close it: an assertion that
+fails *inside a hook* is indistinguishable from one that fails in the body
+(`expect` in a hook gives `AssertionError` + `assertions="1"`; node:assert in a
+hook gives `AssertionError` + `"0"`). No counter rule catches the first shape
+and the second only by accident, which is what the old rule bought.
+
+| Question measured (1.4.2, re-checked where it moved) | Answer |
 | --- | --- |
 | Select one test by name | Yes — `bun test <file> -t "<pattern>"` filters by regex against the test name; non-matching tests print `(filtered out)`/`skipped`. The junit `testcase name` attribute is the **test name only**, no `describe` chain (P10). |
 | Exit code: failed test | `1`. Output has a `(fail) <test name>` line and, with `--reporter=junit`, `<failure type="AssertionError">` on that testcase (P2, P7b). |
 | Exit code: load/collection error (missing module, missing named export, syntax error) | Also `1` — **the exit code does not separate the two**. Load errors print `# Unhandled error between tests`, an `error:` block, counts ` N pass / N fail / N error`, and **no junit file is written at all** (P1, P3, P4, P6, P7). |
 | `-t` pattern that matches nothing | Exit `1` with `error: regex "..." matched 0 tests. Searched 1 file (skipping 2 tests)` — a typo'd pattern cannot silently pass (P5c). |
 | Does the file load before or after `-t` filter? | **After.** A file whose imports fail, run with `-t` matching nothing, reports only "matched 0 tests" — the `Cannot find module` never surfaces (P6b). With a matching test, the load error surfaces and kills the run (P6). |
-| Failure inside `beforeEach` (imports resolve) | Prints a `(fail) NEW: <name>` line exactly like an assertion failure, but junit's failure `type` is `Error`, not `AssertionError` (P9). |
+| Failure inside `beforeEach` (imports resolve) | Prints a `(fail) NEW: <name>` line exactly like an assertion failure, but junit's failure `type` is `Error`, not `AssertionError` (P9). Confirmed on 1.4.3. |
 | Type-only imports of types that don't exist on the parent | Erased by transpile; the test runs and passes (P11). Typecheck is not part of `bun test`, so TS-only breakage cannot colour this gate. |
 | Single-file runtime cost in this repo | ~0.2 s wall for one file (cold, after `bun install`), 118 ms inside bun. |
 
@@ -67,7 +98,9 @@ Consequence: the gate can classify every outcome with two signals —
 (1) was a junit file written? (2) did the selected test produce
 `<failure type="AssertionError">`? Text parsing as a fallback is also viable
 (`(fail) <name>` present AND no `# Unhandled error between tests`), but the junit
-`type` attribute is less brittle than scraping coloured terminal text.
+`type` attribute is less brittle than scraping coloured terminal text. Since
+1.4.3, `--reporter=junit` refuses to run without `--reporter-outfile`, so the
+gate always passes the path explicitly.
 
 ## 2. False positives — a green new test on the parent, legitimately
 

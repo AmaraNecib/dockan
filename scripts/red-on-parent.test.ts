@@ -10,9 +10,11 @@
  * assertion red, so a gate that greps `(fail)` calls it a pass. This suite
  * asserts both halves — the transcript *does* carry that line, and the gate
  * still classifies it WRONG-REASON RED: the failing testcase evaluated no
- * assertion. (On 1.4.2 junit's `type` is `Error` and not `AssertionError`; on
- * 1.3.14, the repo's pin, bun types every failure `AssertionError`, so the
- * `assertions="0"` counter is the signal that holds on CI.)
+ * assertion. The discriminator is junit's `type`: measured on bun 1.4.3 (the
+ * `packageManager` pin, which CI installs), a `beforeEach` throw is
+ * `type="Error"` and an assertion red is `type="AssertionError"`. The
+ * `assertions` counter does not separate them, and using it as well
+ * misclassified a `node:assert` red — see `isAssertionRed` in the gate.
  *
  * These fixtures are the gate's own tests, so they live where `bun run test`
  * already looks (`bun test ./scripts/`).
@@ -139,13 +141,22 @@ function runGateAsync(fixture: Fixture): Promise<GateOutput> {
       env: { ...process.env, RED_ON_PARENT_CACHE: fixture.cache },
     });
     let out = "";
+    // A hung child would otherwise leak for the rest of the suite: spawn has no
+    // timeout of its own, so this one kills it and says why.
+    const timer = setTimeout(() => {
+      out += "\n(the gate did not exit within 120s; killed)";
+      child.kill();
+    }, 120_000);
     child.stdout.on("data", (chunk) => {
       out += String(chunk);
     });
     child.stderr.on("data", (chunk) => {
       out += String(chunk);
     });
-    child.on("close", (status) => settle({ status, stdout: out }));
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      settle({ status, stdout: out });
+    });
   });
 }
 
@@ -209,7 +220,7 @@ describe("guard", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("WRONG-REASON RED: a file that cannot load on the parent fails the gate", () => {
     const fixture = createFixture(
@@ -249,7 +260,7 @@ describe("brand", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("GREEN ON PARENT: a test that passes on the parent fails the gate", () => {
     const fixture = createFixture(
@@ -277,7 +288,7 @@ describe("gr", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("WAIVER MISFILED: a waiver on a test that is already red fails the gate", () => {
     const fixture = createFixture(
@@ -306,7 +317,7 @@ describe("misfile", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("GREEN ON PARENT, waived: the escape hatch passes the gate", () => {
     const fixture = createFixture(
@@ -335,7 +346,7 @@ describe("pre", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("WRONG-REASON RED, waived: a rename whose import only resolves on the change passes", () => {
     const fixture = createFixture(
@@ -364,7 +375,7 @@ describe("moved", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("an uncommitted test file fails the gate, it does not pass quietly", () => {
     const fixture = createFixture(
@@ -402,7 +413,7 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("a staged test file fails the gate too", () => {
     const fixture = createFixture(
@@ -436,7 +447,7 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("edited test files are never gated", () => {
     const existing = `import { expect, test } from "bun:test";
@@ -460,7 +471,7 @@ test("already here", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("a test the change registers and the parent does not is NOT ON PARENT", () => {
     const fixture = createFixture(
@@ -501,7 +512,7 @@ if ("brandNew" in helper) {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
   test("a non-ASCII file name is gated, not silently skipped", () => {
     // `git diff --name-only` quotes a path holding a non-ASCII byte, and the
     // quoted form fails `isGatedTestPath` at both ends — so without `-z` this
@@ -529,7 +540,7 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 });
 
 describe("a file whose workspace owns a bunfig.toml", () => {
@@ -589,7 +600,7 @@ test("the preload defined document", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 });
 
 describe("--head", () => {
@@ -639,7 +650,7 @@ describe("guard", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("an annotated tag on another commit is still reported", () => {
     const fixture = taggedFixture();
@@ -659,7 +670,7 @@ describe("guard", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 });
 
 describe("the base worktree lock", () => {
@@ -685,7 +696,7 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("a cold cache directory is created before the lock is taken", () => {
     const fixture = createFixture([PKG, HELPER], [{ path: "packages/core/src/helper.ts", text: HELPER_AFTER }, redTest]);
@@ -701,7 +712,7 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("a lock held by a live run waits, then refuses, and says which lock", () => {
     const fixture = createFixture([PKG, HELPER], [{ path: "packages/core/src/helper.ts", text: HELPER_AFTER }, redTest]);
@@ -719,7 +730,7 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   // A smoke check on the outcome, not the regression detector: without the lock
   // these two may still both succeed if one finishes `git worktree add` before
@@ -738,7 +749,7 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 });
 
 describe("the hook-throws fixture, where a grep-based gate is wrong", () => {
@@ -770,10 +781,9 @@ describe("hooky", () => {
     try {
       const { status, stdout } = runGateFixture(fixture);
       // The gate's answer, and the reason for it: the test body never ran, so
-      // it never rejected the missing behaviour. Wording on purpose that does
-      // not move between bun versions: on 1.3.14 (the repo pin) junit types a
-      // hook throw `AssertionError` exactly like a real red, and only the
-      // `assertions="0"` counter gives it away; on 1.4.2 the type says `Error`.
+      // it never rejected the missing behaviour. Measured on bun 1.4.3 (the
+      // pin): a hook throw is `type="Error"`, an assertion red is
+      // `type="AssertionError"`, so the type is what decides this.
       //
       // What the gate prints is its verdict and an excerpt of the transcript
       // starting at the first `error:` line, so the reporter's `(fail)` line is
@@ -785,7 +795,7 @@ describe("hooky", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -793,11 +803,11 @@ describe("hooky", () => {
 // ---------------------------------------------------------------------------
 
 describe("the trap a grep-based gate falls into", () => {
-  // A transcript as bun 1.3.14 (the repo pin) prints it for the hook-throws
-  // fixture: the reporter writes the same `(fail) <name>` line a real assertion
-  // red writes, while junit records `assertions="0"` because the body never ran.
-  // The gate must not read the reporter. A grep-based gate does, and passes a
-  // fixture that proves nothing.
+  // A transcript as bun prints it for a hook that throws: the reporter writes
+  // the same `(fail) <name>` line a real assertion red writes, while junit
+  // records `type="Error"` because the body never ran. The gate must not read
+  // the reporter. A grep-based gate does, and passes a fixture that proves
+  // nothing. (Round 3 captures this transcript from a real run below.)
   const hookTranscript = [
     "(fail) hooky > never gets to assert [0.42ms]",
     "error: hook boom",
@@ -807,7 +817,7 @@ describe("the trap a grep-based gate falls into", () => {
 <testsuites name="bun test" tests="1">
   <testsuite name="hook.test.ts" tests="1">
     <testcase name="never gets to assert" classname="hooky" file="hook.test.ts" line="5" assertions="0">
-      <failure type="AssertionError" />
+      <failure type="Error" message="hook boom" />
     </testcase>
   </testsuite>
 </testsuites>`;
@@ -994,19 +1004,31 @@ describe("classifyFileRun", () => {
     expect(verdicts.every(verdictPasses)).toBe(false);
   });
 
-  test("a bare AssertionError with no assertion evaluated is WRONG REASON RED (a bun 1.3.14 hook throw)", () => {
+  test("a hook throw is WRONG REASON RED on its junit type, not on a counter", () => {
+    // Measured on bun 1.4.3: a `beforeEach` throw reports assertions="0" and
+    // type="Error". The type decides it; no counter is consulted.
     const { verdicts } = classifyFileRun(
-      run(junitFor(`<failure type="AssertionError" />`, ` assertions="0"`)),
+      run(junitFor(`<failure type="Error" message="hook boom" />`, ` assertions="0"`)),
       noWaiver,
     );
     expect(verdicts[0]?.name).toBe("WRONG_REASON_RED");
-    expect(verdicts[0]?.detail).toContain("no assertion was evaluated");
+    expect(verdicts[0]?.detail).toContain("Error");
     expect(verdicts.every(verdictPasses)).toBe(false);
   });
 
-  test("a bare AssertionError with an assertion evaluated is RIGHT REASON RED (a bun 1.3.14 real red)", () => {
+  test("a node:assert red is RIGHT REASON RED, not a counter casualty", () => {
+    // Measured on bun 1.4.3: `assert.equal(1, 2)` reports
+    // `<failure type="AssertionError" message="1 == 2">` with assertions="0",
+    // because node:assert is not an `expect` matcher. A rule that also required
+    // assertions !== 0 called a genuine assertion red WRONG REASON RED, so the
+    // author had to waive a red the gate exists to accept.
     const { verdicts } = classifyFileRun(
-      run(junitFor(`<failure type="AssertionError" />`, ` assertions="1"`)),
+      run(
+        junitFor(
+          `<failure type="AssertionError" message="1 == 2">AssertionError</failure>`,
+          ` assertions="0"`,
+        ),
+      ),
       noWaiver,
     );
     expect(verdicts[0]?.name).toBe("RIGHT_REASON_RED");
@@ -1337,7 +1359,7 @@ test("n is two", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -1416,7 +1438,7 @@ describe("guard", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("a hung test run is RUN INCOMPLETE, and no waiver covers it", () => {
     // The timeout has to be injectable, or this fixture would wait two minutes
@@ -1497,7 +1519,7 @@ describe("stale", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("a waiver that matched nothing is WAIVER MISFILED", () => {
     const waiver: Waiver = { pattern: "no such test", reason: "stale", line: 9 };
@@ -1553,7 +1575,7 @@ describe("other", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("a test file outside the gate's scope is named, not silently ignored", () => {
     // The gate on its own pull request adds `scripts/red-on-parent.test.ts` and
@@ -1579,7 +1601,7 @@ describe("other", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
 
   test("the manifest names a copied file as soon as it is copied", () => {
     // The manifest is written on every copy, not after the loop: a run that
@@ -1648,5 +1670,71 @@ test("rejects zero", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 3 — the facts corrected to the bun CI actually installs, and the
+// report saying which bun it ran under.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 3", () => {
+  test("a node:assert red on the parent passes the gate", () => {
+    // Measured on bun 1.4.3: `assert.throws` reports type="AssertionError" with
+    // assertions="0", because node:assert is not an `expect` matcher. Requiring
+    // assertions !== 0 as well called this WRONG REASON RED, so an honest test
+    // written with node:assert had to waive its own red.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/asserted.test.ts",
+          text: `import { test } from "bun:test";
+import assert from "node:assert";
+import { guard } from "./helper";
+test("rejects zero", () => {
+  assert.throws(() => guard(0), /ZERO/);
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("the report says which bun it ran under", () => {
+    // Two lanes on different bun minors emit different junit shapes with no
+    // record of which — the ambiguity that produced the 1.3.14 claim this
+    // round corrects.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/red.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain(`bun ${process.versions.bun ?? "unknown"}`);
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
 });

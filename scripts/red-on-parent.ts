@@ -13,19 +13,21 @@
  * construction, so gating one buys a waiver line and nothing else. Playwright
  * specs are out of unit scope because their red needs two servers running.
  *
- * The discrimination that makes the gate possible, measured on bun 1.4.2 (a
- * dev machine) and bun 1.3.14 (the `packageManager` pin, which CI installs):
+ * The discrimination that makes the gate possible, measured on bun 1.4.3 (the
+ * `packageManager` pin, so this is the bun CI installs) and re-checked on 1.4.2
+ * (a dev machine's global bun):
  *
  *   - a load error and a real assertion failure BOTH exit 1;
  *   - bun writes the junit report only when the file loaded at all, so a
  *     missing report means "the parent could not load this file";
- *   - a real assertion red evaluates an assertion and reports
- *     `<failure type="AssertionError">`. On 1.4.2 a `beforeEach` / `beforeAll`
- *     throw is `<failure type="Error">` instead; on 1.3.14 bun writes a bare
- *     `<failure type="AssertionError" />` for EVERY failure, so the `type`
- *     attribute alone cannot separate a hook throw from an assertion red there.
- *     The `assertions="0"` counter is the tell that the test body never ran —
- *     true of a hook throw on both versions.
+ *   - a real assertion red reports `<failure type="AssertionError">`, and a
+ *     `beforeEach` / `beforeAll` throw reports `<failure type="Error">`. The
+ *     `type` attribute is the whole discriminator on 1.4.3. An earlier version
+ *     of this gate also required `assertions != 0`, justified by a 1.3.14 probe
+ *     where every failure was typed `AssertionError`; on the pinned 1.4.3 that
+ *     counter is not load-bearing, and it misread a `node:assert` red (also
+ *     `AssertionError`, but `assertions="0"`) as a wrong-reason red. The
+ *     measured table and the residual hole are on `isAssertionRed`.
  *
  * A gate that greps `(fail)` accepts a hook throw as a red and is worthless.
  * This one reads the junit report, which is why it runs the file once with
@@ -79,6 +81,12 @@ export function bunOnlyRefusal(
   if (versions.bun !== undefined) return null;
   return "red-on-parent: run this with bun, not node — every parent-side run spawns `bun test` from process.execPath, and under node each file reads as a whole-file load failure\n";
 }
+/** The bun this process is running on, which is the bun every child run inherits. */
+export function bunVersion(): string {
+  // SAFETY: `process.versions` is a plain object and bun adds a `bun` key to it.
+  return (process.versions as { bun?: string }).bun ?? "unknown";
+}
+
 const WAIVER_MARKER = "red-on-parent-waive";
 const DEFAULT_TEST_TIMEOUT_MS = 120_000;
 const GIT_TIMEOUT_MS = 60_000;
@@ -104,9 +112,9 @@ export type TestResult = {
   failureType: string | null;
   /**
    * junit's `assertions` counter for this testcase: how many `expect(...)`
-   * matchers ran. null when the attribute is absent. On bun 1.3.14 this is the
-   * only signal that separates a real assertion red from a hook throw, because
-   * both carry `type="AssertionError"` with no message.
+   * matchers ran. null when the attribute is absent. Recorded, not consulted:
+   * measured on bun 1.4.3 it is `0` for a `node:assert` red as well as for a
+   * hook throw, so it cannot separate them — the failure `type` does that.
    */
   assertions: number | null;
 };
@@ -407,28 +415,41 @@ function classifyResult(
 }
 
 /**
- * A real assertion red evaluated an assertion and got `AssertionError`.
+ * A real assertion red, by the only signal bun gives us: the failure type.
  *
- * The counter is load-bearing on bun 1.3.14, the repo's `packageManager` pin and
- * what CI installs: there bun writes a bare `<failure type="AssertionError" />`
- * for EVERY failure, so a `beforeEach` throw and an assertion red are
- * byte-identical in junit. `assertions="0"` is then the only tell that the test
- * body never ran. On 1.4.2 the `type` says it too (`Error`) and the counter
- * agrees. A report with no counter at all (hand-written, or a bun that never
- * emitted one) keeps the `type`-only rule rather than failing closed on unknown.
+ * Measured, in a scratch directory, on the pinned bun 1.4.3:
  *
- * One measured cost, on 1.3.14 only: `expect.fail(...)` also reports
- * `assertions="0"` with a bare AssertionError, so this calls it WRONG-REASON
- * RED. Failing closed on an undecidable shape costs one waiver line; letting a
- * hook throw through would defeat the gate. Nothing in this repo uses it.
+ * | test shape                                | type            | assertions |
+ * | ----------------------------------------- | --------------- | ---------- |
+ * | `expect(1).toBe(2)`                       | AssertionError  | 1          |
+ * | `expect(...).toThrow("ZERO")` mismatch    | AssertionError  | 1          |
+ * | `assert.equal(1, 2)` (node:assert)        | AssertionError  | 0          |
+ * | `throw new Error("boom")` in the body     | Error           | 0          |
+ * | `throw new Error("x")` in `beforeEach`    | Error           | 0          |
+ * | `throw new Error("x")` in `beforeAll`     | Error           | 0          |
+ * | `expect.fail(...)`                        | TypeError       | 0          |
+ *
+ * So `type` alone separates a hook throw from an assertion red, and the
+ * counter separates nothing: it is 0 for a `node:assert` red too. This gate
+ * used to require `assertions != 0` on the strength of a bun 1.3.14 probe,
+ * where every failure was typed `AssertionError` — a version CI does not run
+ * (the repo pins `packageManager: bun@1.4.3`). On 1.4.3 that clause bought
+ * nothing and cost a genuine `node:assert` red its RIGHT REASON RED verdict.
+ *
+ * The residual hole, stated honestly because junit cannot close it: an
+ * assertion that fails *inside a hook* is indistinguishable from one that
+ * fails in the body — a hook doing `expect(...)` reports `AssertionError` with
+ * assertions="1", and a hook doing `assert.equal` reports it with "0", so no
+ * counter rule ever caught the first shape and the second only by accident.
+ * `expect.fail` on 1.4.3 is not a function at all (TypeError, assertions="0"),
+ * so a test that calls it needs a waiver; nothing in this repo does.
  */
 function isAssertionRed(result: TestResult): boolean {
-  return result.failureType === "AssertionError" && result.assertions !== 0;
+  return result.failureType === "AssertionError";
 }
 
 /** Why a failing test is not a right-reason red, in wording bun does not vary. */
 function failureReason(result: TestResult): string {
-  if (result.assertions === 0) return `no assertion was evaluated (junit assertions="0")`;
   return `junit failure type ${JSON.stringify(result.failureType ?? "unknown")}`;
 }
 
@@ -1422,7 +1443,7 @@ export function renderReport(run: GateRun, problems: string[]): string {
   const lines: string[] = [];
   const files = run.files.length;
   lines.push(
-    `red-on-parent: base ${run.baseSha.slice(0, 12)} (worktree ${run.worktree}${run.worktreeCreated ? ", created" : ", cached"})`,
+    `red-on-parent: base ${run.baseSha.slice(0, 12)} (worktree ${run.worktree}${run.worktreeCreated ? ", created" : ", cached"}) · bun ${bunVersion()}`,
   );
   if (run.uncommitted.length > 0) {
     lines.push(

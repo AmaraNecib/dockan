@@ -40,6 +40,7 @@ import {
   unusedWaiverVerdicts,
   verdictPasses,
   type FileRun,
+  type GateRun,
   type Verdict,
   type Waiver,
 } from "./red-on-parent";
@@ -1226,5 +1227,44 @@ test("n is two", () => {
     } finally {
       fixture.cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 7 — the P2 Greptile raised on 0eb8708.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 7", () => {
+  test("two waivers matching one test both reach the report", () => {
+    // Keeping only the first match dropped the second pattern from the report and
+    // from the unused-waiver check, so a reviewer never saw its reason.
+    const broad: Waiver = { pattern: "cart", reason: "broad reason", line: 5 };
+    const narrow: Waiver = { pattern: "cart totals two", reason: "narrow reason", line: 6 };
+    const xml =
+      '<testsuites><testsuite name="packages/core/src/cart.test.ts" file="packages/core/src/cart.test.ts">' +
+      '<testcase name="totals two" classname="cart">' +
+      '<failure type="AssertionError" message="x">AssertionError: x</failure>' +
+      "</testcase></testsuite></testsuites>";
+    const synthetic: GateRun = {
+      baseSha: "a1b2c3d4e5f6",
+      worktree: "(none)",
+      worktreeCreated: false,
+      installLog: "",
+      files: ["packages/core/src/cart.test.ts"],
+      verdicts: [],
+      stdoutByFile: new Map(),
+      problems: [],
+      uncommitted: [],
+    };
+    const { verdicts, usedWaiverLines } = classifyFileRun(
+      { file: "packages/core/src/cart.test.ts", junit: xml, stdout: "", error: "" },
+      [broad, narrow],
+    );
+    expect(verdicts[0]?.waivers.map((waiver) => waiver.line)).toEqual([5, 6]);
+    expect([...usedWaiverLines].sort()).toEqual([5, 6]);
+    const report = renderReport({ ...synthetic, verdicts }, []);
+    expect(report).toContain("line 5, line 6");
+    expect(report).toContain("broad reason");
+    expect(report).toContain("narrow reason");
   });
 });

@@ -142,6 +142,7 @@ export type Verdict = {
   name: VerdictName;
   detail: string;
   waiver: Waiver | null;
+  waivers: Waiver[];
 };
 
 export type FileRun = {
@@ -342,11 +343,12 @@ function matches(waiver: Waiver, result: TestResult): boolean {
   return re.test(displayName(result)) || re.test(result.name);
 }
 
-function firstWaiver(waivers: Waiver[], result: TestResult): Waiver | null {
-  return waivers.find((waiver) => matches(waiver, result)) ?? null;
-}
-
-function classifyResult(file: string, result: TestResult, waiver: Waiver | null): Verdict {
+function classifyResult(
+  file: string,
+  result: TestResult,
+  waiver: Waiver | null,
+  matching: Waiver[],
+): Verdict {
   const test = displayName(result);
   if (result.status === "skipped") {
     return {
@@ -355,6 +357,7 @@ function classifyResult(file: string, result: TestResult, waiver: Waiver | null)
       name: "GREEN_ON_PARENT",
       detail: `the test is skipped (or a todo) on the parent, so it pins nothing`,
       waiver,
+      waivers: matching,
     };
   }
   if (result.status === "passed") {
@@ -364,6 +367,7 @@ function classifyResult(file: string, result: TestResult, waiver: Waiver | null)
       name: "GREEN_ON_PARENT",
       detail: `the test passes on the parent, so it pins no behaviour the change adds`,
       waiver,
+      waivers: matching,
     };
   }
   if (isAssertionRed(result)) {
@@ -374,6 +378,7 @@ function classifyResult(file: string, result: TestResult, waiver: Waiver | null)
         name: "WAIVER_MISFILED",
         detail: `waived, but the test already fails on the parent with an AssertionError — delete the waiver`,
         waiver,
+        waivers: matching,
       };
     }
     return {
@@ -382,6 +387,7 @@ function classifyResult(file: string, result: TestResult, waiver: Waiver | null)
       name: "RIGHT_REASON_RED",
       detail: `fails on the parent with an assertion on the behaviour the change adds`,
       waiver: null,
+      waivers: [],
     };
   }
   return {
@@ -392,6 +398,7 @@ function classifyResult(file: string, result: TestResult, waiver: Waiver | null)
       result,
     )}), so it proves nothing about the change`,
     waiver,
+    waivers: matching,
   };
 }
 
@@ -448,6 +455,7 @@ export function classifyFileRun(
       name: "RUN_INCOMPLETE",
       detail: run.error,
       waiver: null,
+      waivers: [],
     });
     return { verdicts, usedWaiverLines: used };
   }
@@ -463,8 +471,9 @@ export function classifyFileRun(
       const re = new RegExp(waiver.pattern, "u");
       return changeNames.some((name) => re.test(name));
     };
-    const waiver = waivers.find(covers) ?? null;
-    for (const candidate of waivers) if (covers(candidate)) used.add(candidate.line);
+    const covering = waivers.filter(covers);
+    const waiver = covering[0] ?? null;
+    for (const candidate of covering) used.add(candidate.line);
     const explainsNothing =
       waiver === null && waivers.length > 0
         ? ` — and no waiver here names a test the change registers (${changeNames.join(", ") || "none found"})`
@@ -475,16 +484,17 @@ export function classifyFileRun(
       name: "WRONG_REASON_RED",
       detail: `${reason}${waiver === null ? explainsNothing : ` — covered by the waiver on line ${waiver.line}`}`,
       waiver,
+      waivers: covering,
     });
     return { verdicts, usedWaiverLines: used };
   }
 
   const results = parseJunit(run.junit, run.file);
   // A waiver is used when it matches a test, not when it is the one this run
-  // happened to pick. `firstWaiver` returns the first match, so a broad pattern
-  // ("case") hid a later narrow one ("case one") and the narrow one was then
-  // reported as matching no test in the file — a factually wrong message on a
-  // file that was fine.
+  // happened to pick. A broad pattern ("case") matches "case one" as well as a
+  // narrower "case one" does, and attaching only the first made the second look
+  // like it matched no test at all — a factually wrong message on a file that was
+  // fine. Every match is kept, so the report can show each reason.
   for (const waiver of waivers) {
     if (results.some((result) => matches(waiver, result))) used.add(waiver.line);
   }
@@ -495,14 +505,16 @@ export function classifyFileRun(
       name: "WRONG_REASON_RED",
       detail: "the junit report carries no testcase, so the file pins nothing",
       waiver: null,
+      waivers: [],
     });
     return { verdicts, usedWaiverLines: used };
   }
 
   for (const result of results) {
-    const waiver = firstWaiver(waivers, result);
+    const matching = waivers.filter((candidate) => matches(candidate, result));
+    const waiver = matching[0] ?? null;
     if (waiver !== null) used.add(waiver.line);
-    verdicts.push(classifyResult(run.file, result, waiver));
+    verdicts.push(classifyResult(run.file, result, waiver, matching));
   }
   return { verdicts, usedWaiverLines: used };
 }
@@ -545,7 +557,8 @@ export function unregisteredVerdicts(
       onParent.set(test, remaining - 1);
       continue;
     }
-    const waiver = firstWaiver(waivers, result);
+    const matching = waivers.filter((candidate) => matches(candidate, result));
+    const waiver = matching[0] ?? null;
     if (waiver !== null) used.add(waiver.line);
     verdicts.push({
       file,
@@ -554,6 +567,7 @@ export function unregisteredVerdicts(
       detail:
         "the change registers this test and the parent's run never reported it, so the gate has no red to judge for it",
       waiver,
+      waivers: matching,
     });
   }
   return { verdicts, usedWaiverLines: used };
@@ -577,6 +591,7 @@ export function unusedWaiverVerdicts(file: string, waivers: Waiver[], used: Set<
       name: "WAIVER_MISFILED" as const,
       detail: `the waiver on line ${waiver.line} matches no test in this file — delete it, or fix the pattern`,
       waiver,
+      waivers: [waiver],
     }));
 }
 
@@ -1237,7 +1252,11 @@ export function renderReport(run: GateRun, problems: string[]): string {
   const testWidth = Math.max(12, ...run.verdicts.map((v) => v.test.length));
   lines.push(`${pad("FILE", fileWidth)}  ${pad("TEST", testWidth)}  ${pad("VERDICT", 18)}  WAIVED`);
   for (const verdict of run.verdicts) {
-    const waived = verdict.waiver === null ? "-" : `line ${verdict.waiver.line}`;
+    // Two patterns can accept the same test, and a reviewer needs each reason.
+    const waived =
+      verdict.waivers.length === 0
+        ? "-"
+        : verdict.waivers.map((waiver) => `line ${waiver.line}`).join(", ");
     lines.push(
       `${pad(verdict.file, fileWidth)}  ${pad(verdict.test, testWidth)}  ${pad(verdict.name.replaceAll("_", "-"), 18)}  ${waived}`,
     );
@@ -1293,11 +1312,15 @@ function usedWaiverList(verdicts: Verdict[]): Array<{ file: string; waiver: Waiv
   const seen = new Set<string>();
   const used: Array<{ file: string; waiver: Waiver }> = [];
   for (const verdict of verdicts) {
-    if (verdict.waiver === null) continue;
-    const key = `${verdict.file}:${verdict.waiver.line}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    used.push({ file: verdict.file, waiver: verdict.waiver });
+    // Every matching waiver is listed, not only the first: the report exists so a
+    // reviewer can read why each exception was accepted, and dropping the second
+    // pattern hides its reason entirely.
+    for (const waiver of verdict.waivers) {
+      const key = `${verdict.file}:${waiver.line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      used.push({ file: verdict.file, waiver });
+    }
   }
   return used;
 }

@@ -173,6 +173,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       # setup-bun reads packageManager (bun@1.4.3) from package.json,
       # so CI tracks the repo's bun pin without a second source of truth.
@@ -208,6 +210,10 @@ jobs:
       # couple of minutes, instead of quietly disarming the suite.
       - name: Tests
         run: bun run test
+
+      - name: Red-on-parent gate
+        if: github.event_name == 'pull_request'
+        run: bun scripts/red-on-parent.ts --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }}
 
       # The production bundle adds a PR-time `vite build` alongside the one the
       # `rust` job runs for crate-affecting diffs. It is an additional build,

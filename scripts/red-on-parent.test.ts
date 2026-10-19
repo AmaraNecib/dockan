@@ -9,8 +9,10 @@
  * `beforeEach` throw prints a `(fail) <name>` line identical in shape to a real
  * assertion red, so a gate that greps `(fail)` calls it a pass. This suite
  * asserts both halves — the transcript *does* carry that line, and the gate
- * still classifies it WRONG-REASON RED because the junit `type` is `Error` and
- * not `AssertionError`.
+ * still classifies it WRONG-REASON RED: the failing testcase evaluated no
+ * assertion. (On 1.4.2 junit's `type` is `Error` and not `AssertionError`; on
+ * 1.3.14, the repo's pin, bun types every failure `AssertionError`, so the
+ * `assertions="0"` counter is the signal that holds on CI.)
  *
  * These fixtures are the gate's own tests, so they live where `bun run test`
  * already looks (`bun test ./scripts/`).
@@ -392,10 +394,13 @@ describe("hooky", () => {
       const { status, stdout } = runGateFixture(fixture);
       // The trap: the same `(fail) <name>` text a real assertion red prints.
       expect(stdout).toContain("(fail) hooky > never gets to assert");
-      // The gate's answer, and the reason for it: junit says `Error`, not
-      // `AssertionError`, so the test body never rejected the missing behaviour.
+      // The gate's answer, and the reason for it: the test body never ran, so
+      // it never rejected the missing behaviour. Wording on purpose that does
+      // not move between bun versions: on 1.3.14 (the repo pin) junit types a
+      // hook throw `AssertionError` exactly like a real red, and only the
+      // `assertions="0"` counter gives it away; on 1.4.2 the type says `Error`.
       expect(stdout).toContain("WRONG-REASON-RED");
-      expect(stdout).toContain('junit failure type "Error"');
+      expect(stdout).toContain("before evaluating the test body");
       // A grep-based gate would pass this fixture. That is what it must not do.
       expect(naiveGrepVerdict(stdout)).toBe("RIGHT_REASON_RED");
       expect(status).toBe(1);
@@ -415,7 +420,7 @@ describe("parseJunit", () => {
   <testsuite name="f.test.ts" tests="4">
     <testsuite name="outer" line="2">
       <testsuite name="inner" line="3">
-        <testcase name="deep &amp; quotable" classname="inner &gt; outer" file="f.test.ts" line="4">
+        <testcase name="deep &amp; quotable" classname="inner &gt; outer" file="f.test.ts" line="4" assertions="2">
           <failure type="AssertionError" message="nope">AssertionError: nope</failure>
         </testcase>
       </testsuite>
@@ -438,11 +443,16 @@ describe("parseJunit", () => {
       classname: "inner > outer",
       status: "failed",
       failureType: "AssertionError",
+      assertions: 2,
     });
     expect(results[1]?.status).toBe("passed");
     expect(results[1]?.failureType).toBeNull();
     expect(results[2]?.status).toBe("skipped");
     expect(results[3]?.status).toBe("skipped");
+  });
+
+  test("a testcase with no assertions attribute parses it as null", () => {
+    expect(parseJunit(sample)[1]?.assertions).toBeNull();
   });
 
   test("the display name is the chain bun's -t filter matches", () => {
@@ -530,8 +540,8 @@ describe("classifyFileRun", () => {
   const noWaiver: Waiver[] = [];
   const waiver: Waiver = { pattern: "gr keeps a positive number", reason: "pre-existing", line: 7 };
 
-  const junitFor = (body: string) =>
-    `<testsuites><testsuite name="f.test.ts"><testsuite name="gr"><testcase name="keeps a positive number" classname="gr">${body}</testcase></testsuite></testsuite></testsuites>`;
+  const junitFor = (body: string, attrs = "") =>
+    `<testsuites><testsuite name="f.test.ts"><testsuite name="gr"><testcase name="keeps a positive number" classname="gr"${attrs}>${body}</testcase></testsuite></testsuite></testsuites>`;
 
   const run = (junit: string | null, stdout = ""): FileRun => ({
     file: "packages/core/src/x.test.ts",
@@ -569,6 +579,25 @@ describe("classifyFileRun", () => {
     );
     expect(verdicts[0]?.name).toBe("WRONG_REASON_RED");
     expect(verdicts.every(verdictPasses)).toBe(false);
+  });
+
+  test("a bare AssertionError with no assertion evaluated is WRONG REASON RED (a bun 1.3.14 hook throw)", () => {
+    const { verdicts } = classifyFileRun(
+      run(junitFor(`<failure type="AssertionError" />`, ` assertions="0"`)),
+      noWaiver,
+    );
+    expect(verdicts[0]?.name).toBe("WRONG_REASON_RED");
+    expect(verdicts[0]?.detail).toContain("no assertion was evaluated");
+    expect(verdicts.every(verdictPasses)).toBe(false);
+  });
+
+  test("a bare AssertionError with an assertion evaluated is RIGHT REASON RED (a bun 1.3.14 real red)", () => {
+    const { verdicts } = classifyFileRun(
+      run(junitFor(`<failure type="AssertionError" />`, ` assertions="1"`)),
+      noWaiver,
+    );
+    expect(verdicts[0]?.name).toBe("RIGHT_REASON_RED");
+    expect(verdicts.every(verdictPasses)).toBe(true);
   });
 
   test("a waived AssertionError is WAIVER MISFILED", () => {

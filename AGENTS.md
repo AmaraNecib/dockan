@@ -140,11 +140,12 @@ still decides how much scrutiny a failure mode deserves; it no longer decides
 whether the debate happens. Run them in that order, each as its own sub-agent,
 before the lane reports.
 
-- **The lenses run on a different model than the author.** Author lanes run
-  `zen-proxy/deepseek-v4.1-flash-free`; the three lenses run
-  `zen-proxy/glm-5.3-flash-free` (both via `zen-proxy`; the `opencode*` routes
-  have an expired key). A model reviewing its own diff shares the blind spots the
-  lens exists to catch, so the reviewer is never the author.
+- **One model runs the lanes and the lenses (owner decision, 2026-10-19).** Author lanes and the
+  three lenses all run `opencode-go/deepseek-v4.1-flash`, on the owner's OpenCode Go subscription.
+  The earlier rule asked for a different model on the lens side, because a model reviewing its own
+  diff shares the blind spots the lens exists to catch; with one model a lens is a fresh read of
+  the diff, not an independent one, and its report has to say so. The free fallback is
+  `opencode-go/minimax-m3.1-flash-free`.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.

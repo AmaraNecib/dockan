@@ -11,9 +11,16 @@ model; the report made that impossible to tell, and an unverifiable claim is a d
 Every lens report carries these two lines right under its title, and nothing sits between them:
 
 ```
-Reviewer model: zen-proxy/glm-5.3-flash-free
-Author model:   zen-proxy/deepseek-v4.1-flash-free
+Reviewer model: opencode-go/deepseek-v4.1-flash
+Author model:   opencode-go/deepseek-v4.1-flash
 ```
+
+Those IDs are the pair in force from 2026-10-19, when OpenCode's free tier began refusing this box's IP
+and the owner directed **one model for every sub-agent**. That decision removes the separation this
+entry was written to protect: with the same model on both sides, the lens is a fresh read of the diff
+and not an independent one. So the report says both things — the two model lines, and one sentence
+naming the missing separation. Do not restore the split unasked; the rule is that the lines name the
+models that actually ran, and that a reader is never left to assume a separation that was not there.
 
 Why it matters past tidiness: the reason the reviewer is a second model is that the author's blind
 spots are not the reviewer's. If the report does not name the reviewer, the gate cannot check that

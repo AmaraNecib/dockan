@@ -786,13 +786,18 @@ function startServer(): void {
       // A refused start does not own the folder yet: publishing would point
       // the proxy (and the owner's clients) at the refusal server, so it
       // stays silent until the reclaim succeeds (#277, round-7 finding 2).
-      if (vaultLock !== undefined) {
-        await publishOwnedPort(info.port);
-      } else {
+      // Only a REFUSED start suppresses publication (#277). Plaintext starts
+      // have no vault lock at all and still own the port, so keying this off
+      // `vaultLock` alone silently broke port discovery for
+      // DOKAN_VAULT=disabled (Greptile P1): Vite kept walking the previous
+      // record while the API listened somewhere else.
+      if (refused) {
         logger.warn(
           "VAULT_LOCK_REFUSED",
           `serving the in-use refusal on http://${info.address}:${info.port} (port record untouched: another instance owns the folder)`,
         );
+      } else {
+        await publishOwnedPort(info.port);
       }
       logger.info("SERVER_STARTED", "Dokan API booted", {
         url: `http://${info.address}:${info.port}`,
@@ -902,6 +907,10 @@ async function reconcileBeforeExit(): Promise<void> {
 // rebind that would desync the proxy (greptile P1)
 
 function beginShutdown(): void {
+  // Stop the reclaim loop FIRST (Greptile P2): a pending tick that wins during
+  // shutdown would take the lock and publish a port whose listener is already
+  // closing, stranding the proxy on a dead record until the process exits.
+  reclaim?.stop();
   server?.close();
   // a stuck close (keep-alive connection) must not hang the kiosk forever;
   // the forced path still awaits the full reconcile and the store close before

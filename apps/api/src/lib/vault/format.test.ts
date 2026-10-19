@@ -1,12 +1,17 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  MAX_SNAPSHOT_STAMP_BYTES,
+  VAULT_SNAPSHOT_LEGACY_VERSION,
+  VAULT_SNAPSHOT_MAGIC,
+  VAULT_SNAPSHOT_VERSION,
   base32Decode,
   base32Encode,
   formatRecoveryCode,
   generateRecoveryCode,
   parseRecoveryCode,
   parseVaultHeader,
+  readSnapshotFence,
   serializeVaultHeader,
   type VaultHeader,
 } from "./format";
@@ -126,5 +131,43 @@ describe("vault header", () => {
     const max = header();
     max.kdf = { ...max.kdf, memoryKiB: 262_144, iterations: 10, parallelism: 4 };
     expect(() => parseVaultHeader(JSON.stringify(max))).not.toThrow();
+  });
+});
+
+describe("snapshot envelope fence (#280)", () => {
+  const legacy = () => Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_LEGACY_VERSION]), Buffer.alloc(48, 9)]);
+  const fenced = (stamp: string) => {
+    const stampBytes = Buffer.from(stamp, "utf8");
+    return Buffer.concat([
+      VAULT_SNAPSHOT_MAGIC,
+      Buffer.from([VAULT_SNAPSHOT_VERSION]),
+      Buffer.from([stampBytes.length]),
+      stampBytes,
+      Buffer.alloc(48, 9),
+    ]);
+  };
+
+  it("reads the legacy envelope as unfenced", () => {
+    expect(readSnapshotFence(legacy())).toEqual({ version: VAULT_SNAPSHOT_LEGACY_VERSION, stamp: undefined, bodyOffset: VAULT_SNAPSHOT_MAGIC.length + 1 });
+  });
+
+  it("reads the holder stamp and body offset of a fenced envelope", () => {
+    const fence = readSnapshotFence(fenced("holder-token"));
+    expect(fence?.version).toBe(VAULT_SNAPSHOT_VERSION);
+    expect(fence?.stamp).toBe("holder-token");
+    expect(fence?.bodyOffset).toBe(VAULT_SNAPSHOT_MAGIC.length + 1 + 1 + "holder-token".length);
+  });
+
+  it("refuses to decide a truncated, foreign-header, unknown-version or bad-length envelope", () => {
+    expect(readSnapshotFence(Buffer.alloc(4))).toBeUndefined();
+    expect(readSnapshotFence(Buffer.concat([Buffer.from("NOTVAULT"), Buffer.alloc(16)]))).toBeUndefined();
+    expect(readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([9]), Buffer.alloc(48)]))).toBeUndefined();
+    // a zero length, and a length past the bound
+    expect(readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, 0]), Buffer.alloc(48)]))).toBeUndefined();
+    expect(
+      readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, MAX_SNAPSHOT_STAMP_BYTES + 1]), Buffer.alloc(80)])),
+    ).toBeUndefined();
+    // the stamp claims more bytes than the envelope holds
+    expect(readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, 8]), Buffer.from("abcd")]))).toBeUndefined();
   });
 });

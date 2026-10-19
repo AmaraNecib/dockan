@@ -9,7 +9,18 @@ import * as schema from "./schema";
 import { cleanupStalePartials, writeFileAtomic, writeFileAtomicSync } from "../lib/atomic-file";
 import { createVaultBackupBundle, readVaultBackupBundle } from "../lib/vault/backup";
 import { open, seal } from "../lib/vault/crypto";
-import { VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, parseVaultHeader, snapshotAad, type VaultWrap } from "../lib/vault/format";
+import {
+  MAX_SNAPSHOT_STAMP_BYTES,
+  SNAPSHOT_FENCE_PREFIX_BYTES,
+  VAULT_SNAPSHOT_LEGACY_VERSION,
+  VAULT_SNAPSHOT_MAGIC,
+  VAULT_SNAPSHOT_VERSION,
+  fencedSnapshotAad,
+  parseVaultHeader,
+  readSnapshotFence,
+  snapshotAad,
+  type VaultWrap,
+} from "../lib/vault/format";
 import { assertSchemaVersionSupported, readSchemaVersion } from "../lib/schema-version";
 
 /**
@@ -79,6 +90,14 @@ export type EncryptedConnectionOptions = {
    * overwrites the new owner's snapshot (ADR-0012 clause 3).
    */
   writeGuard?: () => void;
+  /**
+   * The current holder's single-writer lock token, stamped into every snapshot
+   * this connection writes (#280). A snapshot whose stamp is not this value was
+   * written by another holder, so the bytes are not this connection's and its
+   * version is not durable. Absent = unfenced: the legacy envelope is written
+   * and read, exactly the pre-#280 behaviour.
+   */
+  writeStamp?: () => string;
 };
 
 /** An unlock found a vault header but no encrypted database: the data is gone. */
@@ -112,29 +131,57 @@ export class SnapshotPersistenceError extends Error {
 const WRITE_ATTEMPTS = 3;
 const WRITE_RETRY_DELAY_MS = 50;
 
-/** Build the envelope: magic ‖ version ‖ nonce ‖ ciphertext+tag. */
-function sealSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array): Buffer {
-  const sealed = seal(masterKey, image, snapshotAad(vaultId));
-  return Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION]), sealed]);
+/**
+ * Build the envelope. With a holder stamp it is the fenced format (#280):
+ * `magic ‖ 2 ‖ stampLen ‖ stamp ‖ sealed`, and the stamp is bound into the AAD
+ * so a reader can trust whose bytes it holds. Without one it is the legacy
+ * format, exactly what every released build wrote.
+ */
+function sealSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array, stamp: string | undefined): Buffer {
+  if (stamp === undefined) {
+    const sealed = seal(masterKey, image, snapshotAad(vaultId));
+    return Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_LEGACY_VERSION]), sealed]);
+  }
+  const stampBytes = Buffer.from(stamp, "utf8");
+  if (stampBytes.length === 0 || stampBytes.length > MAX_SNAPSHOT_STAMP_BYTES) {
+    throw new Error(`the snapshot holder stamp must be 1..${MAX_SNAPSHOT_STAMP_BYTES} bytes`);
+  }
+  const sealed = seal(masterKey, image, fencedSnapshotAad(vaultId, stamp));
+  return Buffer.concat([
+    VAULT_SNAPSHOT_MAGIC,
+    Buffer.from([VAULT_SNAPSHOT_VERSION]),
+    Buffer.from([stampBytes.length]),
+    stampBytes,
+    sealed,
+  ]);
 }
 
 /**
  * Public wrapper for callers that migrate a legacy plaintext database (e.g. a
- * historical backup) into the vault's encrypted format.
+ * historical backup) into the vault's encrypted format. Passing a holder stamp
+ * fences the result; omitting it writes the legacy format.
  */
-export function buildEncryptedSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array): Buffer {
-  return sealSnapshot(masterKey, vaultId, image);
+export function buildEncryptedSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array, stamp?: string): Buffer {
+  return sealSnapshot(masterKey, vaultId, image, stamp);
 }
 
+/** A decrypted snapshot plus the fence it carried (undefined on the legacy format). */
+type OpenedSnapshot = { image: Buffer; stamp: string | undefined };
+
 /** Decrypt an envelope; structural damage and bad keys are both corruption here. */
-function openSnapshot(masterKey: Uint8Array, vaultId: string, envelope: Uint8Array): Buffer {
+function openSnapshot(masterKey: Uint8Array, vaultId: string, envelope: Uint8Array): OpenedSnapshot {
   if (envelope.length <= VAULT_SNAPSHOT_MAGIC.length + 1) throw new VaultCorruptionError("snapshot is truncated");
   if (!Buffer.from(envelope.subarray(0, VAULT_SNAPSHOT_MAGIC.length)).equals(VAULT_SNAPSHOT_MAGIC)) {
     throw new VaultCorruptionError("snapshot has no Dokan header");
   }
   const version = envelope[VAULT_SNAPSHOT_MAGIC.length];
-  if (version !== VAULT_SNAPSHOT_VERSION) throw new VaultCorruptionError(`unsupported snapshot format ${String(version)}`);
-  return open(masterKey, envelope.subarray(VAULT_SNAPSHOT_MAGIC.length + 1), snapshotAad(vaultId));
+  if (version !== VAULT_SNAPSHOT_LEGACY_VERSION && version !== VAULT_SNAPSHOT_VERSION) {
+    throw new VaultCorruptionError(`unsupported snapshot format ${String(version)}`);
+  }
+  const fence = readSnapshotFence(envelope);
+  if (fence === undefined) throw new VaultCorruptionError("snapshot is truncated");
+  const aad = fence.stamp === undefined ? snapshotAad(vaultId) : fencedSnapshotAad(vaultId, fence.stamp);
+  return { image: open(masterKey, envelope.subarray(fence.bodyOffset), aad), stamp: fence.stamp };
 }
 
 /** PRAGMA quick_check on a live connection (one text column). */
@@ -169,6 +216,11 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   // buffer it handed over when the vault is re-unlocked or closed, and a live
   // connection must never end up sealing with a zeroed reference.
   const connectionKey = Buffer.from(options.masterKey);
+  // The holder's own lock token is stamped into every snapshot this connection
+  // writes (#280); a snapshot carrying a different stamp is another holder's, so
+  // its version is not durable. No callback = unfenced (the legacy envelope).
+  const connectionStamp = options.writeStamp?.();
+  let fenceSatisfied = connectionStamp === undefined;
   let raw: Database;
   if (options.seedBytes !== undefined) {
     raw = Database.deserialize(options.seedBytes);
@@ -179,14 +231,17 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     }
     // the master key already authenticated against the header, so ANY failure
     // to open the committed snapshot is corruption, never a wrong passphrase
-    let image: Buffer;
+    let opened: OpenedSnapshot;
     try {
-      image = openSnapshot(connectionKey, vaultId, fs.readFileSync(snapshotPath));
+      opened = openSnapshot(connectionKey, vaultId, fs.readFileSync(snapshotPath));
     } catch (error) {
       connectionKey.fill(0);
       throw new VaultCorruptionError(error instanceof Error ? error.message : String(error));
     }
-    raw = Database.deserialize(image);
+    // a legacy envelope, or one stamped by a former holder, is not this
+    // holder's: the first write repairs the fence (#280)
+    if (connectionStamp !== undefined) fenceSatisfied = opened.stamp === connectionStamp;
+    raw = Database.deserialize(opened.image);
   } else {
     // a fresh setup owns the path: drop any orphan from a crashed first attempt
     if (fs.existsSync(snapshotPath)) fs.rmSync(snapshotPath, { force: true });
@@ -201,13 +256,56 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   let persistedVersion = 0;
   let persistQueue: Promise<void> = Promise.resolve();
 
+  /**
+   * The fence on disk right now. Reads only the header prefix, so it is cheap
+   * enough to ask before every write. `readable: false` means the file is
+   * missing or its fence cannot be decided; both count as "not mine".
+   */
+  function readDiskFence() {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(snapshotPath, "r");
+      const head = Buffer.alloc(SNAPSHOT_FENCE_PREFIX_BYTES);
+      const read = fs.readSync(fd, head, 0, head.length, 0);
+      const fence = readSnapshotFence(head.subarray(0, read));
+      return fence === undefined ? { readable: false, stamp: undefined } : { readable: true, stamp: fence.stamp };
+    } catch {
+      return { readable: false, stamp: undefined };
+    } finally {
+      if (fd !== undefined) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* already closed */
+        }
+      }
+    }
+  }
+
+  /** True when the bytes on disk carry this holder's stamp (always true when unfenced). */
+  function diskFenceIsMine(): boolean {
+    if (connectionStamp === undefined) return true;
+    const fence = readDiskFence();
+    return fence.readable && fence.stamp === connectionStamp;
+  }
+
+  /**
+   * True when the snapshot on disk already covers every mutation AND carries
+   * this holder's fence. The fence half matters when nothing is dirty: a
+   * zombie's rename may have replaced our bytes since the last verified write
+   * (#280), and a write is then still owed.
+   */
+  function snapshotIsCurrent(): boolean {
+    return mutationVersion === persistedVersion && fenceSatisfied && diskFenceIsMine();
+  }
+
   async function persistNow(): Promise<void> {
-    if (mutationVersion === persistedVersion) return;
+    if (snapshotIsCurrent()) return;
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
     if (connection.inTransaction) return;
     const version = mutationVersion;
-    const envelope = sealSnapshot(connectionKey, vaultId, raw.serialize());
+    const envelope = sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp);
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
       // ADR-0012: a persist queued before the lock was stolen must refuse
@@ -227,9 +325,17 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // the bytes landed; report the version durable only while the folder is
       // still ours, so a theft during the write is never mistaken for saved data
       options.writeGuard?.();
+      // #280: a rename from the previous holder can land on top of ours in the
+      // same window. Re-read the fence; a foreign stamp means the version just
+      // written is NOT on disk, so it is not durable and the write is redone.
+      if (!diskFenceIsMine()) {
+        lastError = new Error("the snapshot was replaced by another writer's envelope");
+        continue;
+      }
       // only now is the version durable; a mutation during the write set
       // mutationVersion beyond `version` and schedules the next flush
       persistedVersion = version;
+      fenceSatisfied = true;
       return;
     }
     throw new SnapshotPersistenceError(lastError ?? new Error("unknown write failure"));
@@ -245,7 +351,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       mutationVersion += 1;
     },
     async persistIfDirty() {
-      if (mutationVersion === persistedVersion) return;
+      if (snapshotIsCurrent()) return;
       const run = persistQueue.then(() => persistNow());
       persistQueue = run.catch(() => undefined);
       await run;
@@ -262,12 +368,18 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // pages that a ROLLBACK could undo, so skip and leave the dirty version
       // for the post-commit flush.
       if (connection.inTransaction) return;
-      if (mutationVersion === persistedVersion && fs.existsSync(snapshotPath)) return;
+      if (snapshotIsCurrent() && fs.existsSync(snapshotPath)) return;
       // the same write guard as persistNow: a shutdown or backup checkpoint
       // must not overwrite a snapshot the folder's new owner already wrote
       options.writeGuard?.();
-      writeFileAtomicSync(snapshotPath, sealSnapshot(connectionKey, vaultId, raw.serialize()));
+      writeFileAtomicSync(snapshotPath, sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp));
+      // #280: the synchronous path can lose the same rename race; a foreign
+      // stamp means the just-written version is not on disk, so it is refused
+      if (!diskFenceIsMine()) {
+        throw new SnapshotPersistenceError(new Error("the snapshot was replaced by another writer's envelope"));
+      }
       persistedVersion = mutationVersion;
+      fenceSatisfied = true;
     },
     async close() {
       // wait for an in-flight async snapshot write, then checkpoint the current
@@ -292,9 +404,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
           if (headerPath === undefined) return false;
           const liveHeader = parseVaultHeader(fs.readFileSync(headerPath, "utf8"));
           if (!wrapsMatch(bundleHeader.wraps, liveHeader.wraps)) return false;
-          candidate = Database.deserialize(openSnapshot(connectionKey, vaultId, bundle.snapshot));
+          candidate = Database.deserialize(openSnapshot(connectionKey, vaultId, bundle.snapshot).image);
         } else {
-          candidate = Database.deserialize(openSnapshot(connectionKey, vaultId, bytes));
+          candidate = Database.deserialize(openSnapshot(connectionKey, vaultId, bytes).image);
         }
         return quickCheckIsOk(candidate);
       } catch {

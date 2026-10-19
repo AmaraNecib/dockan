@@ -27,6 +27,33 @@ afterEach(() => {
 const lockPath = (): string => path.join(dir, "vault.lock");
 const fastSteal = { readRetries: 1, readRetryDelayMs: 1, stealSettleMs: 5 } as const;
 
+/**
+ * Make reads of the lock file fail with a non-ENOENT errno, the way an
+ * antivirus scan, a network drive or a rename in flight does (#287). `matches`
+ * selects the paths to fail, so a test can fail the record at `vault.lock`, its
+ * renamed-aside reclaim copy, or both. The real read is captured before the spy
+ * so unrelated reads still work and the test can inspect the file after
+ * `restore`.
+ */
+function spyLockReadFailure(matches: (target: string) => boolean, code = "EBUSY"): () => void {
+  const originalRead = fs.readFileSync;
+  // SAFETY: fs.readFileSync is overloaded (string when an encoding is given,
+  // Buffer otherwise); this helper only intercepts the lock module's utf8
+  // reads, so the captured original is used through the string overload.
+  const readUtf8 = originalRead as (file: fs.PathLike, ...args: unknown[]) => string;
+  const spy = spyOn(fs, "readFileSync").mockImplementation(
+    // SAFETY: bun types the mock as the callee's whole overload set; this
+    // implementation forwards every read that does not match to the original.
+    ((target: fs.PathLike, ...args: unknown[]) => {
+      if (matches(String(target))) {
+        throw Object.assign(new Error(`${code}: simulated lock-file read failure`), { code });
+      }
+      return readUtf8(target, ...args);
+    }) as typeof fs.readFileSync,
+  );
+  return () => spy.mockRestore();
+}
+
 function writeLock(overrides: Partial<{ pid: number; host: string; heartbeatAt: string; token: string }>): void {
   fs.writeFileSync(
     lockPath(),
@@ -379,6 +406,59 @@ describe("vault single-writer lock", () => {
     const lock = acquireVaultLock(dir, { ...fastSteal, onLost: () => undefined });
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
+  });
+
+  it("refuses a reclaim and leaves a live record alone when every read fails with a non-ENOENT errno (#287)", () => {
+    const record = JSON.stringify({
+      pid: process.pid,
+      host: os.hostname(),
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      token: "live-holder",
+    });
+    fs.writeFileSync(lockPath(), record);
+    // the read fails on the record AND on any renamed-aside copy, as a
+    // sustained sharing violation does; "no owner" is then unprovable and the
+    // reclaim must not touch the file at all
+    const restore = spyLockReadFailure((target) => target.startsWith(lockPath()));
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+      expect(fs.existsSync(lockPath())).toBe(true);
+    } finally {
+      restore();
+    }
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe(record);
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("puts back a renamed-aside record it could not read instead of unlinking it (#287)", () => {
+    fs.writeFileSync(lockPath(), "{ not json");
+    // the record at vault.lock reads (malformed, so reclaimable), but its
+    // renamed-aside copy cannot be read: the reclaim must restore it, never
+    // delete an inode it failed to identify
+    const restore = spyLockReadFailure((target) => target.includes(".reclaim-"));
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+    } finally {
+      restore();
+    }
+    expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("withholds a reclaim when a read in the window failed, even if the renamed copy reads (#287)", () => {
+    // a live holder that created its record but has not written it yet: the
+    // record's own read fails, while the renamed copy reads as an empty
+    // (malformed) file. Only the blocked flag stops the unlink
+    fs.writeFileSync(lockPath(), "");
+    const restore = spyLockReadFailure((target) => target === lockPath());
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+    } finally {
+      restore();
+    }
+    expect(fs.existsSync(lockPath())).toBe(true);
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
   });
 
   it("fails loudly, never a silent no-op, when the lock cannot be created", () => {

@@ -204,18 +204,25 @@ export class VaultLockLostError extends Error {
 }
 
 /**
- * One read of the lock file, classified (#281). `ENOENT` is the only canonical
- * "gone": the path does not resolve, so there is nothing left to hold. Every
- * other failure — a sharing violation (`EACCES`/`EBUSY`/`EPERM`), an I/O error,
- * or a record that does not parse or does not satisfy the schema — is
+ * One read of the lock file, classified (#281, #287). `ENOENT` is the only
+ * canonical "gone": the path does not resolve, so there is nothing left to
+ * hold. A record that parsed and failed the schema, or did not parse at all, is
+ * `malformed`: the bytes were read fine and are not a lock record. Every other
+ * failure — a sharing violation (`EACCES`/`EBUSY`/`EPERM`) or an I/O error — is
  * `unreadable`: the file is there and may well be ours, we just cannot attest
- * to it at this instant. A record another instance is in the middle of writing
- * — a reclaim renames our file away and creates its own before writing it —
- * is one way to see `MALFORMED` on a perfectly healthy lock.
+ * to it at this instant.
+ *
+ * The split is a wait/stop axis, not a naming choice. A `malformed` record is
+ * what a reclaim caught between its create and its write looks like, so the
+ * held-lock path retries it like an errno and never stops on it (#288). The
+ * acquisition path cares about the opposite: `malformed` is staleness evidence
+ * a reclaim may act on, while `unreadable` withholds the reclaim entirely
+ * (#287), because a read that failed cannot prove a live holder is gone.
  */
 type LockFileRead =
   | { readonly kind: "owner"; readonly owner: VaultLockOwner }
   | { readonly kind: "gone" }
+  | { readonly kind: "malformed"; readonly error: Error }
   | { readonly kind: "unreadable"; readonly code: string; readonly error: Error };
 
 function lockFileReader(options: VaultLockOptions): VaultLockFileReader {
@@ -257,11 +264,11 @@ function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileR
   } catch {
     // a fixed single-line detail, never the raw content: the reason reaches a
     // JSONL log line, and the record is a file on disk
-    return { kind: "unreadable", code: "MALFORMED", error: new Error("the record did not parse as JSON") };
+    return { kind: "malformed", error: new Error("the record did not parse as JSON") };
   }
   const parsed = ownerSchema.safeParse(json);
   if (!parsed.success) {
-    return { kind: "unreadable", code: "MALFORMED", error: new Error("the record did not satisfy the owner schema") };
+    return { kind: "malformed", error: new Error("the record did not satisfy the owner schema") };
   }
   return { kind: "owner", owner: parsed.data };
 }
@@ -288,24 +295,47 @@ function retryBudget(configured: number | undefined, fallback: number, ceiling: 
 }
 
 /**
- * The acquisition path's read: "what, if anything, does the lock file say?".
- * `gone` and an error that does not clear within the budget both answer
- * `undefined`, which the caller treats as reclaimable — unchanged from before
- * #281, which is what keeps an unreadable stale lock from blocking a boot.
+ * The acquisition read: the owner it settled on, plus whether ANY read in the
+ * window failed for a reason other than ENOENT — an errno that never cleared
+ * within the budget. That flag is the #287 guard.
+ *
+ * A malformed record still counts toward staleness: the bytes were read and are
+ * not a lock record, so nobody holds it, and the corrupt-lock reclaim keeps
+ * working. A read that errored out proves nothing about the holder, and the
+ * caller must refuse to reclaim rather than unlink a live holder's
+ * renamed-aside file.
  */
-function readOwner(lockPath: string, options: VaultLockOptions): VaultLockOwner | undefined {
+type OwnerRead = {
+  readonly owner: VaultLockOwner | undefined;
+  /** true when any read in this window failed for a reason other than ENOENT */
+  readonly blocked: boolean;
+  /** the last non-ENOENT read error code, for the diagnostic */
+  readonly code: string | undefined;
+};
+
+function readOwner(lockPath: string, options: VaultLockOptions): OwnerRead {
   const retries = retryBudget(options.readRetries, 20, MAX_RETRY_ATTEMPTS);
   const delayMs = retryBudget(options.readRetryDelayMs, 50, MAX_RETRY_DELAY_MS);
   const reader = lockFileReader(options);
+  let blocked = false;
+  let code: string | undefined;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const read = readOwnerOnce(lockPath, reader);
-    if (read.kind === "owner") return read.owner;
-    if (read.kind === "gone") return undefined;
+    if (read.kind === "owner") return { owner: read.owner, blocked, code };
+    // a real ENOENT is final: there is nothing left to read, so the retry loop
+    // must not burn its budget on an absent file
+    if (read.kind === "gone") return { owner: undefined, blocked, code };
+    // only a read that FAILED blocks the reclaim (#287): a malformed record was
+    // read fine and is not a lock record, so it stays staleness evidence
+    if (read.kind === "unreadable") {
+      blocked = true;
+      code = read.code;
+    }
     // a creator may still be writing its JSON, or another process holds the
     // file open: retry before calling the lock stale (and reclaimable)
     if (attempt < retries) Bun.sleepSync(delayMs);
   }
-  return undefined;
+  return { owner: undefined, blocked, code };
 }
 
 /** True when the recorded heartbeat is inside the staleness window. */
@@ -420,7 +450,10 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
     // and a code is only ever a token, never a smuggled log line. Only the
     // first few distinct codes are spelled out; the rest are counted, so a
     // hostile reader cannot grow the reason with fresh codes on every attempt
-    const code = oneLine(read.code, 40);
+    // a malformed record is a read that succeeded on bytes that are not a lock
+    // record (a reclaim caught between its create and its write): it retries
+    // and waits exactly like an errno, and never stops the holder
+    const code = read.kind === "malformed" ? "MALFORMED" : oneLine(read.code, 40);
     if (!seenCodes.has(code)) {
       seenCodes.add(code);
       if (codes.length < MAX_REASON_CODES) codes.push(code);
@@ -543,14 +576,14 @@ export class VaultLock {
     }
     this.fd = undefined;
     const read = readOwnerOnce(this.path, lockFileReader(this.options));
-    // an unreadable record is never unlinked: the token cannot be compared, so
-    // the file may be a new owner's (#281). The synchronous release stays ONE
-    // read — it runs from the exit hook, and sleeping there to chase a file
-    // this process is about to stop caring about is worse than leaving it
-    // (critic N3) — but when the process stays alive (the refusal path) it owes
-    // the cleanup, so it arms the deferred retry that can confirm the token
-    // later (Greptile P1).
-    if (read.kind === "unreadable") {
+    // an unreadable or malformed record is never unlinked: the token cannot be
+    // compared, so the file may be a new owner's, or one mid-write (#281). The
+    // synchronous release stays ONE read — it runs from the exit hook, and
+    // sleeping there to chase a file this process is about to stop caring about
+    // is worse than leaving it (critic N3) — but when the process stays alive
+    // (the refusal path) it owes the cleanup, so it arms the deferred retry that
+    // can confirm the token later (Greptile P1).
+    if (read.kind === "unreadable" || read.kind === "malformed") {
       if (this.options.onLost !== undefined) this.armOwedRelease();
       return;
     }
@@ -622,7 +655,8 @@ export class VaultLock {
       // gone is an ending: there is nothing left to remove, so stop rather
       // than re-arm (code-review P3-3)
       if (read.kind === "gone") return;
-      // unreadable: the record may still be ours, retry on a capped backoff
+      // unreadable or malformed: the record may still be ours and mid-write,
+      // so retry on a capped backoff, never stop (#287/#288 wait-on-malformed)
       delay = Math.min(MAX_OWED_RELEASE_DELAY_MS, Math.max(delay + 1, delay * 2));
       this.owedReleaseTimer = setTimeout(attempt, delay);
       this.owedReleaseTimer.unref?.();
@@ -658,12 +692,26 @@ export function requireHeldLock(lock: VaultLock | undefined): () => void {
  * hands in between, the fresh owner's record is put back (best effort) and the
  * attempt reports "raced" so the caller refuses instead of acquiring over a
  * live replacement (round-5 finding).
+ *
+ * A read in the window that failed for any reason other than ENOENT (#287)
+ * withholds the reclaim entirely: "no owner" is then indistinguishable from
+ * "could not read", and unlinking on that answer can evict a live holder whose
+ * record a concurrent rename moved aside. Nothing is renamed in that case, so
+ * the next attempt re-reads rather than touching a live file.
  */
 function reclaimStaleLock(
   lockPath: string,
-  expected: VaultLockOwner | undefined,
+  settled: OwnerRead,
   options: VaultLockOptions,
 ): "reclaimed" | "raced" | "retry" {
+  if (settled.blocked) {
+    options.logger?.warn(
+      "VAULT_LOCK_RECLAIM_RACED",
+      `a stale-lock reclaim was refused: the lock file could not be read (${settled.code ?? "unknown"}); refusing this attempt`,
+    );
+    return "retry";
+  }
+  const expected = settled.owner;
   const temp = `${lockPath}.reclaim-${process.pid}-${randomBytes(6).toString("hex")}`;
   try {
     fs.renameSync(lockPath, temp);
@@ -674,8 +722,8 @@ function reclaimStaleLock(
   }
   const moved = readOwner(temp, options);
   const isSameStaleOwner =
-    (expected === undefined && moved === undefined) ||
-    (expected !== undefined && moved !== undefined && moved.token === expected.token);
+    (expected === undefined && moved.owner === undefined && !moved.blocked) ||
+    (expected !== undefined && moved.owner !== undefined && moved.owner.token === expected.token);
   if (isSameStaleOwner) {
     try {
       fs.unlinkSync(temp);
@@ -710,7 +758,12 @@ function reclaimStaleLock(
       /* already gone */
     }
   }
-  options.logger?.warn("VAULT_LOCK_RECLAIM_RACED", "a stale-lock reclaim lost the race to a newer owner; refusing this attempt");
+  options.logger?.warn(
+    "VAULT_LOCK_RECLAIM_RACED",
+    moved.blocked
+      ? `a stale-lock reclaim was refused: the moved lock file could not be read (${moved.code ?? "unknown"}); refusing this attempt`
+      : "a stale-lock reclaim lost the race to a newer owner; refusing this attempt",
+  );
   return "raced";
 }
 
@@ -745,9 +798,9 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
       if (errnoCode(wrapped) !== "EEXIST") throw new VaultLockUnavailableError(wrapped, lockPath);
     }
     const existing = readOwner(lockPath, options);
-    if (existing !== undefined) {
-      const verdict = holderVerdict(existing, options);
-      if (verdict.live) throw new VaultAlreadyLockedError(existing, lockPath, verdict.staleHeartbeatOverAlivePid);
+    if (existing.owner !== undefined) {
+      const verdict = holderVerdict(existing.owner, options);
+      if (verdict.live) throw new VaultAlreadyLockedError(existing.owner, lockPath, verdict.staleHeartbeatOverAlivePid);
     }
     // stale (dead same-host PID, quiet foreign heartbeat, or unreadable):
     // settle so a near-simultaneous reclaimer is likely decided, then re-read
@@ -756,17 +809,17 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
     // from; a lost race refuses this boot instead of acquiring over it.
     Bun.sleepSync(options.stealSettleMs ?? 200);
     const settled = readOwner(lockPath, options);
-    if (settled !== undefined) {
-      const verdict = holderVerdict(settled, options);
-      if (verdict.live) throw new VaultAlreadyLockedError(settled, lockPath, verdict.staleHeartbeatOverAlivePid);
+    if (settled.owner !== undefined) {
+      const verdict = holderVerdict(settled.owner, options);
+      if (verdict.live) throw new VaultAlreadyLockedError(settled.owner, lockPath, verdict.staleHeartbeatOverAlivePid);
     }
     const outcome = reclaimStaleLock(lockPath, settled, options);
     if (outcome === "raced") {
-      throw new VaultAlreadyLockedError(readOwner(lockPath, options), lockPath);
+      throw new VaultAlreadyLockedError(readOwner(lockPath, options).owner, lockPath);
     }
     if (outcome === "retry") continue;
   }
-  throw new VaultAlreadyLockedError(readOwner(lockPath, options), lockPath);
+  throw new VaultAlreadyLockedError(readOwner(lockPath, options).owner, lockPath);
 }
 
 /** Locks still held by this process; the single exit hook releases them all. */

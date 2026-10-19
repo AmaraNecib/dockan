@@ -31,6 +31,12 @@
   three, so lane-written lessons collided and the owner resolved the same conflict by
   hand.
 
+## Issue scope
+
+**Never pick up an issue numbered below 273.** That backlog is closed business: the
+numbers are read-only history, not a queue. Work issues **#273 and above**, or a lower
+one only when this session agreed to it in writing.
+
 ## e2e ports and lanes
 
 `DOKAN_PORT`/`DOKAN_WEB_PORT` isolate the shared api/web pair, and the vault

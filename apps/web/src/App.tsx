@@ -8,7 +8,7 @@ import { AuthErrorAlert, authFieldKey, useAuthReporter } from "./lib/auth-errors
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
-import { readVaultSessionToken } from "./lib/vault-client";
+import { readVaultSessionToken, requestVaultReclaim } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
 import { readSetupToken } from "./lib/setup-token";
@@ -32,6 +32,15 @@ function setupNameKey(ownerName: string, storeName: string): MessageKey | null {
 /** Blocks children until a session exists; preferences import in the background. */
 export function RequireSession({ children }: { children: ReactNode }) {
   const vault = useVaultStatus();
+  /**
+   * The in-use screen's retry asks the refused instance to re-check the folder
+   * before it re-reads the status (#277). Only the button does this: a poll is
+   * not a retry, or the client's rate becomes the reclaim rate (greptile P2 on
+   * #298).
+   */
+  const retryRefusedFolder = useCallback(() => {
+    void requestVaultReclaim().then(() => vault.refresh());
+  }, [vault.refresh]);
   // The vault gate owns the first paint: no app route exists until the
   // encrypted store is open (ADR-0008 §4.6).
   if (vault.status !== undefined && vault.status.mode === "vault") {
@@ -54,7 +63,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
   // plaintext) and falls through to the auth screens. A refusal that names a
   // cause gets its own screen; any other failure shows RETRY, never the legacy
   // login (finding 5).
-  if (vault.failure === "in-use") return <VaultLockedByOtherInstance onRetry={vault.refresh} />;
+  if (vault.failure === "in-use") return <VaultLockedByOtherInstance onRetry={retryRefusedFolder} />;
   if (vault.failure === "stale-lock") return <VaultLockStaleHeartbeat onRetry={vault.refresh} />;
   if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
   if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;

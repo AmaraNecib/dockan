@@ -9,11 +9,14 @@
  * is covered by a unit test that never sleeps for it.
  *
  * It does not know about the lock or the vault: the caller owns the attempt so
- * this file stays pure scheduling.
+ * this file stays pure scheduling. It also does not report WHAT the attempt
+ * found — the caller's `attempt` records that itself (the refusal it is serving
+ * is built from the error the attempt caught), and a hook nobody consumed was
+ * only a second, unused path for the same fact (greptile S4 on #298).
  */
 
-/** What one reclaim attempt established. `owner` is the holder when refused. */
-export type ReclaimAttemptResult<TOwner> = { ok: true } | { ok: false; owner: TOwner | undefined };
+/** What one reclaim attempt established. */
+export type ReclaimAttemptResult = { ok: true } | { ok: false };
 
 /**
  * An opaque scheduled tick. The module stores and returns it untouched, so it
@@ -23,13 +26,11 @@ export type ReclaimAttemptResult<TOwner> = { ok: true } | { ok: false; owner: TO
  */
 export type ReclaimTimerHandle = { readonly native: ReturnType<typeof setTimeout> | number };
 
-export type ReclaimRetryOptions<TOwner> = {
+export type ReclaimRetryOptions = {
   /** Try to take the folder once. Must not throw: report failure as `ok:false`. */
-  attempt: () => ReclaimAttemptResult<TOwner>;
+  attempt: () => ReclaimAttemptResult;
   /** Runs exactly once, when an attempt takes the folder. */
   onAcquired: () => void;
-  /** The holder named by a failed attempt, for the refusal copy. */
-  onRefused?: (owner: TOwner | undefined) => void;
   /** Bounded schedule (ms); the last entry repeats. */
   backoffMs?: readonly number[];
   /** Timer seams, so tests drive the schedule synchronously. */
@@ -44,7 +45,7 @@ export type ReclaimRetryOptions<TOwner> = {
  */
 export const DEFAULT_RECLAIM_BACKOFF_MS = [250, 500, 1_000, 2_000, 4_000, 8_000, 15_000] as const;
 
-export class ReclaimRetry<TOwner> {
+export class ReclaimRetry {
   private readonly backoff: readonly number[];
   private readonly schedule: (fn: () => void, ms: number) => ReclaimTimerHandle;
   private readonly cancel: (handle: ReclaimTimerHandle) => void;
@@ -55,7 +56,7 @@ export class ReclaimRetry<TOwner> {
   private inFlight = false;
   private stopped = false;
 
-  constructor(private readonly options: ReclaimRetryOptions<TOwner>) {
+  constructor(private readonly options: ReclaimRetryOptions) {
     this.backoff = options.backoffMs ?? DEFAULT_RECLAIM_BACKOFF_MS;
     if (this.backoff.length === 0) throw new Error("the reclaim backoff must have at least one interval");
     this.schedule =
@@ -81,18 +82,25 @@ export class ReclaimRetry<TOwner> {
   }
 
   /**
-   * Re-check immediately, cancelling the pending tick, so a deliberate retry
-   * is never slower than the automatic one. Returns true when the attempt
-   * took the folder.
+   * Re-check immediately, so a deliberate retry is never slower than the
+   * automatic one. Returns true when the attempt took the folder.
+   *
+   * It does NOT touch the armed tick. It used to cancel and re-arm it, which
+   * made the schedule a function of the caller: a client polling faster than
+   * the cap cancelled the pending tick before it could fire, re-armed it at the
+   * cap, and the automatic reclaim never ran at all. An attempt here is an
+   * EXTRA attempt on top of the schedule, never a replacement for it (greptile
+   * P2 on #298).
    */
   trigger(): boolean {
     if (this.acquired || this.stopped) return this.acquired;
     // one attempt at a time: a request landing while the loop is already
     // deciding must not start a second reclaim and race it
     if (this.inFlight) return false;
-    this.cancelPending();
     const ok = this.runAttempt();
-    if (!ok) this.scheduleNext();
+    // only when nothing is armed (a trigger before start): the schedule stays
+    // the loop's own business otherwise
+    if (!ok && this.pending === undefined) this.scheduleNext();
     return ok;
   }
 
@@ -121,7 +129,7 @@ export class ReclaimRetry<TOwner> {
     if (this.acquired || this.inFlight) return this.acquired;
     this.inFlight = true;
     try {
-      let result: ReclaimAttemptResult<TOwner>;
+      let result: ReclaimAttemptResult;
       try {
         result = this.options.attempt();
       } catch {
@@ -129,7 +137,7 @@ export class ReclaimRetry<TOwner> {
         // failure as ok:false"). The exception must not escape into the timer
         // callback, where it would kill the loop and strand the refusal: the
         // failure is reported as a refusal instead, and the cadence continues.
-        result = { ok: false, owner: undefined };
+        result = { ok: false };
       }
       if (result.ok) {
         // A loop that was stopped while this attempt was running reports no
@@ -143,7 +151,6 @@ export class ReclaimRetry<TOwner> {
         return true;
       }
       this.attempts += 1;
-      this.options.onRefused?.(result.owner);
       return false;
     } finally {
       this.inFlight = false;

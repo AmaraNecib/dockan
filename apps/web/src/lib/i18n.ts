@@ -164,6 +164,9 @@ const resources = {
       logEvent_SESSION_SECRET_REGENERATED: "تجديد سرّ الجلسات",
       logEvent_VAULT_LOCK_RECLAIMED: "أُعيد أخذ قفل الكتابة",
       logEvent_VAULT_LOCK_REFUSED: "البيانات قيد الاستعمال — انتظار إغلاق النسخة الأخرى",
+      // the unreadable lock file is a different remedy from the held folder:
+      // the page names the file, so the badge does too (greptile P1 on #298)
+      logEvent_VAULT_LOCK_UNREADABLE: "تعذّر قراءة ملف القفل — احذف vault.lock إن لم تكن هناك نسخة مفتوحة",
       logEvent_VAULT_UNLOCK_FAILED: "فشل فتح الخزنة",
       logEvent_VAULT_RECOVERY_FAILED: "فشل الفتح بمفتاح استرداد",
       logEvent_VAULT_CHANGE_PASSPHRASE_FAILED: "فشل تغيير كلمة مرور الخزنة",

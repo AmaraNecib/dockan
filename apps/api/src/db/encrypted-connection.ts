@@ -98,6 +98,15 @@ export type EncryptedConnectionOptions = {
    * and read, exactly the pre-#280 behaviour.
    */
   writeStamp?: () => string;
+  /**
+   * Where the connection reports a fence it could not verify (#280): a snapshot
+   * stamped by a former holder, the unstamped legacy envelope, or a fence that
+   * would not read. Both are warnings, never refusals — an unverifiable
+   * snapshot is rewritten rather than rejected — so the log is the only signal
+   * that the bytes being served may be older than the last acknowledged
+   * transaction.
+   */
+  logger?: { warn(event: string, message: string): void };
 };
 
 /** An unlock found a vault header but no encrypted database: the data is gone. */
@@ -130,6 +139,8 @@ export class SnapshotPersistenceError extends Error {
 
 const WRITE_ATTEMPTS = 3;
 const WRITE_RETRY_DELAY_MS = 50;
+/** Ask twice: one retry absorbs a transient EBUSY. A decidable fence cannot change by asking again. */
+const FENCE_READ_ATTEMPTS = 2;
 
 /**
  * Build the envelope. With a holder stamp it is the fenced format (#280):
@@ -240,7 +251,21 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     }
     // a legacy envelope, or one stamped by a former holder, is not this
     // holder's: the first write repairs the fence (#280)
-    if (connectionStamp !== undefined) fenceSatisfied = opened.stamp === connectionStamp;
+    if (connectionStamp !== undefined) {
+      fenceSatisfied = opened.stamp === connectionStamp;
+      // Surfaced, never silent. These bytes were writable by a holder that is
+      // no longer the holder, so the newest acknowledged transactions may be
+      // missing from them — and nothing here can distinguish that from an
+      // honest handover, because the stamp carries no version to compare.
+      if (!fenceSatisfied) {
+        options.logger?.warn(
+          "VAULT_SNAPSHOT_FENCE_FOREIGN",
+          opened.stamp === undefined
+            ? "the snapshot on disk is the legacy unfenced format: it carries no holder stamp, so its currency is unverifiable and this holder rewrites it"
+            : "the snapshot on disk is stamped by a former holder: its currency is unverifiable and this holder rewrites it",
+        );
+      }
+    }
     raw = Database.deserialize(opened.image);
   } else {
     // a fresh setup owns the path: drop any orphan from a crashed first attempt
@@ -257,20 +282,30 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   let persistQueue: Promise<void> = Promise.resolve();
 
   /**
-   * The fence on disk right now. Reads only the header prefix, so it is cheap
-   * enough to ask before every write. `readable: false` means the file is
-   * missing or its fence cannot be decided; both count as "not mine".
+   * What the snapshot on disk says right now, read as the header prefix so it
+   * stays cheap enough to ask before every write.
+   *
+   * The three no-fence answers are deliberately distinct. `"absent"` (no file)
+   * and `"undecidable"` (bytes that are not a fence this build knows) are both
+   * decidable statements about a path that read fine, so asking again cannot
+   * change them. `"unreadable"` is an I/O failure — EBUSY, EACCES, a torn
+   * prefix — and the file may be perfectly healthy and correctly stamped: to
+   * report a foreign writer from it would force a full serialize+encrypt+rename
+   * of a multi-megabyte snapshot over a momentary busy handle.
    */
-  function readDiskFence() {
+  function readDiskFence(): { outcome: "fence"; stamp: string | undefined } | { outcome: "absent" | "undecidable" | "unreadable" } {
     let fd: number | undefined;
     try {
       fd = fs.openSync(snapshotPath, "r");
       const head = Buffer.alloc(SNAPSHOT_FENCE_PREFIX_BYTES);
       const read = fs.readSync(fd, head, 0, head.length, 0);
       const fence = readSnapshotFence(head.subarray(0, read));
-      return fence === undefined ? { readable: false, stamp: undefined } : { readable: true, stamp: fence.stamp };
-    } catch {
-      return { readable: false, stamp: undefined };
+      return fence === undefined ? { outcome: "undecidable" } : { outcome: "fence", stamp: fence.stamp };
+    } catch (error) {
+      // SAFETY: the errno `code` probe is how Node reports ENOENT from open;
+      // the cast only exposes the field this branch reads
+      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      return code === "ENOENT" ? { outcome: "absent" } : { outcome: "unreadable" };
     } finally {
       if (fd !== undefined) {
         try {
@@ -282,11 +317,28 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     }
   }
 
-  /** True when the bytes on disk carry this holder's stamp (always true when unfenced). */
+  /**
+   * True when the bytes on disk carry this holder's stamp (always true when
+   * unfenced). An unreadable prefix is asked twice before it is called foreign:
+   * one retry absorbs a transient EBUSY, and no retry is spent on a decidable
+   * answer, which cannot change by asking again.
+   */
   function diskFenceIsMine(): boolean {
     if (connectionStamp === undefined) return true;
-    const fence = readDiskFence();
-    return fence.readable && fence.stamp === connectionStamp;
+    for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
+      const fence = readDiskFence();
+      if (fence.outcome === "unreadable") continue;
+      return fence.outcome === "fence" && fence.stamp === connectionStamp;
+    }
+    // Still unreadable: our own bytes cannot be shown to be ours, so the version
+    // is not durable and a write is owed. That is the safe direction — a
+    // redundant rewrite costs time, a version reported durable over an
+    // unreadable file costs the committed transaction it claimed to save.
+    options.logger?.warn(
+      "VAULT_SNAPSHOT_FENCE_UNREADABLE",
+      "the snapshot fence could not be read twice; treating the version on disk as unverified and rewriting",
+    );
+    return false;
   }
 
   /**
@@ -385,9 +437,20 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // wait for an in-flight async snapshot write, then checkpoint the current
       // version synchronously: a clean shutdown can never lose to the queue
       await persistQueue.catch(() => undefined);
-      connection.checkpoint();
-      connectionKey.fill(0);
-      raw.close();
+      try {
+        connection.checkpoint();
+      } finally {
+        // The key zeroing and the raw close run even when that final checkpoint
+        // refuses (#280). A key that outlives its connection, and a leaked
+        // SQLite handle, are the wrong taste in a vault module on a path whose
+        // caller may well keep running to report the refusal.
+        connectionKey.fill(0);
+        try {
+          raw.close();
+        } catch {
+          /* the handle is already gone; the checkpoint error is the one that matters */
+        }
+      }
     },
     validateSnapshotFile(filePath: string): boolean {
       let candidate: Database | null = null;

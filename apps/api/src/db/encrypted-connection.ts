@@ -375,6 +375,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * it is a change under a live connection, which is an incident.
    */
   let lastSeenFence: FenceVerdict = { outcome: "mine" };
+  /** the fence the opened envelope carried; undefined when the disk was not read */
+  let openedFence: FenceVerdict | undefined;
   if (options.seedBytes !== undefined) {
     raw = Database.deserialize(options.seedBytes);
   } else if (options.fresh !== true) {
@@ -391,15 +393,18 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       connectionKey.fill(0);
       throw new VaultCorruptionError(error instanceof Error ? error.message : String(error));
     }
-    // a legacy envelope, or one stamped by a former holder, is not this
-    // holder's: the first write repairs the fence (#280)
-    if (connectionStamp !== undefined) {
-      const openedFence: FenceVerdict =
-        opened.stamp === connectionStamp
+    // A legacy envelope, or one stamped by a former holder, is not this
+    // holder's: the first write repairs the fence (#280). The verdict is
+    // computed whether or not this connection carries a stamp, because an
+    // UNFENCED connection over a fenced envelope is a downgrade and has to be
+    // said out loud.
+    openedFence =
+      opened.stamp === undefined
+        ? { outcome: "unstamped" }
+        : opened.stamp === connectionStamp
           ? { outcome: "mine" }
-          : opened.stamp === undefined
-            ? { outcome: "unstamped" }
-            : { outcome: "foreign", stamp: opened.stamp };
+          : { outcome: "foreign", stamp: opened.stamp };
+    if (connectionStamp !== undefined) {
       lastSeenFence = openedFence;
       // Surfaced, never silent. These bytes were writable by a holder that is
       // no longer the holder, so the newest acknowledged transactions may be
@@ -513,6 +518,21 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         );
         return;
     }
+  }
+
+  /**
+   * Warn when an UNFENCED connection is about to downgrade a fenced envelope.
+   * An unfenced caller keeps the pre-#280 write behaviour by design, so the
+   * downgrade is allowed — but it is not silent. Left unsaid, the next fenced
+   * holder reads a v1 envelope and blames a former holder for a file that this
+   * build wrote, and the tamper-evidence the fence bought is gone with no trace
+   * of who removed it.
+   */
+  if (connectionStamp === undefined && openedFence?.outcome === "foreign") {
+    options.logger?.warn(
+      "VAULT_SNAPSHOT_FENCE_DOWNGRADE",
+      "this connection has no holder stamp and will overwrite a fenced snapshot with the legacy unfenced format",
+    );
   }
 
   /**

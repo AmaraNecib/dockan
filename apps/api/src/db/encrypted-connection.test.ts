@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, buildEncryptedSnapshot, createEncryptedConnection, readLegacyDatabaseImage } from "./encrypted-connection";
-import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, MAX_SNAPSHOT_STAMP_BYTES, readSnapshotFence } from "../lib/vault/format";
+import { MAX_SNAPSHOT_STAMP_BYTES, SNAPSHOT_FENCE_PREFIX_BYTES, VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, readSnapshotFence } from "../lib/vault/format";
 
 // Every test opens an encrypted connection and writes a snapshot.
 setHeavyDefaultTimeout();
@@ -221,9 +221,10 @@ describe("encrypted connection", () => {
   });
 });
 
+/** Stands in for VaultLockLostError: the connection only sees a throw. */
+class GuardRefusedError extends Error {}
+
 describe("snapshot write guard (ADR-0012 clause 3)", () => {
-  /** Stands in for VaultLockLostError: the connection only sees a throw. */
-  class GuardRefusedError extends Error {}
 
   it("refuses after a post-write guard failure and never marks the version durable", async () => {
     let guardCalls = 0;
@@ -312,7 +313,15 @@ describe("snapshot fence (#280)", () => {
     await conn.close();
   });
 
-  it("does not rewrite when the envelope already carries this holder's stamp", async () => {
+  it("does not rewrite when nothing is dirty, the fence is ours and the file is there", async () => {
+    // This is an ANTI-ALWAYS-REWRITE guard, not a fence detector: `persistIfDirty`
+    // at the base already returned early when `mutationVersion ===
+    // persistedVersion`, so this test passes against the pre-#280
+    // implementation too. It is kept — a rewrite per call would thrash a
+    // multi-megabyte file — and it is named for what it actually pins. The
+    // fence half is pinned by "repairs a foreign snapshot at checkpoint even
+    // when nothing changed" and by the overwrite-war test, both of which red
+    // when the fence is ignored.
     const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
     first.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
     first.markDirty();
@@ -343,6 +352,14 @@ describe("snapshot fence (#280)", () => {
     expect(diskFence()?.version).toBe(VAULT_SNAPSHOT_VERSION);
     expect(diskFence()?.stamp).toBe(tokenB);
     await current.close();
+
+    // the stamp alone is not enough: a fence-repair that re-sealed an EMPTY
+    // image would satisfy every assertion above and silently drop the former
+    // holder's row. The rewrite must carry the data it read.
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    // SAFETY: the test created the table with a single TEXT column
+    expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "shared" }]);
+    reopened.close();
   });
 
   it("treats a foreign-stamped snapshot on disk as version-not-durable and rewrites it", async () => {
@@ -556,8 +573,11 @@ describe("snapshot fence (#280)", () => {
     conn.markDirty();
 
     await expect(conn.persistIfDirty()).rejects.toThrow(SnapshotPersistenceError);
+    // the count is a private shape (two guard calls per attempt), so it is a
+    // comment rather than an assertion: the outcome — the failure, the fence
+    // left foreign, and the version still dirty — is what the design promises.
     // three attempts, each with a guard before and after its rename
-    expect(guardCalls).toBe(6);
+    expect(guardCalls).toBeGreaterThanOrEqual(6);
     expect(diskFence()?.stamp).toBe(tokenA);
 
     // Nothing was recorded durable. The pin: the war ends, and a snapshot
@@ -699,8 +719,9 @@ describe("snapshot fence (#280)", () => {
       return realOpenSync(file, flags);
     }) as typeof fs.openSync);
     const events: string[] = [];
+    let again: ReturnType<typeof createEncryptedConnection> | undefined;
     try {
-      const again = createEncryptedConnection({
+      again = createEncryptedConnection({
         vaultId,
         masterKey,
         snapshotPath: snapshotPath(),
@@ -709,8 +730,11 @@ describe("snapshot fence (#280)", () => {
       });
       await again.persistIfDirty();
       expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(true);
-      await again.close();
     } finally {
+      // the key copy and the SQLite handle are released even when an assertion
+      // above throws: a connection created inside a try must be closed inside
+      // the finally that owns it
+      await again?.close();
       spy.mockRestore();
     }
     // exactly one refusal, absorbed inside the check, and nothing warned
@@ -780,7 +804,6 @@ describe("snapshot fence (#280)", () => {
     first.markDirty();
     await first.persistIfDirty();
     await first.close();
-    const written = fs.readFileSync(snapshotPath());
 
     // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
     // it passes exactly (path, "r"); the narrowed signature names that one call
@@ -809,22 +832,25 @@ describe("snapshot fence (#280)", () => {
       // as a failed one and the process must not die over it. The version is
       // simply not recorded durable; the next write re-seals it.
       await again.persistIfDirty();
-      expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(false);
+      // a fence read from the bytes, not a byte-inequality check: "the file
+      // changed" is satisfied by a truncated or corrupt envelope, while the
+      // stamp says the envelope that landed is a well-formed fenced one of ours
+      expect(diskFence()?.stamp).toBe(tokenA);
       expect(events).toContain("VAULT_SNAPSHOT_FENCE_UNREADABLE");
 
-      // the bytes that landed are a well-formed fenced envelope of our own, so
-      // the write really did happen and the connection is not left believing a
-      // version it never wrote: with the fence readable again, one more persist
-      // has nothing to do and returns without rewriting.
+      // and the connection is not left believing a version it never wrote:
+      // with the fence readable again, one more persist has nothing to do and
+      // returns without rewriting.
       spy.mockRestore();
-      expect(diskFence()?.stamp).toBe(tokenA);
       const settled = fs.readFileSync(snapshotPath());
       await again.persistIfDirty();
       expect(fs.readFileSync(snapshotPath()).equals(settled)).toBe(true);
     } finally {
+      // the connection and the key copy it owns are released even when an
+      // assertion above throws
+      await again?.close();
       spy.mockRestore();
     }
-    await again?.close();
   });
 
   it("refuses to bundle a snapshot that is not this holder's", async () => {
@@ -864,6 +890,156 @@ describe("snapshot fence (#280)", () => {
       spy.mockRestore();
     }
     await conn.close();
+  });
+
+  it("documents the backup exception: a bundle holds a v1 envelope, deliberately (#280)", () => {
+    // encryptLegacyBackups() calls buildEncryptedSnapshot with no stamp, so the
+    // image inside a .dknvbak is a v1 envelope. A backup is never held under the
+    // lock, so there is no writer token to bind; the guide says so explicitly.
+    // This lives here rather than in `format.test.ts` because it builds a real
+    // envelope, which is this module's job, not the parser's.
+    const unstamped = buildEncryptedSnapshot(masterKey, vaultId, serializedImage([]));
+    const fence = readSnapshotFence(unstamped);
+    expect(fence?.version).toBe(VAULT_SNAPSHOT_LEGACY_VERSION);
+    expect(fence?.stamp).toBeUndefined();
+    // and a stamped write is v2, so the two cannot be confused
+    const stamped = buildEncryptedSnapshot(masterKey, vaultId, serializedImage([]), tokenA);
+    expect(readSnapshotFence(stamped)?.version).toBe(VAULT_SNAPSHOT_VERSION);
+    expect(readSnapshotFence(stamped)?.stamp).toBe(tokenA);
+  });
+
+  it("refuses a truncated snapshot at the connection, not only at the parser", async () => {
+    const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true });
+    first.raw.exec("CREATE TABLE t(a TEXT)");
+    first.markDirty();
+    await first.persistIfDirty();
+    await first.close();
+
+    const bytes = fs.readFileSync(snapshotPath());
+    // cut the tail off: the envelope still parses as a fence, so the refusal has
+    // to come from the decrypt, and it must be corruption rather than a
+    // missing-database error (a header exists, so the data is expected)
+    fs.writeFileSync(snapshotPath(), bytes.subarray(0, bytes.length - 8));
+    expect(() => createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() })).toThrow(VaultCorruptionError);
+
+    // and cut below the fence itself, so the parser is the one that refuses
+    fs.writeFileSync(snapshotPath(), bytes.subarray(0, 6));
+    expect(() => createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() })).toThrow(VaultCorruptionError);
+  });
+
+  it("reads a bounded fence prefix, not the whole snapshot", async () => {
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    await conn.close();
+
+    // The fence read exists so a check before every write stays cheap. Without
+    // a pin on the read length, changing it to slurp the whole multi-megabyte
+    // snapshot would pass every other test in this file.
+    const realReadSync = fs.readSync.bind(fs);
+    let widest = 0;
+    // SAFETY: production calls readSync with (fd, buffer, offset, length,
+    // position) and forwards the result unchanged, so the narrowed signature
+    // describes the one overload that is spied on
+    const spy = spyOn(fs, "readSync").mockImplementation(
+      ((fd: number, buffer: Uint8Array, offset: number, length: number, position: number) => {
+        widest = Math.max(widest, length);
+        return realReadSync(fd, buffer, offset, length, position);
+      }) as typeof fs.readSync,
+    );
+    try {
+      const again = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), writeStamp: () => tokenA });
+      await again.persistIfDirty();
+      await again.close();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(widest).toBe(SNAPSHOT_FENCE_PREFIX_BYTES);
+    expect(widest).toBeLessThan(200);
+  });
+
+  it("refuses before the write when the guard fails on the async path", async () => {
+    let guardCalls = 0;
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeGuard: () => {
+        guardCalls += 1;
+        // the pre-write guard refuses: nothing may be written at all
+        throw new GuardRefusedError("the lock was lost before the write");
+      },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('lost')");
+    conn.markDirty();
+
+    await expect(conn.persistIfDirty()).rejects.toThrow(GuardRefusedError);
+    // the guard ran once and its throw was never retried, and the snapshot the
+    // lock's new owner would have lost was never written
+    expect(guardCalls).toBe(1);
+    expect(fs.existsSync(snapshotPath())).toBe(false);
+  });
+
+  it("serialises overlapping persists and survives a rejected one in the queue", async () => {
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+    // two overlapping calls: the queue makes them sequential, and the second
+    // sees the first's version and has nothing to do
+    const first = conn.persistIfDirty();
+    const second = conn.persistIfDirty();
+    await Promise.all([first, second]);
+    expect(diskFence()?.stamp).toBe(tokenA);
+
+    // a REJECTED persist must not poison the queue: a later write still runs
+    conn.raw.exec("INSERT INTO t VALUES ('after')");
+    conn.markDirty();
+    const realSerialize = conn.raw.serialize.bind(conn.raw);
+    let boom = true;
+    // SAFETY: the spy forwards serialize() unchanged; the narrowed signature is
+    // the parameterless overload production calls
+    const spy = spyOn(conn.raw, "serialize").mockImplementation((() => {
+      if (boom) {
+        boom = false;
+        throw new Error("serialize failed");
+      }
+      return realSerialize();
+    }) as typeof conn.raw.serialize);
+    try {
+      await expect(conn.persistIfDirty()).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    await conn.persistIfDirty();
+    await conn.close();
+
+    const reopened = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    // SAFETY: the test created the table with a single TEXT column
+    expect(reopened.raw.query("SELECT a FROM t").all()).toEqual([{ a: "after" }]);
+    reopened.close();
+  });
+
+  it("closes the handle after an EARLIER rejected persist, not only after a refusing checkpoint", async () => {
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+    // SAFETY: the narrowed signature is the parameterless overload production
+    // calls; this spy always throws and never falls through to implementation
+    const spy = spyOn(conn.raw, "serialize").mockImplementationOnce((() => {
+      throw new Error("serialize failed");
+    }) as typeof conn.raw.serialize);
+    try {
+      await expect(conn.persistIfDirty()).rejects.toThrow();
+      // the failed write left a rejection on the persist queue; close() awaits
+      // the queue, and that awaited rejection must not skip the cleanup
+      spy.mockRestore();
+      await conn.close();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(() => conn.raw.query("SELECT 1").get()).toThrow();
   });
 
   it("repairs a foreign snapshot at checkpoint even when nothing changed", async () => {

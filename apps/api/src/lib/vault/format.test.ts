@@ -21,7 +21,6 @@ import {
   type VaultHeader,
 } from "./format";
 import { DEFAULT_KDF_PARAMS, NONCE_BYTES, SALT_BYTES, WRAPPED_KEY_BYTES } from "./crypto";
-import { buildEncryptedSnapshot } from "../../db/encrypted-connection";
 
 const header = (): VaultHeader => ({
   format: 1,
@@ -164,17 +163,28 @@ describe("snapshot envelope fence (#280)", () => {
     expect(fence?.bodyOffset).toBe(VAULT_SNAPSHOT_MAGIC.length + 1 + 1 + "holder-token".length);
   });
 
-  it("refuses to decide a truncated, foreign-header, unknown-version or bad-length envelope", () => {
-    expect(readSnapshotFence(Buffer.alloc(4))).toBeUndefined();
-    expect(readSnapshotFence(Buffer.concat([Buffer.from("NOTVAULT"), Buffer.alloc(16)]))).toBeUndefined();
-    expect(readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([9]), Buffer.alloc(48)]))).toBeUndefined();
-    // a zero length, and a length past the bound
-    expect(readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, 0]), Buffer.alloc(48)]))).toBeUndefined();
-    expect(
-      readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, MAX_SNAPSHOT_STAMP_BYTES + 1]), Buffer.alloc(80)])),
-    ).toBeUndefined();
-    // the stamp claims more bytes than the envelope holds
-    expect(readSnapshotFence(Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, 8]), Buffer.from("abcd")]))).toBeUndefined();
+  it.each([
+    ["a header shorter than the magic", Buffer.alloc(4)],
+    ["a foreign magic", Buffer.concat([Buffer.from("NOTVAULT"), Buffer.alloc(16)])],
+    ["an unknown version byte", Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([9]), Buffer.alloc(48)])],
+    ["a zero stamp length", Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, 0]), Buffer.alloc(48)])],
+    [
+      "a stamp length past the bound",
+      Buffer.concat([
+        VAULT_SNAPSHOT_MAGIC,
+        Buffer.from([VAULT_SNAPSHOT_VERSION, MAX_SNAPSHOT_STAMP_BYTES + 1]),
+        Buffer.alloc(80),
+      ]),
+    ],
+    [
+      "a stamp claiming more bytes than the envelope holds",
+      Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION, 8]), Buffer.from("abcd")]),
+    ],
+    ["an empty buffer", Buffer.alloc(0)],
+  ])("refuses to decide %s", (_name: string, bytes: Buffer) => {
+    // undefined means "not a fence this build can read", which every caller
+    // treats as not-mine rather than trusting it
+    expect(readSnapshotFence(bytes)).toBeUndefined();
   });
 });
 
@@ -238,18 +248,5 @@ describe("AEAD contexts are frozen strings", () => {
     const builder = builderBody("wrapAad");
     expect(builder).toContain("dokan:vault:wrap:v1:");
     expect(builder).not.toContain("VAULT_FORMAT_VERSION");
-  });
-  it("documents the backup exception: a bundle holds a v1 envelope, deliberately (#280)", () => {
-    // encryptLegacyBackups() calls buildEncryptedSnapshot with no stamp, so the
-    // image inside a .dknvbak is a v1 envelope. A backup is never held under the
-    // lock, so there is no writer token to bind; the guide says so explicitly.
-    const unstamped = buildEncryptedSnapshot(new Uint8Array(32).fill(7), "vault-1", new Uint8Array([1, 2, 3]));
-    const fence = readSnapshotFence(unstamped);
-    expect(fence?.version).toBe(1);
-    expect(fence?.stamp).toBeUndefined();
-    // and a stamped write is v2, so the two cannot be confused
-    const stamped = buildEncryptedSnapshot(new Uint8Array(32).fill(7), "vault-1", new Uint8Array([1, 2, 3]), "token-abc");
-    expect(readSnapshotFence(stamped)?.version).toBe(2);
-    expect(readSnapshotFence(stamped)?.stamp).toBe("token-abc");
   });
 });

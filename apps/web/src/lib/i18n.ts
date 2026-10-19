@@ -150,6 +150,7 @@ const resources = {
       logEvent_VAULT_SNAPSHOT_FENCE_MISSING: "ملف اللقطة مفقود",
       logEvent_VAULT_SNAPSHOT_FENCE_UNKNOWN: "محتوى اللقطة غير معروف",
       logEvent_VAULT_SNAPSHOT_FENCE_UNREADABLE: "تعذّرت قراءة بصمة اللقطة",
+      logEvent_VAULT_SNAPSHOT_FENCE_DOWNGRADE: "إعادة كتابة اللقطة بدون بصمة",
       logEvent_VAULT_ATTEMPT_FAILED: "فشلت محاولة فتح الخزنة",
       logEvent_VAULT_STATE_RESET: "أُعيد ضبط حالة المحاولات",
       logEvent_VAULT_PASSPHRASE_CHANGED: "تغيير كلمة مرور الخزنة",

@@ -8,10 +8,10 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 **Start here.** This is the mandatory entry point for all feature work.
 Read `docs/engineering-workflow.md` first.
 
-**A lane stops at step 9 (Guard Phase 2).** Steps 10-13 are parent-owned: push,
-PR, CI/Greptile, the merge decision and wisdom. The lane's last act is its
-**commit**; its completion wakes the parent. It never pushes, never opens a PR
-and never merges.
+**A lane stops at step 9 (Guard Phase 2).** Steps 10-14 are parent-owned: push, PR,
+CI/Greptile, the architecture review, the merge decision and wisdom. The lane's
+last act is its **commit**; its completion wakes the parent. It never pushes,
+never opens a PR and never merges.
 
 **Wisdom: read it, never write it.** Before step 1, grep `.agents/wisdom/` for your area
 (`grep -rin "<symbol or failure mode>" .agents/wisdom/ | head -40`) and read the hits — not
@@ -98,7 +98,7 @@ Load relevant skills from the workflow's quality check table:
 
 | If the change touches... | Load these skills |
 |---|---|
-| New module, interface, or architecture | `codebase-design` |
+| New module, interface, or architecture | `codebase-design` while writing; `improve-codebase-architecture` is the parent's step 12, after the 5/5 |
 | Complex logic, state, or edge cases | `diagnosing-bugs` |
 | Domain entities, terms, or data models | `domain-modeling` |
 | Any production code | `code-review` |
@@ -202,7 +202,65 @@ line evidence instead of re-implementing the fix.
 
 Repeat until Greptile passes with no actionable findings.
 
-### 12. Guard pre-report (Phase 3) — parent-owned
+### 12. Architecture review — parent-owned, only after a 5/5
+
+Load `improve-codebase-architecture`. Run it **after Greptile returns 5/5**, never before: the
+order is lenses → push and PR → Greptile to 5/5 → this review → fold → merge. Running it earlier
+spends the budget on code whose acceptability is still in question, and a review of code that may
+still be wrong is the expensive way to learn nothing.
+
+**The vocabulary is cheaper and starts earlier.** While the code is being designed and written,
+`codebase-design` supplies the words (module, interface, depth, seam, adapter, leverage, locality)
+and `domain-modeling` keeps `CONTEXT.md` current. Those two are habits, not gates: no report, no
+candidate list, no token spend beyond the conversation.
+
+**Trigger.** If the diff adds a module, moves a seam, adds an adapter or widens an existing
+interface, run the full pass and write the report to the OS temp dir — never into the repo. If it
+does none of those, record the one-line form instead: `architecture: no seam moved`.
+
+**What it finds is a loop, not a one-shot.** A finding has exactly three ways out:
+
+```
+Greptile 5/5?  ── no ──→ fix ──→ ask once more at the new head
+      ↓ yes
+architecture review (this diff only)
+      ↓
+finding about this diff?
+      ├─ nothing ────→ merge
+      ├─ fixable here ──→ fix → push → Greptile 5/5 → review again (two rounds max)
+      └─ too big for this PR ──→ its own issue + its own PR/lane → merge this one on its 5/5
+```
+
+**Small fix here, big fix elsewhere.** A finding the diff can absorb is fixed on this branch; the
+head moves, so Greptile is asked once more. A finding that needs its own PR — a seam move, a
+deepening across several modules — does not hold this PR hostage: it gets an issue and a lane, and
+this PR merges on the 5/5 it already has. What it does not do is vanish: read the evidence comment
+before merging and confirm the follow-up issue number is in it.
+
+**Stop rule: two rounds, then the owner.** A second review that still finds something is a
+disagreement about the design, not a detail — the owner decides. Round three spends Greptile credit
+and never converges.
+
+**Scope is always the diff under review.** A finding about older code becomes an issue, never a loop
+iteration, or the loop never terminates. A review that finds nothing about this diff costs nothing.
+The report ends by asking the owner which candidate to explore, so carry its path and the candidate
+list into the PR evidence comment.
+
+**The vocabulary is always on, like TDD.** `codebase-design` supplies the words for the design
+conversation and `domain-modeling` keeps `CONTEXT.md` current while the code is written — not at the
+gate. The deep pass is only the audit that the habit happened.
+
+**Token budget — spend it on the finding, not the prose.**
+
+- Scope the walk to the modules the diff touches and their direct callers. A repo-wide sweep is
+  refused, not shortened.
+- At most five candidates; each is one sentence plus a deletion-test verdict.
+- The HTML report goes to the OS temp dir and its path goes in the PR comment. Never paste it back
+  into the conversation.
+- Fold the findings once. Do not re-run the review after the fold — the lenses check the fold.
+- No seam moved means no report: `architecture: no seam moved` is the whole output.
+
+### 13. Guard pre-report (Phase 3) — parent-owned
 
 The parent runs `guard` Phase 3. Verifies:
 - Checks — local gates green, plus CI when the branch has it
@@ -214,7 +272,7 @@ applied and carries any candidate lesson there; the parent writes
 a `.agents/wisdom/` entry (via `capture-wisdom`) only when the same failure has
 occurred more than once.
 
-### 13. Report to the owner — parent-owned
+### 14. Report to the owner — parent-owned
 
 The parent reports: PR link, check status (local + CI), Greptile verdict, any deferred items.
 
@@ -258,4 +316,5 @@ it merges, whatever Greptile says.
 | Guard Phase 2 not run | Step 9 — guard pre-push |
 | Lane done, not pushed | Parent only — Step 10 (push + PR) |
 | Greptile not clean | Parent only — Step 11 (CI + Greptile) |
-| All done | Parent only — Steps 12-13 (guard pre-report, then report to the owner) |
+| Greptile 5/5, architecture not reviewed | Parent only — Step 12 (architecture review) |
+| All done | Parent only — Steps 13-14 (guard pre-report, then report to the owner) |

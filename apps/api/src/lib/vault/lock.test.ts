@@ -1194,6 +1194,40 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
   }, 10_000);
 
+  it("stops at the first PERMANENT read failure instead of burning the read budget", () => {
+    // The record path is a DIRECTORY: every read is EISDIR, and no amount of
+    // retrying turns a directory into a lock file. The budget exists for a
+    // TRANSIENT failure (a Windows sharing violation, a record caught
+    // mid-write), so spending it here only delays the page that says which file
+    // to delete — 21 reads x 50 ms x three acquisitions is ~7.6 s of blank
+    // window before the owner is told anything (CI: the integration test hit its
+    // log budget on exactly that wait).
+    fs.mkdirSync(lockPath());
+    const reads = countingReader(() => {
+      throw errno("EISDIR", "EISDIR: illegal operation on a directory, read 'vault.lock'");
+    });
+    let code: string | undefined;
+    try {
+      acquireVaultLock(dir, {
+        readRetries: 20,
+        readRetryDelayMs: 50,
+        stealSettleMs: 1,
+        readLockFile: reads.readLockFile,
+        logger: reads.logger,
+        onLost: () => undefined,
+      });
+      throw new Error("acquireVaultLock returned over a directory");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VaultLockUnreadableError);
+      // the verdict is unchanged and still carries the errno the page explains
+      // SAFETY: the instance assertion above establishes the error class
+      code = (error as VaultLockUnreadableError).code;
+    }
+    expect(code).toBe("EISDIR");
+    // ONE read, not one per attempt per retry: the failure is permanent
+    expect(reads.state.reads).toBe(1);
+  });
+
   it("bounds the boot-path read delay even when a knob asks for five seconds", () => {
     // every readOwner call folds the knob to the 500 ms ceiling, so the refusal
     // path's handful of calls is a few seconds, not 5 s per call. #287: every
@@ -1592,6 +1626,63 @@ describe("the vault lock refusal app", () => {
     expect(await status.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
     const html = await app.fetch(new Request("http://localhost/"));
     expect(await html.text()).toContain(path);
+  });
+
+  it("tells the owner the instance takes the folder by itself instead of asking for a restart (#298)", () => {
+    // The sentence #277 exists to delete. The refused start now takes the
+    // folder as soon as the other copy closes (lib/vault/reclaim-retry.ts), so
+    // "close the other copy and reopen the app" sends the owner through a
+    // restart the instance has already removed. All three held variants carry
+    // it: a named holder, a suspected recycled pid, and no record at all.
+    const honest = vaultLockRefusalPageHtml(heldRefusal(owner));
+    const stale = vaultLockRefusalPageHtml(heldRefusal(owner, true));
+    const unknown = vaultLockRefusalPageHtml(heldRefusal(undefined));
+    for (const page of [honest, stale, unknown]) {
+      expect(page).not.toContain("ثم أعد فتح التطبيق");
+      expect(page).toContain("من تلقاء نفسها");
+    }
+    // and the instructions that still apply survive the rewrite
+    expect(honest).toContain("لا تحذف أي ملف");
+    expect(stale).toContain("vault.lock");
+  });
+
+  it("keeps the reopen instruction on the unreadable page, which no loop clears (#298)", () => {
+    // The deliberate opposite of the test above, so a blanket rewrite cannot
+    // pass both. An unreadable lock file starts no retry loop at boot (#287)
+    // and stops the one that meets it later (main.ts), so nothing on this page
+    // may promise a self-take: the file has to go and the app has to restart.
+    const page = vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: "/data/vault.lock" });
+    expect(page).toContain("أعد فتح التطبيق");
+    expect(page).not.toContain("من تلقاء نفسها");
+  });
+
+  it("refreshes the held page so it recovers once the folder is free (#298)", () => {
+    // The refusal page is the whole screen in the packaged app: the shell loads
+    // the sidecar's own origin and never the SPA, so a static page means the
+    // instance heals while the screen keeps showing the refusal until the owner
+    // reloads by hand. A meta refresh is the one control that needs no script
+    // and no second route.
+    //
+    // It is NOT on the unreadable page: that story has no loop (main.ts stops
+    // one that meets an unreadable file), so the reload could never change what
+    // the owner reads and would be a request every five seconds for nothing.
+    for (const page of [
+      vaultLockRefusalPageHtml(heldRefusal(owner)),
+      vaultLockRefusalPageHtml(heldRefusal(owner, true)),
+      vaultLockRefusalPageHtml(heldRefusal(undefined)),
+    ]) {
+      // SAFETY: the regex asserts the attribute shape; a miss fails below
+      const meta = /<meta http-equiv="refresh" content="(\d+)">/.exec(page);
+      expect(meta).not.toBeNull();
+      const seconds = Number(meta?.[1]);
+      // quick enough that the vault shows up a few seconds after the folder
+      // frees, slow enough that a page left open all day is not a request loop
+      expect(seconds).toBeGreaterThanOrEqual(1);
+      expect(seconds).toBeLessThanOrEqual(10);
+    }
+    expect(vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: "/data/vault.lock" })).not.toContain(
+      'http-equiv="refresh"',
+    );
   });
 
   it("escapes a hostile lock path before it reaches the unreadable page (#287)", () => {

@@ -339,6 +339,18 @@ type OwnerRead = {
   readonly code: string | undefined;
 };
 
+/**
+ * The read errnos that cannot clear by waiting this boot out: the path is not a
+ * readable FILE, and no amount of retrying turns a directory into one. Kept
+ * narrow on purpose — a Windows sharing violation (`EACCES`/`EBUSY`/`EPERM`) is
+ * the case the retry budget exists for, and it stays on the retry path.
+ */
+const PERMANENT_READ_FAILURES: ReadonlySet<string> = new Set(["EISDIR", "ENOTDIR", "ELOOP", "ENAMETOOLONG"]);
+
+function isPermanentReadFailure(code: string | undefined): boolean {
+  return code !== undefined && PERMANENT_READ_FAILURES.has(code);
+}
+
 function readOwner(lockPath: string, options: VaultLockOptions): OwnerRead {
   const retries = retryBudget(options.readRetries, 20, MAX_RETRY_ATTEMPTS);
   const delayMs = retryBudget(options.readRetryDelayMs, 50, MAX_RETRY_DELAY_MS);
@@ -356,6 +368,12 @@ function readOwner(lockPath: string, options: VaultLockOptions): OwnerRead {
     if (read.kind === "unreadable") {
       blocked = true;
       code = read.code;
+      // A permanent errno cannot clear by waiting: the path is not a readable
+      // file at all (a directory where the record belongs), so the remaining
+      // budget can only delay the page that says what to delete. The retries
+      // exist for a TRANSIENT failure — a Windows sharing violation, a record
+      // caught mid-write — and those are exactly the errnos this leaves alone.
+      if (isPermanentReadFailure(read.code)) return { owner: undefined, blocked, code };
     }
     // a creator may still be writing its JSON, or another process holds the
     // file open: retry before calling the lock stale (and reclaimable)
@@ -857,6 +875,13 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
       const verdict = holderVerdict(existing.owner, options);
       if (verdict.live) throw new VaultAlreadyLockedError(existing.owner, lockPath, verdict.staleHeartbeatOverAlivePid);
     }
+    // A permanent read failure ends the boot HERE. Nothing this loop can do
+    // changes it (the reclaim is withheld, and the exclusive create fails while
+    // the path exists), so the remaining attempts could only make the owner
+    // stare at a blank window for the whole read budget before the page that
+    // says which file to delete. The verdict is the same one the last attempt
+    // would reach: unreadable, with the errno.
+    if (isPermanentReadFailure(existing.code)) throw refusalForRead(existing, lockPath);
     // stale (dead same-host PID, quiet foreign heartbeat, or unreadable):
     // settle so a near-simultaneous reclaimer is likely decided, then re-read
     // and re-check IMMEDIATELY before the rename. Without the second check a
@@ -902,20 +927,37 @@ const VAULT_LOCK_PAGE_COPY = {
   heading: "البيانات قيد الاستعمال",
   hint: "لا تُعدّل بيانات المتجر ولا تحذف أي ملف. أغلق النسخة الأخرى فقط.",
   fallbackHost: "جهاز غير معروف",
-  unknownOwner: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
-  ownerTemplate: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز {host}، العملية {pid}). أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+  /**
+   * #277: the refusal is not a dead end any more. This instance retries the
+   * folder on its own bounded schedule and takes it the moment the other copy
+   * closes, so the copy says what happens next instead of asking for the
+   * restart the change removed. The restart sentence is what the feature exists
+   * to delete; only the unreadable variant below still keeps it, because no
+   * loop clears that story (see `unreadableTemplate`).
+   */
+  unknownOwner: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
+  ownerTemplate: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز {host}، العملية {pid}). أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
   /**
    * The recycled-pid story: the holder named here answers alive but stopped
    * beating, so there may be no other Dokan copy. The hint cannot say "delete
-   * no file", and the message must name the lock file as the one exit.
+   * no file", and the message must name the lock file as the one exit — and
+   * then promise what really happens: the retry loop keeps running on this
+   * story, so the deleted file is taken by this instance and not at restart.
    */
   staleHint: "لا تُعدّل بيانات المتجر. إن تأكدت من عدم وجود نسخة أخرى مفتوحة، احذف ملف vault.lock وحده.",
-  staleOwnerTemplate: "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان (الجهاز {host}، العملية {pid}). إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+  staleOwnerTemplate: "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان (الجهاز {host}، العملية {pid}). إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
   /**
    * The unreadable-lock story (#287): the file is there and no read could
    * attest to it, so no holder can be named and the folder may well be free.
    * The hint here cannot say "delete no file" — the message names the one file,
    * and deleting it is half of the only recovery the owner has.
+   *
+   * This is the ONE variant that keeps "then reopen the app" (#298): an
+   * unreadable lock starts no retry loop at boot (#287) and stops the one that
+   * meets it later (main.ts), so nothing here takes the folder by itself. The
+   * held and recycled-pid pages must not carry that sentence, and this page
+   * must not promise a self-take that no loop will perform. It carries no meta
+   * refresh either: a reload cannot change a story only the owner can clear.
    */
   unreadableHint: "لا تُعدّل بيانات المتجر. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock وحده.",
   unreadableTemplate: "تعذّر قراءة ملف القفل في مجلد البيانات: {path}. أغلق أي نسخة أخرى من دكان إن كانت مفتوحة، وإن لم تكن هناك نسخة مفتوحة فاحذف ملف vault.lock وحده ثم أعد فتح التطبيق.",
@@ -970,11 +1012,16 @@ function vaultLockRefusalHint(refusal: VaultLockRefusal): string {
 
 /** Standalone Arabic page for the second instance (mirrors the schema page). */
 export function vaultLockRefusalPageHtml(refusal: VaultLockRefusal): string {
+  // The reload belongs to the stories a loop can clear: the refused instance
+  // takes the folder by itself and the page must follow without a click. An
+  // unreadable lock has no loop (see `unreadableTemplate`), so a reload there
+  // would be a request loop that can never change what the page says.
+  const refresh = refusal.kind === "unreadable" ? "" : `    <meta http-equiv="refresh" content="5">\n`;
   return `<!doctype html>
 <html lang="ar" dir="rtl">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+${refresh}    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(VAULT_LOCK_PAGE_COPY.title)}</title>
     <style>
       body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fafafa; color: #111; font-family: system-ui, sans-serif; }

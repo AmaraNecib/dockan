@@ -274,6 +274,25 @@ function vaultTransport(brokerRequested: boolean): "broker" | "http" {
   return "http";
 }
 
+/**
+ * Ask a refused instance to re-check the data folder now (#277).
+ *
+ * The status route deliberately does NOT do this. When every request also ran a
+ * reclaim attempt, the attempt cancelled the instance's armed backoff tick and
+ * re-armed it at the cap, so a client polling faster than the cap kept the
+ * automatic reclaim from ever firing and set the retry rate itself (greptile P2
+ * on #298). Only the screen's retry posts here. The reply is `{ ok, taken }`;
+ * the status read that follows is what the screen shows, so a reply this build
+ * cannot use is not worth surfacing as an error.
+ */
+export async function requestVaultReclaim(): Promise<void> {
+  try {
+    await fetch("/api/vault/reclaim", { method: "POST" });
+  } catch {
+    /* the retry's outcome is the status read that follows, not this reply */
+  }
+}
+
 export async function fetchVaultStatus(): Promise<VaultStatus> {
   // Inside the desktop shell the broker is the authoritative gate transport:
   // try it first (no secret involved) and fall back to HTTP when the shell has

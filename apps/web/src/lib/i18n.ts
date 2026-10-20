@@ -170,6 +170,10 @@ const resources = {
       logEvent_WEB_UI_SERVE_FAILED: "فشل تقديم واجهة الويب",
       logEvent_SESSION_SECRET_REGENERATED: "تجديد سرّ الجلسات",
       logEvent_VAULT_LOCK_RECLAIMED: "أُعيد أخذ قفل الكتابة",
+      logEvent_VAULT_LOCK_REFUSED: "البيانات قيد الاستعمال — انتظار إغلاق النسخة الأخرى",
+      // the unreadable lock file is a different remedy from the held folder:
+      // the page names the file, so the badge does too (greptile P1 on #298)
+      logEvent_VAULT_LOCK_UNREADABLE: "تعذّر قراءة ملف القفل — احذف vault.lock إن لم تكن هناك نسخة مفتوحة",
       logEvent_VAULT_UNLOCK_FAILED: "فشل فتح الخزنة",
       logEvent_VAULT_RECOVERY_FAILED: "فشل الفتح بمفتاح استرداد",
       logEvent_VAULT_CHANGE_PASSPHRASE_FAILED: "فشل تغيير كلمة مرور الخزنة",
@@ -381,7 +385,9 @@ const resources = {
       VAULT_CORRUPT: "تعذّر فتح البيانات: الملف المشفّر تالف أو غير مكتمل. استعد أحدث نسخة احتياطية ثم أعد المحاولة.",
       VAULT_DATABASE_MISSING: "ملف البيانات المشفّر مفقود. استعد نسخة احتياطية سليمة أو تواصل مع الدعم.",
       VAULT_LAST_RECOVERY_KEY: "لا يمكن حذف آخر مفتاح استرداد؛ فهو طريق الاستعادة الوحيد عند نسيان كلمة المرور.",
-      VAULT_LOCKED_BY_OTHER_INSTANCE: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+      // #277: the refused instance takes the folder by itself once the other
+      // copy closes, so the screen says so instead of asking for a restart
+      VAULT_LOCKED_BY_OTHER_INSTANCE: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
       VAULT_LOOPBACK_REQUIRED: "لحماية بياناتك، لا يمكن إدخال كلمة المرور أو مفتاح الاسترداد عبر الشبكة. افتح دكان على الجهاز نفسه.",
       VAULT_MALFORMED_RESPONSE: "تعذّر تنفيذ العملية: رد غير متوقع من الخادم. أعد المحاولة.",
       VAULT_RESET_FAILED: "تعذّر تعيين كلمة المرور الجديدة. أعد المحاولة.",
@@ -408,7 +414,7 @@ const resources = {
       vaultBackToPassphrase: "رجوع لكلمة المرور",
       vaultLockedWait: "محاولات خاطئة كثيرة. أعد المحاولة بعد {{seconds}} ثانية.",
       vaultLockStaleHeartbeat:
-        "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+        "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
       vaultRecoveryUnlockTitle: "فتح بمفتاح الاسترداد",
       vaultRecoveryUnlockHint: "أدخل مفتاح الاسترداد الذي حفظته عند إنشاء الخزنة.",
       vaultRecoveryField: "مفتاح الاسترداد",

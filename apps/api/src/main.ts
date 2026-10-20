@@ -16,7 +16,9 @@ import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
 import { classifyPlaintextCleanup } from "./lib/vault/cleanup-status";
 import { createOverlay, type RequestHandler } from "./lib/overlay";
-import { forgetPort as forgetPortRecord, portIsReachable, publishPort } from "./lib/port-record";
+import { portRecordReconcileMode } from "./lib/port-reconcile";
+import { PortPublication } from "./lib/port-publish";
+import { forgetOwnRegistryEntry, forgetPort as forgetPortRecord, portIsReachable, publishPort, writeRegistryEntry } from "./lib/port-record";
 import { createSchemaRefusalApp, guardBootStep } from "./lib/schema-refusal";
 import { UnsupportedSchemaVersionError, assertSchemaVersionSupported } from "./lib/schema-version";
 import { ensureSessionSecret } from "./lib/session-secret";
@@ -24,6 +26,8 @@ import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypt
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
+import { ReclaimRetry } from "./lib/vault/reclaim-retry";
+import { answerReclaimRetry } from "./lib/vault/refused-request";
 import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
@@ -62,29 +66,58 @@ const logger = new AppLogger(config.dataDir);
 let vaultLock: VaultLock | undefined;
 /** true once this instance lost the folder to another copy (fail-stop) */
 let lockLost = false;
+/**
+ * Set when this start was refused because another copy owns the folder
+ * (#277): the instance serves the in-use refusal on its own listener and
+ * keeps retrying, holding no lock and writing nothing. `refused` stays true
+ * even when the lock record's owner could not be read.
+ */
+let refused = false;
+/**
+ * The refusal this instance is serving, kept whole rather than reduced to its
+ * holder (greptile P1 on #298): a recycled-pid lock and an unreadable lock file
+ * each carry their own recovery instructions, and collapsing either into "close
+ * the other copy" tells the owner to do something that does not exist. The
+ * automatic retry cannot clear a recycled pid (the pid answers alive) and
+ * cannot clear an unreadable file at all, so the story is the only exit.
+ */
+let refusalError: VaultAlreadyLockedError | VaultLockUnreadableError | undefined;
+/** The reclaim loop while refused; cleared once this instance owns the folder. */
+let reclaim: ReclaimRetry | undefined;
+/**
+ * When the canonical port record may go out (#277). It needs two facts — this
+ * instance may be pointed at (it owns the folder, or it is a plaintext start),
+ * and the listener is up — and they arrive in no fixed order: a refused
+ * instance that reclaims the folder can beat a slow bind. The class publishes
+ * when both are true, whichever arrives last (Greptile issue 1).
+ */
+const publication = new PortPublication();
 if (config.vault === "on") {
   try {
-    vaultLock = acquireVaultLock(config.dataDir, {
-      logger,
-      onLost: (_reason, holder) => {
-        // Fail-stop, but not exit (ADR-0012 clause 3): stop serving writes at
-        // once and answer the in-use refusal on the port already bound. An
-        // exiting sidecar left the shell's broker with nothing to talk to, so
-        // the web fell back to "server unreachable" — the wrong diagnosis.
-        // No second listener, no port-record publication, no new writes. The
-        // single VAULT_LOCK_LOST line is emitted by the lock itself.
-        lockLost = true;
-        activeHandler = buildLockRefusalHandler(holder);
-      },
-    });
+    vaultLock = acquireVaultLock(config.dataDir, { logger, onLost: onLockLost });
+    // this instance owns the folder from the start
+    publication.setPublishable();
   } catch (error) {
-    if (error instanceof VaultAlreadyLockedError || error instanceof VaultLockUnreadableError) await serveLockRefusal(config, error);
-    logger.error(
-      "VAULT_LOCK_FAILED",
-      "the vault data folder could not be locked",
-      error instanceof Error ? error : new Error(String(error)),
-    );
-    process.exit(1);
+    if (error instanceof VaultAlreadyLockedError) {
+      // Do not exit and do not serve a standalone page: this instance binds
+      // its own listener with the refusal and keeps trying to take the folder,
+      // so closing the holder lets the owner in without a restart (#277).
+      refused = true;
+      refusalError = error;
+    } else if (error instanceof VaultLockUnreadableError) {
+      // NOT the same state, and deliberately not retried (#287): the lock file
+      // exists but cannot be parsed or read, so nothing will change until the
+      // owner acts. The page names the file and says what to delete; a retry
+      // loop would hide that behind a spinner that never resolves.
+      await serveLockRefusal(config, error);
+    } else {
+      logger.error(
+        "VAULT_LOCK_FAILED",
+        "the vault data folder could not be locked",
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      process.exit(1);
+    }
   }
 }
 
@@ -141,12 +174,153 @@ function buildOverlay(api: RequestHandler | undefined): RequestHandler {
  * boot-token echo stays, so the desktop shell keeps verifying this child
  * instead of treating the refusal as a dead sidecar.
  */
-function buildLockRefusalHandler(holder: VaultLockOwner | undefined): RequestHandler {
+function buildLockRefusalHandler(
+  refusal: VaultAlreadyLockedError | VaultLockUnreadableError | undefined,
+): RequestHandler {
   // the holder-free variant takes no path: there is no lock file to name when
   // this instance never held the folder, and an empty-string sentinel would be
-  // worse than omitting it
-  const app = createVaultLockRefusalApp(config, new VaultAlreadyLockedError(holder));
+  // worse than omitting it. A refusal already read (held with its recycled-pid
+  // flag, or unreadable with its path) is served as it was read, so the page
+  // keeps the instructions that fit the case (greptile P1 on #298).
+  const error = refusal ?? new VaultAlreadyLockedError(undefined);
+  const app = createVaultLockRefusalApp(config, error);
   return (request, env) => app.fetch(request, env);
+}
+
+/**
+ * The fail-stop once this instance loses the folder (ADR-0012 clause 3): stop
+ * serving writes at once and answer the in-use refusal on the port already
+ * bound. An exiting sidecar left the shell's broker with nothing to talk to, so
+ * the web fell back to "server unreachable" — the wrong diagnosis. No second
+ * listener, no port-record publication, no new writes. The single
+ * VAULT_LOCK_LOST line is emitted by the lock itself.
+ */
+function onLockLost(_reason: string, holder?: VaultLockOwner): void {
+  lockLost = true;
+  activeHandler = buildLockRefusalHandler(holder === undefined ? undefined : new VaultAlreadyLockedError(holder));
+}
+
+/**
+ * The handler a refused start serves (#277). Only the owner's explicit retry
+ * (`POST /api/vault/reclaim`) asks the folder again, so the screen's retry is
+ * never slower than the automatic backoff. Ordinary requests are served as-is:
+ * a request that also triggered would cancel and re-arm the armed tick, and a
+ * client polling faster than the cap would then hold the automatic reclaim off
+ * indefinitely with the attempt rate set by the client (greptile P2 on #298).
+ * The retry is answered with `{ ok, taken }`; when it takes the folder, the
+ * handler is answered through the vault gate from the request after it.
+ */
+function buildRefusedHandler(): RequestHandler {
+  let cached: RequestHandler | undefined;
+  let cachedStory: string | undefined;
+  const serveRefusal: RequestHandler = (request, env) => {
+    const current = activeHandler;
+    if (current !== serveRefusal) return current(request, env);
+    // the retry branch lives in refused-request.ts so the test drives the same
+    // decision the handler runs, not a copy of it
+    const retried = answerReclaimRetry(request, () => reclaim?.trigger() ?? false);
+    if (retried !== undefined) return retried;
+    // the cache key covers the whole refusal, not only the holder: held →
+    // unreadable with no owner token would otherwise keep serving the old page
+    const story =
+      refusalError === undefined
+        ? "none"
+        : refusalError instanceof VaultLockUnreadableError
+          ? `unreadable:${refusalError.lockPath}`
+          : `held:${refusalError.owner?.token ?? "unknown"}:${String(refusalError.staleHeartbeatOverAlivePid)}`;
+    if (cached === undefined || cachedStory !== story) {
+      cachedStory = story;
+      cached = buildLockRefusalHandler(refusalError);
+    }
+    return cached(request, env);
+  };
+  return serveRefusal;
+}
+
+/**
+ * Retry the reclaim while the refusal is served (#277): bounded backoff and one
+ * attempt per tick, driven by the schedule alone, plus an immediate re-check
+ * when the owner posts the retry route. Resolves once this instance owns the
+ * folder, without a restart and without a second listener (the handler swaps on
+ * the server already bound).
+ */
+async function reclaimUntilOwned(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    // VaultLockUnavailableError during a retry is logged once, never per tick:
+    // a folder that stays unwritable must not grow the log without bound.
+    let unavailableLogged = false;
+    const loop = new ReclaimRetry({
+      attempt: () => {
+        try {
+          // Bounded hard (item 4): this attempt runs inside an HTTP handler
+          // (the owner's retry POST) and on every tick, and `acquireVaultLock`
+          // is synchronous by design, so it blocks the event loop. The default
+          // read budget (20 x 50 ms) plus the 200 ms settle per attempt is ~1.2 s
+          // of a dead loop; 4 x 25 ms plus a 50 ms settle keeps one attempt near
+          // 100 ms while still reading through a record caught mid-write. The
+          // pathological create/write gap is #280's, not this loop's.
+          vaultLock = acquireVaultLock(config.dataDir, {
+            logger,
+            onLost: onLockLost,
+            readRetries: 4,
+            readRetryDelayMs: 25,
+            stealSettleMs: 50,
+          });
+          return { ok: true };
+        } catch (error) {
+          if (error instanceof VaultAlreadyLockedError) {
+            // keep the whole refusal, not only its holder: the recycled-pid
+            // story changes what the page tells the owner to do, and a retry
+            // can never clear that lock because the pid answers alive. The
+            // refusal is recorded HERE, on the way past, rather than reported
+            // back through the loop: the loop schedules, it does not carry
+            // findings (greptile S4 on #298).
+            refusalError = error;
+            return { ok: false };
+          }
+          if (error instanceof VaultLockUnreadableError) {
+            // a lock that was readable at boot and is not now: the page must
+            // name the file and say what to delete, not tell the owner to close
+            // a copy that may not exist (greptile P1 on #298). The loop STOPS
+            // here, matching the boot path (#287) and the page's copy: nothing
+            // this instance does takes a file that cannot be read, and the one
+            // recovery is the owner's. The read budget already gave a transient
+            // sharing violation 20 reads to clear; a loop that kept trying would
+            // block the event loop and log a reclaimed-race row every tick,
+            // forever, against a story the page says needs the owner.
+            refusalError = error;
+            loop.stop();
+            return { ok: false };
+          }
+          if (!unavailableLogged) {
+            unavailableLogged = true;
+            logger.error(
+              "VAULT_LOCK_FAILED",
+              "the vault data folder could not be locked",
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          }
+          return { ok: false };
+        }
+      },
+      onAcquired: () => {
+        refusalError = undefined;
+        reclaim = undefined;
+        logger.info("VAULT_LOCK_RECLAIMED", "the refused instance took the data folder; serving the vault gate");
+        // the folder is ours now, and only now: the manager's constructor is
+        // the first write into it (#277 AC3)
+        openVaultManager();
+        activeHandler = buildOverlay(undefined);
+        // the folder is owned, so the record may go out as soon as the listener
+        // has reported its port (the publication waits for it when the bind is
+        // slow — Greptile issue 1)
+        publication.setPublishable();
+        resolve();
+      },
+    });
+    reclaim = loop;
+    loop.start();
+  });
 }
 
 /** Startup daily backup: one copy per Algeria-local day, validated by format. */
@@ -658,29 +832,113 @@ async function firstFreePort(start: number, host: string): Promise<number> {
  * schema-refusal page can own the port first.
  */
 let server: ReturnType<typeof serve> | undefined;
+/** True once this process published the canonical record (shutdown reconciles it). */
+let portPublished = false;
+/** True once this process wrote its own registry entry (shutdown reaps only its own). */
+let registryPublished = false;
+
+/**
+ * Publish the port record for a folder this instance owns. Split from the bind
+ * callback because a refused start binds before it owns anything and must not
+ * touch the owning instance's record (#277); it publishes after it reclaims.
+ * A publication failure is a boot failure: running while Vite still walks the
+ * previous record would strand /api traffic, so fail loudly instead of
+ * discarding the rejection.
+ */
+async function publishOwnedPort(port: number): Promise<void> {
+  try {
+    await publishPort({ portFile, lockDir: portLockDir, registryDir, pid: process.pid, host: config.host, port });
+    portPublished = true;
+  } catch (err) {
+    // SAFETY: every rejection path throws an Error (lock timeout / fs error)
+    logger.error("SERVER_ERROR", `port record publication failed after binding ${port}`, err as Error);
+    process.exit(1);
+  }
+}
+
+/**
+ * Publish ONLY this process's registry entry, never the canonical `.dokan-port`
+ * (#277). The desktop shell's identity check reads
+ * `.dokan-port.registry/<child pid>` and kills a child that has no entry there
+ * (`registry_owned_by` in desktop.rs), so a refused start that publishes
+ * nothing is killed at the end of its 20 s startup budget: the Arabic refusal
+ * page never appears — the owner gets the bundled "server unreachable" — and
+ * the reclaim never runs. The canonical record is a different thing: it is what
+ * the dev proxy follows, and the folder belongs to the other copy, so this start
+ * must not write it.
+ */
+function publishOwnedRegistryEntry(port: number): void {
+  try {
+    // identity-only: the shell's check reads this file, but the canonical
+    // recompute must never point the dev proxy at a refusal (greptile P1 on
+    // #298). Several data folders can share one port root (dev's workspace
+    // root is the default), so this entry sits beside the real owner's and the
+    // owner's shutdown picks the newest live one.
+    writeRegistryEntry(registryDir, process.pid, config.host, port, { identityOnly: true });
+    registryPublished = true;
+  } catch (err) {
+    // A registry failure costs the shell's identity check, not the folder: keep
+    // serving the refusal (a browser still reads it) and say what will happen.
+    logger.error(
+      "SERVER_ERROR",
+      `port registry entry publication failed after binding ${port}; the desktop shell will not verify this child`,
+      err instanceof Error ? err : new Error(String(err)),
+    );
+  }
+}
+
+/**
+ * Build the vault manager and its HTTP app. Called at boot by a start that owns
+ * the folder, and by the reclaim's success hook for a refused one: the
+ * constructor creates <dataDir>/vault, and a start that was refused the folder
+ * writes nothing into it (#277 acceptance criterion 3).
+ */
+function openVaultManager(): VaultManager {
+  const manager = new VaultManager({
+    dataDir: config.dataDir,
+    legacyDbPath: config.db.path,
+    logger,
+  });
+  vaultManager = manager;
+  vaultApp = createVaultHttpApp({
+    manager,
+    config,
+    logger,
+    bootstrap: bootstrapVault,
+    onSetupCommitted: () => manager.cleanupLegacyPlaintext(),
+    afterSetup: runVaultDailyBackup,
+    // a credential change makes today's backup stale (its embedded header has
+    // the old wraps); the daily pass rebuilds it with the live header
+    afterCredentialChange: runVaultDailyBackup,
+  });
+  return manager;
+}
 
 function startServer(): void {
+  // The ONE place the canonical port record goes out (#277). It waits for the
+  // two facts it needs — this instance may be pointed at, and the listener is
+  // up on a known port — and they arrive in no fixed order: a refused
+  // instance that reclaims the folder can beat a slow bind (Greptile issue 1).
+  // One site, one order-independent decision: the old two-site order
+  // published at the bind and skipped the record when the port was not known
+  // yet, which left that instance serving a port discovery never learned
+  // about.
+  void publication.run(publishOwnedPort);
   server = serve(
     { fetch: (request, env) => activeHandler(request, env), port, hostname: config.host },
     async (info) => {
-      // record the port that actually bound: for fallback/ephemeral binds this
-      // differs from the configured value and must be what the proxy trusts.
-      // A publication failure is a boot failure: running while Vite still walks
-      // the previous record would strand /api traffic, so fail loudly (before
-      // logging the server as started) instead of discarding the rejection.
-      try {
-        await publishPort({
-          portFile,
-          lockDir: portLockDir,
-          registryDir,
-          pid: process.pid,
-          host: config.host,
-          port: info.port,
-        });
-      } catch (err) {
-        // SAFETY: every rejection path throws an Error (lock timeout / fs error)
-        logger.error("SERVER_ERROR", `port record publication failed after binding ${info.port}`, err as Error);
-        process.exit(1);
+      // the listener is up: the canonical record may go out now, if this
+      // instance may be pointed at (Greptile issue 1)
+      publication.setBoundPort(info.port);
+      if (refused) {
+        // The shell must still verify the child it spawned, or it kills the one
+        // process that can take the folder by itself (#277). Its check reads the
+        // per-pid entry, not the canonical record, so that is all we publish.
+        publishOwnedRegistryEntry(info.port);
+        logger.warn(
+          "VAULT_LOCK_REFUSED",
+          `serving the in-use refusal on http://${info.address}:${info.port} (canonical port record untouched: this start does not own the folder)`,
+        );
       }
       logger.info("SERVER_STARTED", "Dokan API booted", {
         url: `http://${info.address}:${info.port}`,
@@ -769,7 +1027,24 @@ async function closeStoreThenLock(): Promise<number> {
 /** Cleanup must be observable: exiting successfully after a failed reconcile
  * leaves the proxy with stale discovery data. */
 async function reconcileBeforeExit(): Promise<void> {
+  // A publication that has not started yet is cancelled, and one that is in
+  // flight is awaited: it may write the record a moment from now, and a
+  // record that outlives its listener points discovery at a dead port (Greptile
+  // issue 2). Waiting here is what makes the duty below true.
+  publication.cancel();
+  await publication.settled();
+  // Three duties (#277): a start that published the canonical record withdraws
+  // its entry and repoints the canonical at a survivor; a refused start
+  // published only its own per-pid entry, so it removes that one and probes
+  // nothing — recomputing canonical would touch a record the owning instance
+  // still serves; a start that published nothing owes nothing.
+  const duty = portRecordReconcileMode(portPublished, registryPublished);
+  if (duty === "none") return;
   try {
+    if (duty === "registry") {
+      forgetOwnRegistryEntry(registryDir, process.pid);
+      return;
+    }
     await forgetPort();
   } catch (err) {
     logger.error(
@@ -786,6 +1061,10 @@ async function reconcileBeforeExit(): Promise<void> {
 // rebind that would desync the proxy (greptile P1)
 
 function beginShutdown(): void {
+  // Stop the reclaim loop FIRST (Greptile P2): a pending tick that wins during
+  // shutdown would take the lock and publish a port whose listener is already
+  // closing, stranding the proxy on a dead record until the process exits.
+  reclaim?.stop();
   server?.close();
   // a stuck close (keep-alive connection) must not hang the kiosk forever;
   // the forced path still awaits the full reconcile and the store close before
@@ -812,26 +1091,25 @@ if (config.vault === "on") {
       "DOKAN_VAULT=disabled was ignored: a packaged build (DOKAN_WEB_DIST set) always runs the encrypted vault",
     );
   }
-  const manager = new VaultManager({
-    dataDir: config.dataDir,
-    legacyDbPath: config.db.path,
-    logger,
-  });
-  vaultManager = manager;
-  vaultApp = createVaultHttpApp({
-    manager,
-    config,
-    logger,
-    bootstrap: bootstrapVault,
-    onSetupCommitted: () => manager.cleanupLegacyPlaintext(),
-    afterSetup: runVaultDailyBackup,
-    // a credential change makes today's backup stale (its embedded header has
-    // the old wraps); the daily pass rebuilds it with the live header
-    afterCredentialChange: runVaultDailyBackup,
-  });
-  activeHandler = buildOverlay(undefined);
+  // A start that owns the folder builds the vault app now. A REFUSED start does
+  // not: the manager's constructor creates <dataDir>/vault, and a start that
+  // does not own the folder writes nothing into it (#277 acceptance criterion 3).
+  // The reclaim's success hook builds it instead.
+  if (!refused) openVaultManager();
+  activeHandler = refused ? buildRefusedHandler() : buildOverlay(undefined);
   startServer();
-  if (config.vaultBroker) {
+  // A refused start serves the refusal from the listener it just bound and
+  // retries the folder in the background; the broker (packaged shells) starts
+  // with the vault gate once the folder is ours.
+  if (refused) {
+    await reclaimUntilOwned();
+    // now (and only now) the proxy may be pointed at this instance: the
+    // publication site in startServer() has both facts and writes the record.
+    // Nothing is published here — one site, one decision, in any order
+    // (Greptile issue 1).
+  }
+  const manager = vaultManager;
+  if (config.vaultBroker && manager !== undefined) {
     await runVaultBroker(manager);
   }
 } else {
@@ -840,6 +1118,10 @@ if (config.vault === "on") {
     "DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)",
   );
   await startPlaintext();
+  // a plaintext start owns its port: it takes no vault lock, so nothing else
+  // can claim the folder, and its record is what the dev proxy walks
+  // (Greptile P1 on #298)
+  publication.setPublishable();
   startServer();
 }
 
@@ -850,9 +1132,12 @@ if (config.vault === "on") {
  * and the single-writer lock gate (issue #142).
  *
  * The schema gate is the only instance on the folder, so it publishes the
- * shared `.dokan-port` record the proxy reads. The lock-refusal instance does
- * NOT: it does not own the folder, and publishing would point the first
- * instance's clients at the refusal server (round-7 finding 2).
+ * shared `.dokan-port` record the proxy reads. A refusal that does not own the
+ * folder does NOT publish: publishing would point the first instance's clients
+ * at the refusal server (round-7 finding 2). Its message therefore says only
+ * that the record was left alone, never WHY — the cause lives in the event the
+ * caller passes, and blaming another copy here put the held refusal's words on
+ * the unreadable one's row (greptile P1 on #298).
  * Never returns: the process stays up while the owner reads the page.
  */
 async function serveRefusalServer(
@@ -862,6 +1147,17 @@ async function serveRefusalServer(
   options: { publishPortRecord?: boolean } = {},
 ): Promise<never> {
   const publish = options.publishPortRecord ?? true;
+  /**
+   * Whether this page wrote its own registry entry, kept LOCAL rather than
+   * shared with `registryPublished` (greptile P1 on #298). The unreadable-lock
+   * boot awaits this function from module top level, which suspends module
+   * evaluation for the whole life of the process: every `let` declared AFTER
+   * that await is still in its temporal dead zone, so assigning
+   * `registryPublished` here threw a ReferenceError (logged as a failed
+   * publication, on a write that had succeeded) and the shutdown below threw
+   * reading it — the page then never removed its entry and never exited.
+   */
+  let ownEntryPublished = false;
   const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.probeHost);
   const portRecordDir = config.portRecordDir ?? findWorkspaceRoot();
   if (publish && config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
@@ -890,12 +1186,31 @@ async function serveRefusalServer(
           );
           process.exit(1);
         }
+      } else {
+        // A refusal that does not own the folder publishes its OWN registry
+        // entry only (#277). The desktop shell's identity check reads it under
+        // this pid and kills a child without one after 20 s — which is exactly
+        // the page the owner needs to read. The canonical `.dokan-port` stays
+        // untouched: it belongs to the copy that owns the folder.
+        try {
+          // identity-only, for the same reason as the refused start's entry
+          // above: this page owns no folder, so nothing may pick it as the
+          // canonical record (greptile P1 on #298)
+          writeRegistryEntry(registryDir, process.pid, config.host, info.port, { identityOnly: true });
+          ownEntryPublished = true;
+        } catch (err) {
+          logger.error(
+            "SERVER_ERROR",
+            `refusal page registry entry failed after binding ${info.port}`,
+            err instanceof Error ? err : new Error(String(err)),
+          );
+        }
       }
       logger.warn(
         event,
         publish
           ? `serving a refusal page on http://${info.address}:${info.port}`
-          : `serving a refusal page on http://${info.address}:${info.port} (port record untouched: another instance owns the folder)`,
+          : `serving a refusal page on http://${info.address}:${info.port} (canonical port record untouched: this start does not own the folder)`,
       );
     },
   );
@@ -905,9 +1220,13 @@ async function serveRefusalServer(
   });
   const shutdown = () => {
     server.close(() => {
-      const cleanup = publish
-        ? forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid })
-        : Promise.resolve();
+      // the same three duties as the main shutdown: a page that published the
+      // canonical reconciles it, a page that published only its own entry
+      // removes only that, and one that published nothing owes nothing (#277)
+      const cleanup =
+        portRecordReconcileMode(publish, ownEntryPublished) === "canonical"
+          ? forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid })
+          : Promise.resolve(ownEntryPublished ? forgetOwnRegistryEntry(registryDir, process.pid) : undefined);
       void cleanup.finally(() => process.exit(0));
     });
   };
@@ -928,15 +1247,17 @@ async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVer
 }
 
 /**
- * The second instance on one vault folder: the lock was refused — another copy
- * holds it, or its file could not be read at all — so no vault file is opened
- * and the owner reads why. The first instance keeps running untouched.
+ * The unreadable-lock refusal (#287): the file exists but cannot be parsed or
+ * read, so no vault file is opened and the owner is told which file to remove.
+ * A held lock does NOT come here — it takes the retry path above instead.
+ *
+ * It carries its OWN event, not the held refusal's (greptile P1 on #298): the
+ * two refusals have different remedies, and one badge cannot name both. The
+ * held badge says to wait for the other copy; this one says the lock file could
+ * not be read. The log row must agree with the page, which names the file.
  */
-async function serveLockRefusal(
-  config: AppConfig,
-  error: VaultAlreadyLockedError | VaultLockUnreadableError,
-): Promise<never> {
-  // the first instance owns the folder and the shared port record; this
-  // second instance must not overwrite it (round-7 finding 2)
-  return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_REFUSED", { publishPortRecord: false });
+async function serveLockRefusal(config: AppConfig, error: VaultLockUnreadableError): Promise<never> {
+  // another instance may own the shared port record; this page must not
+  // overwrite it (round-7 finding 2)
+  return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_UNREADABLE", { publishPortRecord: false });
 }

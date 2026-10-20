@@ -193,11 +193,14 @@ Branch naming: `feat/<issue-id>-<short-description>`, `fix/<issue-id>-<descripti
 git push origin <branch-name>
 gh pr create --base develop \
   --title "<description> (closes #<issue-id>)" \
-  --body "See .scratch/reviews/<issue-id>/ for review evidence"
+  --body "<what changed, how it was verified, and the SHA>"
 ```
 
 After opening the PR, the parent publishes a concise review-evidence summary as a
-PR comment.
+PR comment: the three lens names, the SHA they read, the verdict and the counts.
+The reports themselves stay local — `.scratch/reviews/` is gitignored, and a
+committed report makes the reviewer judge our notes instead of our code, burns
+credits, and makes the previous report stale.
 
 ### 11. CI + Greptile — parent-owned
 

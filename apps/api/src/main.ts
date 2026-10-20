@@ -423,7 +423,6 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // so a byte written by a former holder is recognisable and never trusted. The
   // same fail-loud rule as the guard: no lock, no stamp, no write.
   storeInput.writeStamp = () => holderToken(vaultLock);
-  const { conn, store } = openVaultStore(storeInput);
   // #292: the snapshot fence is re-read on the holder's heartbeat tick, so a
   // rename that lands while this instance is idle is named within one beat
   // instead of at the next persist, checkpoint or close — the three points #280
@@ -432,13 +431,12 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // the probe writes nothing, so no client-visible behaviour moves.
   // Fail loud on the same rule as the guard and the stamp above: an unpolled
   // fence would go back to being invisible, so a missing lock is an error here
-  // rather than a skipped registration.
+  // rather than a skipped registration. It is checked BEFORE `openVaultStore`,
+  // because a throw between the open and the `try` below would leave `conn`
+  // unclosed and its connection key unzeroed (architecture audit, PR #314).
   if (vaultLock === undefined) throw new Error("the vault snapshot fence probe started without a held lock");
-  // The unsubscribe is kept, not dropped: a failed bootstrap closes `conn`, and
-  // a callback left on the lock would hold that closed connection for the
-  // lock's lifetime while adding work to every beat. Greptile caught the leak
-  // (#292); the catch below is where it is released.
-  const stopHeartbeatProbe = vaultLock.onHeartbeat(() => conn.recheckFence());
+  const heldLock = vaultLock;
+  const { conn, store } = openVaultStore(storeInput);
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed
   // (a retry would duplicate a sale/payment). Exiting here means the client
@@ -473,7 +471,18 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     logger.error("SNAPSHOT_PERSIST_FAILED", "FATAL: encrypted snapshot could not be written; exiting to avoid divergence", error);
     process.exit(1);
   };
+  // Declared before the `try` so the catch can release it, assigned INSIDE it:
+  // the registration is the one statement that must not throw between the open
+  // above and the `try`, or `conn` would never close and its key never zero.
+  // The unsubscribe is kept, not dropped: a failed bootstrap closes `conn`, and
+  // a callback left on the lock would hold that closed connection for the
+  // lock's lifetime while adding work to every beat. Greptile caught the leak
+  // (#292); the catch below is where it is released. The wiring itself is
+  // pinned by the source scan in `vault-store.test.ts`, because booting main.ts
+  // from a unit test is not possible.
+  let stopHeartbeatProbe: (() => void) | undefined;
   try {
+    stopHeartbeatProbe = heldLock.onHeartbeat(() => conn.recheckFence());
     // Refuse a newer database before any migration writes (ADR-0008 §4.5): the
     // refusal is surfaced by the unlock screen, never a half-migrated image.
     assertSchemaVersionSupported(conn.raw);
@@ -533,7 +542,7 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   } catch (error) {
     // The probe must not outlive the connection it reads: release it before the
     // close, so no beat can land on a connection that is on its way out.
-    stopHeartbeatProbe();
+    stopHeartbeatProbe?.();
     // a lost folder abandons the store: closing it would run the final
     // checkpoint over the new owner's snapshot (ADR-0012 clause 3)
     if (!lockLost) await conn.close();

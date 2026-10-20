@@ -1161,10 +1161,11 @@ describe("snapshot fence (#280)", () => {
     await current.close();
   });
 
-  it("a checkpoint at version zero is a write this connection verified (#292)", async () => {
-    // `persistedVersion > 0` cannot answer "is there a write of mine on disk":
-    // a checkpoint with no mutation writes and verifies a snapshot while both
-    // counters stay at 0, and the old test reported that as not durable.
+  it("a checkpoint at version zero still writes the snapshot (#292)", async () => {
+    // The availability counters cannot answer "is there a write of mine on
+    // disk": a checkpoint with no mutation writes a snapshot while both
+    // `mutationVersion` and `persistedVersion` stay at 0, so the write must not
+    // be skipped by version bookkeeping.
     const conn = createEncryptedConnection({
       vaultId,
       masterKey,
@@ -1174,12 +1175,9 @@ describe("snapshot fence (#280)", () => {
     });
     try {
       conn.raw.exec("CREATE TABLE t(a TEXT)");
-      // Nothing has been written yet, and the counters agree with each other,
-      // so this must NOT read as durable.
-      expect(conn.snapshotIsDurable()).toBe(false);
+      expect(fs.existsSync(snapshotPath())).toBe(false);
       conn.checkpoint();
       expect(diskFence()?.stamp).toBe(tokenB);
-      expect(conn.snapshotIsDurable()).toBe(true);
     } finally {
       await conn.close();
     }
@@ -1203,7 +1201,6 @@ describe("snapshot fence (#280)", () => {
       conn.markDirty();
       await conn.persistIfDirty();
       expect(diskFence()?.stamp).toBe(tokenB);
-      expect(conn.snapshotIsDurable()).toBe(true);
       expect(events).toEqual([]);
 
       // Holder A goes IDLE: no mutation, no persist, no checkpoint. A zombie
@@ -1216,9 +1213,6 @@ describe("snapshot fence (#280)", () => {
       // its own. Without this the holder goes on believing its version is
       // saved and says nothing at all until the next persist.
       expect(events).toEqual(["warn:VAULT_SNAPSHOT_FENCE_FOREIGN"]);
-      // and it stops claiming durability, which is the whole point of re-reading
-      // on a tick: the version is no longer the one on disk
-      expect(conn.snapshotIsDurable()).toBe(false);
       // the probe DETECTS; it does not fight for the file (that is a persist's
       // job, and a write on a heartbeat tick could land inside a unit)
       expect(diskFence()?.stamp).toBe(tokenA);

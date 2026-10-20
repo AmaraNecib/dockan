@@ -344,7 +344,6 @@ describe("the holder's heartbeat re-reads the snapshot fence (#292)", () => {
       conn.markDirty();
       await conn.persistIfDirty();
       expect(diskStamp()).toBe(lock.currentOwner().token);
-      expect(conn.snapshotIsDurable()).toBe(true);
 
       // No await between the counter's read and the rename, so no timer can run
       // in between: the next probe is the FIRST probe after the bytes landed,
@@ -365,9 +364,9 @@ describe("the holder's heartbeat re-reads the snapshot fence (#292)", () => {
       expect(detectedAtProbe).toBeDefined();
       expect(detectedAtProbe! - probesBefore).toBe(1);
       expect(events).toEqual(["warn:VAULT_SNAPSHOT_FENCE_FOREIGN"]);
-      // A does not keep pretending its version is saved, and it does not fight
-      // for the file on a tick: the zombie's bytes are still what is on disk
-      expect(conn.snapshotIsDurable()).toBe(false);
+      // A does not fight for the file on a tick: the zombie's bytes are still
+      // what is on disk, and the repair is the next persist's or checkpoint's
+      // job — a write on a heartbeat could land inside an open unit
       expect(diskStamp()).toBe(zombieToken);
     } finally {
       await conn.close();

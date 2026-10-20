@@ -546,6 +546,17 @@ export class VaultLock {
   }
 
   /**
+   * How many listeners ride the beat (for tests and diagnostics): a released
+   * lock answers 0, because `release()` drops them. What this number protects is
+   * retention, not behaviour — a listener left in the set holds its closure
+   * (a closed connection's, in main.ts) for the rest of the process's life —
+   * so it is the one property of the set that has no other observable.
+   */
+  heartbeatListenerCount(): number {
+    return this.heartbeatListeners.size;
+  }
+
+  /**
    * Ride work on the holder's heartbeat tick (#292): called once per beat,
    * AFTER this holder's record has been rewritten, and never once the lock is
    * lost or released. This is the only continuous timer the vault already
@@ -558,8 +569,22 @@ export class VaultLock {
    * of a `setInterval` callback aborts the process, and the one thing the tick
    * must never do is take the heartbeat — the record that keeps this folder
    * ours — down with it. Returns an unsubscribe.
+   *
+   * CONTRACT: a listener runs SYNCHRONOUSLY, inside this lock's own
+   * `setInterval` callback, after the beat has rewritten the record and BEFORE
+   * the next beat can. So it must be bounded work: a listener that blocks
+   * delays the record rewrite that is the heartbeat, and a rewrite delayed past
+   * the staleness window is what lets another copy reclaim this folder. It must
+   * not be handed an unbounded read, a network call or a full snapshot write.
+   *
+   * A lock that is already released (including by loss, which releases) answers
+   * with a no-op unsubscribe rather than registering: a listener added after the
+   * beat has stopped would never run, and it would hold its closure — often a
+   * closed connection — for the rest of the process's life. `release()` clears
+   * the set for the same reason.
    */
   onHeartbeat(listener: () => void): () => void {
+    if (this.released) return () => undefined;
     this.heartbeatListeners.add(listener);
     return () => {
       this.heartbeatListeners.delete(listener);
@@ -655,6 +680,10 @@ export class VaultLock {
     if (this.released) return;
     this.released = true;
     activeLocks.delete(this);
+    // the tick is over, so nothing registered on it can run again: dropping the
+    // listeners here is what stops a released lock from retaining a closed
+    // connection's closure for the process's lifetime
+    this.heartbeatListeners.clear();
     if (this.timer !== undefined) clearInterval(this.timer);
     try {
       if (this.fd !== undefined) fs.closeSync(this.fd);

@@ -610,6 +610,34 @@ describe("vault single-writer lock", () => {
     }
   });
 
+  it("a listener registered after release is a no-op, and release drops what it held (#292)", async () => {
+    // Retention is the only observable behind the two guards, so the count is
+    // read directly: what the set holds is a closed connection's closure in
+    // main.ts, and "it was never called" cannot see that.
+    const lock = acquireVaultLock(dir, { heartbeatIntervalMs: 20 });
+    let called = 0;
+    lock.onHeartbeat(() => {
+      called += 1;
+    });
+    expect(lock.heartbeatListenerCount()).toBe(1);
+
+    lock.release();
+    // the tick is over, so nothing registered on it can run again: keeping the
+    // closure would retain it for the rest of the process's life
+    expect(lock.heartbeatListenerCount()).toBe(0);
+
+    // and a registration after release is refused outright rather than left in
+    // the set waiting for a beat that cannot come — the docstring promises
+    // "never once the lock is lost or released", so the unsubscribe is a no-op
+    const unsubscribe = lock.onHeartbeat(() => {
+      called += 1;
+    });
+    expect(lock.heartbeatListenerCount()).toBe(0);
+    unsubscribe();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(called).toBe(0);
+  });
+
   it("release never deletes another owner's lock", () => {
     const lock = acquireVaultLock(dir);
     // simulate a steal of the file by a different owner

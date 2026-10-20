@@ -84,14 +84,21 @@ still alive, so one shared helper decides both.
   served silently. What the fence cannot do is prove *currency*: no version
   travels with the bytes, so detection is only as continuous as the reader.
   Since #292 the holder re-reads the fence on its heartbeat tick, so a rename
-  that lands while it is idle is named and its version stops counting as
-  durable within one cadence instead of at the next write — but a holder that
-  crashes before that tick still loses the transactions in between, and the next
-  holder can only say the bytes are someone else's, not how old they are. The
-  refusal is fatal wherever it is seen — on the
-  write path because the client would otherwise be told a committed unit
-  failed, and at shutdown because the last committed version is not on disk and
-  exiting zero would call that a clean stop. That residue is the accepted limit
+  that lands while it is idle is named within one 10 s beat instead of at its
+  next write, and the version that was there stops being one this process calls
+  saved — but a holder that crashes before that tick still loses the
+  transactions in between, and the next holder can only say the bytes are
+  someone else's, not how old they are. What each of the three observing sites
+  does is its own answer, because the caller differs: the write path is fatal
+  (the client would otherwise be told a committed unit failed), shutdown is
+  fatal (the last committed version is not on disk, and exiting zero would call
+  that a clean stop), and the heartbeat only logs — one
+  `VAULT_SNAPSHOT_FENCE_FOREIGN` warn naming the stamp that replaced this
+  holder's, because nobody is committing on a beat, and a process that shut
+  itself down ten seconds into an idle afternoon would be its own outage. The
+  beat does not fight for the file either: a write on a timer could land inside
+  an open unit, so detection there is naming, and the next persist or
+  checkpoint is what repaves the bytes. That residue is the accepted limit
   recorded in the design record, not a claim of closure.
 - A refused instance keeps its decrypted image and its copy of the connection key
   in memory for the rest of the process's life. Closing the abandoned store would

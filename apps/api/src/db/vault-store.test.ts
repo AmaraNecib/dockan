@@ -122,4 +122,44 @@ describe("openVaultStore wires the snapshot fence (#280)", () => {
     // prints the file, and the failure line is the only useful part
     expect(source.includes("storeInput.writeStamp = () => holderToken(vaultLock);")).toBe(true);
   });
+
+  it("main.ts rides the fence probe on the holder's heartbeat, and releases it on failure", () => {
+    // The other half of the same wiring, and the half the integration test
+    // cannot prove: `lock.integration.test.ts` re-creates this registration
+    // inside the test, so it stays green if main.ts never registers at all —
+    // the title of #292 ("the fence is re-read on the heartbeat") would then be
+    // a description of a test, not of the app.
+    //
+    // A source scan rather than a race, deliberately: main.ts boots the whole
+    // app when imported, and the assertion a race would need — "a probe ran on
+    // a beat while a live lock held a live connection" — is only reachable
+    // through the same wiring being tested, on a 10 s timer. The scan proves
+    // the wiring is in the file, on the lock, calling the probe; the beat
+    // itself, the once-per-change log and the no-write contract are pinned
+    // against real time in `lock.integration.test.ts` and
+    // `encrypted-connection.test.ts`.
+    const source = fs.readFileSync(new URL("../main.ts", import.meta.url), "utf8");
+    expect(/\.onHeartbeat\(\(\) => conn\.recheckFence\(\)\)/.test(source)).toBe(true);
+    // and the unsubscribe is wired to the failure path: a bootstrap that throws
+    // after the registration must not leave the beat reading a closed
+    // connection for the lock's lifetime (Greptile, #292)
+    expect(source.includes("stopHeartbeatProbe?.();")).toBe(true);
+    // The fail-loud precondition sits BEFORE the connection is opened. It used
+    // to sit after `openVaultStore` and before the `try`, so a missing lock
+    // threw with `conn` already open, and its connection key was never zeroed
+    // (architecture audit, PR #314). A scan can pin the ORDER, which is the
+    // whole defect; a race cannot, because reaching that line needs the boot.
+    const guardAt = source.indexOf(
+      'if (vaultLock === undefined) throw new Error("the vault snapshot fence probe started without a held lock");',
+    );
+    const openAt = source.indexOf("const { conn, store } = openVaultStore(storeInput);");
+    const tryAt = source.indexOf("stopHeartbeatProbe = heldLock.onHeartbeat(() => conn.recheckFence());");
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(guardAt).toBeLessThan(openAt);
+    // and the registration is INSIDE the `try` that closes `conn` on failure,
+    // so no throw stands between the open and its cleanup
+    expect(openAt).toBeLessThan(tryAt);
+    expect(source.indexOf("try {", openAt)).toBeLessThan(tryAt);
+    expect(source.indexOf("stopHeartbeatProbe?.();", tryAt)).toBeGreaterThan(tryAt);
+  });
 });

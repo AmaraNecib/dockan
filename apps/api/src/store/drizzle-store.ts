@@ -763,19 +763,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    */
   const persistOrFail = async (): Promise<void> => {
     try {
-      const outcome = await conn.persistIfDirty();
-      if (outcome === "dropped") {
-        // The unit committed and is NOT on disk, and nothing can write it now:
-        // the connection closed first. The verdict is the one a failed write
-        // gets — fail-stop — because a client told "saved" would never retry a
-        // lost sale, and a client told "failed" would retry a committed one
-        // (#291). The connection named the drop under SNAPSHOT_PERSIST_DROPPED;
-        // this is the store's consequence of it.
-        throw new SnapshotPersistenceError(new Error(snapshotFailurePolicy("dropped").sentence), "dropped");
-      }
-      // "unproven" is NOT a failure: the bytes landed and only the proof did
-      // not, so the next write re-seals them. An unreadable prefix is never
-      // fatal (the design record), and the unit IS on disk.
+      // Everything the connection can answer is a throw: a write that failed,
+      // a fence that refused, and a connection that closed before the write.
+      // A resolved persist means the committed image is on disk — including the
+      // write whose fence could not be read back, which is reported by the
+      // connection and re-sealed by the next write, not failed here. Nothing in
+      // this module has to know which of those happened (#309).
+      await conn.persistIfDirty();
     } catch (error) {
       const wrapped = error instanceof Error ? error : new Error(String(error));
       // What the reason MEANS comes from one place (`snapshotFailurePolicy`), so

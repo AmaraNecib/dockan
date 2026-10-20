@@ -1444,7 +1444,7 @@ describe("closed connection and unreadable paths (#291)", () => {
     // a unit that arrives after the close: the handle is released and the key
     // is zeroed, so nothing was written and nothing can be
     conn.markDirty();
-    await expect(conn.persistIfDirty()).resolves.toBe("dropped");
+    await expect(conn.persistIfDirty()).rejects.toMatchObject({ reason: "dropped" });
     expect(fs.readFileSync(snapshotPath()).equals(durable)).toBe(true);
 
     // the drop is not silent: it is named, once, at error. A committed unit

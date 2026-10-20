@@ -4,9 +4,10 @@ import path from "node:path";
 
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
-import type { DrizzleDb, PersistOutcome } from "./connection";
+import type { DrizzleDb } from "./connection";
 import * as schema from "./schema";
 import {
+  SnapshotPersistenceError,
   readVerifiedSnapshot,
   sealSnapshot,
   sleepSync,
@@ -67,12 +68,14 @@ export type EncryptedConnection = {
   vaultId: string;
   markDirty(): void;
   /**
-   * Write the committed image if it is dirty, and say what happened. `dropped`
-   * is not "nothing to do": the connection had already closed, so the version
-   * this flush would have written is not on disk and cannot be. A caller that
-   * treats every resolved flush as saved reports a lost transaction as saved.
+   * Write the committed image if it is dirty. Every failure THROWS with its
+   * reason, including a connection that closed before the write: a caller that
+   * has to decide whether a committed unit may be reported saved reads one
+   * thing, and a resolved promise always means the image is on disk. An
+   * unreadable read-back is not a failure — the bytes landed — so it resolves
+   * and the version is simply not recorded durable.
    */
-  persistIfDirty(): Promise<PersistOutcome>;
+  persistIfDirty(): Promise<void>;
   flush(): Promise<void>;
   checkpoint(): void;
   close(): Promise<void>;
@@ -499,8 +502,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     return mutationVersion === persistedVersion && readFence().outcome === "mine";
   }
 
-  async function persistNow(): Promise<PersistOutcome> {
-    if (await snapshotIsCurrentAsync()) return "on-disk";
+  async function persistNow(): Promise<void> {
+    if (await snapshotIsCurrentAsync()) return;
     // The await above parks this job, and the store is not frozen while it is
     // parked: `close()` can release the database handle and a unit can BEGIN.
     // So the guard is read HERE, on the near side of the serializer, and not
@@ -523,17 +526,24 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       options.logger?.error?.(
         "SNAPSHOT_PERSIST_DROPPED",
         // The words come from the policy, not from here: the store logs the same
-        // event for the same fact when a persist throws "dropped", and a second
+        // event for the same fact when this throws "dropped", and a second
         // hand-written sentence would let one fact carry two texts — with the
         // policy's edit never reaching this row. The connection adds nothing to
         // the meaning, so it adds nothing to the sentence.
         snapshotFailurePolicy("dropped").sentence,
       );
-      return "dropped";
+      // And it THROWS, rather than resolving with a value the caller has to
+      // read. `dropped` is a failure by every measure that matters to a caller:
+      // a committed unit is not on disk and never will be. Signalling it as a
+      // resolved promise put the same fact in two unions — a return value and a
+      // throw — and left the store rebuilding the error this module owns
+      // (#309). The reason still travels, so the policy still files it under
+      // SNAPSHOT_PERSIST_DROPPED.
+      throw new SnapshotPersistenceError(new Error(snapshotFailurePolicy("dropped").sentence), "dropped");
     }
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
-    if (connection.inTransaction) return "on-disk";
+    if (connection.inTransaction) return;
     // The four-step sequence and its three-verdict table are
     // `snapshot-durability`'s, not this module's: seal, place with the guard
     // before the rename, read the fence back, retry a refusal. What is decided
@@ -552,9 +562,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       readFence: readFenceAsync,
     });
     // only a proven write records the version durable; an unproven one is
-    // reported and re-sealed by the next write
+    // reported and re-sealed by the next write, and neither is a refusal
     if (durability === "durable") persistedVersion = version;
-    return durability === "durable" ? "on-disk" : "unproven";
   }
 
   const connection: EncryptedConnection = {
@@ -582,9 +591,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // queue, released the handle, and the persist then woke up and serialized
       // it (#291). The currency check keeps its place and its meaning — it runs
       // on the queue now, one await inside the slot, instead of at request time.
-      const run = persistQueue.then(async (): Promise<PersistOutcome> => {
-        if (await snapshotIsCurrentAsync()) return "on-disk";
-        return persistNow();
+      const run = persistQueue.then(async (): Promise<void> => {
+        if (await snapshotIsCurrentAsync()) return;
+        await persistNow();
       });
       // the queue only needs to know WHEN the job settled, not what it decided
       persistQueue = run.then(

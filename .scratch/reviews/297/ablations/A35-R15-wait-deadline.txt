@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+3105 |       );
+3106 |       const waited = Date.now() - started;
+3107 |       expect(stdout).toContain("it says it is judging 3 files");
+3108 |       // Three files at two runs each and a one-second test timeout is six
+3109 |       // seconds of holder work: the waiter did not give up at its own 1.5s.
+3110 |       expect(waited).toBeGreaterThan(4_000);
+                            ^
+error: expect(received).toBeGreaterThan(expected)
+
+Expected: > 4000
+Received: 2117
+
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:3110:22)
+(fail) red-on-parent round 15 — the edge-audit findings at 8a618ed9 > a waiter waits past its own budget when the holder is judging more [2469.57ms]
+
+ 0 pass
+ 123 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [2.50s]

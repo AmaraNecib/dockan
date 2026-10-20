@@ -1,23 +1,23 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-1524 |         fixture,
-1525 |         { RED_ON_PARENT_TEST_TIMEOUT_MS: "1500" },
-1526 |         [],
-1527 |         20_000,
-1528 |       );
-1529 |       expect(stdout).toContain("RUN-INCOMPLETE");
+1553 |         fixture,
+1554 |         { RED_ON_PARENT_TEST_TIMEOUT_MS: "1500" },
+1555 |         [],
+1556 |         20_000,
+1557 |       );
+1558 |       expect(stdout).toContain("RUN-INCOMPLETE");
                             ^
 error: expect(received).toContain(expected)
 
 Expected to contain: "RUN-INCOMPLETE"
-Received: "red-on-parent: base 11678e943380 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-NDwsZA\\wt-11678e9433806afb3726a490a1a52be1d49946f9, created) · bun 1.4.2\n\nFILE                            TEST          VERDICT             WAIVED\npackages/core/src/hang.test.ts  hangs         WRONG-REASON-RED    line 7\npackages/core/src/hang.test.ts  hangs         RED-ON-CHANGE       -\n\nFAILURES\n  packages/core/src/hang.test.ts\n    RED ON CHANGE: hangs — the test fails on the change as well, so it pins nothing the parent can be asked about\n\nWAIVERS (a reviewer reads these in the diff)\n  packages/core/src/hang.test.ts:7  \"hangs\" — a waiver cannot excuse a run that never finished\n\nVERDICT GUIDE\n  RED ON CHANGE — the test fails on the change as well, so it pins nothing\n    1. run the test in your checkout and fix it — a test that is red on the change is broken, whatever the parent says\n    2. if your working tree has uncommitted changes, commit them and run the gate again: the change's own run reads the working tree, not the commit\n  WRONG REASON RED — the test could not be evaluated on the parent (load error, or a non-assertion throw)\n    1. land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken\n    2. or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`\n    3. if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`\n\nadded test files: 1 · 0 right reason red · 1 red on change · 1 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: FAIL\n"
+Received: "red-on-parent: base e8a3a9ef628a (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-ngJdCM\\wt-e8a3a9ef628a7685f8c57cd3fa326153b8632826, created) · bun 1.4.2\n\nFILE                            TEST          VERDICT             WAIVED\npackages/core/src/hang.test.ts  hangs         WRONG-REASON-RED    line 7\npackages/core/src/hang.test.ts  hangs         RED-ON-CHANGE       -\n\nFAILURES\n  packages/core/src/hang.test.ts\n    RED ON CHANGE: hangs — the test fails on the change as well, so it pins nothing the parent can be asked about\n\nWAIVERS (a reviewer reads these in the diff)\n  packages/core/src/hang.test.ts:7  \"hangs\" — a waiver cannot excuse a run that never finished\n\nVERDICT GUIDE\n  RED ON CHANGE — the test fails on the change as well, so it pins nothing\n    1. run the test in your checkout and fix it — a test that is red on the change is broken, whatever the parent says\n    2. if your working tree has uncommitted changes, commit them and run the gate again: the change's own run reads the working tree, not the commit\n  WRONG REASON RED — the test could not be evaluated on the parent (load error, or a non-assertion throw)\n    1. land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken\n    2. or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`\n    3. if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`\n\nadded test files: 1 · 0 right reason red · 1 red on change · 0 skipped on change · 0 not on change · 1 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: FAIL\n"
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1529:22)
-(fail) red-on-parent round 8 > a hung test run is RUN INCOMPLETE, and no waiver covers it [11264.28ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1558:22)
+(fail) red-on-parent round 8 > a hung test run is RUN INCOMPLETE, and no waiver covers it [11366.75ms]
 
  0 pass
- 95 filtered out
+ 123 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [11.30s]
+Ran 1 test across 1 file. [11.40s]

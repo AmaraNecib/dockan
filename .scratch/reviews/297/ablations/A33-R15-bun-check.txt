@@ -1,0 +1,37 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+(pass) red-on-parent round 5 > the gate refuses to run under node [0.05ms]
+3118 |     // The ask lived in `main` alone, so a caller that used the exported
+3119 |     // `runGate` skipped it: every parent-side run then read as a whole-file
+3120 |     // load failure, and a waiver turned that into a PASS.
+3121 |     expect(() =>
+3122 |       runGate({ repo: process.cwd(), base: "HEAD", head: "HEAD", fresh: false }, {}),
+3123 |     ).toThrow(/bun/);
+             ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /bun/
+
+Received function did not throw
+Received value: {
+  baseSha: "8a618ed96c97a03233d1f0d48344cdc26640420e",
+  worktree: "(none)",
+  worktreeCreated: false,
+  installLog: "",
+  files: [],
+  verdicts: [],
+  stdoutByFile: Map {},
+  problems: [ "--base HEAD already contains HEAD: there is no change to gate, so this run would pass having judged nothing. Point --base at the branch this change targets." ],
+  uncommitted: [],
+  skipped: [],
+}
+
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:3123:7)
+(fail) red-on-parent round 15 — the edge-audit findings at 8a618ed9 > the gate refuses to run under node [457.74ms]
+
+ 1 pass
+ 122 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 2 tests across 1 file. [491.00ms]

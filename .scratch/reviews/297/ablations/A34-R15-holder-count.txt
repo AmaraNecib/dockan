@@ -1,0 +1,28 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+(pass) red-on-parent round 15 — the edge-audit findings at 8a618ed9 > the holder's pid file says how many files it is judging [8.75ms]
+3161 |     // The pid file is how a waiter learns what the holder is doing, and the
+3162 |     // file count is the only part of it the holder can be behind on. The
+3163 |     // format is pinned here because the reader parses it: a waiter that
+3164 |     // cannot read the count waits for its own guess instead of the holder's
+3165 |     // work.
+3166 |     expect(lockPidFileContent(4242, "token-abc", 7)).toBe("4242 token-abc 7\n");
+                                                            ^
+error: expect(received).toBe(expected)
+
+- "4242 token-abc 7
++ "4242 token-abc
+  "
+
+- Expected  - 1
++ Received  + 1
+
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:3166:54)
+(fail) red-on-parent round 16 — the standards-review findings at 8a618ed9 > the holder's pid file says how many files it is judging [0.52ms]
+
+ 1 pass
+ 122 filtered out
+ 1 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [43.00ms]

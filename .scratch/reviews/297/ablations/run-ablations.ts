@@ -38,10 +38,10 @@ type Ablation = {
 const ablations: Ablation[] = [
   {
     name: "A1-F1-red-on-change",
-    test: "red on the change as well",
+    test: "a waived NOT ON PARENT does not suppress RED ON CHANGE",
     claim: "F1: a test that fails on the change as well is reported as RED_ON_CHANGE",
-    from: `        if (changeResult.status !== "failed") continue;`,
-    to: `        if (changeResult.status !== "failed") continue;\n        continue;`,
+    from: `    if (changeResult.status === "failed") {`,
+    to: `    if (false) {`,
   },
   {
     name: "A2-F2-no-timeout",
@@ -162,6 +162,270 @@ const ablations: Ablation[] = [
     from: `  if (isTypeOnlyClause(match[1] ?? "")) continue;`,
     to: `  if (isTypeOnlyClause("")) continue;`,
   },
+  {
+    name: "A18-R5-lock-identity",
+    test: "does not touch the lock that took it",
+    claim: "R5: the pid is not an identity — the token tells a replaced lock from the stale one",
+    from: `    return a.pid === b.pid && (a.token ?? "") === (b.token ?? "");`,
+    to: `    return a.pid === b.pid;`,
+  },
+  {
+    name: "A19-R5-verify-before-rename",
+    test: "does not touch the lock that took it",
+    claim: "R5b: a reclaim refuses before it renames, so a live lock is never moved",
+    from: `  if (!sameLock(observeLockHolder(lockPath), observed)) return "refused";`,
+    to: `  if (false) return "refused";`,
+  },
+  {
+    name: "A20-R6-skipped-on-change",
+    test: "a test the change skips is not a right-reason red",
+    claim: "R6: a test the change skips never runs there, so the parent's red says nothing about it",
+    from: `      name: "SKIPPED_ON_CHANGE",
+      detail:
+        "the test is skipped on the change, so it never runs there and pins nothing — the parent's red was about a test the change does not execute",`,
+    to: `      name: "GREEN_ON_PARENT",
+      detail:
+        "the test is skipped on the change, so it never runs there and pins nothing — the parent's red was about a test the change does not execute",`,
+  },
+  {
+    name: "A21-R7-dirty-tree",
+    test: "an uncommitted source cannot hide a test from the change side",
+    claim: "R7: a dirty working tree fails the gate closed, because the change side reads it",
+    from: `  const dirty = modifiedTrackedFiles(repo);`,
+    to: `  const dirty: string[] = [];`,
+  },
+  {
+    name: "A22-R8-tombstone-name",
+    test: "a tombstone left behind does not block the reclaim",
+    claim: "R8: the tombstone name carries a random suffix, so a leftover one cannot block the rename",
+    from: "  const tombstone = `${lockPath}.stale-${process.pid}-${randomUUID()}`;",
+    to: "  const tombstone = `${lockPath}.stale-${process.pid}`;",
+  },
+  {
+    name: "A23-R9-unreadable-pid",
+    test: "a pid file that cannot be read is not evidence of a dead holder",
+    claim: "R9: a read error that is not ENOENT is not evidence of a dead holder",
+    from: `    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { kind: "alive" };`,
+    to: ``,
+  },
+  {
+    name: "A24-R10-no-spin",
+    test: "a reclaim that cannot rename the lock is waited out, not spun on",
+    claim: "R10: the waiter is bounded — a reclaim that refused falls through to the deadline check and the sleep, so the run cannot spin at the lock",
+    from: `      if (Date.now() > deadline) {
+        throw new GateError(lockContentionMessage(lockPath, observed));
+      }
+      if (observed.kind !== "alive" && reclaimStaleLock(lockPath, observed) === "reclaimed") {
+        // The stale lock is gone, so the next \`mkdirSync\` can take the name.
+        continue;
+      }`,
+    to: `      if (observed.kind !== "alive") {
+        reclaimStaleLock(lockPath, observed);
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new GateError(lockContentionMessage(lockPath, observed));
+      }`,
+  },
+  {
+    name: "A25-R13-missing-module",
+    test: "the report names what the parent was missing",
+    claim: "R13: the verdict names the module or export the parent lacks",
+    from: `  const module = missingModule(stdout);
+  if (module !== null) {
+    return \`the parent could not load the file (the parent has no \${module})\`;
+  }`,
+    to: ``,
+  },
+  {
+    name: "A26-R13-waived-count",
+    test: "a pass that rests on a waiver says so in the last line",
+    claim: "R13b: a pass that rests on waivers says so in the last line, which is the one a reviewer reads",
+    from: `    const waived = run.verdicts.filter((verdict) => verdict.waiver !== null && verdictPasses(verdict));`,
+    to: `    const waived: Verdict[] = [];`,
+  },
+  {
+    name: "A27-R10-deadline",
+    test: "a reclaim that cannot rename the lock is waited out, not spun on",
+    claim: "R10b: the wait has a deadline — the run gives up and says so instead of waiting forever",
+    from: `      if (Date.now() > deadline) {
+        throw new GateError(lockContentionMessage(lockPath, observed));
+      }
+`,
+    to: ``,
+  },
+  {
+    name: "A28-R14-not-on-change",
+    test: "a test the change does not register is not a right-reason red",
+    claim:
+      "R14a: a test the parent's run registered and the change's run did not is a test the change does not execute, so it is not a right-reason red",
+    from: `      const notOnChange = changeSideRan
+        ? notRegisteredOnChange(file, parentResults, changeResults)
+        : [];`,
+    to: `      const notOnChange: Verdict[] = [];`,
+  },
+  {
+    name: "A29-R14-verdict-line",
+    test: "a run with nothing to gate still says what it decided",
+    claim: "R14b: the report ends with a verdict in every shape, including the one that judged nothing",
+    from: `    lines.push(problems.length > 0 ? "red-on-parent: FAIL" : "red-on-parent: PASS");`,
+    to: ``,
+  },
+  {
+    name: "A30-R14-guide-entry",
+    test: "the verdict guide names every verdict, and says what to do about it",
+    claim: "R14c: every verdict the gate can print has a guide entry with fixes",
+    from: `  {
+    name: "NOT_ON_CHANGE",
+    title: "the parent's run registered this test and the change's run did not, so the change does not execute it",`,
+    to: `  {
+    name: "NOT_ON_CHANGE_UNDOCUMENTED",
+    title: "the parent's run registered this test and the change's run did not, so the change does not execute it",`,
+  },
+  {
+    name: "A31-R14-not-on-parent-suppression",
+    test: "the change side's verdicts are decided on its own results",
+    claim:
+      "R14d: a change-side failure whose NOT ON PARENT row already fails the run is not reported twice",
+    from: `      if (unexcusedNotOnParent.has(test)) continue;`,
+    to: `      if (false) continue;`,
+  },
+  {
+    name: "A32-R15-skipped-on-change",
+    test: "a test the change skips and the parent never judged is not a pass",
+    claim:
+      "R15a: a test the change skips and the parent never judged runs nowhere, so it is not a pass",
+    from: `    const alreadyFailing =
+      parentVerdict !== undefined &&
+      (parentVerdict.name === "WAIVER_MISFILED" ||
+        parentVerdict.name === "RUN_INCOMPLETE" ||
+        (parentVerdict.name === "NOT_ON_PARENT" && !verdictPasses(parentVerdict)));
+    if (alreadyFailing) continue;`,
+    to: `    if (parentVerdict === undefined || parentVerdict.name !== "RIGHT_REASON_RED") continue;`,
+  },
+  {
+    name: "A33-R15-bun-check",
+    test: "the gate refuses to run under node",
+    claim: "R15b: the gate asks whether it is running under bun before it does any work, whoever calls it",
+    from: `  const refusal = bunOnlyRefusal(versions);
+  if (refusal !== null) {
+    throw new GateError(
+      "this gate has to run under bun, not node — every parent-side run spawns \`bun test\` from process.execPath, and under node each file reads as a whole-file load failure",
+    );
+  }
+`,
+    to: ``,
+  },
+  {
+    name: "A34-R15-holder-count",
+    test: "the holder's pid file says how many files it is judging",
+    claim: "R15c: the pid file says how many files the holder is judging, so a waiter can wait for that work",
+    from: "  return `${pid} ${token} ${fileCount}\\n`;",
+    to: "  return `${pid} ${token}\\n`;",
+  },
+  {
+    name: "A35-R15-wait-deadline",
+    test: "a waiter waits past its own budget when the holder is judging more",
+    claim: "R15d: the waiter waits for the work the holder says it is doing, not for its own guess",
+    from: `      if (observed.kind !== "unclaimed" && observed.token !== countedHolder) {
+        countedHolder = observed.token ?? null;
+        deadline = effectiveWaitDeadline(deadline, observed, Date.now());
+      }
+`,
+    to: ``,
+  },
+  {
+    name: "A36-R16-base-contains-head",
+    test: "--base that already contains head reports a problem, not a green run",
+    claim:
+      "R16a: a base that already contains the head has nothing to gate, so the run says so instead of passing having judged nothing",
+    from: `    if (baseContainsHead) {
+      problems.push(
+        \`--base \${options.base} already contains \${head}: there is no change to gate, so this run would pass having judged nothing. Point --base at the branch this change targets.\`,
+      );
+    }`,
+    to: `    if (false) {
+      problems.push(
+        \`--base \${options.base} already contains \${head}: there is no change to gate, so this run would pass having judged nothing. Point --base at the branch this change targets.\`,
+      );
+    }`,
+  },
+  {
+    name: "A37-R16-head-not-checked-out",
+    test: "an annotated tag on another commit is still reported",
+    claim:
+      "R16b: a head that is not checked out cannot have its tests enumerated, so the run says so instead of judging the wrong commit",
+    from: `  if (checkoutDiffers) {
+    problems.push(
+      \`--head \${head} is not the checked-out commit, so the tests it registers cannot be enumerated — check that commit out, or drop --head\`,
+    );
+  }`,
+    to: `  if (false) {
+    problems.push(
+      \`--head \${head} is not the checked-out commit, so the tests it registers cannot be enumerated — check that commit out, or drop --head\`,
+    );
+  }`,
+  },
+  {
+    name: "A38-R16-ignored-files-kept",
+    test: "a reused worktree is restored, not judged as the last run left it",
+    claim: "R16c: the reset clears the untracked files a test left behind and keeps the ignored ones",
+    from: `  gitText(worktree, ["clean", "-fd"]);`,
+    to: `  gitText(worktree, ["clean", "-fdx"]);`,
+  },
+  {
+    name: "A39-R16-comment-strip",
+    test: "a commented-out import is not an import",
+    claim: "R16d: a commented-out import is not an import, so the file is not refused for it",
+    from: `  const code = withoutComments(source);`,
+    to: `  const code = source;`,
+  },
+  {
+    name: "A40-R16-waiver-before-refusal",
+    test: "a refused file still has its waiver marker read",
+    claim:
+      "R16e: the waiver marker of a refused file is read before the refusal, so a malformed marker is still reported",
+    from: `      const source = readAtRevision(repo, head, file);
+      const parsed = parseWaivers(source);
+      for (const problem of parsed.problems) problems.push(\`\${file}: \${problem}\`);
+      // A file that imports another test file pulls that file's cases into its
+      // own report, and bun names every case after the entry, so the report
+      // cannot say whose test failed. Judging it would put the other file's
+      // green case against this file — and demand a waiver for a test this
+      // file does not contain. The gate names the import and judges nothing.
+      const imports = importedTestFiles(source);
+      if (imports.length > 0) {
+        problems.push(
+          \`\${file}: imports another test file (\${imports.join(", ")}), so one run would report that file's cases as well and the gate could not tell whose test failed — this file was not judged; keep each file's cases in its own file\`,
+        );
+        continue;
+      }`,
+    to: `      const source = readAtRevision(repo, head, file);
+      // A file that imports another test file pulls that file's cases into its
+      // own report, and bun names every case after the entry, so the report
+      // cannot say whose test failed. Judging it would put the other file's
+      // green case against this file — and demand a waiver for a test this
+      // file does not contain. The gate names the import and judges nothing.
+      const imports = importedTestFiles(source);
+      if (imports.length > 0) {
+        problems.push(
+          \`\${file}: imports another test file (\${imports.join(", ")}), so one run would report that file's cases as well and the gate could not tell whose test failed — this file was not judged; keep each file's cases in its own file\`,
+        );
+        continue;
+      }
+      const parsed = parseWaivers(source);
+      for (const problem of parsed.problems) problems.push(\`\${file}: \${problem}\`);`,
+  },
+  {
+    name: "A41-R16-run-incomplete-passes",
+    test: "a broken or unjudged test fails even with a waiver",
+    claim:
+      "R16f: a run that did not finish fails the gate, and a waiver cannot make an unjudged test pass",
+    from: `    case "RUN_INCOMPLETE":
+      return false;`,
+    to: `    case "RUN_INCOMPLETE":
+      return true;`,
+  },
 ];
 
 function restoreBaseline(): void {
@@ -194,11 +458,17 @@ try {
     const fails = (output.match(/^\(fail\)/gmu) ?? []).length;
     const passes = (output.match(/^\(pass\)/gmu) ?? []).length;
     const red = fails > 0;
+    // The failing test's name, so a red can be attributed to the test the
+    // entry names. The `-t` filter is a substring match, so it can select more
+    // than one test; the name says which one died.
+    const failedNames = [...output.matchAll(/^\(fail\)\s+(.+?)\s+\[\d/gsmu)]
+      .map((match) => match[1] ?? "")
+      .join(" | ");
     // A mutant that crashes the runner is not a green mutant: it is a broken
     // ablation, and the two have to read differently.
     const crashed = !red && result.status !== 0;
     summary.push(
-      `${red ? "RED " : crashed ? "CRASHED" : "NOT RED"} ${ablation.name}: ${passes} pass, ${fails} fail, exit ${result.status} — ${ablation.claim}`,
+      `${red ? "RED " : crashed ? "CRASHED" : "NOT RED"} ${ablation.name}: ${passes} pass, ${fails} fail, exit ${result.status}${failedNames ? ` — failing: ${failedNames}` : ""} — ${ablation.claim}`,
     );
     restoreBaseline();
   }

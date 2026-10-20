@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+1265 | 
+1266 |   test("a broken or unjudged test fails even with a waiver", () => {
+1267 |     // These three name a defect in the change, not a fact about the parent, so
+1268 |     // a waiver has nothing to say about them: a waiver says why a test is
+1269 |     // green on the parent.
+1270 |     expect(verdictPasses(verdict("RED_ON_CHANGE", null))).toBe(false);
+                                                                 ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1270:59)
+(fail) verdictPasses > a broken or unjudged test fails even with a waiver [0.51ms]
+
+ 0 pass
+ 123 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [34.00ms]

@@ -1,0 +1,37 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+2766 |     // The report prints the guide filtered by the verdicts it has, so a typo
+2767 |     // in a name deletes that verdict's fix text from the report and nothing
+2768 |     // else notices. A verdict with no guide entry is a verdict a reviewer
+2769 |     // cannot act on.
+2770 |     const names = new Set(VERDICT_GUIDE.map((entry) => entry.name));
+2771 |     expect(names).toEqual(
+                         ^
+error: expect(received).toEqual(expected)
+
+  Set {
+    "RIGHT_REASON_RED",
+    "RED_ON_CHANGE",
+    "SKIPPED_ON_CHANGE",
+-   "NOT_ON_CHANGE",
++   "NOT_ON_CHANGE_UNDOCUMENTED",
+    "WRONG_REASON_RED",
+    "NOT_ON_PARENT",
++   "RUN_INCOMPLETE",
+    "GREEN_ON_PARENT",
+    "WAIVER_MISFILED",
+-   "RUN_INCOMPLETE",
+  }
+
+- Expected  - 2
++ Received  + 2
+
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2771:19)
+(fail) red-on-parent round 14 — the test-audit findings at 8a618ed9 > the verdict guide names every verdict, and says what to do about it [0.58ms]
+
+ 0 pass
+ 123 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [33.00ms]

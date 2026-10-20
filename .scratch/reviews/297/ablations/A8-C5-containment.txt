@@ -1,36 +1,36 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-1692 |   test("a manifest path that escapes the worktree names nothing", () => {
-1693 |     const worktree = join(tmpdir(), "wt");
-1694 |     expect(gateModule.manifestTarget(worktree, "packages/core/src/x.test.ts")).toBe(
-1695 |       join(resolve(worktree), "packages/core/src/x.test.ts"),
-1696 |     );
-1697 |     expect(gateModule.manifestTarget(worktree, "../victim.txt")).toBeNull();
+1721 |   test("a manifest path that escapes the worktree names nothing", () => {
+1722 |     const worktree = join(tmpdir(), "wt");
+1723 |     expect(gateModule.manifestTarget(worktree, "packages/core/src/x.test.ts")).toBe(
+1724 |       join(resolve(worktree), "packages/core/src/x.test.ts"),
+1725 |     );
+1726 |     expect(gateModule.manifestTarget(worktree, "../victim.txt")).toBeNull();
                                                                         ^
 error: expect(received).toBeNull()
 
 Received: "C:\\Users\\sensei57\\AppData\\Local\\Temp\\victim.txt"
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1697:66)
-(fail) red-on-parent round 8 > a manifest path that escapes the worktree names nothing [0.63ms]
-1725 |       writeFileSync(
-1726 |         join(fixture.cache, `${fixture.base}.copied.json`),
-1727 |         JSON.stringify(["../victim.txt"]),
-1728 |       );
-1729 |       runGateFixture(fixture);
-1730 |       expect(existsSync(victim)).toBe(true);
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1726:66)
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree names nothing [0.79ms]
+1754 |       writeFileSync(
+1755 |         join(fixture.cache, `${fixture.base}.copied.json`),
+1756 |         JSON.stringify(["../victim.txt"]),
+1757 |       );
+1758 |       runGateFixture(fixture);
+1759 |       expect(existsSync(victim)).toBe(true);
                                         ^
 error: expect(received).toBe(expected)
 
 Expected: true
 Received: false
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1730:34)
-(fail) red-on-parent round 8 > a manifest path that escapes the worktree deletes nothing [2227.90ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1759:34)
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree deletes nothing [2382.31ms]
 
  0 pass
- 94 filtered out
+ 122 filtered out
  2 fail
  3 expect() calls
-Ran 2 tests across 1 file. [2.26s]
+Ran 2 tests across 1 file. [2.41s]

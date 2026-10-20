@@ -1,12 +1,12 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-1147 |     expect(verdicts.map((verdict) => verdict.test)).toEqual([
-1148 |       "gr keeps a positive number",
-1149 |       "other already worked",
-1150 |     ]);
-1151 |     expect(verdicts[0]?.waiver).toEqual(waiver);
-1152 |     expect(verdicts[1]?.waiver).toBeNull();
+1162 |     expect(verdicts.map((verdict) => verdict.test)).toEqual([
+1163 |       "gr keeps a positive number",
+1164 |       "other already worked",
+1165 |     ]);
+1166 |     expect(verdicts[0]?.waiver).toEqual(waiver);
+1167 |     expect(verdicts[1]?.waiver).toBeNull();
                                        ^
 error: expect(received).toBeNull()
 
@@ -16,25 +16,25 @@ Received: {
   line: 7,
 }
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1152:33)
-(fail) classifyFileRun > a waiver excuses only the test it names [0.83ms]
-1626 |       const { status, stdout } = runGateFixture(fixture);
-1627 |       expect(stdout).toContain("WRONG-REASON-RED");
-1628 |       // The unjudged sibling has to be named: a waiver that names one test says
-1629 |       // nothing about the next one.
-1630 |       expect(stdout).toContain("other already worked");
-1631 |       expect(status).toBe(1);
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1167:33)
+(fail) classifyFileRun > a waiver excuses only the test it names [0.99ms]
+1655 |       const { status, stdout } = runGateFixture(fixture);
+1656 |       expect(stdout).toContain("WRONG-REASON-RED");
+1657 |       // The unjudged sibling has to be named: a waiver that names one test says
+1658 |       // nothing about the next one.
+1659 |       expect(stdout).toContain("other already worked");
+1660 |       expect(status).toBe(1);
                             ^
 error: expect(received).toBe(expected)
 
 Expected: 1
 Received: 0
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1631:22)
-(fail) red-on-parent round 8 > a waiver excuses only the test it names [1236.21ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1660:22)
+(fail) red-on-parent round 8 > a waiver excuses only the test it names [1345.90ms]
 
  0 pass
- 94 filtered out
+ 122 filtered out
  2 fail
  6 expect() calls
-Ran 2 tests across 1 file. [1268.00ms]
+Ran 2 tests across 1 file. [1385.00ms]

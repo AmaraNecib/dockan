@@ -32,6 +32,10 @@ import {
   parseSteps,
   stepNamed,
 } from "./workflow-utils";
+// The gate's own budget, read from the script rather than copied here: the
+// step timeout has to cover what the script can spend, and a copy of the two
+// numbers in two files is a pair that drifts.
+import { INSTALL_TIMEOUT_MS, testTimeoutMs } from "../../../scripts/red-on-parent";
 
 const WORKFLOW_PATH = path.resolve(import.meta.dir, "../../../.github/workflows/ci.yml");
 const WORKFLOW_SOURCE = readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n?/gu, "\n");
@@ -304,6 +308,14 @@ describe("PR CI workflow", () => {
     const stepTimeout = Number(gate.timeoutMinutes);
     expect(stepTimeout).toBeGreaterThan(0);
     expect(stepTimeout).toBeLessThan(jobTimeout);
+    // The step's budget has to cover what the script can spend on one gated
+    // file: a cold install in the base worktree, then the parent-side run and
+    // the change-side run at the test timeout. A step timeout below that kills
+    // the gate on a cold install, and the numbers come from the script, so the
+    // assertion moves when the script's budget does.
+    expect(stepTimeout * 60_000).toBeGreaterThanOrEqual(
+      INSTALL_TIMEOUT_MS + 2 * testTimeoutMs(),
+    );
   });
 
   it("keeps the production web build in checks", () => {

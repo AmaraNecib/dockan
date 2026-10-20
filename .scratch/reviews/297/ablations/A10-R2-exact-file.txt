@@ -1,23 +1,23 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-2151 |     );
-2152 |     try {
-2153 |       const { status, stdout } = runGateFixture(fixture, {
-2154 |         RED_ON_PARENT_TEST_TIMEOUT_MS: "2000",
-2155 |       });
-2156 |       expect(stdout).not.toContain("RUN-INCOMPLETE");
+2190 |     );
+2191 |     try {
+2192 |       const { status, stdout } = runGateFixture(fixture, {
+2193 |         RED_ON_PARENT_TEST_TIMEOUT_MS: "2000",
+2194 |       });
+2195 |       expect(stdout).not.toContain("RUN-INCOMPLETE");
                                 ^
 error: expect(received).not.toContain(expected)
 
 Expected to not contain: "RUN-INCOMPLETE"
-Received: "red-on-parent: base 47038b52d3b8 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-65ygEH\\wt-47038b52d3b8114b4391b0a9c5c526cb9fda6d59, created) · bun 1.4.2\n\nFILE                            TEST          VERDICT             WAIVED\npackages/core/src/cart.test.ts  (whole file)  RUN-INCOMPLETE      -\n\nFAILURES\n  packages/core/src/cart.test.ts\n    RUN INCOMPLETE: (whole file) — bun test did not complete (spawnSync C:\\Users\\sensei57\\.bun\\bin\\bun.exe ETIMEDOUT)\n\nVERDICT GUIDE\n  RUN INCOMPLETE — the test run did not finish, so there is no result to judge\n    1. re-run the gate — a timeout or a failed process start says nothing about the change\n    2. no waiver covers this: a waiver says why a test is green on the parent, not why no result arrived\n\nadded test files: 1 · 0 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 1 run incomplete\nred-on-parent: FAIL\n"
+Received: "red-on-parent: base 06b0c5439dbb (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-oOEk3I\\wt-06b0c5439dbb9cb5a3abf97e86d0ae362db4e673, created) · bun 1.4.2\n\nFILE                            TEST          VERDICT             WAIVED\npackages/core/src/cart.test.ts  (whole file)  RUN-INCOMPLETE      -\n\nFAILURES\n  packages/core/src/cart.test.ts\n    RUN INCOMPLETE: (whole file) — bun test did not complete (spawnSync C:\\Users\\sensei57\\.bun\\bin\\bun.exe ETIMEDOUT)\n\nVERDICT GUIDE\n  RUN INCOMPLETE — the test run did not finish, so there is no result to judge\n    1. re-run the gate — a timeout or a failed process start says nothing about the change\n    2. no waiver covers this: a waiver says why a test is green on the parent, not why no result arrived\n\nadded test files: 1 · 0 right reason red · 0 red on change · 0 skipped on change · 0 not on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 1 run incomplete\nred-on-parent: FAIL\n"
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2156:26)
-(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > a sibling whose name extends the added file's is never run [3130.40ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2195:26)
+(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > a sibling whose name extends the added file's is never run [3181.35ms]
 
  0 pass
- 95 filtered out
+ 123 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [3.16s]
+Ran 1 test across 1 file. [3.21s]

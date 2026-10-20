@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+3010 |         },
+3011 |       ],
+3012 |     );
+3013 |     try {
+3014 |       const { status, stdout } = runGateFixture(fixture);
+3015 |       expect(stdout).toContain("SKIPPED-ON-CHANGE");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "SKIPPED-ON-CHANGE"
+Received: "red-on-parent: base 834c316f382f (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-gjCdQm\\wt-834c316f382f061b7db868b4602394196f259221, created) · bun 1.4.2\n\nFILE                             TEST                   VERDICT             WAIVED\npackages/core/src/fresh.test.ts  waits for the feature  WRONG-REASON-RED    line 1\n\nWAIVERS (a reviewer reads these in the diff)\n  packages/core/src/fresh.test.ts:1  \"waits for the feature\" — the module is new in this change\n\nVERDICT GUIDE\n  WRONG REASON RED — the test could not be evaluated on the parent (load error, or a non-assertion throw)\n    1. land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken\n    2. or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`\n    3. if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`\n\nadded test files: 1 · 0 right reason red · 0 red on change · 0 skipped on change · 0 not on change · 1 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS (1 waived)\n  1 of them: the parent could not run the test, so nothing was judged there\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:3015:22)
+(fail) red-on-parent round 15 — the edge-audit findings at 8a618ed9 > a test the change skips and the parent never judged is not a pass [1297.12ms]
+
+ 0 pass
+ 123 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [1329.00ms]

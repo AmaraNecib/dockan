@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+scripts\red-on-parent.test.ts:
+708 |     try {
+709 |       tag(fixture.repo, "at-change", "HEAD");
+710 |       writeFiles(fixture.repo, [{ path: "packages/core/README.md", text: "not a test\n" }]);
+711 |       commitAll(fixture.repo, "moves HEAD past the tagged commit");
+712 |       const { status, stdout } = runGateFixture(fixture, {}, ["--head", "at-change"]);
+713 |       expect(stdout).toContain("is not the checked-out commit");
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "is not the checked-out commit"
+Received: "red-on-parent: base cdcae4a0f2d7 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-APFe1A\\wt-cdcae4a0f2d7e21997dc180bd5f2a17678d9690a, created) · bun 1.4.2\n\nFILE                           TEST                VERDICT             WAIVED\npackages/core/src/red.test.ts  guard rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 skipped on change · 0 not on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:713:22)
+(fail) --head > an annotated tag on another commit is still reported [1341.46ms]
+
+ 0 pass
+ 123 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [1374.00ms]

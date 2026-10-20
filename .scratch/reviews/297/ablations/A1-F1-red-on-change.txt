@@ -1,23 +1,23 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-1487 |         },
-1488 |       ],
-1489 |     );
-1490 |     try {
-1491 |       const { status, stdout } = runGateFixture(fixture);
-1492 |       expect(stdout).toContain("RED-ON-CHANGE");
+2113 |       ],
+2114 |     );
+2115 |     try {
+2116 |       const { status, stdout } = runGateFixture(fixture);
+2117 |       expect(stdout).toContain("NOT-ON-PARENT");
+2118 |       expect(stdout).toContain("RED-ON-CHANGE");
                             ^
 error: expect(received).toContain(expected)
 
 Expected to contain: "RED-ON-CHANGE"
-Received: "red-on-parent: base 1e70a05ebcb3 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-baH0nC\\wt-1e70a05ebcb3af82b0d2ec8e110555e0effe75b6, created) · bun 1.4.2\n\nFILE                           TEST                VERDICT             WAIVED\npackages/core/src/red.test.ts  guard rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+Received: "red-on-parent: base 623dd3a27583 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-vOnt0M\\wt-623dd3a2758385695ef915ec0171df7a8f044c43, created) · bun 1.4.2\n\nFILE                                   TEST                 VERDICT             WAIVED\npackages/core/src/conditional.test.ts  always rejects zero  RIGHT-REASON-RED    -\npackages/core/src/conditional.test.ts  brand new works      NOT-ON-PARENT       line 12\n\nWAIVERS (a reviewer reads these in the diff)\n  packages/core/src/conditional.test.ts:12  \"brand new works\" — the parent cannot register it\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n  NOT ON PARENT — the change registers a test the parent's run never reported, so there is no red to judge for it\n    1. build the test so the parent registers it too — the gate has to run it on the parent before it can trust the red\n    2. if the parent genuinely cannot register it, add `// red-on-parent-waive: \"<test name>\" — <why the parent cannot run it>`\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 skipped on change · 0 not on change · 0 wrong reason red · 1 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS (1 waived)\n"
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1492:22)
-(fail) red-on-parent round 8 > a test that is red on the change as well fails the gate [1265.44ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2118:22)
+(fail) red-on-parent round 9 — a waiver cannot hide a change-side failure > a waived NOT ON PARENT does not suppress RED ON CHANGE [1597.96ms]
 
  0 pass
- 95 filtered out
+ 123 filtered out
  1 fail
- 1 expect() calls
-Ran 1 test across 1 file. [1298.00ms]
+ 2 expect() calls
+Ran 1 test across 1 file. [1.63s]

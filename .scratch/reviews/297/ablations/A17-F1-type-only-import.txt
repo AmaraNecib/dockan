@@ -1,12 +1,12 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-2346 |     expect(importedTestFiles(`export * from "./reexport.test.ts";\n`)).toEqual([
-2347 |       "./reexport.test.ts",
-2348 |     ]);
-2349 |     // A type-only import is erased before the file runs: it imports nothing.
-2350 |     // Measured on bun 1.4.2: `import { type X } from` is erased as well.
-2351 |     expect(importedTestFiles(`import type { Case } from "./cases.test.ts";\n`)).toEqual([]);
+2385 |     expect(importedTestFiles(`export * from "./reexport.test.ts";\n`)).toEqual([
+2386 |       "./reexport.test.ts",
+2387 |     ]);
+2388 |     // A type-only import is erased before the file runs: it imports nothing.
+2389 |     // Measured on bun 1.4.2: `import { type X } from` is erased as well.
+2390 |     expect(importedTestFiles(`import type { Case } from "./cases.test.ts";\n`)).toEqual([]);
                                                                                        ^
 error: expect(received).toEqual(expected)
 
@@ -18,11 +18,11 @@ error: expect(received).toEqual(expected)
 - Expected  - 1
 + Received  + 3
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2351:81)
-(fail) red-on-parent round 11 — the findings at 45f42fd7 > the import that names another test file is found in the source [0.97ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2390:81)
+(fail) red-on-parent round 11 — the findings at 45f42fd7 > the import that names another test file is found in the source [0.91ms]
 
  0 pass
- 95 filtered out
+ 123 filtered out
  1 fail
  6 expect() calls
-Ran 1 test across 1 file. [34.00ms]
+Ran 1 test across 1 file. [36.00ms]

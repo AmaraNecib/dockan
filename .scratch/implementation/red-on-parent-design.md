@@ -7,8 +7,8 @@ Date: 2026-10-19 · Reviewed head: local commit on `t3/design-red-on-parent-gate
 because bun's actual behaviour — measured below, not assumed — happens to split
 "failed for the right reason" from "failed because it couldn't even load" well
 enough to automate. The gate earns its keep only for **new** test files, needs
-a cheap legal-waiver escape hatch, and must treat a load error as a hard stop,
-never as a pass.
+a cheap legal-waiver escape hatch, and must treat a load error as a hard stop:
+never a silent pass, and a pass only where a waiver names the test.
 
 ## Glossary (definitions this doc commits to; promote to CONTEXT.md only if the owner approves the gate)
 
@@ -113,7 +113,7 @@ Never edited ones. That single scope decision deletes the worst classes.
 | --- | --- | --- |
 | Characterization test for behaviour that already worked (pure refactor PR) | Green on parent → gate blocks | Waiver with one reason line. This is the intended UX; cost is one comment line and a reviewer glance. |
 | Test documenting an existing invariant | Same | Same. |
-| Test whose setup needs a helper the change introduces (`makeTestUser`) | Wrong-reason red (parent lacks the helper module) → gate hard-fails with "the parent could not load this file" | Two options, both real payments: hoist the helper into the parent by committing it as a separate first commit, or waive + inline the fixture locally in the test. |
+| Test whose setup needs a helper the change introduces (`makeTestUser`) | Wrong-reason red (parent lacks the helper module) → gate hard-fails with "the parent could not load this file" | Two options, both real payments: land the helper on the **base branch** in its own change and rebase, or waive + inline the fixture locally in the test. A commit *inside* this change does not help: the parent is the merge-base, so the module is still missing there. |
 | Test-only helper fix PR (fixes a broken helper, no behaviour change) | If it adds a new test file, that file likely pins the fixed helper → green or wrong-reason red | Waiver, or scope the PR to edits of existing tests only (which the gate then never touches). Rare; acceptable. |
 | Plumbing: file moved/renamed, its tests move with it | New file at new path; import path resolves only on the change → wrong-reason red | Waiver ("moved file") or keep tests in place. Common in rename PRs; the waiver names the pattern, so it is narrow. |
 | New dependency + new test for it | Green on parent (the test imports the new dep; parent source never did, so nothing about the parent eagerly loads it) | Waiver with "new dep" as reason. Or run the test first, then wire the dep — same waiver either way. |
@@ -126,6 +126,49 @@ block, the gate converts from a vacuity check into a waiver-collection form.
 Mitigations baked into the design: new-file-only scope, the waiver reason is
 must-have text, and the gate output puts every waiver in the printed table so a
 reviewer can't miss that a PR waived its way past.
+
+**The gate does not judge the dominant shape, and that is a known payment.**
+A change that adds a *source module* and a test for it puts the parent in the
+"wrong-reason red" row above: the module is not there, the file cannot load,
+and the only way past is a waiver. The waiver is per test, so the report names
+each one, and the last line says `PASS (n waived)` — but the gate has judged
+nothing about those tests, because the parent could not run them. That is the
+price of a merge-base parent, and it is paid on every PR of that shape.
+
+**Known limits of the source scan.** The gate finds a file that imports another
+test file by reading the source, because bun names every testcase after the
+entry file and the report cannot say whose case it holds. The scan strips
+comments and keeps string literals, so two shapes are misread: a fixture string
+that quotes an import (`const fixture = "import { a } from './shared.test.ts'"`)
+and a regex literal with an unbalanced quote in front of a commented-out
+import. Both make the gate refuse a file that imports no test file — a false
+failure, never a false pass. The fix is a code mask (string bodies blanked,
+offsets preserved) with the specifier read from the original text at the same
+offsets.
+
+The scan reads the added file's own imports, so an import *through* a helper —
+the added test imports `shared.ts`, and `shared.ts` imports another test file —
+is not seen. The cases of that second file land in the report and are judged as
+the added file's own. The junit carries the file each case came from, and
+`parseJunit` can filter on it, so the machinery to close this is written; the
+gate does not use it yet, because using it would drop the other file's cases
+silently instead of saying so. The loud version — a refusal, like the direct
+import — is the one to write.
+
+**Known limit of the red's attribution.** A hook that *throws* on the parent
+reports `<failure type="Error">` and is read as a wrong-reason red. A hook that
+*asserts* reports `AssertionError`, exactly like a test body, and is read as
+the test's own red. The two are indistinguishable in the junit: the report names
+the failing line, and a helper a test body calls fails at that helper's line
+too, so "the red came from a shared hook" and "the red came from the test's own
+helper" look the same. Measured on bun 1.4.2, the two reports differ only in
+the line the stack names (the hook's line, before the testcase's line, against
+the body's line, after it), which is a rule that would also misread the helper
+case. The gate therefore states the limit instead of guessing at it: an
+assertion in a hook is treated as the test's own red, and a test whose body
+would have been green on the parent is not caught here. Closing it needs the
+enclosing function of the failing line, which a line-based source scan does not
+give.
 
 ## 3. False negatives — how a vacuous test still slips through
 
@@ -211,20 +254,25 @@ separate CI logic to drift.
 1. Find merge-base with develop (default; overridable for stacked PRs).
 2. Resolve added test files from `git diff --name-only <base>...HEAD`
    (filter: *.test.ts under apps/|packages/, skipping e2e).
-3. List the added test names statically (regex over the added file text, so we
-   know what `-t` must match) and regex-escape each as the `-t` pattern.
+3. Generate one entry file per added test file: it imports the added file by
+   its own relative path and nothing else, so bun's report holds that file's
+   cases and no other file's. (The design first sketched a static list of the
+   added test names and a `-t` pattern; bun's positional argument is a
+   *substring* filter, so `cart.test.ts` also matches `cart.test.tsx`, and the
+   cases of a file the gate is not judging land in the report. The entry file
+   removes the filter instead of escaping it.)
 4. Prepare a base worktree once per base SHA, cached:
    git worktree add <tmp>/<base-sha> <base-sha>
-   mklink /J worktree/node_modules  →  main checkout's node_modules  (seconds;
-   fresh install ~1 min is the fallback, and needed when the diff
-   intentionally adds a dependency)
+   bun install --frozen-lockfile in the worktree (~1 min cold; the design first
+   sketched a junction to the main checkout's node_modules, and a junction
+   cannot serve a change that adds a dependency, so the install is real)
 5. Copy ONLY the added test files into the base worktree at their own
    relative paths. This is the load-bearing subtlety: running a test file by
    absolute path from the change's checkout would resolve its imports
    against the change, not the parent, and the gate would test nothing.
    Then, cwd = base worktree:
-      bun test <copied files> -t '<pattern>' --reporter=junit
-      --reporter-outfile=...
+      bun test <entry file> --reporter=junit --reporter-outfile=...
+   and the same file is run again on the change side, in the change's checkout.
 6. Classify per test:
    - the run did not finish (timeout, spawn error)  → RUN INCOMPLETE (fail; no waiver)
    - junit absent                                 → WRONG-REASON RED (fail)
@@ -234,11 +282,24 @@ separate CI logic to drift.
    - a test the change registers and the parent's report never names →
      NOT ON PARENT → waiver needed. The change's own run supplies the names,
      because the parent's report is only a subset of what the file declares.
+   - the same test fails on the change as well      → RED ON CHANGE (fail; no waiver)
+   - the same test is skipped on the change         → SKIPPED ON CHANGE (fail; no waiver)
+   - the parent's run registered a test the change's run did not → NOT ON CHANGE
+     (fail; no waiver)
+   - the added file imports another test file       → the file is REFUSED: it
+     was not judged, and no waiver covers that, because a report that mixes two
+     files cannot say whose case failed
 7. Waivers are read from the change's test file text; evaluated in step 6
-   before deciding to fail.
-8. Print the table (file / test / verdict / message). Exit 1 on any
-   WRONG-REASON RED, any green without waiver, any NOT ON PARENT, any RUN
-   INCOMPLETE. Exit 0 on all red or all waived-with-red-check-clean.
+   before deciding to fail. The change side's verdicts are decided on the
+   change's own results: a waiver says why the parent could not run a test,
+   not that the test works on the change.
+8. Print the table (file / test / verdict / waiver) and, under FAILURES, the
+   message each failing verdict carries. Exit 1 on any WRONG-REASON RED, any
+   green without waiver, any NOT ON PARENT, any RUN INCOMPLETE, any RED ON
+   CHANGE, any SKIPPED ON CHANGE, any NOT ON CHANGE, and on any problem the run
+   could not judge. Exit 0 on all red or all waived-with-red-check-clean.
+   Exit 2 when the gate could not run at all: a usage error, a runtime that is
+   not bun, a lock it could not take, or an unexpected error.
 ```
 
 **Failures the author sees.** Each verdict prints what to do, not "gate
@@ -262,21 +323,37 @@ failed":
   registers it too, or waive it with the reason the parent cannot.`
 - `RUN INCOMPLETE: the test run did not finish (<timeout or spawn error>), so
   there is no result to judge. Re-run the gate; no waiver covers this.`
+- `RED ON CHANGE: test '<name>' fails on the change as well, so it pins nothing
+  the parent can be asked about. Fix the test; a waiver cannot cover it.`
+- `SKIPPED ON CHANGE: test '<name>' is skipped on the change, so it never runs
+  there. Run it, or make the parent skip it too.`
+- `NOT ON CHANGE: the parent's run registered test '<name>' and the change's run
+  did not, so the change does not execute it. Make the change register it.`
+- `FILE REFUSED: the added file imports another test file, so one run would
+  report that file's cases as well and the gate could not tell whose test
+  failed. Keep each file's cases in its own file; no waiver covers this.`
 
 **Runtime cost, honestly.** Per PR, not per push:
 
 | Component | Measured/estimated |
 | --- | --- |
 | `git worktree add` from local objects (cached per base SHA) | seconds |
-| `node_modules` — junction to main checkout | seconds; only when the diff adds a package is a fresh ~1-min `bun install` forced |
-| `bun test <file> -t <pattern>` per touched file | ~0.2 s warm per file (measured on this repo's smallest file); heavier integration-style tests cost more, maybe 1–5 s each |
-| Total, typical bug-fix PR (1–3 new test files) | **< 1 minute warm**; up to a few minutes on the first run of a session or a cold install |
+| `bun install --frozen-lockfile` in the cached base worktree | ~1 min cold, once per base SHA; the cache makes later runs free |
+| `bun test <entry file>` per touched file, twice (parent side and change side) | ~0.2 s warm per file (measured on this repo's smallest file); heavier integration-style tests cost more, maybe 1–5 s each |
+| Total, typical bug-fix PR (1–3 new test files) | **under 2 minutes warm**; a few minutes on the first run of a session or a cold install |
 
 This is far inside any notice-me budget, and ordering the gate after the suite
 in CI means its extra cost is dwarfed by the turbo test run it sits beside.
 Do not run it on every push: the worktree cache makes re-runs cheap anyway,
 but the required input — the merge-base — does not move between pushes, so
 there is no reason to pay for it twice in the same session.
+
+**What the CI step's timeout can and cannot promise.** The gate's worst case is
+one cold install (10 minutes) plus two runs per file at the test timeout. A
+step timeout below that budget is unreachable configuration: the job ceiling is
+reached first, and the steps after the gate do not run. The CI placement is
+therefore the owner's call, and the diff lives in `.github/`, which this
+repository reserves for the owner.
 
 ## 5. Verdict
 

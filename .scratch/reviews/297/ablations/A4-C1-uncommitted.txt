@@ -1,23 +1,23 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-438 |           path: "packages/core/src/late.test.ts",
-439 |           text: `import { expect, test } from "bun:test";\ntest("late", () => {\n  expect(1).toBe(2);\n});\n`,
-440 |         },
-441 |       ]);
-442 |       const { status, stdout } = runGateFixture(fixture);
-443 |       expect(stdout).toContain("packages/core/src/late.test.ts");
+452 |           path: "packages/core/src/late.test.ts",
+453 |           text: `import { expect, test } from "bun:test";\ntest("late", () => {\n  expect(1).toBe(2);\n});\n`,
+454 |         },
+455 |       ]);
+456 |       const { status, stdout } = runGateFixture(fixture);
+457 |       expect(stdout).toContain("packages/core/src/late.test.ts");
                            ^
 error: expect(received).toContain(expected)
 
 Expected to contain: "packages/core/src/late.test.ts"
-Received: "red-on-parent: base 7baf5db11fe1 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-NVXMeZ\\wt-7baf5db11fe1775edb0b0ce6cfe9cd89f2b48ffa, created) · bun 1.4.2\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+Received: "red-on-parent: base 1087f480b648 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-LlUNUl\\wt-1087f480b64863f9adf568d2568af34bf84983b0, created) · bun 1.4.2\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 skipped on change · 0 not on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:443:22)
-(fail) red-on-parent gate fixtures > an uncommitted test file fails the gate, it does not pass quietly [2340.09ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:457:22)
+(fail) red-on-parent gate fixtures > an uncommitted test file fails the gate, it does not pass quietly [1261.32ms]
 
  0 pass
- 95 filtered out
+ 123 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [2.40s]
+Ran 1 test across 1 file. [1293.00ms]

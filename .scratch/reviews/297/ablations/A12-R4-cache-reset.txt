@@ -2,19 +2,19 @@ bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
 warning: in the working copy of 'packages/core/src/data.json', LF will be replaced by CRLF the next time Git touches it
-2237 |       writeFileSync(leftover, "leftover\n");
-2238 |       writeFileSync(ignored, "ignored\n");
-2239 |       expect(runGateFixture(fixture).status).toBe(0);
-2240 |       // The order of the assertions is the order of the claims, so each
-2241 |       // ablation dies on the claim it names and not on an earlier one.
-2242 |       expect(readFileSync(other, "utf8")).toContain(`"kept"`);
+2276 |       writeFileSync(leftover, "leftover\n");
+2277 |       writeFileSync(ignored, "ignored\n");
+2278 |       expect(runGateFixture(fixture).status).toBe(0);
+2279 |       // The order of the assertions is the order of the claims, so each
+2280 |       // ablation dies on the claim it names and not on an earlier one.
+2281 |       expect(readFileSync(other, "utf8")).toContain(`"kept"`);
                     ^
-error: ENOENT: no such file or directory, open 'C:\Users\sensei57\AppData\Local\Temp\ronp-cache-9Rbcvg\wt-62d8468fa5c408db9e7aa1fb88684b0819b3f8e8\packages\core\src\other.json'
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2242:14)
-(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > a reused worktree is restored, not judged as the last run left it [2174.98ms]
+error: ENOENT: no such file or directory, open 'C:\Users\sensei57\AppData\Local\Temp\ronp-cache-0ZNShn\wt-e021993d26e25459a4993debe8bbffcbdbd6a943\packages\core\src\other.json'
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2281:14)
+(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > a reused worktree is restored, not judged as the last run left it [2415.33ms]
 
  0 pass
- 95 filtered out
+ 123 filtered out
  1 fail
  2 expect() calls
-Ran 1 test across 1 file. [2.21s]
+Ran 1 test across 1 file. [2.45s]

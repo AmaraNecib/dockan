@@ -28,6 +28,12 @@
  *     counter is not load-bearing, and it misread a `node:assert` red (also
  *     `AssertionError`, but `assertions="0"`) as a wrong-reason red. The
  *     measured table and the residual hole are on `isAssertionRed`.
+ *   - a hook that *asserts* rather than throws is not a wrong-reason red: it
+ *     reports `AssertionError`, exactly like a test body, and the junit names
+ *     the failing line. A helper a test body calls fails at that helper's
+ *     line, so "the red is not the test's own" cannot be told from the report
+ *     alone. The limit is stated here rather than guessed at, and the round-14
+ *     test "a hook that asserts is read as the test's own red" pins it.
  *
  * A gate that greps `(fail)` accepts a hook throw as a red and is worthless.
  * This one reads the junit report, which is why it runs the file once with
@@ -37,6 +43,12 @@
  * a single whole-file run enumerates exactly the tests the diff adds. That is
  * also why there is no `-t` pattern to derive: a hand-rolled name parser would
  * be the one thing here that can silently skip a test it failed to match.
+ *
+ * One file is refused outright: an added test file that imports another test
+ * file. One run would report that file's cases as well, and bun names every
+ * case after the entry, so the report cannot say whose test failed. The gate
+ * names the import and judges nothing; no waiver covers that, because a waiver
+ * over a report that mixes two files would be a lie.
  *
  * Usage:
  *   bun scripts/red-on-parent.ts [--base <rev>] [--head <rev>] [--fresh]
@@ -48,7 +60,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -139,6 +151,8 @@ export type WaiverParse = {
 export type VerdictName =
   | "RIGHT_REASON_RED"
   | "RED_ON_CHANGE"
+  | "SKIPPED_ON_CHANGE"
+  | "NOT_ON_CHANGE"
   | "WRONG_REASON_RED"
   | "NOT_ON_PARENT"
   | "GREEN_ON_PARENT"
@@ -249,10 +263,14 @@ export function parseJunit(xml: string, onlyFile?: string): TestResult[] {
   const testcase = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/gu;
   for (const match of xml.matchAll(testcase)) {
     // No file filter: the gate imports exactly the file it judges, so every
-    // testcase in its report belongs to that file. `onlyFile` is for callers
-    // that ran a bare path filter instead — bun's positional argument is a
-    // *substring* filter, so `cart.test.ts` matches `cart.test.tsx` too, and
-    // those testcases belong to a file the caller is not judging.
+    // testcase in its report belongs to that file. `onlyFile` has no caller
+    // inside the gate today — the entry file the gate generates imports one
+    // test file, so the report never mixes two. It stays because the case it
+    // covers is real: bun's positional argument is a *substring* filter, so a
+    // caller that ran a bare path filter gets the cases of `cart.test.tsx`
+    // alongside `cart.test.ts`. It is also the mechanism that would close the
+    // gap the import scan leaves — a test file reached through a helper is
+    // not seen by the scan, and its cases land in the report.
     if (onlyFile !== undefined) {
       const reported = enclosingSuiteFile(xml, match.index ?? 0);
       if (reported !== null && !sameTestFile(reported, onlyFile)) continue;
@@ -348,6 +366,8 @@ export function verdictPasses(verdict: Verdict): boolean {
     // A test that is red on the change is broken, and a waiver says why a test
     // is green on the parent: it cannot excuse a broken test.
     case "RED_ON_CHANGE":
+    case "SKIPPED_ON_CHANGE":
+    case "NOT_ON_CHANGE":
     case "WAIVER_MISFILED":
     case "RUN_INCOMPLETE":
       return false;
@@ -666,12 +686,164 @@ export function unregisteredVerdicts(
   return { verdicts, usedWaiverLines: used, problems: [] };
 }
 
+/**
+ * The verdicts the change's own run adds to the parent's.
+ *
+ * The parent's report says what happened on the parent. Two things about the
+ * change are only visible from the change's side, and both can turn a run that
+ * looks green into one that judged nothing:
+ *
+ * - a test that is red on the change as well is a broken test: it pins
+ *   nothing, and a waiver says why the *parent* could not run it, not that the
+ *   test works;
+ * - a test the change *skips* never runs there, so it pins nothing either.
+ *   `test.skipIf(condition)` runs on the parent — where the condition the
+ *   change satisfies is absent — and is skipped on the change, so the parent's
+ *   red says nothing about a test the change never executes.
+ *
+ * A right-reason red only passes when the change's side agrees the test runs
+ * there, and the change's status is read independently of the parent's
+ * waivers.
+ */
+export function changeSideVerdicts(
+  file: string,
+  parentVerdicts: Verdict[],
+  changeResults: TestResult[],
+): Verdict[] {
+  const verdicts: Verdict[] = [];
+  // Only an *unexcused* NOT ON PARENT row makes a RED ON CHANGE row
+  // redundant: that row already fails the run, so the second row would say the
+  // same thing twice. A waived one does not — the waiver explains the parent,
+  // and the change's own status is a separate question.
+  const unexcusedNotOnParent = new Set(
+    parentVerdicts
+      .filter((verdict) => verdict.name === "NOT_ON_PARENT" && !verdictPasses(verdict))
+      .map((verdict) => verdict.test),
+  );
+  const parentByTest = new Map<string, Verdict>();
+  for (const verdict of parentVerdicts) parentByTest.set(verdict.test, verdict);
+  for (const changeResult of changeResults) {
+    const test = displayName(changeResult);
+    if (changeResult.status === "failed") {
+      if (unexcusedNotOnParent.has(test)) continue;
+      verdicts.push({
+        file,
+        test,
+        name: "RED_ON_CHANGE",
+        detail:
+          "the test fails on the change as well, so it pins nothing the parent can be asked about",
+        waiver: null,
+        waivers: [],
+      });
+      continue;
+    }
+    if (changeResult.status !== "skipped") continue;
+    // A test the change skips does not run there, so the change does not
+    // exercise it. That is fatal when the parent's own run judged the test —
+    // its red was about that test — and it is just as fatal when the parent
+    // never judged it at all: a load failure a waiver excuses, or a test the
+    // parent never registered. The test then runs nowhere, and the file as
+    // committed pins nothing. Only a parent verdict that already fails the run
+    // on its own suppresses the row.
+    const parentVerdict = parentByTest.get(test);
+    const alreadyFailing =
+      parentVerdict !== undefined &&
+      (parentVerdict.name === "WAIVER_MISFILED" ||
+        parentVerdict.name === "RUN_INCOMPLETE" ||
+        (parentVerdict.name === "NOT_ON_PARENT" && !verdictPasses(parentVerdict)));
+    if (alreadyFailing) continue;
+    verdicts.push({
+      file,
+      test,
+      name: "SKIPPED_ON_CHANGE",
+      detail:
+        "the test is skipped on the change, so it never runs there and pins nothing — the parent's red was about a test the change does not execute",
+      waiver: null,
+      waivers: [],
+    });
+  }
+  return verdicts;
+}
+
+/**
+ * The module the parent does not have, when the file failed to load for that
+ * reason. Bun says `Cannot find module './helper' from '<the file>'`.
+ */
+export function missingModule(stdout: string): string | null {
+  const match = /Cannot find module ['"]([^'"]+)['"]/u.exec(stdout);
+  return match?.[1] ?? null;
+}
+
+/**
+ * The export the parent does not have, when the file failed to load for that
+ * reason. Bun says `SyntaxError: Export named 'guard' not found`.
+ */
+export function missingExport(stdout: string): string | null {
+  const match = /Export named ['"]([^'"]+)['"] not found/u.exec(stdout);
+  return match?.[1] ?? null;
+}
+
 export function loadFailureReason(stdout: string): string {
   if (/Ran 0 tests/u.test(stdout)) return "the file declares no tests";
+  // The report says what the parent was missing, not only that it could not
+  // load the file. A reviewer reading a waived row has to judge the waiver,
+  // and "the parent could not load the file" does not tell them what to fix.
+  const module = missingModule(stdout);
+  if (module !== null) {
+    return `the parent could not load the file (the parent has no ${module})`;
+  }
+  const exported = missingExport(stdout);
+  if (exported !== null) {
+    return `the parent could not load the file (the parent has no export ${exported})`;
+  }
   if (/# Unhandled error between tests/u.test(stdout)) {
     return `the parent could not load the file (see the transcript below)`;
   }
   return "bun wrote no junit report, so the file did not run to completion";
+}
+
+/**
+ * The tests the parent's run registered and the change's run did not.
+ *
+ * Both runs read the same file; only the sources differ. A test the parent's
+ * run registered and the change's run did not is a test the change does not
+ * execute: the parent's red was about it, and the file as committed runs fewer
+ * tests than the gate judged. Nothing else reports this — the NOT ON PARENT
+ * row is the other direction (the change registers a test the parent never
+ * reported), and a change that registers no test at all produces no change-side
+ * name for that row to compare against.
+ */
+export function notRegisteredOnChange(
+  file: string,
+  parentResults: TestResult[],
+  changeResults: TestResult[],
+): Verdict[] {
+  // Counts, not a set: a loop can register the same display name more than
+  // once, and the extra case is a test of its own.
+  const onChange = new Map<string, number>();
+  for (const result of changeResults) {
+    const name = displayName(result);
+    onChange.set(name, (onChange.get(name) ?? 0) + 1);
+  }
+  const verdicts: Verdict[] = [];
+  for (const result of parentResults) {
+    const test = displayName(result);
+    const remaining = onChange.get(test) ?? 0;
+    if (remaining > 0) {
+      onChange.set(test, remaining - 1);
+      continue;
+    }
+    verdicts.push({
+      file,
+      test,
+      name: "NOT_ON_CHANGE",
+      detail:
+        "the parent's run registered this test and the change's run did not, so the change does not execute it — the parent's red was about a test the change does not run",
+      waiver: null,
+      waivers: [],
+    });
+  }
+  return verdicts;
 }
 
 /** Waivers that matched no test at all. Each is a failure: it excuses nothing. */
@@ -889,6 +1061,29 @@ function modifiedInWorkingTree(repo: string, path: string): boolean {
 }
 
 /**
+ * The tracked files whose working-tree content differs from HEAD.
+ *
+ * The change side runs the added file in the checkout, so it reads the
+ * checkout's sources and not the commit's. An uncommitted edit to a source the
+ * test imports can stop the file registering a test — a `if ("newExport" in
+ * mod)` guard the edit satisfies, say — and the change side then enumerates a
+ * list no commit holds. The test the commit registers is invisible to the gate
+ * and the run passes over it. A dirty tree is therefore a problem, not a
+ * detail, and the gate fails closed on it.
+ */
+export function modifiedTrackedFiles(repo: string): string[] {
+  // `-z` for the same reason as `addedTestFiles`: git quotes a non-ASCII path,
+  // and the quoting hides it.
+  const names = gitText(repo, ["diff", "--name-only", "-z", "HEAD"])
+    .split("\0")
+    .filter((path) => path.length > 0);
+  // A path HEAD does not hold is an added file, not a modified one: the added
+  // test files are what this run is judging, and an added file is reported by
+  // `uncommittedTestFiles` instead.
+  return names.filter((path) => git(repo, ["cat-file", "-e", `HEAD:${path}`]).ok);
+}
+
+/**
  * The directory bun must run `file` from, and the path to pass it.
  *
  * Bun loads the `bunfig.toml` of its *working directory*, not of the test file.
@@ -1059,9 +1254,60 @@ function sleepSync(ms: number): void {
  * crash between `mkdirSync` and the pid write leaves behind.
  */
 type LockObservation =
-  | { kind: "alive" }
-  | { kind: "holder"; pid: number }
+  | { kind: "alive"; token?: string; fileCount?: number }
+  | { kind: "holder"; pid: number; token?: string; fileCount?: number }
   | { kind: "unclaimed"; mtimeMs: number };
+
+/**
+ * The pid file's owner: a pid, and a token only the run that wrote it knows.
+ *
+ * The pid alone is not an identity. The operating system hands a dead holder's
+ * pid to a later process, and the pid file of a *live* lock then reads exactly
+ * like the dead one a reclaimer judged stale. The token is written once, by
+ * the run that took the lock, and is never reused, so a lock that was replaced
+ * carries a different one and the reclaimer can tell the two apart.
+ */
+type LockOwner = { pid: number; token: string; fileCount: number };
+
+/**
+ * The pid file's content: the pid, the token, and how many files the holder is
+ * judging.
+ *
+ * The count is what a waiter needs. The lock may be held by a run that judges
+ * twenty files while the waiter judges one, and a waiter that waits for its
+ * own guess gives up while the holder is still working.
+ */
+export function lockPidFileContent(pid: number, token: string, fileCount: number): string {
+  return `${pid} ${token} ${fileCount}\n`;
+}
+
+/**
+ * The owner a pid file names, or null when it names none.
+ */
+function readLockOwner(raw: string): LockOwner | null {
+  const parts = raw.trim().split(/\s+/u);
+  const pid = Number.parseInt(parts[0] ?? "", 10);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  // The holder's own file count, when it wrote one. A lock written before this
+  // field existed has none, and a waiter that cannot see the count waits for
+  // its own guess.
+  const fileCount = Number.parseInt(parts[2] ?? "", 10);
+  return {
+    pid,
+    token: parts[1] ?? "",
+    fileCount: Number.isInteger(fileCount) && fileCount > 0 ? fileCount : 0,
+  };
+}
+
+/** Whether two observations name the same lock. */
+function sameLock(a: LockObservation, b: LockObservation): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "holder" && b.kind === "holder") {
+    return a.pid === b.pid && (a.token ?? "") === (b.token ?? "");
+  }
+  if (a.kind === "unclaimed" && b.kind === "unclaimed") return a.mtimeMs === b.mtimeMs;
+  return false;
+}
 
 /**
  * Observe the lock without deciding, so a reclaimer can bind its rename to the
@@ -1079,7 +1325,14 @@ export function observeLockHolder(lockPath: string): LockObservation {
   let raw: string;
   try {
     raw = readFileSync(pidFile, "utf8");
-  } catch {
+  } catch (error) {
+    // A read error that is not "the file is not there" says nothing about the
+    // holder: a sharing violation or a permission problem is not evidence of a
+    // dead one, and reading it as one lets a reclaimer take a live lock away
+    // from the run that holds it. Only a missing pid file is the evidence.
+    // SAFETY: `readFileSync` is the only throw source here and rejects with a
+    // NodeJS.ErrnoException, whose string `code` is what this test reads.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { kind: "alive" };
     // No pid file. If the directory is gone too, or young, there is no evidence
     // of a dead holder: retry rather than reclaim.
     try {
@@ -1091,18 +1344,18 @@ export function observeLockHolder(lockPath: string): LockObservation {
       return { kind: "alive" };
     }
   }
-  const pid = Number.parseInt(raw.trim(), 10);
-  if (!Number.isInteger(pid) || pid <= 0) return { kind: "alive" };
+  const owner = readLockOwner(raw);
+  if (owner === null) return { kind: "alive" };
   try {
-    process.kill(pid, 0);
-    return { kind: "alive" };
+    process.kill(owner.pid, 0);
+    return { kind: "alive", token: owner.token, fileCount: owner.fileCount };
   } catch (error) {
     // ESRCH: no such process, so the holder died without releasing. EPERM: it
     // exists but belongs to another user — treat that as alive.
     // SAFETY: `process.kill` is the only throw source here and rejects with a
     // NodeJS.ErrnoException, whose string `code` is what this test reads.
     return (error as NodeJS.ErrnoException).code === "ESRCH"
-      ? { kind: "holder", pid }
+      ? { kind: "holder", pid: owner.pid, token: owner.token, fileCount: owner.fileCount }
       : { kind: "alive" };
   }
 }
@@ -1111,6 +1364,18 @@ export function observeLockHolder(lockPath: string): LockObservation {
 export function lockHolderIsGone(lockPath: string): boolean {
   return observeLockHolder(lockPath).kind !== "alive";
 }
+
+/**
+ * What a reclaim did.
+ *
+ * `reclaimed` is the stale lock removed. `refused` is the name left exactly
+ * where it was because it no longer holds the lock that was observed — another
+ * run took it, and moving it would move a live run's directory. `restored` is
+ * the rare case where a lock was moved before the check could see it and had
+ * to be put back. `not-stale` is an observation that named a live holder, so
+ * there was nothing to reclaim.
+ */
+export type ReclaimOutcome = "reclaimed" | "refused" | "restored" | "not-stale";
 
 /**
  * Remove the lock `observed` described, unless the name now holds a different,
@@ -1123,24 +1388,34 @@ export function lockHolderIsGone(lockPath: string): boolean {
  * undone when it moved something else. Without the check the second waiter
  * renamed and deleted the first waiter's live lock, and both runs then held "the
  * lock" and shared one worktree.
+ *
+ * The check runs *before* the rename as well, and that is the half that is
+ * load-bearing now. Renaming a live lock away moves it out from under the run
+ * that holds it, and the restore below only puts it back while the name is
+ * free: a third run that takes the name in between leaves the live lock
+ * orphaned, and the run that owns it then deletes the new holder's lock when it
+ * releases. So a lock that is not the one observed is left exactly where it is,
+ * and the reclaim says it refused.
  */
-export function reclaimStaleLock(lockPath: string, observed: LockObservation): void {
-  if (observed.kind === "alive") return;
-  const tombstone = `${lockPath}.stale-${process.pid}`;
+export function reclaimStaleLock(lockPath: string, observed: LockObservation): ReclaimOutcome {
+  if (observed.kind === "alive") return "not-stale";
+  if (!sameLock(observeLockHolder(lockPath), observed)) return "refused";
+  // The tombstone name carries a random suffix as well as the pid, so a
+  // tombstone left behind by an earlier run cannot block this one's rename.
+  // A fixed name made the rename fail on a name that was already taken, and a
+  // reclaim that could not remove the lock was the one case the waiter loop
+  // could not recover from.
+  const tombstone = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
   try {
     renameSync(lockPath, tombstone);
   } catch {
     // Another run broke it (or reclaimed it) first; the retry takes the lock.
-    return;
+    return "refused";
   }
   const moved = observeLockHolder(tombstone);
-  const sameLock =
-    observed.kind === "holder"
-      ? moved.kind === "holder" && moved.pid === observed.pid
-      : moved.kind === "unclaimed" && moved.mtimeMs === observed.mtimeMs;
-  if (sameLock) {
+  if (sameLock(moved, observed)) {
     rmSync(tombstone, { recursive: true, force: true });
-    return;
+    return "reclaimed";
   }
   // We moved a lock that is not the one we judged stale — a live run now holds
   // it. Put it back; if the name is taken again, leave the directory where it is
@@ -1150,6 +1425,7 @@ export function reclaimStaleLock(lockPath: string, observed: LockObservation): v
   } catch {
     // The tombstone stays behind, named for a run that is not its holder.
   }
+  return "restored";
 }
 
 /**
@@ -1166,12 +1442,14 @@ export function reclaimStaleLock(lockPath: string, observed: LockObservation): v
  * the budget from the work it is about to do. `RED_ON_PARENT_LOCK_WAIT_MS`
  * overrides it, which is how the lock's refusal is pinned in milliseconds.
  */
-function acquireWorktreeLock(lockPath: string, lockWaitMs: number): () => void {
+function acquireWorktreeLock(lockPath: string, lockWaitMs: number, fileCount = 0): () => void {
   // The cache root does not exist on a cold first run, and `mkdirSync(lockPath)`
   // stays non-recursive because that is exactly what makes it the exclusive
   // acquire. Create the lock's parent first, never the lock itself.
   mkdirSync(dirname(lockPath), { recursive: true });
-  const deadline = Date.now() + lockWaitMs;
+  let deadline = Date.now() + lockWaitMs;
+  // The holder whose file count the budget was already extended for.
+  let countedHolder: string | null = null;
   for (;;) {
     try {
       mkdirSync(lockPath);
@@ -1181,20 +1459,49 @@ function acquireWorktreeLock(lockPath: string, lockWaitMs: number): () => void {
       // is the documented way to tell "already held" from a real failure.
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const observed = observeLockHolder(lockPath);
-      if (observed.kind !== "alive") {
-        reclaimStaleLock(lockPath, observed);
-        continue;
+      // The holder's own file count says what the lock is working on. The
+      // waiter's count is a guess, and a budget that expires while the holder
+      // is still judging its files tells the waiter to delete a live lock. The
+      // count is taken once per holder: a deadline that grew on every pass
+      // would never expire.
+      if (observed.kind !== "unclaimed" && observed.token !== countedHolder) {
+        countedHolder = observed.token ?? null;
+        deadline = effectiveWaitDeadline(deadline, observed, Date.now());
       }
       if (Date.now() > deadline) {
-        throw new GateError(
-          `another red-on-parent run is using ${lockPath}; wait for it to finish, or delete that directory if no run is alive`,
-        );
+        throw new GateError(lockContentionMessage(lockPath, observed));
       }
+      if (observed.kind !== "alive" && reclaimStaleLock(lockPath, observed) === "reclaimed") {
+        // The stale lock is gone, so the next `mkdirSync` can take the name.
+        continue;
+      }
+      // A reclaim that refused or restored leaves the lock exactly where it
+      // was, and the next pass would observe the same stale lock and reclaim
+      // it again. The `continue` this used to take skipped both the deadline
+      // check and the sleep, so a lock that could not be reclaimed spun the
+      // run at full speed until somebody killed it.
       sleepSync(LOCK_RETRY_MS);
     }
   }
-  writeFileSync(join(lockPath, "pid"), `${process.pid}\n`);
-  return () => rmSync(lockPath, { recursive: true, force: true });
+  // The pid file carries a token as well as the pid, so a later run can tell
+  // this lock from one that took the same pid after the operating system
+  // handed that pid out again.
+  const token = randomUUID();
+  writeFileSync(join(lockPath, "pid"), lockPidFileContent(process.pid, token, fileCount));
+  return () => {
+    // The release removes the lock this run took, and only that one. A lock
+    // that was reclaimed and re-taken by another run carries that run's token,
+    // and removing it would let a third run into the same worktree.
+    let raw: string;
+    try {
+      raw = readFileSync(join(lockPath, "pid"), "utf8");
+    } catch {
+      return;
+    }
+    const owner = readLockOwner(raw);
+    if (owner === null || owner.pid !== process.pid || owner.token !== token) return;
+    rmSync(lockPath, { recursive: true, force: true });
+  };
 }
 
 /**
@@ -1431,31 +1738,106 @@ export function changeSideResults(
     );
     return [];
   }
+  // The file itself is committed, but the sources it imports are read from the
+  // working tree, and an uncommitted edit to one of them can change which
+  // tests the file registers. The change side would then enumerate a version of
+  // the change that no commit holds, and a test the commit registers would be
+  // invisible to the gate.
+  const dirty = modifiedTrackedFiles(repo);
+  if (dirty.length > 0) {
+    const named = dirty.slice(0, 5).join(", ");
+    problems.push(
+      `${file}: the working tree differs from HEAD in ${dirty.length} file(s) (${named}${
+        dirty.length > 5 ? ", …" : ""
+      }), and the change's own run reads the working tree — so the tests it registers are not the commit's. Commit the change and run the gate again`,
+    );
+    return [];
+  }
   rmSync(junitPath, { force: true });
   const result = runFrom(repo, file, junitPath);
   if (!existsSync(junitPath)) {
+    // bun writes no junit for a file that registers no test at all, and no
+    // junit for a file that did not load. The two need different words: the
+    // first is a file that pins nothing, the second is a file that did not run.
+    const reason =
+      result.error.length > 0
+        ? result.error
+        : /Ran 0 tests/u.test(result.stdout)
+          ? "the file registers no test, so the change's own run reported nothing"
+          : "the file did not run to completion";
     problems.push(
-      `${file}: the change's own run wrote no junit report (${
-        result.error.length > 0 ? result.error : "the file did not run to completion"
-      }), so the gate cannot tell which tests this change registers`,
+      `${file}: the change's own run wrote no junit report (${reason}), so the gate cannot tell which tests this change registers`,
     );
     return [];
   }
   return parseJunit(readFileSync(junitPath, "utf8"));
 }
 
-/** How long a run waits for the lock, given what can legitimately be inside it. */
-export function lockWaitBudget(fileCount: number): number {
-  const override = Number.parseInt(process.env.RED_ON_PARENT_LOCK_WAIT_MS ?? "", 10);
-  if (Number.isInteger(override) && override > 0) return override;
-  // Two runs per file, not one: the lock covers the parent-side run and the
-  // change-side run the classifier compares it against. A budget of one run per
-  // file expires while the holder is still doing the second, and the waiter is
-  // told to wait for a run that has not finished — with a deadline that has.
-  return INSTALL_TIMEOUT_MS + fileCount * 2 * testTimeoutMs() + LOCK_WAIT_SLACK_MS;
+/**
+ * What a waiter says when the lock is still held.
+ *
+ * The holder's own file count is in the message when there is one: a waiter
+ * that gave up after a budget computed from its own file count otherwise reads
+ * the holder as idle, and the advice to delete the directory breaks a live run.
+ */
+export function lockContentionMessage(lockPath: string, observed: LockObservation): string {
+  const count = observed.kind === "unclaimed" ? 0 : observed.fileCount ?? 0;
+  const note =
+    count > 0
+      ? ` (it says it is judging ${count} file${count === 1 ? "" : "s"}, so it may still be working)`
+      : "";
+  return `another red-on-parent run is using ${lockPath}${note}; wait for it to finish, or delete that directory if no run is alive`;
 }
 
-export function runGate(options: GateOptions): GateRun {
+/** How long a run waits for the lock, given what can legitimately be inside it. */
+export function lockWaitBudget(fileCount: number, holderFileCount = 0): number {
+  const override = Number.parseInt(process.env.RED_ON_PARENT_LOCK_WAIT_MS ?? "", 10);
+  const own = Number.isInteger(override) && override > 0
+    ? override
+    : INSTALL_TIMEOUT_MS + fileCount * 2 * testTimeoutMs() + LOCK_WAIT_SLACK_MS;
+  // The holder's own work is not the waiter's to shorten. A waiter that judges
+  // one file waits for one file's worth of time, while the lock may be held by
+  // a run that judges twenty; the holder says how many in its pid file, and the
+  // wait covers that many. The install is not counted here: the waiter cannot
+  // know whether the holder paid it.
+  const holderNeed = holderFileCount * 2 * testTimeoutMs();
+  return Math.max(own, holderNeed);
+}
+
+/**
+ * The deadline a waiter works to, given what the lock's holder says it is doing.
+ *
+ * The waiter's own file count is a guess about a lock it cannot see into. The
+ * holder writes its own count into its pid file, so a waiter that reads it can
+ * wait for the work that is actually there instead of for its own guess.
+ */
+export function effectiveWaitDeadline(
+  deadline: number,
+  observed: LockObservation,
+  now: number,
+): number {
+  const count = observed.kind === "unclaimed" ? undefined : observed.fileCount;
+  if (count === undefined || count <= 0) return deadline;
+  return Math.max(deadline, now + lockWaitBudget(count, count));
+}
+
+export function runGate(
+  options: GateOptions,
+  // SAFETY: `process.versions` is a plain object and bun adds a `bun` key to
+  // it, so reading an optional property cannot throw; the cast only names
+  // that key.
+  versions: { bun?: string } = process.versions as { bun?: string },
+): GateRun {
+  // The gate asks once, before any work, whether it is running under bun. The
+  // ask used to live in `main` alone, so a caller that used the exported
+  // `runGate` skipped it: every parent-side run then read as a whole-file load
+  // failure, and a waiver turned that into a PASS.
+  const refusal = bunOnlyRefusal(versions);
+  if (refusal !== null) {
+    throw new GateError(
+      "this gate has to run under bun, not node — every parent-side run spawns `bun test` from process.execPath, and under node each file reads as a whole-file load failure",
+    );
+  }
   const { repo, head, fresh } = options;
   const baseSha = gitText(repo, ["merge-base", options.base, head]).trim();
   const uncommitted = uncommittedTestFiles(repo);
@@ -1504,7 +1886,11 @@ export function runGate(options: GateOptions): GateRun {
   // wait budget covers the install plus one timeout per file: a shorter budget
   // would refuse a legitimate second run that is simply behind a slow first one.
   const lockWaitMs = lockWaitBudget(files.length);
-  const release = acquireWorktreeLock(join(cacheRoot(repo), `wt-${baseSha}.lock`), lockWaitMs);
+  const release = acquireWorktreeLock(
+    join(cacheRoot(repo), `wt-${baseSha}.lock`),
+    lockWaitMs,
+    files.length,
+  );
   try {
     return gateBaseWorktree({ repo, head, baseSha, files, uncommitted, skipped, fresh });
   } finally {
@@ -1601,45 +1987,35 @@ function gateBaseWorktree(input: {
       // whole-file waiver can be judged against.
       const enumerateChange =
         !checkoutDiffers && (parentResults.length > 0 || parsed.waivers.length > 0);
+      const problemsBeforeChange = problems.length;
       const changeResults = enumerateChange
         ? changeSideResults(repo, file, join(outDir, `${copied.length}-change.xml`), problems)
         : [];
+      // The change's own run produced a report when it raised no problem of its
+      // own. A run that wrote no junit, or that was refused because the
+      // working tree is dirty, registers nothing — and comparing that against
+      // the parent's list would restate the problem once per test.
+      const changeSideRan = enumerateChange && problems.length === problemsBeforeChange;
       const classified = classifyFileRun(fileRun, parsed.waivers, changeResults);
       for (const problem of classified.problems) problems.push(problem);
       const unregistered =
         parentResults.length === 0
           ? { verdicts: [], usedWaiverLines: new Set<number>(), problems: [] }
           : unregisteredVerdicts(file, parentResults, changeResults, parsed.waivers);
-      verdicts.push(...classified.verdicts, ...unregistered.verdicts);
-      // A test that is red on the change as well is a broken test: it pins
-      // nothing, and the guide used to promise that a right-reason red "passes
-      // on the change" while nothing read the change side's status. The
-      // change's own run is already made, so its statuses cost nothing to read.
-      // Only an *unexcused* NOT ON PARENT row already fails the run, so only
-      // that row makes a second RED ON CHANGE row redundant. When the NOT ON
-      // PARENT row passes — a waiver excused it — the change-side red must still
-      // be reported: a waiver says why the parent could not run the test, not
-      // that the test works. Skipping it unconditionally printed PASS over a
-      // test that fails on the change.
-      const unexcusedNotOnParent = new Set(
-        unregistered.verdicts
-          .filter((verdict) => !verdictPasses(verdict))
-          .map((verdict) => verdict.test),
+      // The parent's run and the change's run read the same file. A test the
+      // parent's run registered and the change's did not is a test the change
+      // does not execute, and the parent's red was about it.
+      const notOnChange = changeSideRan
+        ? notRegisteredOnChange(file, parentResults, changeResults)
+        : [];
+      verdicts.push(...classified.verdicts, ...unregistered.verdicts, ...notOnChange);
+      // The change's own run is already made, so its statuses cost nothing to
+      // read. They are read independently of the parent's waivers: a waiver says
+      // why the parent could not run a test, not that the test works on the
+      // change.
+      verdicts.push(
+        ...changeSideVerdicts(file, [...classified.verdicts, ...unregistered.verdicts], changeResults),
       );
-      for (const changeResult of changeResults) {
-        if (changeResult.status !== "failed") continue;
-        const test = displayName(changeResult);
-        if (unexcusedNotOnParent.has(test)) continue;
-        verdicts.push({
-          file,
-          test,
-          name: "RED_ON_CHANGE",
-          detail:
-            "the test fails on the change as well, so it pins nothing the parent can be asked about",
-          waiver: null,
-          waivers: [],
-        });
-      }
       const usedLines = new Set([...classified.usedWaiverLines, ...unregistered.usedWaiverLines]);
       // A waiver can only be judged against tests the run actually enumerated.
       // When nothing was enumerated (a load failure with no change-side names,
@@ -1687,6 +2063,22 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
     fixes: [
       "run the test in your checkout and fix it — a test that is red on the change is broken, whatever the parent says",
       "if your working tree has uncommitted changes, commit them and run the gate again: the change's own run reads the working tree, not the commit",
+    ],
+  },
+  {
+    name: "SKIPPED_ON_CHANGE",
+    title: "the test is skipped on the change, so it never runs there and pins nothing",
+    fixes: [
+      "run the test on the change — a skipped test proves nothing about the change",
+      "if the skip is deliberate, make the parent skip it too, so the two sides agree about what ran",
+    ],
+  },
+  {
+    name: "NOT_ON_CHANGE",
+    title: "the parent's run registered this test and the change's run did not, so the change does not execute it",
+    fixes: [
+      "make the change register the test the parent's run registered — the gate judged the parent's run of it",
+      "if the change really does not run it, the file as committed pins less than the gate judged, and no waiver covers that",
     ],
   },
   {
@@ -1768,6 +2160,10 @@ export function renderReport(run: GateRun, problems: string[]): string {
       lines.push("PROBLEMS (any entry here fails the run)");
       for (const problem of problems) lines.push(`  ${problem}`);
     }
+    // The report states its verdict in every other shape. A run that judged
+    // nothing still decided something, and a reader who cannot find the
+    // verdict cannot tell a decided run from a silent one.
+    lines.push(problems.length > 0 ? "red-on-parent: FAIL" : "red-on-parent: PASS");
     return `${lines.join("\n")}\n`;
   }
   if (run.installLog.length > 0) lines.push(`installed the parent's dependencies: ${run.installLog}`);
@@ -1837,7 +2233,25 @@ export function renderReport(run: GateRun, problems: string[]): string {
     for (const entry of run.skipped) lines.push(`  ${entry.path} — ${entry.reason}`);
   }
   const failed = failing.length > 0 || problems.length > 0;
-  lines.push(failed ? "red-on-parent: FAIL" : "red-on-parent: PASS");
+  if (failed) {
+    lines.push("red-on-parent: FAIL");
+  } else {
+    // A run that passes on waivers says so in the last line, which is the
+    // line a reviewer reads. "PASS" alone, next to a table of waived rows,
+    // reads like the gate judged those tests; it did not.
+    const waived = run.verdicts.filter((verdict) => verdict.waiver !== null && verdictPasses(verdict));
+    if (waived.length === 0) {
+      lines.push("red-on-parent: PASS");
+    } else {
+      lines.push(`red-on-parent: PASS (${waived.length} waived)`);
+      const unjudged = waived.filter((verdict) => verdict.name === "WRONG_REASON_RED").length;
+      if (unjudged > 0) {
+        lines.push(
+          `  ${unjudged} of them: the parent could not run the test, so nothing was judged there`,
+        );
+      }
+    }
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -1869,6 +2283,8 @@ function summaryLine(counts: Map<VerdictName, number>): string {
   const order: VerdictName[] = [
     "RIGHT_REASON_RED",
     "RED_ON_CHANGE",
+    "SKIPPED_ON_CHANGE",
+    "NOT_ON_CHANGE",
     "WRONG_REASON_RED",
     "NOT_ON_PARENT",
     "GREEN_ON_PARENT",

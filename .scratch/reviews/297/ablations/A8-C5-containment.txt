@@ -13,7 +13,7 @@ error: expect(received).toBeNull()
 Received: "C:\\Users\\sensei57\\AppData\\Local\\Temp\\victim.txt"
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1697:66)
-(fail) red-on-parent round 8 > a manifest path that escapes the worktree names nothing [0.66ms]
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree names nothing [0.63ms]
 1725 |       writeFileSync(
 1726 |         join(fixture.cache, `${fixture.base}.copied.json`),
 1727 |         JSON.stringify(["../victim.txt"]),
@@ -27,10 +27,10 @@ Expected: true
 Received: false
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1730:34)
-(fail) red-on-parent round 8 > a manifest path that escapes the worktree deletes nothing [2293.16ms]
+(fail) red-on-parent round 8 > a manifest path that escapes the worktree deletes nothing [2227.90ms]
 
  0 pass
  94 filtered out
  2 fail
  3 expect() calls
-Ran 2 tests across 1 file. [2.31s]
+Ran 2 tests across 1 file. [2.26s]

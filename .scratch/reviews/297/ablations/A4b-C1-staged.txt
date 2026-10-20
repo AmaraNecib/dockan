@@ -11,13 +11,13 @@ scripts\red-on-parent.test.ts:
 error: expect(received).toContain(expected)
 
 Expected to contain: "packages/core/src/staged.test.ts"
-Received: "red-on-parent: base 10eb5cae1745 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-wO0qeX\\wt-10eb5cae1745a3912dfddb510cb6f83f39aaff34, created) · bun 1.4.2\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+Received: "red-on-parent: base 673a962df475 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-7v1sRZ\\wt-673a962df475a708c13603fface2b7b2ba0bdcb2, created) · bun 1.4.2\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:481:22)
-(fail) red-on-parent gate fixtures > a staged test file fails the gate too [1239.41ms]
+(fail) red-on-parent gate fixtures > a staged test file fails the gate too [1281.54ms]
 
  0 pass
  95 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [1261.00ms]
+Ran 1 test across 1 file. [1302.00ms]

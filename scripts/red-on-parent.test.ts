@@ -2167,14 +2167,27 @@ test("rejects zero with ZERO", () => {
     // holder is still inside its second, and the waiter is then refused for
     // waiting on work that is still in progress. The absolute value pins the
     // install and the slack as well as the slope.
-    expect(lockWaitBudget(2) - lockWaitBudget(1)).toBe(2 * testTimeoutMs());
-    expect(lockWaitBudget(3)).toBe(
-      INSTALL_TIMEOUT_MS + 3 * 2 * testTimeoutMs() + LOCK_WAIT_SLACK_MS,
-    );
     const saved = process.env.RED_ON_PARENT_LOCK_WAIT_MS;
-    process.env.RED_ON_PARENT_LOCK_WAIT_MS = "1234";
+    // An ambient override would decide the first two assertions, so it is out
+    // of the way for the whole test and put back afterwards.
+    delete process.env.RED_ON_PARENT_LOCK_WAIT_MS;
     try {
+      expect(lockWaitBudget(2) - lockWaitBudget(1)).toBe(2 * testTimeoutMs());
+      expect(INSTALL_TIMEOUT_MS).toBe(600_000);
+      expect(LOCK_WAIT_SLACK_MS).toBe(60_000);
+      expect(lockWaitBudget(3)).toBe(
+        INSTALL_TIMEOUT_MS + 3 * 2 * testTimeoutMs() + LOCK_WAIT_SLACK_MS,
+      );
+      process.env.RED_ON_PARENT_LOCK_WAIT_MS = "1234";
       expect(lockWaitBudget(3)).toBe(1234);
+      // An override that is not a number, or is not positive, is no override:
+      // the formula decides, or a waiter would wait for the wrong time.
+      for (const bad of ["abc", "0", "-5"]) {
+        process.env.RED_ON_PARENT_LOCK_WAIT_MS = bad;
+        expect(lockWaitBudget(3)).toBe(
+          INSTALL_TIMEOUT_MS + 3 * 2 * testTimeoutMs() + LOCK_WAIT_SLACK_MS,
+        );
+      }
     } finally {
       if (saved === undefined) delete process.env.RED_ON_PARENT_LOCK_WAIT_MS;
       else process.env.RED_ON_PARENT_LOCK_WAIT_MS = saved;
@@ -2186,6 +2199,7 @@ test("rejects zero with ZERO", () => {
       [
         PKG,
         HELPER,
+        { path: ".gitignore", text: "ignored.txt\n" },
         { path: "packages/core/src/data.json", text: `{"v":1}\n` },
         { path: "packages/core/src/other.json", text: `{"kept":true}\n` },
       ],
@@ -2206,20 +2220,29 @@ test("rejects zero with ZERO", () => {
     const cached = join(worktree, "packages/core/src/data.json");
     const other = join(worktree, "packages/core/src/other.json");
     const leftover = join(worktree, "leftover.txt");
+    const ignored = join(worktree, "ignored.txt");
     try {
       expect(runGateFixture(fixture).status).toBe(0);
       // What a test that ran in the cached worktree can leave behind: a tracked
-      // file changed and staged, another deleted, and an untracked one. The next
-      // run must judge the commit, not any of them. Staged matters: a checkout
-      // from the index would restore the change it was meant to discard.
+      // file changed and staged, another deleted, an untracked one, and an
+      // ignored one. The next run must judge the commit, not any of them.
+      // Staged matters: a checkout from the index would restore the change it
+      // was meant to discard. Deleted matters: only the reset brings a deleted
+      // file back — the clean cannot. Ignored must survive: the dependency
+      // tree in the worktree is ignored, and a clean that removed it would
+      // reinstall on every run.
       writeFileSync(cached, `{"v":2}\n`);
       execFileSync("git", ["add", "packages/core/src/data.json"], { cwd: worktree });
       rmSync(other);
       writeFileSync(leftover, "leftover\n");
+      writeFileSync(ignored, "ignored\n");
       expect(runGateFixture(fixture).status).toBe(0);
-      expect(readFileSync(cached, "utf8")).not.toContain(`"v":2`);
+      // The order of the assertions is the order of the claims, so each
+      // ablation dies on the claim it names and not on an earlier one.
       expect(readFileSync(other, "utf8")).toContain(`"kept"`);
+      expect(readFileSync(cached, "utf8")).not.toContain(`"v":2`);
       expect(existsSync(leftover)).toBe(false);
+      expect(existsSync(ignored)).toBe(true);
     } finally {
       fixture.cleanup();
     }
@@ -2239,10 +2262,17 @@ test("rejects zero with ZERO", () => {
     process.env.GIT_CONFIG_VALUE_1 = "no-such-gpg-for-this-test";
     try {
       const fixture = createFixture([PKG], []);
-      // The commit is the thing under test: a fixture whose commits silently
-      // never landed would make this test green for no reason at all.
-      expect(fixture.base).toMatch(/^[0-9a-f]{40}$/u);
-      fixture.cleanup();
+      try {
+        // The commit is the thing under test: a fixture whose commits silently
+        // never landed would make this test green for no reason at all.
+        const tree = execFileSync("git", ["ls-tree", "--name-only", "-r", "HEAD"], {
+          cwd: fixture.repo,
+          encoding: "utf8",
+        });
+        expect(tree).toContain("package.json");
+      } finally {
+        fixture.cleanup();
+      }
     } finally {
       for (const [key, value] of saved) {
         if (value === undefined) delete process.env[key];
@@ -2261,6 +2291,7 @@ describe("red-on-parent round 11 — the findings at 45f42fd7", () => {
     const fixture = createFixture(
       [
         PKG,
+        { path: "packages/core/src/mock.ts", text: "export type Mock = unknown;\n" },
         {
           path: "packages/core/src/helper.test.ts",
           text: `import { expect, test } from "bun:test";
@@ -2274,6 +2305,7 @@ test("the helper's own case", () => {
         {
           path: "packages/core/src/cart.test.ts",
           text: `import { expect, test } from "bun:test";
+import type { Mock } from "./mock.ts";
 import "./helper.test.ts";
 test("rejects zero with ZERO", () => {
   expect(0).toBe(1);
@@ -2285,10 +2317,17 @@ test("rejects zero with ZERO", () => {
     try {
       const out = runGateFixture(fixture);
       expect(out.status).toBe(1);
+      // The file and the import are named: a message that says only "something
+      // is wrong" leaves the contributor guessing.
+      expect(out.stdout).toContain("packages/core/src/cart.test.ts");
+      expect(out.stdout).toContain("./helper.test.ts");
       expect(out.stdout).toContain("imports another test file");
       // The imported file's case must not be judged against the importing
       // file: that would ask for a waiver for a test the file does not hold.
+      // And the importing file's own case must not be judged either — the file
+      // was refused, not judged.
       expect(out.stdout).not.toContain("the helper's own case");
+      expect(out.stdout).not.toContain("rejects zero with ZERO");
     } finally {
       fixture.cleanup();
     }
@@ -2303,10 +2342,39 @@ test("rejects zero with ZERO", () => {
     expect(importedTestFiles(`const m = await import("./late.test.ts");\n`)).toEqual([
       "./late.test.ts",
     ]);
+    expect(importedTestFiles(`const h = require("./req.test.ts");\n`)).toEqual(["./req.test.ts"]);
+    expect(importedTestFiles(`export * from "./reexport.test.ts";\n`)).toEqual([
+      "./reexport.test.ts",
+    ]);
     // A type-only import is erased before the file runs: it imports nothing.
+    // Measured on bun 1.4.2: `import { type X } from` is erased as well.
     expect(importedTestFiles(`import type { Case } from "./cases.test.ts";\n`)).toEqual([]);
+    expect(importedTestFiles(`import { type Case } from "./cases.test.ts";\n`)).toEqual([]);
+    expect(importedTestFiles(`export type { Case } from "./cases.test.ts";\n`)).toEqual([]);
+    expect(
+      importedTestFiles(
+        `import type { Aaaaaaaaaa, Bbbbbbbbbb, Cccccccccc, Dddddddddd, Eeeeeeeeee, Ffffffffff, Gggggggggg, Hhhhhhhhhh, Iiiiiiiiii } from "./cases.test.ts";\n`,
+      ),
+    ).toEqual([]);
+    // One runtime name in the clause is enough to make the statement import
+    // something, so the file is named.
+    expect(importedTestFiles(`import { type A, B } from "./cases.test.ts";\n`)).toEqual([
+      "./cases.test.ts",
+    ]);
+    // A commented-out import is not an import, and a comment must not silence
+    // a real one.
+    expect(importedTestFiles(`// import type { Q } from "./old.test.ts";\n`)).toEqual([]);
+    expect(
+      importedTestFiles(`// import type { Q } from "./old.test.ts";\nimport "./real.test.ts";\n`),
+    ).toEqual(["./real.test.ts"]);
     // A helper that is not a test file, and a package that is not local.
     expect(importedTestFiles(`import { guard } from "./helper";\n`)).toEqual([]);
     expect(importedTestFiles(`import { expect } from "bun:test";\n`)).toEqual([]);
+    expect(importedTestFiles(`import "./fixtures.test.json";\n`)).toEqual([]);
+    expect(importedTestFiles(`import "./helper.test-data.ts";\n`)).toEqual([]);
+    // Known limits, pinned so a change to the scan cannot quietly widen or
+    // narrow them: a dynamic import whose specifier is a variable is not seen,
+    // and neither is the import of a module that itself imports a test file.
+    expect(importedTestFiles(`const m = await import(name);\n`)).toEqual([]);
   });
 });

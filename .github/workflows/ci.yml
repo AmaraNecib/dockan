@@ -222,10 +222,16 @@ jobs:
       # this job proves (the merge result), so the gate uses the checkout it has.
       # timeout-minutes is under the job's 15: a wedged run (a cold install, a
       # hung test) dies here and the build and audit after it still run — a
-      # job-level timeout would discard everything after the hang.
+      # job-level timeout would discard everything after the hang. It is 14 and
+      # not less because the script's own budget is longer than 8: a cold
+      # install in the base worktree gets 10 minutes, and each gated file gets
+      # two runs of 2 minutes, so one file can need 14 minutes on a slow
+      # machine. A PR that adds many files can still exceed this — that is the
+      # job's 15-minute limit, not this step's, and raising that is a change to
+      # the whole job.
       - name: Red-on-parent gate
         if: github.event_name == 'pull_request'
-        timeout-minutes: 8
+        timeout-minutes: 14
         run: bun scripts/red-on-parent.ts --base ${{ github.event.pull_request.base.sha }}
 
       # The production bundle adds a PR-time `vite build` alongside the one the

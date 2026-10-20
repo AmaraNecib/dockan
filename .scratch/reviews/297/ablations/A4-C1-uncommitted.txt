@@ -11,13 +11,13 @@ scripts\red-on-parent.test.ts:
 error: expect(received).toContain(expected)
 
 Expected to contain: "packages/core/src/late.test.ts"
-Received: "red-on-parent: base 0e0b4c9df003 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-hCckLF\\wt-0e0b4c9df003d5f0c693fac53476284ab17574a3, created) · bun 1.4.2\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+Received: "red-on-parent: base 7baf5db11fe1 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-NVXMeZ\\wt-7baf5db11fe1775edb0b0ce6cfe9cd89f2b48ffa, created) · bun 1.4.2\n\nFILE                           TEST          VERDICT             WAIVED\npackages/core/src/red.test.ts  rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:443:22)
-(fail) red-on-parent gate fixtures > an uncommitted test file fails the gate, it does not pass quietly [1189.88ms]
+(fail) red-on-parent gate fixtures > an uncommitted test file fails the gate, it does not pass quietly [2340.09ms]
 
  0 pass
  95 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [1210.00ms]
+Ran 1 test across 1 file. [2.40s]

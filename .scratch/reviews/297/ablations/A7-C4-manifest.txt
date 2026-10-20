@@ -19,10 +19,10 @@ error: expect(received).toEqual(expected)
 + Received  + 1
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1685:49)
-(fail) red-on-parent round 8 > the manifest names a copied file as soon as it is copied [2.75ms]
+(fail) red-on-parent round 8 > the manifest names a copied file as soon as it is copied [3.19ms]
 
  0 pass
  95 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [22.00ms]
+Ran 1 test across 1 file. [48.00ms]

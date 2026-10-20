@@ -11,13 +11,13 @@ scripts\red-on-parent.test.ts:
 error: expect(received).toContain(expected)
 
 Expected to contain: "scripts/outside.test.ts"
-Received: "red-on-parent: base 5ac6e80c36ca (worktree (none), cached) · bun 1.4.2\nno added test files this gate covers: nothing to gate\nadded test files: 0\n"
+Received: "red-on-parent: base c17a081fe34a (worktree (none), cached) · bun 1.4.2\nno added test files this gate covers: nothing to gate\nadded test files: 0\n"
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1654:22)
-(fail) red-on-parent round 8 > a test file outside the gate's scope is named, not silently ignored [752.19ms]
+(fail) red-on-parent round 8 > a test file outside the gate's scope is named, not silently ignored [725.56ms]
 
  0 pass
  95 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [773.00ms]
+Ran 1 test across 1 file. [770.00ms]

@@ -148,6 +148,20 @@ const ablations: Ablation[] = [
     from: `      const imports = importedTestFiles(source);`,
     to: `      const imports: string[] = [];`,
   },
+  {
+    name: "A16-R4-clean",
+    test: "a reused worktree is restored, not judged as the last run left it",
+    claim: "R4d: an untracked file a test left behind is removed, not left for the next run",
+    from: `  gitText(worktree, ["clean", "-fd"]);\n`,
+    to: ``,
+  },
+  {
+    name: "A17-F1-type-only-import",
+    test: "the import that names another test file is found in the source",
+    claim: "F1b: a type-only import is erased before the file runs, so it names no test file",
+    from: `  if (isTypeOnlyClause(match[1] ?? "")) continue;`,
+    to: `  if (isTypeOnlyClause("")) continue;`,
+  },
 ];
 
 function restoreBaseline(): void {
@@ -180,8 +194,11 @@ try {
     const fails = (output.match(/^\(fail\)/gmu) ?? []).length;
     const passes = (output.match(/^\(pass\)/gmu) ?? []).length;
     const red = fails > 0;
+    // A mutant that crashes the runner is not a green mutant: it is a broken
+    // ablation, and the two have to read differently.
+    const crashed = !red && result.status !== 0;
     summary.push(
-      `${red ? "RED " : "NOT RED"} ${ablation.name}: ${passes} pass, ${fails} fail — ${ablation.claim}`,
+      `${red ? "RED " : crashed ? "CRASHED" : "NOT RED"} ${ablation.name}: ${passes} pass, ${fails} fail, exit ${result.status} — ${ablation.claim}`,
     );
     restoreBaseline();
   }

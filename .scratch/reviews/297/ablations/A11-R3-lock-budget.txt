@@ -1,23 +1,23 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-2165 |     // The holder runs each file on the parent side and again on the change side,
-2166 |     // and the lock covers both. A budget of one run per file expires while the
-2167 |     // holder is still inside its second, and the waiter is then refused for
-2168 |     // waiting on work that is still in progress. The absolute value pins the
-2169 |     // install and the slack as well as the slope.
-2170 |     expect(lockWaitBudget(2) - lockWaitBudget(1)).toBe(2 * testTimeoutMs());
-                                                         ^
+2170 |     const saved = process.env.RED_ON_PARENT_LOCK_WAIT_MS;
+2171 |     // An ambient override would decide the first two assertions, so it is out
+2172 |     // of the way for the whole test and put back afterwards.
+2173 |     delete process.env.RED_ON_PARENT_LOCK_WAIT_MS;
+2174 |     try {
+2175 |       expect(lockWaitBudget(2) - lockWaitBudget(1)).toBe(2 * testTimeoutMs());
+                                                           ^
 error: expect(received).toBe(expected)
 
 Expected: 240000
 Received: 120000
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2170:51)
-(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > the lock wait budget covers both runs of every file [0.62ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2175:53)
+(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > the lock wait budget covers both runs of every file [0.83ms]
 
  0 pass
  95 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [21.00ms]
+Ran 1 test across 1 file. [38.00ms]

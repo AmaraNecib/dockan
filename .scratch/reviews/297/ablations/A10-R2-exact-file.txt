@@ -11,10 +11,10 @@ scripts\red-on-parent.test.ts:
 error: expect(received).not.toContain(expected)
 
 Expected to not contain: "RUN-INCOMPLETE"
-Received: "red-on-parent: base 7db77bba57ec (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-K0WyzN\\wt-7db77bba57ecd8d3c1cc13565050f884630beabf, created) · bun 1.4.2\n\nFILE                            TEST          VERDICT             WAIVED\npackages/core/src/cart.test.ts  (whole file)  RUN-INCOMPLETE      -\n\nFAILURES\n  packages/core/src/cart.test.ts\n    RUN INCOMPLETE: (whole file) — bun test did not complete (spawnSync C:\\Users\\sensei57\\.bun\\bin\\bun.exe ETIMEDOUT)\n\nVERDICT GUIDE\n  RUN INCOMPLETE — the test run did not finish, so there is no result to judge\n    1. re-run the gate — a timeout or a failed process start says nothing about the change\n    2. no waiver covers this: a waiver says why a test is green on the parent, not why no result arrived\n\nadded test files: 1 · 0 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 1 run incomplete\nred-on-parent: FAIL\n"
+Received: "red-on-parent: base 47038b52d3b8 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-65ygEH\\wt-47038b52d3b8114b4391b0a9c5c526cb9fda6d59, created) · bun 1.4.2\n\nFILE                            TEST          VERDICT             WAIVED\npackages/core/src/cart.test.ts  (whole file)  RUN-INCOMPLETE      -\n\nFAILURES\n  packages/core/src/cart.test.ts\n    RUN INCOMPLETE: (whole file) — bun test did not complete (spawnSync C:\\Users\\sensei57\\.bun\\bin\\bun.exe ETIMEDOUT)\n\nVERDICT GUIDE\n  RUN INCOMPLETE — the test run did not finish, so there is no result to judge\n    1. re-run the gate — a timeout or a failed process start says nothing about the change\n    2. no waiver covers this: a waiver says why a test is green on the parent, not why no result arrived\n\nadded test files: 1 · 0 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 1 run incomplete\nred-on-parent: FAIL\n"
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:2156:26)
-(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > a sibling whose name extends the added file's is never run [3122.80ms]
+(fail) red-on-parent round 10 — the findings at 5ab9a2c4 > a sibling whose name extends the added file's is never run [3130.40ms]
 
  0 pass
  95 filtered out

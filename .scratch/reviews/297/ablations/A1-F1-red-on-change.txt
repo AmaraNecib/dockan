@@ -11,13 +11,13 @@ scripts\red-on-parent.test.ts:
 error: expect(received).toContain(expected)
 
 Expected to contain: "RED-ON-CHANGE"
-Received: "red-on-parent: base fd826dfb69c7 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-dreAoh\\wt-fd826dfb69c7efe156f69382f353342a3c6b1d5e, created) · bun 1.4.2\n\nFILE                           TEST                VERDICT             WAIVED\npackages/core/src/red.test.ts  guard rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+Received: "red-on-parent: base 1e70a05ebcb3 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-baH0nC\\wt-1e70a05ebcb3af82b0d2ec8e110555e0effe75b6, created) · bun 1.4.2\n\nFILE                           TEST                VERDICT             WAIVED\npackages/core/src/red.test.ts  guard rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
 
       at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1492:22)
-(fail) red-on-parent round 8 > a test that is red on the change as well fails the gate [1272.39ms]
+(fail) red-on-parent round 8 > a test that is red on the change as well fails the gate [1265.44ms]
 
  0 pass
  95 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [1292.00ms]
+Ran 1 test across 1 file. [1298.00ms]

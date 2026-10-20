@@ -709,35 +709,111 @@ export function isGatedTestPath(path: string): boolean {
 const TEST_LIKE_BASENAME = /\.(test|spec)(\.[cm]?[jt]sx?)?$/u;
 
 /**
+ * The source with its comments removed.
+ *
+ * A commented-out import is not an import, and a text scan that cannot tell
+ * the two reads `// import "./setup.test.ts"` as a real one — which would name
+ * an import that never happens and fail a correct change. String literals are
+ * kept: a specifier lives inside one, and a `//` inside a string is not a
+ * comment.
+ */
+function withoutComments(source: string): string {
+  let out = "";
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (char === "/" && source[index + 1] === "/") {
+      while (index < source.length && source[index] !== "\n") index += 1;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "*") {
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
+        index += 1;
+      }
+      index += 2;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      out += char;
+      index += 1;
+      while (index < source.length) {
+        const inner = source[index]!;
+        if (inner === "\\") {
+          out += inner + (source[index + 1] ?? "");
+          index += 2;
+          continue;
+        }
+        out += inner;
+        index += 1;
+        if (inner === quote) break;
+      }
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return out;
+}
+
+/**
+ * Whether an import clause names only types, and is therefore erased before
+ * the file runs.
+ *
+ * `import type { X } from` and `export type { X } from` are erased, and so is
+ * `import { type X } from` — but `import { type X, Y } from` still imports Y
+ * at runtime, and so does `import X, { type Y } from`.
+ */
+function isTypeOnlyClause(clause: string): boolean {
+  const trimmed = clause.trim();
+  if (trimmed.startsWith("type ")) return true;
+  if (!trimmed.startsWith("{")) return false;
+  const end = trimmed.lastIndexOf("}");
+  if (end < 0) return false;
+  const entries = trimmed
+    .slice(1, end)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  return entries.length > 0 && entries.every((entry) => entry === "type" || entry.startsWith("type "));
+}
+
+/**
  * The test files a source file imports, directly.
  *
- * Bun names every testcase of a run after the entry file, so a file that
- * imports another test file brings that file's cases into its own report and
- * the report cannot say whose test failed — the two files are one report with
- * one name. The import is found in the source instead, because the report
- * cannot be asked.
+ * Bun names every testcase of a run after the entry file — measured on bun
+ * 1.4.2 and on the 1.4.3 CI installs, the `<testcase file=...>` attribute
+ * carries the entry's name for every case, including the ones a second file
+ * contributed. So a file that imports another test file brings that file's
+ * cases into its own report and the report cannot say whose case it holds.
+ * The import is found in the source instead, because the report cannot be
+ * asked.
+ *
+ * Two shapes are not seen, and both mix the reports the same way: a dynamic
+ * import whose specifier is a variable (`await import(name)`), and an import
+ * of a module that itself imports a test file. They are known limits of a
+ * source scan, not a claim that the gate covers them.
  */
 export function importedTestFiles(source: string): string[] {
+  const code = withoutComments(source);
   const specifiers = new Set<string>();
-  const patterns = [
-    /\bfrom\s*["']([^"']+)["']/gu,
-    /\bimport\s*["']([^"']+)["']/gu,
-    /\bimport\(\s*["']([^"']+)["']\s*\)/gu,
-    /\brequire\(\s*["']([^"']+)["']\s*\)/gu,
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      const specifier = match[1];
-      if (specifier === undefined) continue;
-      if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
-      const name = specifier.split("/").pop() ?? "";
-      if (!TEST_LIKE_BASENAME.test(name)) continue;
-      // `import type` is erased before the file runs, so it imports nothing.
-      const before = source.slice(Math.max(0, match.index - 64), match.index);
-      if (/\bimport\s+type\b/u.test(before)) continue;
-      specifiers.add(specifier);
-    }
+  const add = (specifier: string | undefined): void => {
+    if (specifier === undefined) return;
+    if (!specifier.startsWith("./") && !specifier.startsWith("../")) return;
+    const name = specifier.split("/").pop() ?? "";
+    if (!TEST_LIKE_BASENAME.test(name)) return;
+    specifiers.add(specifier);
+  };
+  // `import ... from "x"` and `export ... from "x"`. The clause says whether
+  // the statement imports anything at runtime.
+  for (const match of code.matchAll(/\b(?:import|export)\s+([^;'"]*?)\s*from\s*["']([^"']+)["']/gu)) {
+    if (isTypeOnlyClause(match[1] ?? "")) continue;
+    add(match[2]);
   }
+  for (const match of code.matchAll(/\bimport\s*["']([^"']+)["']/gu)) add(match[1]);
+  for (const match of code.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/gu)) add(match[1]);
+  for (const match of code.matchAll(/\brequire\(\s*["']([^"']+)["']\s*\)/gu)) add(match[1]);
   return [...specifiers];
 }
 
@@ -1482,15 +1558,17 @@ function gateBaseWorktree(input: {
   try {
     for (const file of files) {
       const source = readAtRevision(repo, head, file);
+      const parsed = parseWaivers(source);
+      for (const problem of parsed.problems) problems.push(`${file}: ${problem}`);
       // A file that imports another test file pulls that file's cases into its
       // own report, and bun names every case after the entry, so the report
       // cannot say whose test failed. Judging it would put the other file's
       // green case against this file — and demand a waiver for a test this
-      // file does not contain. The gate names the import instead of guessing.
+      // file does not contain. The gate names the import and judges nothing.
       const imports = importedTestFiles(source);
       if (imports.length > 0) {
         problems.push(
-          `${file}: imports another test file (${imports.join(", ")}), so one run reports that file's cases as well and the gate cannot tell whose test failed — keep each file's cases in its own file`,
+          `${file}: imports another test file (${imports.join(", ")}), so one run would report that file's cases as well and the gate could not tell whose test failed — this file was not judged; keep each file's cases in its own file`,
         );
         continue;
       }
@@ -1499,8 +1577,6 @@ function gateBaseWorktree(input: {
       const junitPath = join(outDir, `${copied.length}.xml`);
       rmSync(junitPath, { force: true });
       const result = runFrom(worktree, file, junitPath);
-      const parsed = parseWaivers(source);
-      for (const problem of parsed.problems) problems.push(`${file}: ${problem}`);
 
       const junit = existsSync(junitPath) ? readFileSync(junitPath, "utf8") : null;
       const fileRun: FileRun = {

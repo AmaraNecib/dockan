@@ -2316,6 +2316,12 @@ test("rejects zero with ZERO", () => {
       "./late.test.ts",
     ]);
     expect(importedTestFiles(`const h = require("./req.test.ts");\n`)).toEqual(["./req.test.ts"]);
+    // A qualified require reaches the same loader in Bun, so it hides the same
+    // second test file. The bare-identifier test that replaced the text scan let
+    // it through and the gate judged a mixed report as this file's.
+    expect(importedTestFiles(`const q = module.require("./qualified.test.ts");\n`)).toEqual([
+      "./qualified.test.ts",
+    ]);
     expect(importedTestFiles(`export * from "./reexport.test.ts";\n`)).toEqual([
       "./reexport.test.ts",
     ]);

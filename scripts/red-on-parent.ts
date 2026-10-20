@@ -1135,7 +1135,17 @@ export function importedTestFiles(source: string, path = "file.ts"): string[] {
       const only = node.arguments.length === 1 ? node.arguments[0] : undefined;
       if (only !== undefined && ts.isStringLiteral(only)) {
         const dynamic = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-        const required = ts.isIdentifier(node.expression) && node.expression.text === "require";
+        // `require(...)` and any qualified spelling of it — `module.require(...)`
+        // takes the same path in Bun's loader, and the text scan this replaced
+        // caught it too. A bare-identifier test here let a file import another
+        // test file and still be judged on the mixed report, which is the
+        // refusal this scan exists to make.
+        const callee = node.expression;
+        const required =
+          (ts.isIdentifier(callee) && callee.text === "require") ||
+          (ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.name) &&
+            callee.name.text === "require");
         if (dynamic || required) add(only.text);
       }
     }

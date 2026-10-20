@@ -226,6 +226,39 @@ class GuardRefusedError extends Error {}
 
 describe("snapshot write guard (ADR-0012 clause 3)", () => {
 
+  it("refuses at the rename step, leaves the snapshot untouched, and never marks the version durable", async () => {
+    let guardCalls = 0;
+    let refuseAt = 0;
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeGuard: () => {
+        guardCalls += 1;
+        // the guard is asked three times per attempt: before the write, before
+        // the rename, and after it
+        if (guardCalls === refuseAt) throw new GuardRefusedError("the lock was lost mid-write");
+      },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+    // the first write lands, so there ARE bytes on disk worth protecting
+    await conn.persistIfDirty();
+    const durable = fs.readFileSync(snapshotPath());
+
+    conn.raw.exec("INSERT INTO t VALUES ('second')");
+    conn.markDirty();
+    // the call right before the rename of the next attempt
+    refuseAt = guardCalls + 2;
+    await expect(conn.persistIfDirty()).rejects.toThrow(GuardRefusedError);
+    // the rename never happened, so the bytes on disk are still the first
+    // write's. This is the point of asking the guard again right before the
+    // rename: a refusal must not overwrite what the folder's new owner wrote
+    expect(fs.readFileSync(snapshotPath()).equals(durable)).toBe(true);
+    conn.close();
+  });
+
   it("refuses after a post-write guard failure and never marks the version durable", async () => {
     let guardCalls = 0;
     let failPostWrite = true;
@@ -236,24 +269,24 @@ describe("snapshot write guard (ADR-0012 clause 3)", () => {
       fresh: true,
       writeGuard: () => {
         guardCalls += 1;
-        // odd call = before the write, even = after it landed
-        if (failPostWrite && guardCalls % 2 === 0) throw new GuardRefusedError("the lock was lost mid-write");
+        // the third call of the first attempt is the one AFTER the rename
+        if (failPostWrite && guardCalls === 3) throw new GuardRefusedError("the lock was lost mid-write");
       },
     });
     conn.raw.exec("CREATE TABLE t(a TEXT)");
     conn.markDirty();
 
     await expect(conn.persistIfDirty()).rejects.toThrow(GuardRefusedError);
-    // the bytes landed (the guard ran after the write), but the version must
+    // the bytes landed (the guard ran after the rename), but the version must
     // not be durable
     expect(fs.existsSync(snapshotPath())).toBe(true);
-    expect(guardCalls).toBe(2);
+    expect(guardCalls).toBe(3);
 
     // a later persist with no new mutation still has work to do: if
     // persistedVersion had advanced, this would return without a write
     failPostWrite = false;
     await conn.persistIfDirty();
-    expect(guardCalls).toBeGreaterThan(2);
+    expect(guardCalls).toBeGreaterThan(3);
     conn.close();
   });
 
@@ -582,9 +615,11 @@ describe("snapshot fence (#280)", () => {
       writeStamp: () => tokenB,
       writeGuard: () => {
         guardCalls += 1;
-        // the post-write guard runs after every rename: a zombie that keeps
-        // landing replaces each version the holder just wrote
-        if (atWar && guardCalls % 2 === 0) renameZombieEnvelope(zombieEnvelope);
+        // the guard is asked three times per attempt — before the write, before
+        // the rename, and after it — so the zombie lands on the third call:
+        // the one that runs AFTER this holder's rename, replacing the version
+        // the holder just wrote
+        if (atWar && guardCalls % 3 === 0) renameZombieEnvelope(zombieEnvelope);
       },
     });
     conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
@@ -594,8 +629,9 @@ describe("snapshot fence (#280)", () => {
     // the count is a private shape (two guard calls per attempt), so it is a
     // comment rather than an assertion: the outcome — the failure, the fence
     // left foreign, and the version still dirty — is what the design promises.
-    // three attempts, each with a guard before and after its rename
-    expect(guardCalls).toBeGreaterThanOrEqual(6);
+    // three attempts, each with a guard before the write, before the rename
+    // and after it
+    expect(guardCalls).toBe(9);
     expect(diskFence()?.stamp).toBe(tokenA);
 
     // Nothing was recorded durable. The pin: the war ends, and a snapshot
@@ -1204,6 +1240,99 @@ describe("snapshot fence (#280)", () => {
       spy.mockRestore();
       await conn.close();
     }
+  });
+});
+
+describe("closed connection and unreadable paths (#291)", () => {
+  it("drops a persist that arrives after close(), and names the drop in the log", async () => {
+    const events: Array<{ event: string; message: string }> = [];
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      logger: {
+        warn: () => {},
+        info: () => {},
+        error: (event: string, message: string) => {
+          events.push({ event, message });
+        },
+      },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('before')");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    await conn.close();
+    const durable = fs.readFileSync(snapshotPath());
+
+    // a flush after the close is an ordinary event (the process is going
+    // down): it is refused quietly, and it must not name a loss that never
+    // happened
+    await expect(conn.flush()).resolves.toBeUndefined();
+    expect(events.filter((entry) => entry.event === "SNAPSHOT_PERSIST_DROPPED")).toHaveLength(0);
+
+    // a unit that arrives after the close: the handle is released and the key
+    // is zeroed, so nothing was written and nothing can be
+    conn.markDirty();
+    await expect(conn.persistIfDirty()).resolves.toBe("dropped");
+    expect(fs.readFileSync(snapshotPath()).equals(durable)).toBe(true);
+
+    // the drop is not silent: it is named, once, at error. A committed unit
+    // that never reached the snapshot is a real loss, and a caller that only
+    // sees a resolved promise reports it as saved
+    expect(events.filter((entry) => entry.event === "SNAPSHOT_PERSIST_DROPPED")).toHaveLength(1);
+  });
+
+  it("a path that is not a file is ABSENT, not unreadable, so the write is owed and the failure is loud", async () => {
+    const events: string[] = [];
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      // a stamp, so the fence is actually READ: an unfenced connection's fence
+      // is trivially its own and the path is never opened
+      writeStamp: () => "a".repeat(32),
+      logger: {
+        warn: (event: string) => {
+          events.push(event);
+        },
+        info: () => {},
+      },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+
+    // ENOTDIR and EISDIR answer the same question as ENOENT: there is no
+    // snapshot file at this path. They are decidable statements about the
+    // path, not a transient I/O failure, so the verdict is "absent" — a write
+    // is owed — and never "unreadable", which would send the post-write
+    // branch down its benign "written, fence unproven" exit over a snapshot
+    // that is not there.
+    // SAFETY: readDiskFence is the only caller that opens the snapshot path,
+    // and it passes exactly (path, "r"); the narrowed signature names that one
+    // call so the spy can delegate to the real open
+    const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
+    // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
+    // parameters are the (path, flags) overload production calls
+    const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
+      if (String(file) === snapshotPath()) {
+        // the errno Node puts on the error, so the code under test reads it
+        const error = Object.assign(new Error("ENOTDIR: not a directory, open '...'"), { code: "ENOTDIR" });
+        throw error;
+      }
+      return realOpenSync(file, flags);
+    }) as typeof fs.openSync);
+    try {
+      // the write itself lands; the fence read after it does not, and the
+      // verdict decides whether that is a benign "unproven" or a real
+      // "the snapshot is gone"
+      await expect(conn.persistIfDirty()).rejects.toThrow(SnapshotPersistenceError);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(events).toContain("VAULT_SNAPSHOT_FENCE_MISSING");
+    expect(events).not.toContain("VAULT_SNAPSHOT_FENCE_UNREADABLE");
   });
 });
 

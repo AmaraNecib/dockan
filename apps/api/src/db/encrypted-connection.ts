@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
-import type { DrizzleDb } from "./connection";
+import type { DrizzleDb, PersistOutcome } from "./connection";
 import * as schema from "./schema";
 import { cleanupStalePartials, writeFileAtomic, writeFileAtomicSync } from "../lib/atomic-file";
 import { createVaultBackupBundle, readVaultBackupBundle } from "../lib/vault/backup";
@@ -52,7 +52,13 @@ export type EncryptedConnection = {
   /** the vault this connection belongs to (binds the snapshot AEAD context) */
   vaultId: string;
   markDirty(): void;
-  persistIfDirty(): Promise<void>;
+  /**
+   * Write the committed image if it is dirty, and say what happened. `dropped`
+   * is not "nothing to do": the connection had already closed, so the version
+   * this flush would have written is not on disk and cannot be. A caller that
+   * treats every resolved flush as saved reports a lost transaction as saved.
+   */
+  persistIfDirty(): Promise<PersistOutcome>;
   flush(): Promise<void>;
   checkpoint(): void;
   close(): Promise<void>;
@@ -155,7 +161,15 @@ export type SnapshotFailureReason =
   /** the snapshot file is gone */
   | "absent"
   /** the fence could not be read */
-  | "unreadable";
+  | "unreadable"
+  /**
+   * the connection closed before the write: nothing was written, and nothing
+   * can be — the handle is released and the key is zeroed. Distinct from
+   * "write-failed" because the disk is not implicated: the unit is lost
+   * because there is no writer left, which is the one failure a retry cannot
+   * fix.
+   */
+  | "dropped";
 
 /** A committed unit could not be written to its durable snapshot. */
 export class SnapshotPersistenceError extends Error {
@@ -375,6 +389,10 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     raw = Database.deserialize(options.seedBytes);
   } else if (options.fresh !== true) {
     if (!fs.existsSync(snapshotPath)) {
+      // ABORT, never an empty shop: the snapshot is the only copy of the
+      // data, so a missing file is a lost vault and not a fresh one. The
+      // failure is named, so the unlock screen can say the data is gone
+      // instead of opening a shop with no rows in it.
       connectionKey.fill(0);
       throw new MissingVaultDatabaseError();
     }
@@ -456,7 +474,15 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // SAFETY: the errno `code` probe is how Node reports ENOENT from open;
       // the cast only exposes the field this branch reads
       const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-      return code === "ENOENT" ? { outcome: "absent" } : { outcome: "unreadable" };
+      // ENOENT is not the only "no snapshot file at this path". A path that is a
+      // directory, or whose parent is a file, answers EISDIR or ENOTDIR on open
+      // or read. Those are decidable statements about the path, not a transient
+      // I/O failure: calling them "unreadable" sent the post-write branch down
+      // its benign "written, fence unproven" exit over a snapshot that was
+      // gone. Treated as absent, a write is owed, and the write itself then
+      // fails loudly because nothing can be renamed over a directory.
+      if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { outcome: "absent" };
+      return { outcome: "unreadable" };
     } finally {
       if (fd !== undefined) {
         try {
@@ -616,8 +642,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     return mutationVersion === persistedVersion && readFence().outcome === "mine";
   }
 
-  async function persistNow(): Promise<void> {
-    if (await snapshotIsCurrentAsync()) return;
+  async function persistNow(): Promise<PersistOutcome> {
+    if (await snapshotIsCurrentAsync()) return "on-disk";
     // The await above parks this job, and the store is not frozen while it is
     // parked: `close()` can release the database handle and a unit can BEGIN.
     // So the guard is read HERE, on the near side of the serializer, and not
@@ -631,31 +657,60 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     // loop below can observe `closed` become true. Guards there were
     // unreachable by construction and unkillable by any test; the invariant
     // they stood for is this one, and it is pinned by the store's #291 tests.
-    if (closed) return;
+    if (closed) {
+      // Nothing was written and nothing can be: close() released the handle and
+      // zeroed the key. A committed unit that lands here is NOT in the
+      // snapshot, so a caller that only sees a resolved promise would report a
+      // lost transaction as saved (#291 review). Named once per drop, at error:
+      // the loss is real, it is just not this process's to retry.
+      options.logger?.error?.(
+        "SNAPSHOT_PERSIST_DROPPED",
+        "the connection closed before this committed unit reached the snapshot; the unit was not written",
+      );
+      return "dropped";
+    }
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
-    if (connection.inTransaction) return;
+    if (connection.inTransaction) return "on-disk";
     const version = mutationVersion;
     const envelope = sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp);
+    // The guard's refusal is never a write failure and is never retried, on the
+    // pre-write check and on the pre-rename one alike. Recording it here is how
+    // the catch below tells the two apart without this module knowing what the
+    // guard's error type is.
+    let guardRefusal: Error | undefined;
+    const runGuard = (): void => {
+      try {
+        options.writeGuard?.();
+      } catch (error) {
+        guardRefusal = error instanceof Error ? error : new Error(String(error));
+        throw guardRefusal;
+      }
+    };
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
       // ADR-0012: a persist queued before the lock was stolen must refuse
       // rather than overwrite the new owner's snapshot, so the guard is asked
       // at the instant of the write and its throw is never retried
-      options.writeGuard?.();
+      runGuard();
       try {
         // the single-writer lock (lib/vault/lock.ts) keeps a second process
         // from holding a competing in-memory image, so this rename is the only
-        // writer for the folder
-        await writeFileAtomic(snapshotPath, envelope);
+        // writer for the folder. The guard is asked AGAIN inside the write,
+        // immediately before the rename: asking only before the temp write
+        // leaves the serialize + encrypt + write + fsync as the window a theft
+        // can land in, and our rename then overwrites the new owner's snapshot
+        // without the post-write fence read ever seeing it.
+        await writeFileAtomic(snapshotPath, envelope, { beforeRename: runGuard });
       } catch (error) {
+        if (guardRefusal !== undefined) throw guardRefusal;
         lastError = new SnapshotPersistenceError(error instanceof Error ? error : new Error(String(error)), "write-failed");
         if (attempt < WRITE_ATTEMPTS) await delay(WRITE_RETRY_DELAY_MS);
         continue;
       }
       // the bytes landed; report the version durable only while the folder is
       // still ours, so a theft during the write is never mistaken for saved data
-      options.writeGuard?.();
+      runGuard();
       // #280: a rename from the previous holder can land on top of ours in the
       // same window. Re-read the fence; a stamp that is not ours means the
       // version just written is NOT on disk, so it is not durable and the
@@ -665,7 +720,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         // only now is the version durable; a mutation during the write set
         // mutationVersion beyond `version` and schedules the next flush
         persistedVersion = version;
-        return;
+        return "on-disk";
       }
       if (verdict.outcome === "unreadable") {
         // The bytes landed; the fence could not be read back. An unreadable
@@ -678,7 +733,10 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         // transaction it claimed to save). Reported here, per persist, so the
         // words match the guarantee: written, but not proven durable.
         reportFence({ outcome: "unreadable" }, "warn");
-        return;
+        // "unproven", not "on-disk": the write landed but nothing proved it,
+        // and saying otherwise in the outcome would be the same lie this
+        // branch's comment exists to avoid.
+        return "unproven";
       }
       const failure = fenceFailure(verdict);
       lastError = new SnapshotPersistenceError(new Error(failure.message), failure.reason);
@@ -703,14 +761,25 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // queue, released the handle, and the persist then woke up and serialized
       // it (#291). The currency check keeps its place and its meaning — it runs
       // on the queue now, one await inside the slot, instead of at request time.
-      const run = persistQueue.then(async () => {
-        if (await snapshotIsCurrentAsync()) return;
-        await persistNow();
+      const run = persistQueue.then(async (): Promise<PersistOutcome> => {
+        if (await snapshotIsCurrentAsync()) return "on-disk";
+        return persistNow();
       });
-      persistQueue = run.catch(() => undefined);
-      await run;
+      // the queue only needs to know WHEN the job settled, not what it decided
+      persistQueue = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
     },
     async flush() {
+      // A flush after close() has nothing to write: the handle is released
+      // and the key is zeroed, so the write would be refused anyway. Refused
+      // QUIETLY, like checkpoint(): a flush asked for while the process is
+      // going down is an ordinary event, and bumping the version here would
+      // only manufacture a dirty version for a connection that can never write
+      // it — and name a loss that never happened.
+      if (closed) return;
       // force a write even when nothing changed: the first snapshot after setup
       // and explicit checkpoints must never be skipped by version bookkeeping
       mutationVersion += 1;
@@ -733,7 +802,12 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // the same write guard as persistNow: a shutdown or backup checkpoint
       // must not overwrite a snapshot the folder's new owner already wrote
       options.writeGuard?.();
-      writeFileAtomicSync(snapshotPath, sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp));
+      // and again immediately before the rename, for the same reason as the
+      // async path: the guard that only ran before the temp write leaves the
+      // serialize + write + fsync as the window a takeover can land in
+      writeFileAtomicSync(snapshotPath, sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp), {
+        beforeRename: options.writeGuard,
+      });
       // #280: the synchronous path can lose the same rename race; a stamp that
       // is not ours means the just-written version is not on disk, so it is
       // refused
@@ -759,6 +833,12 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       try {
         connection.checkpoint();
       } finally {
+        // Closing is a one-way door: the key is zeroed, the handle is
+        // released, and this connection never writes again. Nothing reopens
+        // it — a persist that arrives after this point is REFUSED as dropped
+        // (and named in the log), never retried, because there is no handle
+        // left to serialize and no key left to seal with.
+        //
         // Marked closed before the handle is released, and with no await in
         // between: any persist this close() did not wait for now refuses to
         // serialize instead of throwing from under a dead handle (#291).

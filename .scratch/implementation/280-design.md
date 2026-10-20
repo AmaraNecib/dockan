@@ -222,6 +222,25 @@ are on disk" case and no loss is known yet; the shutdown row is where the loss
 becomes known. The three sites therefore agree on the verdict and differ only in
 the level the case deserves.
 
+A persist that lands after the close is the same problem one step later, and it
+now says what it is. `persistIfDirty` answers with an **outcome**
+(`on-disk` / `unproven` / `dropped`) instead of a bare promise, so the store can
+tell a unit that reached the snapshot from one that did not. `dropped` means
+the connection closed first: nothing was written and nothing can be. It is
+named once, at `error`, under `SNAPSHOT_PERSIST_DROPPED`, and the store treats
+it as **fail-stop** — the same verdict a write that could not land gets — because
+a client told "saved" would never retry a lost sale and a client told "failed"
+would retry a committed one. `unproven` is not a failure: the bytes landed and
+only the proof did not, so the next write re-seals them, exactly as the
+unreadable-prefix rule has always said.
+
+The write guard is asked a second time, immediately before the rename, on both
+the async and the sync path. Asking once, before the temp write, left the
+serialize + encrypt + write + fsync as the window a takeover can land in: our
+rename then replaced the new owner's snapshot, and the post-write fence read
+never saw it because the fence it read was ours. The refusal at the rename step
+therefore leaves the previous bytes exactly as they were.
+
 ## Risks and costs the PR owns
 
 - A read-back per write adds a 74-byte read. Cheap next to serialise+encrypt.

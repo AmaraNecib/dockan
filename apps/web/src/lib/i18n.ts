@@ -135,6 +135,7 @@ const resources = {
       logEvent_SERVER_ERROR: "خطأ في الخادم",
       logEvent_RPC_ERROR: "خطأ في طلب",
       logEvent_SNAPSHOT_PERSIST_FAILED: "فشل حفظ نسخة الخزنة",
+      logEvent_SNAPSHOT_PERSIST_DROPPED: "لم تُكتب عملية ملتزمة قبل إغلاق الخزنة",
       logEvent_DASHBOARD_SECTION_FAILED: "تعذّر تحميل قسم من الرئيسية",
       logEvent_VAULT_CREATED: "إنشاء الخزنة",
       logEvent_VAULT_SETUP_DONE: "اكتمل إنشاء الخزنة",

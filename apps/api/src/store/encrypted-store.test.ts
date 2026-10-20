@@ -329,9 +329,36 @@ describe("vault-mode store", () => {
     // a store call that lands during shutdown still marks the image dirty, so
     // the flush below reaches the serializer instead of being skipped as current
     conn.markDirty();
+    // the flush is refused quietly (an ordinary event while the process goes
+    // down), and the direct persist says what happened: the unit was DROPPED,
+    // not written
     await expect(conn.flush()).resolves.toBeUndefined();
-    await expect(conn.persistIfDirty()).resolves.toBeUndefined();
+    await expect(conn.persistIfDirty()).resolves.toBe("dropped");
     // nothing was written for the closed connection
     expect(fs.readFileSync(conn.dbPath).equals(durable)).toBe(true);
+  });
+
+  itHeavy("a dropped snapshot fails stop like a write that could not land (#291)", async () => {
+    const { conn, store } = await freshVault();
+    await store.setup();
+    const fatal: Error[] = [];
+    // The same connection, with a persist that reports the drop a closed
+    // connection reports: the unit committed, the snapshot did not. The
+    // connection's own refusal is not enough — the store is the thing that
+    // reports success to the client, so the store is where the verdict has to
+    // be acted on.
+    const dropping = {
+      ...conn,
+      onFatalError: (error: Error) => fatal.push(error),
+      persistIfDirty: async () => "dropped" as const,
+    };
+    const dropStore = createDrizzleStore(dropping);
+
+    await expect(dropStore.createCategory({ name: "dropped" })).rejects.toThrow(SnapshotPersistenceError);
+    // fail-stop, exactly like a write that could not land: the client must
+    // not be told a committed sale was saved
+    expect(fatal).toHaveLength(1);
+    // and the row is committed: the unit is lost, not undone
+    expect((await dropStore.listCategories()).some((category) => category.name === "dropped")).toBe(true);
   });
 });

@@ -75,7 +75,7 @@ export type StoreLogger = {
    * behind), which must not be dressed up as incidents.
    */
   info?(event: string, message: string): void;
-  error?(event: string, message: string, error: Error): void;
+  error?(event: string, message: string, error?: Error): void;
 };
 
 /**

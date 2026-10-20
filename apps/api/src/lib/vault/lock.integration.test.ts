@@ -6,7 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, VaultAlreadyLockedError } from "./lock";
+import { acquireVaultLock, VaultAlreadyLockedError, type VaultLock, type VaultLockOptions } from "./lock";
 import { withPortFileLock } from "../port-record";
 
 /**
@@ -24,6 +24,26 @@ let second: ChildProcessWithoutNullStreams | undefined;
 let third: ChildProcessWithoutNullStreams | undefined;
 /** The last stderr the api child wrote, so a failed wait names the exit path. */
 let apiStderr = "";
+
+/**
+ * Locks THIS process took, drained by `afterEach` before the folder is removed.
+ *
+ * A test here asserts while it holds the folder, so an assertion that throws
+ * skips whatever `release()` came after it. `afterEach` would then delete `dir`
+ * with the lock's heartbeat still armed; the next beat reads its own record,
+ * finds it gone, and fail-stops with `process.exit(1)` (`lost()` in lock.ts),
+ * aborting the rest of the file instead of reporting the one real failure. A
+ * registered holder makes teardown own the release, whatever path the test took
+ * out (greptile on #298).
+ */
+const heldLocks: VaultLock[] = [];
+
+/** Take the folder as this process, with teardown guaranteeing the release. */
+function holdFolder(options: VaultLockOptions = {}): VaultLock {
+  const lock = acquireVaultLock(dir, options);
+  heldLocks.push(lock);
+  return lock;
+}
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -254,6 +274,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // release first: a live heartbeat on a record this hook is about to delete
+  // under it fail-stops the whole run (lock.ts `lost()` -> `process.exit(1)`)
+  for (const lock of heldLocks.splice(0)) lock.release();
   await hardKillAndWait(api);
   api = undefined;
   await hardKillAndWait(second);
@@ -287,7 +310,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     const running = api;
     api = undefined;
     await hardKillAndWait(running);
-    const lock = acquireVaultLock(dir, { readRetries: 1, readRetryDelayMs: 5, stealSettleMs: 5 });
+    const lock = holdFolder({ readRetries: 1, readRetryDelayMs: 5, stealSettleMs: 5 });
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
     expect(fs.existsSync(path.join(dir, "vault.lock"))).toBe(false);
@@ -327,7 +350,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     const registryDir = path.join(dir, "run", ".dokan-port.registry");
     // a holder that never publishes anything: this test is about the waiter's
     // own entry, not about a survivor's canonical
-    const holder = acquireVaultLock(dir);
+    const holder = holdFolder();
     second = startApi(refusedPort);
     await waitForLog("VAULT_LOCK_REFUSED");
     const refusedPid = second.pid;
@@ -415,7 +438,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     // backoff (greptile P2 on #298). The retry is now a route of its own, and a
     // status poll is not it.
     const refusedPort = await freePort();
-    const holder = acquireVaultLock(dir);
+    const holder = holdFolder();
     second = startApi(refusedPort);
     await waitForLog("VAULT_LOCK_REFUSED");
 
@@ -461,7 +484,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     // the POST is the taker. A route disconnected from trigger() would answer
     // `taken: false` and leave the folder to the tick.
     const refusedPort = await freePort();
-    const holder = acquireVaultLock(dir);
+    const holder = holdFolder();
     second = startApi(refusedPort);
     await waitForLog("VAULT_LOCK_REFUSED");
     // The automatic schedule is 250, 500, 1s, 2s, 4s, 8s, 15s and 15s
@@ -676,7 +699,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     // the holder must survive the loss it is about to suffer: without a handler
     // the lock fail-stops the process that owns it, and that process is this
     // test runner
-    const holder = acquireVaultLock(dir, { onLost: () => {} });
+    const holder = holdFolder({ onLost: () => {} });
     second = startApi(refusedPort);
     await waitForLog("VAULT_LOCK_REFUSED");
 
@@ -819,7 +842,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     // that runs the child's exit hook) is the POSIX test below.
     const secondPort = await freePort();
     const lockFile = path.join(dir, "vault.lock");
-    const holder = acquireVaultLock(dir);
+    const holder = holdFolder();
     expect(fs.existsSync(lockFile)).toBe(true);
 
     // the second sidecar is refused on its own port and must not hold the lock

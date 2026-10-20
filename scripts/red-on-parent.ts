@@ -1651,6 +1651,12 @@ function takeReclaimClaim(lockPath: string): ReclaimClaim | null {
   // rename of one name succeeds once, so of the runs that decide the claim is
   // dead exactly one moves it — and even that one has to win the name back,
   // because a third run can create its own claim in the gap.
+  //
+  // What moves below is the CLAIM FILE inside the lock, never the lock
+  // directory. A lock directory is removed only by `reclaimStaleLock` or
+  // `releaseWorktreeLock`, and both of those compare the `dev`/`ino`/`birthtimeMs`
+  // they observed; neither renames it, and neither decides on the pid file's
+  // content alone, which a replacement directory can reproduce byte for byte.
   let raw: string;
   try {
     raw = readFileSync(claimPath, "utf8");
@@ -1669,14 +1675,14 @@ function takeReclaimClaim(lockPath: string): ReclaimClaim | null {
   } else if (processIsAlive(owner.pid)) {
     return null;
   }
-  const grave = `${claimPath}.stale-${process.pid}-${randomUUID()}`;
+  const claimTombstone = `${claimPath}.stale-${process.pid}-${randomUUID()}`;
   try {
-    renameSync(claimPath, grave);
+    renameSync(claimPath, claimTombstone);
   } catch {
     return null;
   }
   try {
-    unlinkSync(grave);
+    unlinkSync(claimTombstone);
   } catch {
     // The tombstone stays behind inside the lock directory; it goes with it.
   }

@@ -313,6 +313,18 @@ describe("DashboardPage summary (issue 84)", () => {
     await page.unmount();
   });
 
+  it("renders the day's sales count under its own testid", async () => {
+    // #295 — the e2e reads the count through this testid, so the number the
+    // spec reads and the number the owner sees are the same number. Without
+    // the pin, the testid could be renamed or dropped and only the e2e would
+    // notice.
+    summary.salesCount = 3;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-sales-count") !== null)).toBe(true);
+    expect(page.card("dashboard-sales-count")?.textContent).toBe("3");
+    await page.unmount();
+  });
+
   it("hides the pending-returns notice when no return awaits review", async () => {
     const page = await mount(queryClient);
     expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
@@ -811,6 +823,22 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     const page = await mount(queryClient, { refreshMs: 20 });
     expect(await waitFor(() => fetchCount >= 3)).toBe(true);
     expect(progressFetchCount).toBe(1);
+    await page.unmount();
+  });
+
+  it("does not let the progress read tick in the background either", async () => {
+    // the same read, the other half of the wiring: it must not run on a
+    // background tab either. A hidden checklist has nobody to self-heal for,
+    // and its server read writes — a background heartbeat would be a
+    // preference write per tick.
+    //
+    // The flag is spelled out as `false` on the query (dashboard.tsx), so the
+    // assertion is exact: `refetchIntervalInBackground: true` put back on the
+    // onboardingProgress query fails HERE.
+    const page = await mount(queryClient, { slowRefreshMs: 20 });
+    expect(await waitFor(() => progressFetchCount >= 1)).toBe(true);
+    const observer = queryClient.getQueryCache().find({ queryKey: ["onboardingProgress"] })?.observers[0];
+    expect(observer?.options.refetchIntervalInBackground).toBe(false);
     await page.unmount();
   });
 });

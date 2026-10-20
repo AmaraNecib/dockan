@@ -24,6 +24,8 @@ const dbPath = path.join(dir, "dokan.db");
 if (!fs.existsSync(dbPath)) throw new Error(`e2e database not found at ${dbPath}`);
 
 const db = new Database(dbPath);
+/** The tables the reset must empty: the shop's own records, in one list. */
+const SHOP_RECORD_TABLES = ["items", "invoices", "stock_movements"];
 try {
   // busy_timeout: the API holds its own WAL connection while this one writes.
   db.exec("PRAGMA busy_timeout = 5000;");
@@ -54,6 +56,23 @@ try {
     DELETE FROM suppliers;
     DELETE FROM preferences;
   `);
+
+  // PROVE the end state, not the intent. A reset that half-happened — one
+  // table left behind, one DELETE line deleted from the list above — used to
+  // leave the suite green and the next spec with a dirty database. The counts
+  // are read back from the same connection that did the deletes, and a
+  // leftover row is a non-zero exit: the spec's afterAll fails loudly
+  // instead of the run going green over a table that is not empty.
+  const leftovers = SHOP_RECORD_TABLES.map((table) => {
+    const row = db.query(`SELECT COUNT(*) AS count FROM ${table}`).get();
+    return { table, count: Number(row?.count ?? 0) };
+  });
+  const dirty = leftovers.filter((entry) => entry.count > 0);
+  if (dirty.length > 0) {
+    throw new Error(
+      `reset did not clear the shop records: ${dirty.map((entry) => `${entry.table}=${entry.count}`).join(", ")}`,
+    );
+  }
 } finally {
   db.close();
 }

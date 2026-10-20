@@ -159,6 +159,44 @@ describe("stock movements — persistence + ordering", () => {
     expect(later).toHaveLength(0);
   });
 
+  it("reads the window through the (item_id, created_at) index, not a ledger scan", () => {
+    // #295 — the repeat window runs while the adjustment holds the write lock,
+    // so a full scan of the ledger is paid by every manual adjustment on a
+    // growing shop. The SQL below mirrors the store's own window read
+    // (drizzle-store.ts `listStockMovementsSince`): the same columns, the same
+    // predicate, the same `ORDER BY rowid`.
+    //
+    // Measured on a throwaway bun:sqlite database at this shape (200 items,
+    // 1000 executions of the query): with the repeat window empty (the rows
+    // inside the window are the fresh ones) 1k rows 50.6 -> 1.0 ms, 10k rows
+    // 497.2 -> 1.1 ms, 100k rows 5833.0 -> 1.4 ms; with the whole item ledger
+    // inside the window (the worst case) 1k rows 90.2 -> 16.5 ms, 10k rows
+    // 706.5 -> 90.5 ms, 100k rows 7146.0 -> 662.3 ms. Delete the index line
+    // from SCHEMA_DDL and this test fails on the plan.
+    //
+    // SAFETY: EXPLAIN QUERY PLAN answers one `detail` string per plan row
+    const plan = conn.raw
+      .query(
+        `EXPLAIN QUERY PLAN SELECT id, item_id, kind, delta, unit_cost, reason, ref, return_mark, occurred_at, created_at, rowid
+           FROM stock_movements WHERE item_id = ? AND created_at > ? ORDER BY rowid`,
+      )
+      .all("plan-item", "2020-01-01T00:00:00") as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join(" | ");
+    expect(details).toContain("SEARCH stock_movements USING INDEX idx_stock_movements_item (item_id=? AND created_at>?)");
+    expect(details).not.toContain("SCAN stock_movements");
+    // the window's rows are then sorted by rowid; that sort is the price of the
+    // index and it covers only the window, not the ledger
+    expect(details).toContain("USE TEMP B-TREE FOR ORDER BY");
+
+    // SAFETY: PRAGMA index_list answers one row per index on the table
+    const indexes = conn.raw.query("PRAGMA index_list(stock_movements)").all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain("idx_stock_movements_item");
+
+    // SAFETY: PRAGMA index_info answers one row per indexed column
+    const columns = conn.raw.query("PRAGMA index_info(idx_stock_movements_item)").all() as Array<{ seqno: number; name: string }>;
+    expect(columns.sort((a, b) => a.seqno - b.seqno).map((column) => column.name)).toEqual(["item_id", "created_at"]);
+  });
+
   it("counts movements per item only", async () => {
     const a = await makeItem("ledger-item-2");
     const b = await makeItem("ledger-item-3");

@@ -110,7 +110,13 @@ export function DashboardPage({
     // (`onboardingProgress` -> `upsertPreference` -> vault persist), so a 5 s
     // heartbeat would be a preference write every 5 s. No background flag
     // either — a hidden panel has nobody to self-heal for.
+    //
+    // The flag is spelled out as `false` rather than left out: TanStack reads
+    // it as `flag || isFocused()`, so an absent flag and a false one behave
+    // the same — but an absent flag cannot be ASSERTED, and the test below
+    // pins this query's flag exactly.
     refetchInterval: slowRefreshMs,
+    refetchIntervalInBackground: false,
   });
 
   // "Finished means gone": when the four real records are observed, ask the

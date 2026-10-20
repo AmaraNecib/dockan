@@ -1,5 +1,12 @@
 import { expect, type Locator, type Page, type Response } from "@playwright/test";
 
+import {
+  postRpcInPage,
+  rpcRequestInit,
+  type RpcEnvelope,
+  VAULT_SESSION_STORAGE_KEY,
+} from "../../packages/e2e-support/src/rpc-request";
+
 /**
  * Server-acknowledged RPCs (issue 179).
  *
@@ -140,35 +147,29 @@ export async function rpcOutput<T>(response: Response, procedure = "rpc"): Promi
 /**
  * POST one procedure from the page and unwrap the `{ json }` envelope.
  *
- * The one place the app's link headers live (`x-vault-session`) and the one
- * place `credentials: "include"` is set, so every caller below is faithful on
- * a vault-mode server.
+ * The request itself is built by `@dokan/e2e-support` (packages/e2e-support),
+ * which owns the app's link headers (`x-vault-session`) and the
+ * `credentials: "include"` mode — and a unit test over that module pins what
+ * the request carries. This helper only has to supply the page's vault token
+ * and the payload.
  */
 async function postRpc<T>(page: Page, procedure: string, payload: string): Promise<T> {
-  const body = await page.evaluate(
-    async ({ name, input }) => {
-      const headers = new Headers({ "content-type": "application/json" });
-      // the same unlocked-owner header apps/web/src/lib/rpc.ts attaches; read the
-      // one storage key vault-client.ts writes (empty/null means no session). A
-      // blocked storage throws there too and must not fail the read.
-      let vaultToken: string | null = null;
-      try {
-        vaultToken = sessionStorage.getItem("dokan.vault.session");
-      } catch {
-        /* storage can be blocked by the webview; proceed without a vault session */
-      }
-      if (vaultToken !== null && vaultToken !== "") headers.set("x-vault-session", vaultToken);
-      const response = await fetch(`/api/rpc/${name}`, {
-        method: "POST",
-        headers,
-        body: input,
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
-      return response.json();
-    },
-    { name: procedure, input: payload },
-  );
+  // the token lives in the PAGE's sessionStorage (the key the app's vault
+  // client writes), so it is read there. A blocked storage throws there too
+  // and must not fail the read.
+  const vaultToken = await page.evaluate((key) => {
+    try {
+      return sessionStorage.getItem(key);
+    } catch {
+      /* storage can be blocked by the webview; proceed without a vault session */
+      return null;
+    }
+  }, VAULT_SESSION_STORAGE_KEY);
+  const body = await page.evaluate(postRpcInPage, {
+    name: procedure,
+    payload,
+    init: rpcRequestInit(vaultToken),
+  });
   if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
     throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
   }
@@ -176,7 +177,7 @@ async function postRpc<T>(page: Page, procedure: string, payload: string): Promi
   // the oRPC StandardRPCSerializer answers a successful call with
   // `{ json: <declared output> }` (the browser-side `ok()` rejected a refusal),
   // so the caller's T names the value at `json`.
-  return (body as { json: T }).json;
+  return (body as RpcEnvelope<T>).json;
 }
 
 /**

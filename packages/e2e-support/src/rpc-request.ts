@@ -1,0 +1,99 @@
+/**
+ * The outbound RPC request the e2e helpers post (#295).
+ *
+ * WHY THIS IS A MODULE AND NOT A LINE IN THE HELPER. The e2e helpers used to
+ * build their own request inside the page, and the only proof that the
+ * request carried the app's link headers (`x-vault-session`) and its
+ * `credentials: "include"` was a COMMENT. A comment is not a pin: deleting
+ * the header line left every test green, and the failure would only show up
+ * on a vault-mode server, where the seed RPC is refused for a reason that has
+ * nothing to do with what the spec is testing.
+ *
+ * So the request is built HERE, in one place, and the browser-side fetch is
+ * a function that takes that request as an argument. A unit test can then
+ * call the very function the helper calls and look at what it would send.
+ *
+ * The vault token itself is still read in the page (it lives in the page's
+ * `sessionStorage`), so the helper reads it and passes it in. Nothing about
+ * the token's origin changes: it still comes from the page that posts.
+ */
+
+/**
+ * The storage key the app's vault client writes the session token to
+ * (`apps/web/src/lib/vault-client.ts`). The helper reads the same key, so
+ * the helper and the app cannot drift apart on where the token lives.
+ */
+export const VAULT_SESSION_STORAGE_KEY = "dokan.vault.session";
+
+/**
+ * The headers the RPC request carries.
+ *
+ * A named owner contract, not `Record<string, string>` at every use: the
+ * header names are the app's own, and the session header is optional.
+ */
+export interface RpcRequestHeaders {
+  [header: string]: string;
+}
+
+/** The request the helper posts: its headers and its credentials mode. */
+export interface RpcRequestInit {
+  readonly headers: RpcRequestHeaders;
+  readonly credentials: "include";
+}
+
+/**
+ * The request init for one RPC call.
+ *
+ * The vault session header is attached only when a token is configured: an
+ * empty or absent token means "no session", and an empty header value is not
+ * the same thing as no header at all — the server reads the header, and an
+ * empty one is a wrong answer rather than an absent one.
+ *
+ * `credentials: "include"` is the app's own mode (the web client's fetch
+ * link sends the session cookie the same way), so a seeded call is
+ * authenticated exactly like a call the page made.
+ */
+export function rpcRequestInit(vaultToken: string | null): RpcRequestInit {
+  const headers: RpcRequestHeaders = { "content-type": "application/json" };
+  if (vaultToken !== null && vaultToken !== "") headers["x-vault-session"] = vaultToken;
+  return { headers, credentials: "include" };
+}
+
+/** One RPC call, as the page receives it. */
+export interface RpcPageRequest {
+  /** the procedure name, which is the last path segment of the endpoint */
+  readonly name: string;
+  /** the request body, already serialized by the caller */
+  readonly payload: string;
+  readonly init: RpcRequestInit;
+}
+
+/**
+ * The oRPC envelope the endpoint answers: the output under `json`.
+ *
+ * The output type is the caller's, so the helper can hand back a typed value
+ * once it has checked the envelope really carries one.
+ */
+export interface RpcEnvelope<TOutput> {
+  readonly json: TOutput;
+}
+
+/**
+ * The fetch the helper performs, in the page.
+ *
+ * SELF-CONTAINED ON PURPOSE: `page.evaluate` serializes this function's
+ * source into the browser, so it may not close over anything in this module
+ * — no imports, no module scope. Everything it needs arrives as arguments.
+ */
+export async function postRpcInPage<TOutput>(request: RpcPageRequest): Promise<RpcEnvelope<TOutput>> {
+  const response = await fetch(`/api/rpc/${request.name}`, {
+    method: "POST",
+    headers: new Headers(request.init.headers),
+    body: request.payload,
+    credentials: request.init.credentials,
+  });
+  if (!response.ok) throw new Error(`${request.name} failed with HTTP ${response.status}`);
+  // SAFETY: the oRPC link answers the parsed JSON body of the call, and the
+  // caller names the output type it expects under `json`.
+  return (await response.json()) as RpcEnvelope<TOutput>;
+}

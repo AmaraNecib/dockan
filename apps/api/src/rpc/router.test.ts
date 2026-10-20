@@ -714,6 +714,41 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     expect(after.movements).toHaveLength(history.movements.length + 1);
   });
 
+  it("does not refuse the owner's adjustment because the opening row looks like it", async () => {
+    // the opening row (itemsCreateWithStock) is the guard's one blind spot
+    // (#295): it has no origin document to carry, and the owner's typed
+    // request carries none either, so the ONLY field that separates the two is
+    // the literal reason "opening" the web never sends. Set that reason to null
+    // and the guard refuses the owner's next identical adjustment as a
+    // duplicate while every other test in the branch stays green.
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreateWithStock({
+      name: "افتتاحي-تسوية",
+      categoryId: categories.items[0]!.id,
+      costPrice: 100,
+      sellingPrice: 200,
+      stockOnHand: 12,
+    });
+    const opening = await client.itemsHistory({ itemId: item.id });
+    expect(opening.movements).toHaveLength(1);
+
+    // the owner posts the same quantity with no reason: a real second action.
+    // THIS is the line the mutation breaks — with the opening row's reason
+    // nulled, matchesAdjustment sees a copy and the call is refused.
+    await client.stockAddManual({ itemId: item.id, delta: 12 });
+
+    // the premise, asserted after the guard ran so a nulled reason fails on the
+    // refusal above (the claim) rather than on this line (the setup)
+    expect(opening.movements[0]).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 12, reason: "opening", ref: null });
+
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements).toHaveLength(2);
+    // the owner's own action landed: the same quantity, and no reason — the
+    // opening row did not swallow it
+    expect(after.movements.at(-1)).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 12, reason: null });
+    expect(after.stockOnHand).toBe(24);
+  });
+
   it("pins the window's boundary second on the wire", async () => {
     // `created_at` is a one-second stamp and the store's comparison is
     // STRICT (`gt`), so a row recorded IN the cutoff second is already

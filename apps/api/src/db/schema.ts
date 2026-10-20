@@ -465,6 +465,17 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), amount INTEGER NOT NULL, method TEXT NOT NULL, note TEXT, paid_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id), kind TEXT NOT NULL, delta INTEGER NOT NULL, unit_cost INTEGER, reason TEXT, ref TEXT, return_mark TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  // #295 — the repeat-window read filters `item_id = ? AND created_at > ?`
+  // (drizzle-store.ts `listStockMovementsSince`), and that read runs while the
+  // manual adjustment HOLDS THE WRITE LOCK. Without this index every
+  // adjustment full-scans the ledger: ~5.8 ms per adjustment at 100k rows,
+  // against ~1.4 ms with the index.
+  //
+  // Additive and idempotent like every line here, so it needs no migration:
+  // no user_version bump (CURRENT_SCHEMA_VERSION stays 6), no backfill, no row
+  // rewrite. The index is built on the next boot from this same array —
+  // ~50 ms at 100k rows, once.
+  `CREATE INDEX IF NOT EXISTS idx_stock_movements_item ON stock_movements(item_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), direction TEXT CHECK (direction IN ('WE_OWE','THEY_OWE') OR direction IS NULL), invoice_id TEXT REFERENCES invoices(id), method TEXT, note TEXT, ref TEXT, dedup_key TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL))`,
   `CREATE INDEX IF NOT EXISTS idx_supplier_entries_supplier ON supplier_account_entries(supplier_id, occurred_at)`,

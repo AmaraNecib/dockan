@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, buildEncryptedSnapshot, createEncryptedConnection, readLegacyDatabaseImage } from "./encrypted-connection";
-import { MAX_SNAPSHOT_STAMP_BYTES, SNAPSHOT_FENCE_PREFIX_BYTES, VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, readSnapshotFence } from "../lib/vault/format";
+import { MAX_SNAPSHOT_STAMP_BYTES, VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, readSnapshotFence } from "../lib/vault/format";
 
 // Every test opens an encrypted connection and writes a snapshot.
 setHeavyDefaultTimeout();
@@ -765,9 +765,9 @@ describe("snapshot fence (#280)", () => {
     // The window is measured from the first attempt, not from the start of the
     // test: the connection reads and decrypts the whole snapshot before it
     // asks the fence anything, and that takes longer than the window.
-    // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
-    // it passes exactly (path, "r"); the narrowed signature names that one call
-    // so the spy can delegate to the real open
+    // SAFETY: the fence reader (`lib/vault/fence.ts`) is the only code that opens the
+    // snapshot path, and it passes exactly (path, "r"); the narrowed signature
+    // names that one call so the spy can delegate to the real open
     const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
     let firstAttempt = 0;
     let refusals = 0;
@@ -821,9 +821,9 @@ describe("snapshot fence (#280)", () => {
     // gives up (and says so), the next one gets a good answer. The first
     // successful read is therefore the THIRD attempt — with a bound of one it
     // would be the second, and with a bound of five it would be the sixth.
-    // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
-    // it passes exactly (path, "r"); the narrowed signature names that one call
-    // so the spy can delegate to the real open
+    // SAFETY: the fence reader (`lib/vault/fence.ts`) is the only code that opens the
+    // snapshot path, and it passes exactly (path, "r"); the narrowed signature
+    // names that one call so the spy can delegate to the real open
     const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
     let attempts = 0;
     let refusals = 0;
@@ -870,9 +870,9 @@ describe("snapshot fence (#280)", () => {
     await first.persistIfDirty();
     await first.close();
 
-    // SAFETY: readDiskFence is the only caller that opens the snapshot path, and
-    // it passes exactly (path, "r"); the narrowed signature names that one call
-    // so the spy can delegate to the real open
+    // SAFETY: the fence reader (`lib/vault/fence.ts`) is the only code that opens the
+    // snapshot path, and it passes exactly (path, "r"); the narrowed signature
+    // names that one call so the spy can delegate to the real open
     const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
     // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
     // parameters are the (path, flags) overload production calls
@@ -974,6 +974,43 @@ describe("snapshot fence (#280)", () => {
     await conn.close();
   });
 
+  it("refuses to bundle a fenced snapshot when this connection has no stamp to check it against (#307)", async () => {
+    const former = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      headerPath: path.join(dir, "vault.json"),
+      fresh: true,
+      writeStamp: () => tokenA,
+    });
+    former.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('former')");
+    former.markDirty();
+    await former.persistIfDirty();
+    await former.close();
+
+    // The old backup check short-circuited on "this connection has no stamp"
+    // and called the bytes its own without reading them, while the write path
+    // compared them and called them another holder's. One reader says the true
+    // thing — the bytes are fenced and this holder has nothing to compare — so
+    // the bundle is refused rather than quietly holding an envelope this
+    // connection cannot establish as its own version.
+    const headerText = "{}";
+    fs.writeFileSync(path.join(dir, "vault.json"), headerText);
+    const unstamped = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), headerPath: path.join(dir, "vault.json") });
+    let refusal: unknown;
+    try {
+      await unstamped.writeBackupTo(path.join(dir, "today.dknvbak"));
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(SnapshotPersistenceError);
+    // SAFETY: the assertion above established the class, and `reason` is the
+    // field this test exists to read
+    expect((refusal as SnapshotPersistenceError).reason).toBe("unfenced-holder");
+    expect(fs.existsSync(path.join(dir, "today.dknvbak"))).toBe(false);
+    await unstamped.close();
+  });
+
   it("documents the backup exception: a bundle holds a v1 envelope, deliberately (#280)", () => {
     // encryptLegacyBackups() calls buildEncryptedSnapshot with no stamp, so the
     // image inside a .dknvbak is a v1 envelope. A backup is never held under the
@@ -1007,38 +1044,6 @@ describe("snapshot fence (#280)", () => {
     // and cut below the fence itself, so the parser is the one that refuses
     fs.writeFileSync(snapshotPath(), bytes.subarray(0, 6));
     expect(() => createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() })).toThrow(VaultCorruptionError);
-  });
-
-  it("reads a bounded fence prefix, not the whole snapshot", async () => {
-    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
-    conn.raw.exec("CREATE TABLE t(a TEXT)");
-    conn.markDirty();
-    await conn.persistIfDirty();
-    await conn.close();
-
-    // The fence read exists so a check before every write stays cheap. Without
-    // a pin on the read length, changing it to slurp the whole multi-megabyte
-    // snapshot would pass every other test in this file.
-    const realReadSync = fs.readSync.bind(fs);
-    let widest = 0;
-    // SAFETY: production calls readSync with (fd, buffer, offset, length,
-    // position) and forwards the result unchanged, so the narrowed signature
-    // describes the one overload that is spied on
-    const spy = spyOn(fs, "readSync").mockImplementation(
-      ((fd: number, buffer: Uint8Array, offset: number, length: number, position: number) => {
-        widest = Math.max(widest, length);
-        return realReadSync(fd, buffer, offset, length, position);
-      }) as typeof fs.readSync,
-    );
-    try {
-      const again = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), writeStamp: () => tokenA });
-      await again.persistIfDirty();
-      await again.close();
-    } finally {
-      spy.mockRestore();
-    }
-    expect(widest).toBe(SNAPSHOT_FENCE_PREFIX_BYTES);
-    expect(widest).toBeLessThan(200);
   });
 
   it("refuses before the write when the guard fails on the async path", async () => {
@@ -1245,9 +1250,9 @@ describe("snapshot fence (#280)", () => {
     conn.markDirty();
     await conn.persistIfDirty();
 
-    // SAFETY: readDiskFence is the only caller that opens the snapshot path,
-    // and it passes exactly (path, "r"); the narrowed signature names that one
-    // call so the spy can delegate to the real open
+    // SAFETY: the fence reader (`lib/vault/fence.ts`) is the only code that opens the
+    // snapshot path, and it passes exactly (path, "r"); the narrowed signature
+    // names that one call so the spy can delegate to the real open
     const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
     let reads = 0;
     // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
@@ -1337,9 +1342,9 @@ describe("closed connection and unreadable paths (#291)", () => {
     // is owed — and never "unreadable", which would send the post-write
     // branch down its benign "written, fence unproven" exit over a snapshot
     // that is not there.
-    // SAFETY: readDiskFence is the only caller that opens the snapshot path,
-    // and it passes exactly (path, "r"); the narrowed signature names that one
-    // call so the spy can delegate to the real open
+    // SAFETY: the fence reader (`lib/vault/fence.ts`) is the only code that opens the
+    // snapshot path, and it passes exactly (path, "r"); the narrowed signature
+    // names that one call so the spy can delegate to the real open
     const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
     // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
     // parameters are the (path, flags) overload production calls

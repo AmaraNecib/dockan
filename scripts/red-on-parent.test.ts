@@ -55,6 +55,7 @@ import {
   lockContentionMessage,
   lockHolderIsGone,
   lockPidFileContent,
+  clearDeadClaim,
   LOCK_WAIT_SLACK_MS,
   lockWaitBudget,
   main,
@@ -2672,6 +2673,45 @@ test("rejects zero", () => {
       fixture.cleanup();
     }
   }, 60_000);
+
+  test("a live claim that took the name while a dead one was being cleared is put back", () => {
+    // The `wx` create is the exclusivity, but a rename proves only that one run
+    // moved a name. A reclaimer that already cleared the dead claim can create
+    // its own live one between this run's read and its rename, and a blind
+    // rename then carries that away and unlinks it: the owner believes it still
+    // holds the claim, a second run takes the name, and both enter the
+    // worktree. The moved file must still read as the bytes that were observed.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
+    const lockPath = join(dir, "wt.lock");
+    mkdirSync(lockPath);
+    const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
+    const deadRaw = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
+    const liveRaw = lockPidFileContent(process.pid, "live-claim-token", 0);
+    writeFileSync(claimPath, liveRaw);
+    try {
+      // this run read the DEAD bytes a moment ago and now tries to clear them
+      expect(clearDeadClaim(claimPath, deadRaw)).toBe(false);
+      // the live claim is back where its owner expects it, not deleted
+      expect(readFileSync(claimPath, "utf8")).toBe(liveRaw);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a claim that still reads as the observed dead one is cleared", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
+    const lockPath = join(dir, "wt.lock");
+    mkdirSync(lockPath);
+    const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
+    const deadRaw = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
+    writeFileSync(claimPath, deadRaw);
+    try {
+      expect(clearDeadClaim(claimPath, deadRaw)).toBe(true);
+      expect(existsSync(claimPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test("a claim left behind by a dead reclaimer does not block the reclaim", () => {
     // Recovery is exclusive because a reclaimer takes a claim inside the lock

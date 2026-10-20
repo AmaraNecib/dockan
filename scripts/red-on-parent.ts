@@ -1675,18 +1675,53 @@ function takeReclaimClaim(lockPath: string): ReclaimClaim | null {
   } else if (processIsAlive(owner.pid)) {
     return null;
   }
+  if (!clearDeadClaim(claimPath, raw)) return null;
+  return create() ? { path: claimPath, token } : null;
+}
+
+/**
+ * Remove a claim whose owner is gone, binding the removal to the bytes that were
+ * observed.
+ *
+ * The `wx` create is what makes claiming exclusive, but a rename proves only
+ * that ONE run moved a name — not that the name still held the dead claim that
+ * run read. Between the read and the rename, a reclaimer that already cleared
+ * the dead claim can create its own LIVE one at the same path; a blind rename
+ * then carries that away and unlinks it, so the run that owns it believes it
+ * still holds the claim, a second run takes the name, and both enter the
+ * worktree. So the moved file must still read as the bytes that were observed.
+ *
+ * Anything else is put back where its owner expects it. If the name has been
+ * taken again in the meantime the tombstone stays inside the lock and goes with
+ * it — far better than a claim deleted under a live owner.
+ */
+export function clearDeadClaim(claimPath: string, observed: string): boolean {
   const claimTombstone = `${claimPath}.stale-${process.pid}-${randomUUID()}`;
   try {
     renameSync(claimPath, claimTombstone);
   } catch {
-    return null;
+    return false;
+  }
+  let moved: string;
+  try {
+    moved = readFileSync(claimTombstone, "utf8");
+  } catch {
+    return false;
+  }
+  if (moved !== observed) {
+    try {
+      if (!existsSync(claimPath)) renameSync(claimTombstone, claimPath);
+    } catch {
+      // The name is taken again; the tombstone goes with the lock.
+    }
+    return false;
   }
   try {
     unlinkSync(claimTombstone);
   } catch {
     // The tombstone stays behind inside the lock directory; it goes with it.
   }
-  return create() ? { path: claimPath, token } : null;
+  return true;
 }
 
 /** Drop this run's claim, and only its own. */

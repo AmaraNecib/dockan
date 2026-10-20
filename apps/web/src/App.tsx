@@ -64,7 +64,10 @@ export function RequireSession({ children }: { children: ReactNode }) {
   // cause gets its own screen; any other failure shows RETRY, never the legacy
   // login (finding 5).
   if (vault.failure === "in-use") return <VaultLockedByOtherInstance onRetry={retryRefusedFolder} />;
-  if (vault.failure === "stale-lock") return <VaultLockStaleHeartbeat onRetry={vault.refresh} />;
+  // The stale-pid screen promises the same self-take as the in-use one, so its
+  // button asks the folder too; a plain status refresh would wait for a tick the
+  // copy no longer admits to (#298).
+  if (vault.failure === "stale-lock") return <VaultLockStaleHeartbeat onRetry={retryRefusedFolder} />;
   if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
   if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
   return <LegacySessionGate>{children}</LegacySessionGate>;

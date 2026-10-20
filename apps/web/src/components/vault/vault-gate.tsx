@@ -48,6 +48,15 @@ const VAULT_STATUS_FAILURES = new Map<string, VaultFailure>([
   ["VAULT_LOCKED_BY_OTHER_INSTANCE", "in-use"],
 ]);
 
+/**
+ * How often a screen naming a lock refusal re-reads the status (#298). The
+ * refused instance takes the folder by itself, so a screen that only moves on a
+ * click contradicts the sentence it is showing. Slow enough to be invisible,
+ * and it exists only for the two lock stories: every other failure waits for
+ * the owner's retry.
+ */
+const VAULT_REFUSAL_POLL_MS = 5_000;
+
 type VaultHook = {
   status: VaultStatus | undefined;
   /** "unsupported" = legacy build; "unreachable" = show retry, never login;
@@ -100,6 +109,14 @@ export function useVaultStatus(): VaultHook {
       aliveRef.current = false;
     };
   }, [load]);
+
+  // #298: a lock refusal can clear itself while the owner watches. Follow it, so
+  // the gate appears when the refused instance takes the folder without a click.
+  useEffect(() => {
+    if (failure !== "in-use" && failure !== "stale-lock") return undefined;
+    const timer = setInterval(load, VAULT_REFUSAL_POLL_MS);
+    return () => clearInterval(timer);
+  }, [failure, load]);
 
   return { status, failure, setStatus, refresh: load };
 }

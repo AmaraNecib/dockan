@@ -1622,15 +1622,21 @@ describe("the vault lock refusal app", () => {
     expect(page).not.toContain("من تلقاء نفسها");
   });
 
-  it("refreshes the refusal page so it recovers once the folder is free (#298)", () => {
+  it("refreshes the held page so it recovers once the folder is free (#298)", () => {
     // The refusal page is the whole screen in the packaged app: the shell loads
     // the sidecar's own origin and never the SPA, so a static page means the
     // instance heals while the screen keeps showing the refusal until the owner
     // reloads by hand. A meta refresh is the one control that needs no script
     // and no second route.
-    const held = vaultLockRefusalPageHtml(heldRefusal(owner));
-    const unreadable = vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: "/data/vault.lock" });
-    for (const page of [held, unreadable]) {
+    //
+    // It is NOT on the unreadable page: that story has no loop (main.ts stops
+    // one that meets an unreadable file), so the reload could never change what
+    // the owner reads and would be a request every five seconds for nothing.
+    for (const page of [
+      vaultLockRefusalPageHtml(heldRefusal(owner)),
+      vaultLockRefusalPageHtml(heldRefusal(owner, true)),
+      vaultLockRefusalPageHtml(heldRefusal(undefined)),
+    ]) {
       // SAFETY: the regex asserts the attribute shape; a miss fails below
       const meta = /<meta http-equiv="refresh" content="(\d+)">/.exec(page);
       expect(meta).not.toBeNull();
@@ -1640,6 +1646,9 @@ describe("the vault lock refusal app", () => {
       expect(seconds).toBeGreaterThanOrEqual(1);
       expect(seconds).toBeLessThanOrEqual(10);
     }
+    expect(vaultLockRefusalPageHtml({ kind: "unreadable", lockPath: "/data/vault.lock" })).not.toContain(
+      'http-equiv="refresh"',
+    );
   });
 
   it("escapes a hostile lock path before it reaches the unreadable page (#287)", () => {

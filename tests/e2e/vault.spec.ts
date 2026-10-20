@@ -346,7 +346,11 @@ test("a second instance on this folder: the browser is told the folder is in use
   await expect(page.getByTestId("vault-status-unavailable")).toHaveCount(0);
   await expect(page.getByText("تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.")).toHaveCount(0);
 
-  // closing the other copy and retrying reaches the real gate
+  // Closing the other copy and retrying reaches the real gate. What this half
+  // proves is the SPA's retry path through the dev proxy to the OWNER instance
+  // (the proxy points at the first copy, not at the refuser); the self-take — a
+  // refused instance taking the folder by itself — is proved on the wire in the
+  // last test of this file, because the browser cannot see the refuser at all.
   await stopAndWait(refusal);
   refusal = undefined;
   await page.unroute("**/api/vault/status");
@@ -386,4 +390,70 @@ test("a genuinely unreachable server keeps the server-down copy (#276)", async (
   await expect(down).toBeVisible();
   await expect(down).toHaveText("تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.");
   await expect(page.getByTestId("vault-status-in-use")).toHaveCount(0);
+});
+
+test("a refused instance takes this folder by itself once the first copy goes (#277/#298)", async () => {
+  // Everything above proves the refusal's COPY. This proves the behaviour the
+  // copy promises, which no assertion in this file did: a live refused instance
+  // takes the folder with no restart, publishes the canonical port record the
+  // proxy follows, and then serves the vault gate. It is the last test in the
+  // file because it takes the first instance away for good.
+  const runDir = path.join(dataDir, "run");
+  const portFile = path.join(runDir, ".dokan-port");
+  const lockFile = path.join(dataDir, "vault.lock");
+  const refusalPort = await freePort();
+  refusal = startApi(refusalPort);
+  await waitForRefusal(refusalPort);
+  const refusalPid = refusal.pid;
+  if (refusalPid === undefined) throw new Error("the refused instance has no pid");
+
+  // The first copy owns the folder and the canonical record the proxy reads
+  expect(fs.readFileSync(portFile, "utf8")).toBe(String(API_PORT));
+
+  // The retry route answers on the REFUSED instance itself, not only through the
+  // dev proxy (which points at the owner). Deleting POST /api/vault/reclaim from
+  // main.ts used to leave this spec green, because the only POST went through
+  // the proxy to the owner. Here the ask goes to the refuser's own port, and the
+  // folder is still held, so the honest answer is "asked, not taken".
+  const asked = await fetch(`http://127.0.0.1:${refusalPort}/api/vault/reclaim`, { method: "POST" });
+  expect(asked.status).toBe(200);
+  expect(await asked.json()).toEqual({ ok: true, taken: false });
+
+  // it goes away without a clean close (SIGKILL/taskkill leaves `vault.lock`
+  // behind), which is the harder of the two stories: the refused instance has
+  // to reclaim a stale record, not just see a free path
+  await stopAndWait(api);
+  api = undefined;
+
+  // the refused instance takes the folder on its own backoff: no restart, and
+  // the lock record names it
+  const takeDeadline = Date.now() + 45_000;
+  for (;;) {
+    let ownerPid: number | undefined;
+    try {
+      // SAFETY: the lock record is JSON written by a running sidecar
+      ownerPid = (JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid?: number }).pid;
+    } catch {
+      ownerPid = undefined;
+    }
+    if (ownerPid === refusalPid) break;
+    if (Date.now() >= takeDeadline) throw new Error("the refused instance never took the folder");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  // the canonical record follows without anyone restarting anything: this is
+  // the file the dev proxy walks, so its arrival is what makes the takeover
+  // visible to the browser
+  for (;;) {
+    if (fs.existsSync(portFile) && fs.readFileSync(portFile, "utf8") === String(refusalPort)) break;
+    if (Date.now() >= takeDeadline) throw new Error("the canonical port record never followed the takeover");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  // and the instance that kept the promise serves the gate, not the refusal:
+  // this data dir has a vault, so the gate's own answer is `locked`
+  const status = await fetch(`http://127.0.0.1:${refusalPort}/api/vault/status`);
+  expect(status.status).toBe(200);
+  // SAFETY: the status route returns { state: string } per the vault contract
+  expect(((await status.json()) as { state?: string }).state).toBe("locked");
 });

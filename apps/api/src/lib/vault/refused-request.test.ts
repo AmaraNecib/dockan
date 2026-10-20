@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { ReclaimRetry, type ReclaimTimerHandle } from "./reclaim-retry";
-import { RECLAIM_RETRY_PATH, isReclaimRetry } from "./refused-request";
+import { RECLAIM_RETRY_PATH, answerReclaimRetry, isReclaimRetry } from "./refused-request";
 
 /**
  * #277 + greptile P2 on #298: serving a refusal and asking the folder again
@@ -12,6 +12,11 @@ import { RECLAIM_RETRY_PATH, isReclaimRetry } from "./refused-request";
  * polling faster than the cap kept the automatic tick from ever firing: the
  * attempt rate was the client's, not the schedule's. Only the owner's explicit
  * retry asks the folder now.
+ *
+ * The poll below runs through `answerReclaimRetry`, the function the refused
+ * handler calls, so this test can fail: if the retry branch ever answers polls
+ * again (or if it cancelled and re-armed the armed tick, which is the P2
+ * regression), `attempts` or `cancelled` move.
  */
 
 /** The minimum of the real loop's scheduler the rate question needs. */
@@ -56,13 +61,29 @@ describe("a refused start's request handling (#277, greptile P2 on #298)", () =>
     expect(isReclaimRetry("POST", `${RECLAIM_RETRY_PATH}/extra`)).toBe(false);
   });
 
-  it("keeps the automatic schedule firing while a client polls faster than the cap", () => {
+  it("answers a malformed url as a poll instead of throwing into the handler", () => {
+    // the predicate runs on the request path: an unparseable url is not a retry
+    expect(() => isReclaimRetry("POST", "http://[")).not.toThrow();
+    expect(isReclaimRetry("POST", "http://[")).toBe(false);
+  });
+
+  it("answers 200 with `taken` for the retry, and asks once", () => {
+    let asked = 0;
+    const response = answerReclaimRetry(new Request(`http://localhost${RECLAIM_RETRY_PATH}`, { method: "POST" }), () => {
+      asked += 1;
+      return true;
+    });
+    expect(response?.status).toBe(200);
+    expect(asked).toBe(1);
+  });
+
+  it("keeps the automatic schedule firing while a client polls faster than the cap", async () => {
     const clock = armedTicks();
     let attempts = 0;
     const retry = new ReclaimRetry({
       attempt: () => {
         attempts += 1;
-        return { ok: false, owner: undefined };
+        return { ok: false };
       },
       onAcquired: () => {},
       backoffMs: [15_000],
@@ -74,10 +95,13 @@ describe("a refused start's request handling (#277, greptile P2 on #298)", () =>
     expect(clock.pending()).toBe(1);
 
     // the client polls far faster than the fifteen-second cap, and every poll
-    // is routed exactly as main.ts routes it
+    // goes through the handler's own retry branch
     for (let poll = 0; poll < 200; poll += 1) {
-      if (isReclaimRetry("GET", "/api/vault/status")) retry.trigger();
+      const answered = answerReclaimRetry(new Request(`http://localhost/api/vault/status?ts=${poll}`), () => retry.trigger());
+      // a poll is served as the refusal, never answered as a retry
+      expect(answered).toBeUndefined();
     }
+    // ...and it asked the folder zero times, and never touched the armed tick
     expect(attempts).toBe(0);
     expect(clock.cancelled).toHaveLength(0);
 
@@ -85,6 +109,53 @@ describe("a refused start's request handling (#277, greptile P2 on #298)", () =>
     clock.fireNext();
     expect(attempts).toBe(1);
     // and the next tick is armed from the loop, not from a request
+    expect(clock.pending()).toBe(1);
+
+    // the owner's retry is an EXTRA attempt on top of the schedule: it fires
+    // now and leaves the armed tick alone (cancel + re-arm is the P2 bug)
+    const answered = answerReclaimRetry(new Request(`http://localhost${RECLAIM_RETRY_PATH}`, { method: "POST" }), () =>
+      retry.trigger(),
+    );
+    expect(attempts).toBe(2);
+    expect(clock.cancelled).toHaveLength(0);
+    expect(clock.pending()).toBe(1);
+    expect(await answered?.json()).toEqual({ ok: true, taken: false });
+  });
+
+  it("the client's rate never owns the schedule, however often it asks (#298)", () => {
+    // The stronger pin, and the one that survives the mutations the routing test
+    // above cannot see: here EVERY poll asks for an immediate attempt, which is
+    // exactly the old behaviour (a request flipped the loop). Three mutations
+    // die here:
+    //   1. deleting the poll loop      -> attempts stays 0, not 200
+    //   2. cancel-and-re-arm trigger()  -> `cancelled` is non-empty
+    //   3. an attempt armed per request -> more than one pending tick
+    const clock = armedTicks();
+    let attempts = 0;
+    const retry = new ReclaimRetry({
+      attempt: () => {
+        attempts += 1;
+        return { ok: false };
+      },
+      onAcquired: () => {},
+      backoffMs: [15_000],
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    retry.start();
+    for (let poll = 0; poll < 200; poll += 1) retry.trigger();
+
+    // every poll did ask, and every ask was answered as a failed attempt
+    expect(attempts).toBe(200);
+    // ...and the schedule is exactly where start() left it: one armed tick,
+    // never cancelled, never re-armed at the cap by a request
+    expect(clock.pending()).toBe(1);
+    expect(clock.cancelled).toHaveLength(0);
+
+    // the tick armed at start still fires on its own, from the loop's schedule
+    clock.fireNext();
+    expect(attempts).toBe(201);
     expect(clock.pending()).toBe(1);
   });
 });

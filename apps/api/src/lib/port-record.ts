@@ -274,6 +274,17 @@ export function writeRegistryEntry(registryDir: string, pid: number, host: strin
 }
 
 /**
+ * Remove this process's registry entry only (#277). A refused start publishes
+ * that entry so the desktop shell can verify the child it spawned, but it owns
+ * no canonical record: recomputing one on the way out would probe the
+ * survivors and repoint or delete the owning instance's `.dokan-port` while it
+ * is still serving.
+ */
+export function forgetOwnRegistryEntry(registryDir: string, pid: number): void {
+  removeFileIfPresent(ownRegistryEntry(registryDir, pid));
+}
+
+/**
  * Parses one registry entry file; prunes entries whose pid is dead. The host
  * is normalized to the probeable loopback so wildcard binds never get pruned
  * by an unconnectable probe (review finding).

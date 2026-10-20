@@ -931,7 +931,8 @@ const VAULT_LOCK_PAGE_COPY = {
    * unreadable lock starts no retry loop at boot (#287) and stops the one that
    * meets it later (main.ts), so nothing here takes the folder by itself. The
    * held and recycled-pid pages must not carry that sentence, and this page
-   * must not promise a self-take that no loop will perform.
+   * must not promise a self-take that no loop will perform. It carries no meta
+   * refresh either: a reload cannot change a story only the owner can clear.
    */
   unreadableHint: "لا تُعدّل بيانات المتجر. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock وحده.",
   unreadableTemplate: "تعذّر قراءة ملف القفل في مجلد البيانات: {path}. أغلق أي نسخة أخرى من دكان إن كانت مفتوحة، وإن لم تكن هناك نسخة مفتوحة فاحذف ملف vault.lock وحده ثم أعد فتح التطبيق.",
@@ -986,12 +987,16 @@ function vaultLockRefusalHint(refusal: VaultLockRefusal): string {
 
 /** Standalone Arabic page for the second instance (mirrors the schema page). */
 export function vaultLockRefusalPageHtml(refusal: VaultLockRefusal): string {
+  // The reload belongs to the stories a loop can clear: the refused instance
+  // takes the folder by itself and the page must follow without a click. An
+  // unreadable lock has no loop (see `unreadableTemplate`), so a reload there
+  // would be a request loop that can never change what the page says.
+  const refresh = refusal.kind === "unreadable" ? "" : `    <meta http-equiv="refresh" content="5">\n`;
   return `<!doctype html>
 <html lang="ar" dir="rtl">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="refresh" content="5">
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+${refresh}    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(VAULT_LOCK_PAGE_COPY.title)}</title>
     <style>
       body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fafafa; color: #111; font-family: system-ui, sans-serif; }

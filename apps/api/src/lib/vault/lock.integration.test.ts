@@ -183,6 +183,19 @@ async function waitForFreshHeartbeat(lockFile: string, seen: string | undefined)
   }
 }
 
+/**
+ * The vault gate really answers on `onPort`. A `not.toBe(503)` also passes on a
+ * 404 or a 500, so a takeover that left the refusal route mounted elsewhere
+ * would read as success. Every folder in this file is fresh (no vault header),
+ * so the gate's own answer is `unconfigured`.
+ */
+async function expectFreshVaultGate(onPort: number): Promise<void> {
+  const response = await fetch(`http://127.0.0.1:${onPort}/api/vault/status`);
+  expect(response.status).toBe(200);
+  // SAFETY: the status route returns { state: string } per the vault contract
+  expect(((await response.json()) as { state?: string }).state).toBe("unconfigured");
+}
+
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-vault-lock-integration-"));
   port = await freePort();
@@ -248,6 +261,44 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
     // the first instance still owns the folder and keeps serving
     expect((await fetch(`http://127.0.0.1:${port}/health`)).ok).toBe(true);
+  });
+
+  itHeavy("a refused start publishes its own registry entry and never the canonical record (#277)", async () => {
+    // The desktop shell's identity check B (`registry_owned_by` in desktop.rs)
+    // reads `<portRoot>/.dokan-port.registry/<child pid>` and kills a child that
+    // has no entry there, after its 20 s startup budget. A refused start used to
+    // publish nothing, so the shell killed the one process that can take the
+    // folder by itself, and the Arabic refusal page was never shown. The entry
+    // is now published; the canonical record is still the owner's business.
+    const refusedPort = await freePort();
+    const lockFile = path.join(dir, "vault.lock");
+    const portFile = path.join(dir, "run", ".dokan-port");
+    const registryDir = path.join(dir, "run", ".dokan-port.registry");
+    // a holder that never publishes anything: this test is about the waiter's
+    // own entry, not about a survivor's canonical
+    const holder = acquireVaultLock(dir);
+    second = startApi(refusedPort);
+    await waitForLog("VAULT_LOCK_REFUSED");
+    const refusedPid = second.pid;
+    if (refusedPid === undefined) throw new Error("the refused sidecar has no pid");
+
+    const entryPath = path.join(registryDir, String(refusedPid));
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(entryPath); attempt += 1) await sleep(50);
+    const raw = fs.readFileSync(entryPath, "utf8");
+    // the exact shape the shell's check requires: the loopback host, and the
+    // assigned port anchored to the closing brace (43189 must not satisfy 4318)
+    expect(raw).toContain('"host":"127.0.0.1"');
+    expect(raw).toContain(`"port":${refusedPort}}`);
+    expect(JSON.parse(raw)).toEqual({ host: "127.0.0.1", port: refusedPort });
+
+    // and it wrote NO canonical record: the dev proxy must never be pointed at
+    // a refusal server
+    expect(fs.existsSync(portFile)).toBe(false);
+    // the entry was not bought with a takeover: the holder still owns the folder
+    expect((await fetch(`http://127.0.0.1:${refusedPort}/api/vault/status`)).status).toBe(503);
+    // SAFETY: the lock record is JSON written by this process
+    expect((JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number }).pid).toBe(process.pid);
+    holder.release();
   });
 
   itHeavy("a refused start serves the recycled-pid page, not the close-the-other-copy one (greptile P1 on #298)", async () => {
@@ -396,6 +447,57 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(readLogs()).not.toContain("the refused instance took the data folder");
   });
 
+  itPosix("a running retry loop STOPS when it meets an unreadable lock file (#298)", async () => {
+    // The other half of the unreadable story. At boot an unreadable lock starts
+    // no loop (#287); this is the instance that was refused and is retrying when
+    // the file becomes unreadable. The page it then serves says "delete the file
+    // and reopen", so nothing may keep ticking: a loop would block the event
+    // loop and log a reclaimed-race row every fifteen seconds against a story
+    // only the owner can clear. The assertion is the folder itself — once the
+    // file is gone, a live loop would take it on its next 250 ms tick.
+    //
+    // POSIX only: the holder keeps an open fd on the record, and Windows will
+    // not unlink an open file.
+    const lockFile = path.join(dir, "vault.lock");
+    const refusedPort = await freePort();
+    // the holder must survive the loss it is about to suffer: without a handler
+    // the lock fail-stops the process that owns it, and that process is this
+    // test runner
+    const holder = acquireVaultLock(dir, { onLost: () => {} });
+    second = startApi(refusedPort);
+    await waitForLog("VAULT_LOCK_REFUSED");
+
+    // swap the holder's readable record for a directory: same path, so the read
+    // is EISDIR, not ENOENT — the unreadable refusal, not a free folder
+    fs.rmSync(lockFile);
+    fs.mkdirSync(lockFile);
+
+    // the loop's next tick meets it and swaps the page to the lock-file story
+    const pageDeadline = Date.now() + 20_000;
+    for (;;) {
+      const page = await fetch(`http://127.0.0.1:${refusedPort}/`);
+      const html = await page.text();
+      if (html.includes("تعذّر قراءة ملف القفل")) break;
+      if (Date.now() >= pageDeadline) {
+        throw new Error(`the refused sidecar never served the unreadable page; stderr: ${apiStderr}`);
+      }
+      await sleep(200);
+    }
+
+    // the owner does their half: the file goes away
+    fs.rmSync(lockFile, { recursive: true, force: true });
+    // longer than the first three backoff steps (250 + 500 + 1000 ms): a loop
+    // that is still running takes the folder well inside this window
+    await sleep(3_000);
+    expect(fs.existsSync(lockFile)).toBe(false);
+    // and the page still says what the owner has to do
+    const still = await fetch(`http://127.0.0.1:${refusedPort}/`);
+    expect(still.status).toBe(503);
+    expect(await still.text()).toContain("تعذّر قراءة ملف القفل");
+    expect(readLogs()).not.toContain("the refused instance took the data folder");
+    holder.release();
+  });
+
   itHeavy("a refused start takes the folder by itself once the holder is killed (#277)", async () => {
     const secondPort = await freePort();
     const thirdPort = await freePort();
@@ -462,8 +564,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     const loserPid = ownerPid === refusedPid ? otherPid : refusedPid;
 
     // the winner owns the folder: the vault gate serves instead of the refusal
-    // and the lock record names it
-    expect((await fetch(`http://127.0.0.1:${winnerPort}/api/vault/status`)).status).not.toBe(503);
+    await expectFreshVaultGate(winnerPort);
     // SAFETY: the lock record is JSON written by the reclaiming sidecar
     expect((JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number }).pid).toBe(ownerPid);
 
@@ -479,9 +580,11 @@ describe("vault single-writer lock over a live sidecar", () => {
     // SAFETY: the lock record is JSON written by the reclaiming sidecar
     expect((JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid: number }).pid).toBe(ownerPid);
 
-    // and the loser published no port record: no registry entry of its own, and
-    // the canonical record names the winner
-    expect(fs.existsSync(path.join(registryDir, String(loserPid)))).toBe(false);
+    // and the loser left the canonical record to the winner. It DOES publish its
+    // own per-pid registry entry: the desktop shell's identity check reads that
+    // file and kills a child without one (#277), and it names the loser's own
+    // port, so it points nothing at the refusal.
+    expect(fs.existsSync(path.join(registryDir, String(loserPid)))).toBe(true);
     expect(fs.existsSync(path.join(registryDir, String(ownerPid)))).toBe(true);
     const publishDeadline = Date.now() + 10_000;
     for (;;) {
@@ -546,9 +649,8 @@ describe("vault single-writer lock over a live sidecar", () => {
     // record: the reclaim path in lock.ts logs that separately
     expect(readLogs()).not.toContain("reclaimed a stale lock");
     expect(readLogs()).not.toContain("reclaimed an unreadable lock");
-    // and it now serves the vault gate instead of the refusal
-    const status = await fetch(`http://127.0.0.1:${secondPort}/api/vault/status`);
-    expect(status.status).not.toBe(503);
+    // and it now serves the vault gate, not merely something that is not a 503
+    await expectFreshVaultGate(secondPort);
   });
 
   itPosix("a refused start takes the folder once the holder's process EXITS cleanly (#277)", async () => {
@@ -602,9 +704,8 @@ describe("vault single-writer lock over a live sidecar", () => {
     // record: the reclaim path in lock.ts logs that separately
     expect(readLogs()).not.toContain("reclaimed a stale lock");
     expect(readLogs()).not.toContain("reclaimed an unreadable lock");
-    // and it now serves the vault gate instead of the refusal
-    const status = await fetch(`http://127.0.0.1:${secondPort}/api/vault/status`);
-    expect(status.status).not.toBe(503);
+    // and it now serves the vault gate, not merely something that is not a 503
+    await expectFreshVaultGate(secondPort);
   });
 
   itHeavy("a running instance that loses the folder refuses on its own port instead of exiting (ADR-0012)", async () => {

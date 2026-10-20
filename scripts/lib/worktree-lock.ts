@@ -15,10 +15,10 @@
  * **Recovery is exclusive.** The removal is one `rmSync` of one name, and two
  * runs that read the same dead pid would both reach it: one replaces the
  * directory and starts work, the other deletes the live lock it just took. So a
- * reclaimer takes a claim *inside* the directory with `wx` before it removes
- * anything. Exactly one caller can win that create, so at most one run is ever
- * removing a given lock. The claim is released when the lock is left alone and
- * disappears with the directory when the removal succeeds.
+ * reclaimer claims a generation inside the directory with `wx` before it removes
+ * anything, and exactly one caller can win that create. The generation is marked
+ * released when the lock is left alone, and it goes with the directory when the
+ * removal succeeds.
  *
  * **The removal is bound to the observed object.** The claim can be taken
  * inside a *different* directory than the one observed: between the caller's
@@ -44,16 +44,13 @@
  * comparing content alone then deletes the live lock of the run that holds the
  * name now. One rule for both removals, and no per-call-site check to forget.
  *
- * The file a reclaimer takes inside the lock is the claim, and it is what makes
- * recovery exclusive: one `wx` create has exactly one winner, so at most one run
- * is removing a given lock. A claim whose writer died is taken over in two steps
- * — the dead claim is moved to a unique tombstone and the bytes are compared
- * *there*, then the name is created again with `wx` — so a live claim is never
- * moved out of the name without being put back: whatever a reclaimer displaced
- * and did not observe goes straight back, and the exclusive create lets exactly
- * one run through the gap. Clearing a dead claim by moving it aside and putting
- * it back is what this replaced: the restore loses to whatever took the name in
- * between, and then two runs both hold the claim.
+ * A claim generation is never replaced, moved or deleted to take the claim,
+ * which is what keeps every claim name occupied for as long as the lock
+ * exists: a dead generation stays where it is and the next run supersedes it
+ * with a higher number, and the run that won a generation can still prove it
+ * owns it at the removal. Replacing a claim instead is what let a third run
+ * create its own in the gap a rename left behind, and two runs then removed one
+ * lock.
  */
 
 import { randomUUID } from "node:crypto";
@@ -61,10 +58,9 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
+  readdirSync,
   rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -270,128 +266,162 @@ export function lockHolderIsGone(lockPath: string): boolean {
 export type ReclaimOutcome = "reclaimed" | "refused" | "not-stale";
 
 /**
- * The file a reclaimer creates inside the lock it is removing.
+ * The prefix of the claim generations a reclaimer creates inside the lock it is
+ * removing: `reclaim.<n>`, `n` a decimal generation.
  *
- * A fixed name, because that is what makes taking it exclusive: `wx` on one
- * name inside one directory has exactly one winner.
+ * A generation rather than one fixed name, because the name must never be free
+ * while a run holds it. Taking a claim displaces nothing: a claim is the
+ * exclusive create of the *next* generation, so exactly one caller wins and the
+ * generation below it — dead or not — stays exactly where it is.
  */
-export const RECLAIM_CLAIM_FILE = "reclaim";
-
-type ReclaimClaim = { path: string; token: string };
-
-/** Whether the claim at `claimPath` still carries this run's pid and token. */
-function claimHolds(claimPath: string, token: string): boolean {
-  let raw: string;
-  try {
-    raw = readFileSync(claimPath, "utf8");
-  } catch {
-    return false;
-  }
-  const owner = readLockOwner(raw);
-  return owner !== null && owner.pid === process.pid && owner.token === token;
-}
+export const RECLAIM_CLAIM_PREFIX = "reclaim.";
 
 /**
- * Take the exclusive right to remove this lock, or report that someone else has
- * it.
+ * What a released generation says in place of an owner.
+ *
+ * A reclaimer that refuses the lock has to stop blocking it, and deleting its
+ * generation frees a name for the next claimant to race on. Marking it
+ * superseded in place keeps the name occupied and sends the next run to the
+ * generation above it, which is the path a dead generation takes too.
  */
-function takeReclaimClaim(lockPath: string): ReclaimClaim | null {
-  const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
-  const token = randomUUID();
-  // `wx` is the whole exclusivity of the ordinary path: one create attempt has
-  // exactly one winner, and the name is never free while a live claim sits at
-  // it. The read-back is ownership rather than ceremony — a claim displaced
-  // between the create and here is not this run's to release.
+export const RECLAIM_RELEASED_MARKER = "released\n";
+
+/** The file name of one claim generation. */
+export function reclaimClaimName(generation: number): string {
+  return `${RECLAIM_CLAIM_PREFIX}${generation}`;
+}
+
+/** The generation a claim file name encodes, or null when it is not one. */
+function claimGenerationOf(name: string): number | null {
+  if (!name.startsWith(RECLAIM_CLAIM_PREFIX)) return null;
+  const digits = name.slice(RECLAIM_CLAIM_PREFIX.length);
+  if (!/^[1-9][0-9]*$/u.test(digits)) return null;
+  const generation = Number.parseInt(digits, 10);
+  return Number.isSafeInteger(generation) ? generation : null;
+}
+
+/** A claim this run created, and the generation it owns. */
+export type ReclaimClaim = { path: string; generation: number; token: string };
+
+/** What one claim generation says, and how strongly. */
+type ClaimGeneration = {
+  generation: number;
+  owner: LockOwner | null;
+  released: boolean;
+  ageMs: number;
+};
+
+/** The highest claim generation in the lock, or null when it claims none. */
+function highestClaimGeneration(lockPath: string): number | null {
+  let names: string[];
   try {
-    writeFileSync(claimPath, lockPidFileContent(process.pid, token, 0), { flag: "wx" });
-    return claimHolds(claimPath, token) ? { path: claimPath, token } : null;
-  } catch {
-    // The name is taken. That is the question the rest of this function asks.
-  }
-  let raw: string;
-  try {
-    raw = readFileSync(claimPath, "utf8");
+    names = readdirSync(lockPath);
   } catch {
     return null;
   }
-  const owner = readLockOwner(raw);
-  if (owner === null) {
-    // No readable owner: only age is evidence, exactly as for a lock directory
-    // whose writer died before it wrote its pid.
+  let highest: number | null = null;
+  for (const name of names) {
+    const generation = claimGenerationOf(name);
+    if (generation !== null && (highest === null || generation > highest)) highest = generation;
+  }
+  return highest;
+}
+
+/** Read one claim generation, or null when it is no longer there to read. */
+function readClaimGeneration(lockPath: string, generation: number): ClaimGeneration | null {
+  const path = join(lockPath, reclaimClaimName(generation));
+  let raw: string;
+  let ageMs: number;
+  try {
+    raw = readFileSync(path, "utf8");
+    ageMs = Date.now() - statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+  if (raw === RECLAIM_RELEASED_MARKER) {
+    return { generation, owner: null, released: true, ageMs };
+  }
+  return { generation, owner: readLockOwner(raw), released: false, ageMs };
+}
+
+/**
+ * Whether a generation blocks a claimant.
+ *
+ * A live owner is someone already removing the lock. A generation with no
+ * readable owner blocks only while it is young: its writer may still be inside
+ * the create, exactly as for a lock directory whose pid file is not written yet.
+ * A released generation blocks nothing, and neither does a dead one.
+ */
+function blocksClaim(generation: ClaimGeneration): boolean {
+  if (generation.released) return false;
+  if (generation.owner === null) return generation.ageMs <= LOCK_PID_GRACE_MS;
+  return processIsAlive(generation.owner.pid);
+}
+
+/**
+ * Take this run's claim on the lock, or report that another run holds it.
+ *
+ * The claim is the exclusive create of the next generation, so there is no
+ * check-then-act: `wx` has exactly one winner whatever the interleaving, and a
+ * run that loses the create re-reads the highest generation and either claims
+ * the one above that or refuses. A generation is never replaced, so the run that
+ * won it can still prove it owns it afterwards.
+ */
+export function claimReclaimGeneration(lockPath: string): ReclaimClaim | null {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const highest = highestClaimGeneration(lockPath);
+    if (highest !== null) {
+      const current = readClaimGeneration(lockPath, highest);
+      // The highest generation vanished between the listing and the read, which
+      // only happens when the lock directory itself is going. Re-list rather
+      // than claim a number that may already be taken.
+      if (current === null) continue;
+      if (blocksClaim(current)) return null;
+    }
+    const generation = (highest ?? 0) + 1;
+    const path = join(lockPath, reclaimClaimName(generation));
+    const token = randomUUID();
     try {
-      if (Date.now() - statSync(claimPath).mtimeMs <= LOCK_PID_GRACE_MS) return null;
-    } catch {
+      writeFileSync(path, lockPidFileContent(process.pid, token, 0), { flag: "wx" });
+    } catch (error) {
+      // SAFETY: `writeFileSync` rejects with a NodeJS.ErrnoException, whose
+      // string `code` is what this reads.
+      const code = (error as NodeJS.ErrnoException).code;
+      // Another run created this generation first. That is not a failure: the
+      // next pass reads the generation it created and refuses, or supersedes it
+      // when its writer is gone.
+      if (code === "EEXIST") continue;
       return null;
     }
-  } else if (processIsAlive(owner.pid)) {
-    // A live reclaimer is already removing this lock, and this run waits.
-    return null;
+    return { path, generation, token };
   }
-  return replaceDeadClaim(claimPath, raw, token) ? { path: claimPath, token } : null;
+  return null;
 }
 
 /**
- * Take the claim the observed dead one occupies, and say whether this run now
- * holds it.
+ * Whether this run still owns the highest claim generation, which is the only
+ * thing that licenses removing the lock.
  *
- * The `wx` create is what makes claiming exclusive, so the dead claim has to be
- * out of the name before this run's claim can be created there — and the name
- * must not read as free while any run holds it, or a third run creates its claim
- * in that gap and two runs remove one lock.
- *
- * So the dead claim is displaced by one rename to a unique tombstone, and the
- * bytes are compared **from the tombstone**: that is the object the rename
- * actually moved, so the comparison decides what was displaced instead of what
- * the name held a moment earlier. Anything that is not the observed dead claim —
- * a live claim that took the name between the read and the rename — is put
- * straight back, because moving a claim out from under the run that holds it ends
- * with two runs judging one worktree. The name is then free for one `wx` create:
- * exactly one run wins it, and a run that loses refuses rather than removing
- * anything.
+ * Read again immediately before the `rmSync`: a higher live generation is
+ * another run's claim on the same lock, and removing the lock would delete it
+ * under the run that holds it.
  */
-export function replaceDeadClaim(claimPath: string, observed: string, token: string): boolean {
-  const body = lockPidFileContent(process.pid, token, 0);
-  const tombstone = `${claimPath}.stale-${process.pid}-${randomUUID()}`;
-  try {
-    renameSync(claimPath, tombstone);
-  } catch {
-    // The dead claim went before this call: another reclaimer took it over, and
-    // this run has nothing to replace.
-    return false;
-  }
-  let moved: string | null;
-  try {
-    moved = readFileSync(tombstone, "utf8");
-  } catch {
-    // Unreadable is not the claim that was judged, and a comparison cannot clear
-    // what it could not read.
-    moved = null;
-  }
-  if (moved !== observed) {
-    try {
-      if (!existsSync(claimPath)) renameSync(tombstone, claimPath);
-    } catch {
-      // The name is taken again, so the tombstone stays inside the lock and goes
-      // with it. Refusing is the safe half: the alternative is a second claim
-      // beside the one that holds the lock.
-    }
-    return false;
-  }
-  try {
-    unlinkSync(tombstone);
-  } catch {
-    // The dead claim is out of the name either way, and a stray tombstone goes
-    // with the lock directory.
-  }
-  try {
-    writeFileSync(claimPath, body, { flag: "wx" });
-  } catch {
-    return false;
-  }
-  return claimHolds(claimPath, token);
+export function claimStillLicensed(lockPath: string, claim: ReclaimClaim): boolean {
+  const highest = highestClaimGeneration(lockPath);
+  if (highest !== claim.generation) return false;
+  const current = readClaimGeneration(lockPath, claim.generation);
+  if (current === null || current.owner === null) return false;
+  return current.owner.pid === process.pid && current.owner.token === claim.token;
 }
 
-/** Drop this run's claim, and only its own. */
+/**
+ * Mark this run's claim released, and only its own.
+ *
+ * In place, not by deleting the name: a freed generation is one the next
+ * claimant can race on, and the whole point of a generation is that the next
+ * claimant takes the one above instead. The generation stays as a superseded
+ * record, and it goes with the lock directory.
+ */
 function releaseReclaimClaim(claim: ReclaimClaim): void {
   let raw: string;
   try {
@@ -402,7 +432,7 @@ function releaseReclaimClaim(claim: ReclaimClaim): void {
   const owner = readLockOwner(raw);
   if (owner === null || owner.pid !== process.pid || owner.token !== claim.token) return;
   try {
-    unlinkSync(claim.path);
+    writeFileSync(claim.path, RECLAIM_RELEASED_MARKER);
   } catch {
     // The directory is going, or gone, and takes the claim with it.
   }
@@ -430,17 +460,18 @@ function stillObservedLock(lockPath: string, observed: LockObservation): boolean
  *
  * The two properties this has to satisfy — recovery is exclusive, and the
  * removal is bound to the observed object — are the module's charter at the top
- * of this file. This is where each is met: the claim below is the exclusivity,
- * and `stillObservedLock` is the binding.
+ * of this file. This is where each is met: the claim generation below is the
+ * exclusivity, `stillObservedLock` is the binding, and `claimStillLicensed` is
+ * the licence read one last time before the removal.
  */
 export function reclaimStaleLock(lockPath: string, observed: LockObservation): ReclaimOutcome {
   if (observed.kind === "alive") return "not-stale";
   // An observation with no identity binds nothing, so it is refused rather than
   // trusted: a hand-built observation must not become a licence to delete.
   if (observed.identity === undefined) return "refused";
-  const claim = takeReclaimClaim(lockPath);
+  const claim = claimReclaimGeneration(lockPath);
   if (claim === null) return "refused";
-  if (!stillObservedLock(lockPath, observed)) {
+  if (!stillObservedLock(lockPath, observed) || !claimStillLicensed(lockPath, claim)) {
     releaseReclaimClaim(claim);
     return "refused";
   }

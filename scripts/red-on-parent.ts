@@ -85,17 +85,21 @@ import { acquireWorktreeLock, lockWaitBudget } from "./lib/worktree-lock";
 // removed". Its names stay exported from here so a caller of the gate keeps one
 // import, and so the module's seam can move again without touching them.
 export {
-  replaceDeadClaim,
+  claimReclaimGeneration,
+  claimStillLicensed,
   effectiveWaitDeadline,
   lockContentionMessage,
   lockHolderIsGone,
   lockPidFileContent,
   lockWaitBudget,
   observeLockHolder,
-  RECLAIM_CLAIM_FILE,
+  RECLAIM_CLAIM_PREFIX,
+  RECLAIM_RELEASED_MARKER,
+  reclaimClaimName,
   reclaimStaleLock,
   releaseWorktreeLock,
   type LockIdentity,
+  type ReclaimClaim,
   type ReclaimOutcome,
 } from "./lib/worktree-lock";
 // The typed refusal and the run limits moved out with it: the lock module has to

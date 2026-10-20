@@ -9,8 +9,9 @@
  *   2. a replacement cannot be removed — the removal is bound to the directory
  *      that was observed, not to the name, so a directory that took the name
  *      with an identical pid file survives it;
- *   3. two reclaimers cannot both enter — the claim inside the lock has exactly
- *      one winner, and the two-process case proves it with two real processes.
+ *   3. two reclaimers cannot both enter — a claim is the exclusive create of
+ *      the next generation inside the lock, so it has exactly one winner, and
+ *      the two-process case proves it with two real processes.
  *
  * The rest of the suite is the rounds that produced those rules: the pid file's
  * format, the token that tells two locks with one pid apart, the identity that
@@ -39,16 +40,18 @@ import { pathToFileURL } from "node:url";
 
 import { INSTALL_TIMEOUT_MS, LOCK_WAIT_SLACK_MS, testTimeoutMs } from "./gate-limits";
 import {
+  claimReclaimGeneration,
+  claimStillLicensed,
   effectiveWaitDeadline,
   lockContentionMessage,
   lockHolderIsGone,
   lockPidFileContent,
   lockWaitBudget,
   observeLockHolder,
-  RECLAIM_CLAIM_FILE,
+  RECLAIM_RELEASED_MARKER,
+  reclaimClaimName,
   reclaimStaleLock,
   releaseWorktreeLock,
-  replaceDeadClaim,
   type LockIdentity,
 } from "./worktree-lock";
 
@@ -134,7 +137,7 @@ describe("the lock's three properties", () => {
       expect(observed.kind).toBe("holder");
       // The first reclaimer's claim, taken and still held by a live process.
       writeFileSync(
-        join(lockPath, RECLAIM_CLAIM_FILE),
+        join(lockPath, reclaimClaimName(1)),
         lockPidFileContent(process.pid, "first-reclaimer", 0),
       );
       expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
@@ -327,63 +330,19 @@ describe("red-on-parent round 12 — the findings at 8a618ed9", () => {
     }
   });
 
-  test("a live claim that took the name while a dead one was being cleared is put back", () => {
-    // The `wx` create is the exclusivity, but a rename proves only that one run
-    // moved a name. A reclaimer that already cleared the dead claim can create
-    // its own live one between this run's read and its rename, and a blind
-    // rename then carries that away and unlinks it: the owner believes it still
-    // holds the claim, a second run takes the name, and both enter the
-    // worktree. The moved file must still read as the bytes that were observed.
-    const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
-    const lockPath = join(dir, "wt.lock");
-    mkdirSync(lockPath);
-    const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
-    const deadRaw = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
-    const liveRaw = lockPidFileContent(process.pid, "live-claim-token", 0);
-    writeFileSync(claimPath, liveRaw);
-    try {
-      // this run read the DEAD bytes a moment ago and now tries to clear them
-      expect(replaceDeadClaim(claimPath, deadRaw, "this-run-token")).toBe(false);
-      // the live claim is back where its owner expects it, not deleted
-      expect(readFileSync(claimPath, "utf8")).toBe(liveRaw);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("a claim that still reads as the observed dead one is replaced, not just removed", () => {
-    // Clearing the dead claim and leaving the name empty is what let a third
-    // run create its claim in the gap. What takes a dead claim over installs
-    // its own in the same step, so the name never reads as free.
-    const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
-    const lockPath = join(dir, "wt.lock");
-    mkdirSync(lockPath);
-    const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
-    const deadRaw = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
-    writeFileSync(claimPath, deadRaw);
-    try {
-      expect(replaceDeadClaim(claimPath, deadRaw, "this-run-token")).toBe(true);
-      expect(readFileSync(claimPath, "utf8")).toBe(
-        lockPidFileContent(process.pid, "this-run-token", 0),
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   test("a claim left behind by a dead reclaimer does not block the reclaim", () => {
     // Recovery is exclusive because a reclaimer takes a claim inside the lock
     // before it removes anything, and a claim whose writer was killed between
     // claiming and removing would block every later run on this lock forever.
-    // A dead claim is cleared by renaming it — one winner — and the mover has to
-    // win the name back before it may proceed. This pins that recovery: without
-    // it the reclaim refuses and the lock outlives every run that wants it.
+    // A dead generation is superseded, not cleared: this run claims the next
+    // generation above it and proceeds. This pins that recovery — without it the
+    // reclaim refuses and the lock outlives every run that wants it.
     const dir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
     const lockPath = join(dir, "wt.lock");
     mkdirSync(lockPath);
     writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "stale-token", 0));
     writeFileSync(
-      join(lockPath, RECLAIM_CLAIM_FILE),
+      join(lockPath, reclaimClaimName(1)),
       lockPidFileContent(2_147_483_647, "dead-claim-token", 0),
     );
     try {
@@ -405,7 +364,7 @@ describe("red-on-parent round 12 — the findings at 8a618ed9", () => {
     const lockPath = join(dir, "wt.lock");
     mkdirSync(lockPath);
     writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "stale-token", 0));
-    writeFileSync(join(lockPath, RECLAIM_CLAIM_FILE), "");
+    writeFileSync(join(lockPath, reclaimClaimName(1)), "");
     try {
       const observed = observeLockHolder(lockPath);
       expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
@@ -502,7 +461,11 @@ describe("red-on-parent round 19 — the Greptile findings at 4c689c95", () => {
       const other = observeLockHolder(otherPath);
       expect(other.kind).toBe("holder");
       expect(reclaimStaleLock(lockPath, other)).toBe("refused");
-      expect(existsSync(join(lockPath, RECLAIM_CLAIM_FILE))).toBe(false);
+      // The generation this run claimed stays, marked superseded, so the next
+      // claimant takes the one above it instead of racing on a freed name.
+      expect(readFileSync(join(lockPath, reclaimClaimName(1)), "utf8")).toBe(
+        RECLAIM_RELEASED_MARKER,
+      );
       expect(reclaimStaleLock(lockPath, observeLockHolder(lockPath))).toBe("reclaimed");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -553,43 +516,97 @@ describe("red-on-parent round 20 — the Greptile findings at e1ea567c", () => {
   });
 });
 
-describe("red-on-parent round 21 — the Greptile finding at 25d60eb9", () => {
+describe("red-on-parent round 21 — the finding at b2ecce6b", () => {
   test("a third runner cannot take a claim another run is holding", () => {
-    // Three runs read the same dead claim. Clearing it used to be a rename of
-    // the name to a tombstone, a comparison, and a rename back — so between
-    // those two renames the claim's NAME WAS FREE. A cleared the dead claim and
-    // took a live one, B moved A's live claim into its tombstone to compare it,
-    // and C created its own claim in the gap the restore needed. A and C then
-    // both believed they held the claim: A removed the stale lock, C took the
-    // name with a live one, and A's removal deleted C's lock out from under it.
-    // Taking a dead claim over now moves it to a tombstone that only this run
-    // holds, compares the bytes there, and wins the name back with one `wx`
-    // create — so a runner whose token is not at the name refuses instead of
-    // removing anything.
+    // Three runs recover one dead reclaim generation, and all three read it
+    // before any of them claims. A creates the generation above it, and B and
+    // C's exclusive create of that same generation has to lose — the create is
+    // the whole decision, so there is no point at which the claim name reads as
+    // free. Replacing the claim instead is how this used to fail: A's live claim
+    // was moved aside to be compared, C created its own in the name that freed,
+    // and A's removal then deleted C's lock out from under it.
     const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
     const lockPath = join(dir, "wt.lock");
     mkdirSync(lockPath);
-    const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
-    const deadRaw = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
-    writeFileSync(claimPath, deadRaw);
+    // What all three runs read: generation 1, whose writer is gone.
+    writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 0));
+    const deadClaim = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
+    writeFileSync(join(lockPath, reclaimClaimName(1)), deadClaim);
     try {
-      // A read the dead claim, so it holds the bytes it judged.
-      const a = replaceDeadClaim(claimPath, deadRaw, "run-a");
-      expect(a).toBe(true);
-      // A holds a claim of its own, and the name was never left empty.
-      expect(readFileSync(claimPath, "utf8")).toBe(
-        lockPidFileContent(process.pid, "run-a", 0),
-      );
-      // B read the same dead bytes before A took the claim: it may not take the
-      // claim A is holding away from it, and it may not claim beside it.
-      const b = replaceDeadClaim(claimPath, deadRaw, "run-b");
-      expect(b).toBe(false);
-      // C arrives late with the same stale reading, on a name A still holds.
-      const c = replaceDeadClaim(claimPath, deadRaw, "run-c");
-      expect(c).toBe(false);
-      // Exactly one of the three ended up holding the claim, and it is A's.
+      // A claims first, one generation above the dead one it read.
+      const a = claimReclaimGeneration(lockPath);
+      expect(a?.generation).toBe(2);
+      // B and C hold the same dead reading, so their claim is the same
+      // generation. Both lose the create and refuse rather than claim beside A.
+      const b = claimReclaimGeneration(lockPath);
+      const c = claimReclaimGeneration(lockPath);
       expect([a, b, c].filter(Boolean)).toHaveLength(1);
-      expect(readFileSync(claimPath, "utf8")).toContain("run-a");
+      // Exactly one run is licensed to remove the lock, and it is A.
+      expect([a, b, c].filter((claim) => claim !== null && claimStillLicensed(lockPath, claim)))
+        .toHaveLength(1);
+      // A's generation still names A, and the dead one it superseded is exactly
+      // where it was: nothing was moved, so nothing can be moved out from under
+      // the run holding it.
+      expect(a === null ? "" : readFileSync(a.path, "utf8")).toBe(
+        lockPidFileContent(process.pid, a?.token ?? "", 0),
+      );
+      expect(readFileSync(join(lockPath, reclaimClaimName(1)), "utf8")).toBe(deadClaim);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a dead generation does not block: a later run claims the next one and proceeds", () => {
+    // A generation whose writer died stays on disk, so recovery has to be
+    // supersession rather than cleanup: the highest one is read, its owner is
+    // dead, and the next generation above it is claimed.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
+    const lockPath = join(dir, "wt.lock");
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 0));
+    writeFileSync(
+      join(lockPath, reclaimClaimName(3)),
+      lockPidFileContent(2_147_483_647, "dead-claim-token", 0),
+    );
+    try {
+      const claim = claimReclaimGeneration(lockPath);
+      // The generation above the dead one, not the dead one's name.
+      expect(claim?.generation).toBe(4);
+      expect(claim !== null && claimStillLicensed(lockPath, claim)).toBe(true);
+      // And the reclaim itself proceeds with the dead generation still there.
+      const staleLock = join(dir, "stale.lock");
+      mkdirSync(staleLock);
+      writeFileSync(join(staleLock, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 0));
+      writeFileSync(
+        join(staleLock, reclaimClaimName(1)),
+        lockPidFileContent(2_147_483_647, "dead-claim-token", 0),
+      );
+      expect(reclaimStaleLock(staleLock, observeLockHolder(staleLock))).toBe("reclaimed");
+      expect(existsSync(staleLock)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a live generation makes the second and third runners refuse and the lock survives", () => {
+    // The other half of supersession: a generation whose owner is alive is a
+    // run already removing this lock, so nobody claims above it and nobody
+    // removes anything.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
+    const lockPath = join(dir, "wt.lock");
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 0));
+    const liveClaim = lockPidFileContent(process.pid, "live-claim-token", 0);
+    writeFileSync(join(lockPath, reclaimClaimName(1)), liveClaim);
+    try {
+      const observed = observeLockHolder(lockPath);
+      expect(observed.kind).toBe("holder");
+      expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
+      expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
+      expect(existsSync(join(lockPath, "pid"))).toBe(true);
+      expect(readFileSync(join(lockPath, reclaimClaimName(1)), "utf8")).toBe(liveClaim);
+      // No generation was created beside the live one.
+      expect(existsSync(join(lockPath, reclaimClaimName(2)))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

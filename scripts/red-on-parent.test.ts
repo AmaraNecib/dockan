@@ -52,7 +52,7 @@ import {
   notRegisteredOnChange,
   parseJunit,
   parseWaivers,
-  RECLAIM_CLAIM_FILE,
+  reclaimClaimName,
   renderReport,
   runFinished,
   runGate,
@@ -3311,7 +3311,7 @@ describe("red-on-parent round 20 — the Greptile findings at e1ea567c", () => {
       // short.
       writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 0));
       writeFileSync(
-        join(lockPath, RECLAIM_CLAIM_FILE),
+        join(lockPath, reclaimClaimName(1)),
         lockPidFileContent(process.pid, "first-reclaimer", 0),
       );
       const { status, stdout } = runGateFixture(
@@ -3322,7 +3322,7 @@ describe("red-on-parent round 20 — the Greptile findings at e1ea567c", () => {
       expect(stdout).toContain("another red-on-parent run is using");
       expect(status).toBe(2);
       expect(existsSync(join(lockPath, "pid"))).toBe(true);
-      expect(existsSync(join(lockPath, RECLAIM_CLAIM_FILE))).toBe(true);
+      expect(existsSync(join(lockPath, reclaimClaimName(1)))).toBe(true);
       expect(existsSync(join(worktree, "marker"))).toBe(true);
     } finally {
       fixture.cleanup();

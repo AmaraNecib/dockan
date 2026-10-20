@@ -29,7 +29,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -62,7 +64,9 @@ import {
   parseWaivers,
   RECLAIM_CLAIM_FILE,
   reclaimStaleLock,
+  releaseWorktreeLock,
   renderReport,
+  runFinished,
   runGate,
   testTimeoutMs,
   unregisteredVerdicts,
@@ -71,6 +75,7 @@ import {
   VERDICT_GUIDE,
   type FileRun,
   type GateRun,
+  type LockIdentity,
   type TestResult,
   type TestStatus,
   type Verdict,
@@ -3660,6 +3665,190 @@ describe("red-on-parent round 19 — the Greptile findings at 4c689c95", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(otherDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("red-on-parent round 20 — the Greptile findings at e1ea567c", () => {
+  /** A directory's identity, read the way the gate reads it. */
+  function identityOf(path: string): LockIdentity {
+    const stats = statSync(path);
+    return { dev: stats.dev, ino: stats.ino, birthMs: stats.birthtimeMs };
+  }
+
+  const junitOneCase =
+    `<testsuites><testsuite name="e.test.ts"><testcase name="x" classname="x" /></testsuite></testsuites>`;
+
+  test("a release cannot remove a lock that took the name with an identical pid file", () => {
+    // The release is the second of the two places a lock directory is removed,
+    // and it decided on the pid file's content alone. Content is the one thing a
+    // replacement reproduces: a run that takes the name after this lock was
+    // reclaimed writes its own pid file, and a release that compared content
+    // deleted the live lock of the run holding the name now — so the name was
+    // free again while two runs judged one worktree. The replacement here is a
+    // different directory, not the same name re-created, so only the identity
+    // can tell them apart.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    const lockPath = join(dir, "wt.lock");
+    const token = "this-runs-token";
+    const pidFile = lockPidFileContent(process.pid, token, 2);
+    try {
+      mkdirSync(lockPath);
+      const identity = identityOf(lockPath);
+      writeFileSync(join(lockPath, "pid"), pidFile);
+      // The run holding the name now: same pid file, different directory.
+      const replacement = join(dir, "replacement");
+      mkdirSync(replacement);
+      writeFileSync(join(replacement, "pid"), pidFile);
+      rmSync(lockPath, { recursive: true, force: true });
+      renameSync(replacement, lockPath);
+      expect(releaseWorktreeLock(lockPath, token, identity)).toBe(false);
+      expect(readFileSync(join(lockPath, "pid"), "utf8")).toBe(pidFile);
+      // And the release still takes away the directory it actually created: a
+      // guard that refused everything would pin the removal shut instead.
+      expect(releaseWorktreeLock(lockPath, token, identityOf(lockPath))).toBe(true);
+      expect(existsSync(lockPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a --fresh run waits for a reclaim another live process holds", () => {
+    // `--fresh` has no lock of its own: it deletes the cached worktree from
+    // inside `acquireWorktreeLock`, under the name `wt-<sha>`, and never touches
+    // `wt-<sha>.lock`. This is the end-to-end proof. A stale lock whose reclaim
+    // is already in flight (the claim belongs to a live process) must make the
+    // fresh run wait and refuse, and must leave the lock, its claim and the
+    // worktree it guards exactly as they were. A fresh path that removed the
+    // lock itself would clear the claim, rebuild the worktree and exit 0.
+    const redTest: File = {
+      path: "packages/core/src/red.test.ts",
+      text: `import { expect, test } from "bun:test";\nimport { guard } from "./helper";\ntest("rejects zero", () => {\n  expect(() => guard(0)).toThrow("ZERO");\n});\n`,
+    };
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [{ path: "packages/core/src/helper.ts", text: HELPER_AFTER }, redTest],
+    );
+    try {
+      const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
+      const worktree = join(fixture.cache, `wt-${fixture.base}`);
+      mkdirSync(worktree, { recursive: true });
+      writeFileSync(join(worktree, "marker"), "the cached worktree --fresh would rebuild\n");
+      mkdirSync(lockPath, { recursive: true });
+      // A holder that is gone, and a reclaim of it held by a live process. The
+      // count is 0, so the waiter works to its own budget and the test stays
+      // short.
+      writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 0));
+      writeFileSync(
+        join(lockPath, RECLAIM_CLAIM_FILE),
+        lockPidFileContent(process.pid, "first-reclaimer", 0),
+      );
+      const { status, stdout } = runGateFixture(
+        fixture,
+        { RED_ON_PARENT_LOCK_WAIT_MS: "600" },
+        ["--fresh"],
+      );
+      expect(stdout).toContain("another red-on-parent run is using");
+      expect(status).toBe(2);
+      expect(existsSync(join(lockPath, "pid"))).toBe(true);
+      expect(existsSync(join(lockPath, RECLAIM_CLAIM_FILE))).toBe(true);
+      expect(existsSync(join(worktree, "marker"))).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a run that exited non-zero with no error has finished", () => {
+    // The change's own run executes the test this change adds, and that test is
+    // the one the gate wants red on the parent and green on the change — but a
+    // red test on the change exits 1, and the gate reads that red to report
+    // RED_ON_CHANGE. So a non-zero exit may not refuse the report. This is the
+    // deliberate half of the decision the finding asked for.
+    expect(runFinished({ status: 1, error: "" })).toBe(true);
+    expect(runFinished({ status: 0, error: "" })).toBe(true);
+  });
+
+  test("an errored run has not finished, whatever status it reports", () => {
+    // The other half: `spawnSync` sets `error` when the child never ran
+    // (ENOENT), was killed for its budget (ETIMEDOUT) or overran the buffer
+    // (ENOBUFS). A report on disk from a run that ended that way is not evidence
+    // of what the change registers, and the status surviving is not a licence to
+    // read it.
+    expect(runFinished({ status: 1, error: "spawnSync ETIMEDOUT" })).toBe(false);
+    expect(runFinished({ status: 1, error: "ENOBUFS: maxBuffer exceeded" })).toBe(false);
+    expect(runFinished({ status: null, error: "" })).toBe(false);
+    expect(runFinished({ status: null, error: "killed after 120000ms" })).toBe(false);
+  });
+
+  test("a change-side report from a run that exited non-zero is read", () => {
+    // The concrete version of the decision above: a report on disk, a process
+    // that exited 1 — a red test on the change — and an empty `error`. The
+    // report is the evidence, and refusing it would report a broken change as an
+    // unreadable run instead.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/red-on-change.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("x", () => {\n  expect(1).toBe(2);\n});\n`,
+        },
+      ],
+    );
+    try {
+      const out = join(mkdtempSync(join(tmpdir(), "ronp-junit-")), "out.xml");
+      const problems: string[] = [];
+      const results = changeSideResults(
+        fixture.repo,
+        "packages/core/src/red-on-change.test.ts",
+        out,
+        problems,
+        (_repo, _file, junitPath) => {
+          writeFileSync(junitPath, junitOneCase);
+          return { status: 1, stdout: "(fail) x", error: "" };
+        },
+      );
+      expect(problems).toEqual([]);
+      expect(results.map((result) => result.name)).toEqual(["x"]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a change-side report from an errored run is refused even when it exited", () => {
+    // The finding's exact shape: a report present on disk, from a process that
+    // exited non-zero *and* carries a non-empty `error`. Only the status was
+    // checked before the report was read, so this report was accepted and the
+    // gate enumerated whatever tests happened to reach the file. The report is
+    // refused now, and the refusal says which error it was.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/errored.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("x", () => {\n  expect(1).toBe(1);\n});\n`,
+        },
+      ],
+    );
+    try {
+      const out = join(mkdtempSync(join(tmpdir(), "ronp-junit-")), "out.xml");
+      const problems: string[] = [];
+      const results = changeSideResults(
+        fixture.repo,
+        "packages/core/src/errored.test.ts",
+        out,
+        problems,
+        (_repo, _file, junitPath) => {
+          writeFileSync(junitPath, junitOneCase);
+          return { status: 1, stdout: "", error: "ENOBUFS: maxBuffer exceeded" };
+        },
+      );
+      expect(results).toEqual([]);
+      expect(problems.join(" ")).toContain("did not finish");
+      expect(problems.join(" ")).toContain("ENOBUFS");
+    } finally {
+      fixture.cleanup();
     }
   });
 });

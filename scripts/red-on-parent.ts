@@ -1823,25 +1823,63 @@ function acquireWorktreeLock(lockPath: string, lockWaitMs: number, fileCount = 0
       sleepSync(LOCK_RETRY_MS);
     }
   }
+  // The directory this run took, named by object, before anything is written
+  // into it: the release below is the second place a lock directory is removed,
+  // and it is bound to this the way the reclaim is bound to its observation.
+  const identity = lockIdentity(lockPath);
   // The pid file carries a token as well as the pid, so a later run can tell
   // this lock from one that took the same pid after the operating system
   // handed that pid out again.
   const token = randomUUID();
   writeFileSync(join(lockPath, "pid"), lockPidFileContent(process.pid, token, fileCount));
   return () => {
-    // The release removes the lock this run took, and only that one. A lock
-    // that was reclaimed and re-taken by another run carries that run's token,
-    // and removing it would let a third run into the same worktree.
-    let raw: string;
-    try {
-      raw = readFileSync(join(lockPath, "pid"), "utf8");
-    } catch {
-      return;
-    }
-    const owner = readLockOwner(raw);
-    if (owner === null || owner.pid !== process.pid || owner.token !== token) return;
-    rmSync(lockPath, { recursive: true, force: true });
+    releaseWorktreeLock(lockPath, token, identity);
   };
+}
+
+/**
+ * Remove the lock this run holds, and only that one.
+ *
+ * This is the second of the two places a lock directory is removed —
+ * `reclaimStaleLock` is the first — and it is bound the same way: to the token
+ * this run wrote *and* to the object it wrote it into. The token alone names the
+ * pid file's content, and content is the one thing a replacement can reproduce:
+ * a directory that took the name after this run's lock was reclaimed can carry
+ * a pid file that reads identically, and a release comparing content alone then
+ * deletes the live lock of the run that holds the name now. The identity is
+ * captured by the acquire and compared before anything is read, so there is one
+ * rule for both removals and no per-call-site check to forget.
+ *
+ * An acquire that could not stamp its own directory keeps the lock instead of
+ * removing it. A lock left behind is recovered by the next run once this process
+ * is gone, because its pid file names a dead holder; a lock removed blind is
+ * not recoverable at all.
+ *
+ * Returns whether the directory is gone.
+ */
+export function releaseWorktreeLock(
+  lockPath: string,
+  token: string,
+  identity: LockIdentity | undefined,
+): boolean {
+  if (identity === undefined) return false;
+  if (!sameIdentity(lockIdentity(lockPath), identity)) return false;
+  let raw: string;
+  try {
+    raw = readFileSync(join(lockPath, "pid"), "utf8");
+  } catch {
+    return false;
+  }
+  const owner = readLockOwner(raw);
+  if (owner === null || owner.pid !== process.pid || owner.token !== token) return false;
+  try {
+    rmSync(lockPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    // A directory in use on Windows, or a parent that will not let the entry go.
+    // It stays, and the next run reclaims it once this pid is dead.
+    return false;
+  }
 }
 
 /**
@@ -2058,6 +2096,33 @@ function readAtRevision(repo: string, head: string, path: string): string {
 }
 
 /**
+ * Whether a run's junit report can be read as evidence.
+ *
+ * Both halves of the process result decide this, and neither alone is enough.
+ *
+ * A non-zero *exit* is not a run that failed to finish. The change's own run
+ * executes the test this change adds, and a test that is red there exits 1 —
+ * that red is exactly what RED_ON_CHANGE is made of, so `status` alone may not
+ * refuse the report.
+ *
+ * A non-empty `error` is the other half: `spawnSync` sets it when the child was
+ * never spawned (ENOENT, EACCES), when its budget killed it (ETIMEDOUT), or when
+ * it overran the output buffer (ENOBUFS). A process that ended that way did not
+ * write a report on purpose, and the report on disk is then the report some
+ * earlier process left, or a file bun had already flushed. `status === null`
+ * covers the killed cases in practice, because a killed child reports a signal
+ * rather than a status; the `error` clause is what keeps the rule true when it
+ * does not.
+ *
+ * One predicate, used by both sides, is the point: a report is read in exactly
+ * one place per side and nowhere else, so there is no path that reads a report
+ * the process result did not license.
+ */
+export function runFinished(result: { status: number | null; error: string }): boolean {
+  return result.status !== null && result.error.length === 0;
+}
+
+/**
  * The tests the change's own run registers, for comparison with the parent's.
  *
  * It runs the file where the author runs it — the change's checkout, which
@@ -2104,15 +2169,13 @@ export function changeSideResults(
   }
   rmSync(junitPath, { force: true });
   const result = runFile(repo, file, junitPath);
-  // The report is accepted only from a run that finished. `status === null` is
-  // a child that was killed — the timeout, an interrupt, a debugger stop — and
-  // a killed run's report is not evidence: it can be the report bun wrote
-  // before it died, a half-written file, or one left by a process the caller
-  // replaced. Reading it anyway enumerates whatever tests happened to be in it,
-  // and a test the change registers but the report never reached is invisible
-  // to the gate. This is checked before the report is looked at, so a killed
-  // run is reported as killed whether or not it left a file behind.
-  if (result.status === null) {
+  // The report is accepted only from a run that finished, and "finished" is
+  // `runFinished` — both halves of the process result. This is checked before
+  // the report is looked at, so a killed or errored run is reported as such
+  // whether or not it left a file behind. A non-zero exit is not this test's
+  // business: a red test on the change legitimately exits 1, and refusing that
+  // report would report RED_ON_CHANGE as an unreadable run.
+  if (!runFinished(result)) {
     problems.push(
       `${file}: the change's own run did not finish (${
         result.error.length > 0 ? result.error : "the process was killed"
@@ -2340,15 +2403,19 @@ function gateBaseWorktree(input: {
       rmSync(junitPath, { force: true });
       const result = runFrom(worktree, file, junitPath);
 
-      const junit = existsSync(junitPath) ? readFileSync(junitPath, "utf8") : null;
+      // The parent's report is read on the same rule as the change's: only a
+      // run that finished wrote it. Both halves of the result decide, because a
+      // killed or errored run leaves a file that says what reached it, not what
+      // the file registers.
+      const finished = runFinished(result);
+      const junit = finished && existsSync(junitPath) ? readFileSync(junitPath, "utf8") : null;
       const fileRun: FileRun = {
         file,
         junit,
         stdout: `${result.stdout}${result.stderr}`,
-        error:
-          result.status === null
-            ? `bun test did not complete${result.error.length > 0 ? ` (${result.error})` : ""}`
-            : "",
+        error: finished
+          ? ""
+          : `bun test did not complete${result.error.length > 0 ? ` (${result.error})` : ""}`,
       };
       stdoutByFile.set(file, fileRun.stdout);
       // No file filter: the run imported exactly this file, so every testcase in

@@ -175,6 +175,18 @@ repository, and it is paid for once per PR.
 | Re-runs | None. Findings are folded once, and the lenses check the fold. |
 | Default | No seam moved means no report at all — the one-line form costs one sentence. |
 
+**What a measured run returns.** On PR #291 the review produced five candidates: two that the
+code-review lens had already written down in passing, and three new ones — **none of them a
+defect**. Its one act of prediction was a candidate naming the *cause* of a lens finding the lens
+had found as a symptom (the reason → meaning policy re-derived in three consumers, which is what
+produced a comment claiming an event code the branch does not emit).
+
+So the review's value is causes, not new bugs. A candidate that names a cause of an existing
+finding is worth folding. A candidate that only consolidates is an issue, never a fix on a
+bug-fix PR. And two of five candidates being re-derivations is the number that keeps the budget
+honest: the review mostly re-derives what a careful lens already said, which is why it stays
+scoped to the diff and never runs twice.
+
 ## Review tiers
 
 **The tier follows the failure mode, never the diff size.** Ask what the change

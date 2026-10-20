@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { acquireVaultLock, VaultAlreadyLockedError } from "./lock";
+import { withPortFileLock } from "../port-record";
 
 /**
  * Issue #142 over a real process boundary: a running sidecar holds the vault
@@ -181,6 +182,23 @@ async function waitForFreshHeartbeat(lockFile: string, seen: string | undefined)
     if (Date.now() >= deadline) return;
     await sleep(50);
   }
+}
+
+/**
+ * The OLD owner's record is gone. The file itself may or may not be there: the
+ * waiter can take the folder — and write its own record — before this test
+ * looks, and that is the recovery working quickly, not a failure (Greptile
+ * issue 3 on #298). What must not be there is the old owner's record.
+ */
+function expectOldOwnerGone(lockFile: string, oldPid: number): void {
+  let ownerPid: number | undefined;
+  try {
+    // SAFETY: the lock record is JSON written by a running sidecar
+    ownerPid = (JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid?: number }).pid;
+  } catch {
+    ownerPid = undefined;
+  }
+  expect(ownerPid).not.toBe(oldPid);
 }
 
 /**
@@ -397,6 +415,120 @@ describe("vault single-writer lock over a live sidecar", () => {
       if (Date.now() >= deadline) throw new Error(`refused sidecar never took the closed folder; stderr: ${apiStderr}`);
       await sleep(100);
     }
+  });
+
+  itHeavy("the explicit retry takes the folder itself, before any automatic tick (#298)", async () => {
+    // The route is not a route with a body: the POST runs the reclaim attempt
+    // NOW. The only way to see that is to free the folder and ask — the answer
+    // is `taken: true` and the folder is ours within the same request. An
+    // automatic tick could take it first, so the ask is placed where the
+    // schedule sits at its fifteen-second cap: the tick is then far away, and
+    // the POST is the taker. A route disconnected from trigger() would answer
+    // `taken: false` and leave the folder to the tick.
+    const refusedPort = await freePort();
+    const holder = acquireVaultLock(dir);
+    second = startApi(refusedPort);
+    await waitForLog("VAULT_LOCK_REFUSED");
+    // The automatic schedule is 250, 500, 1s, 2s, 4s, 8s, 15s and 15s
+    // forever, so the ticks land at 250, 750, 1750, 3750, 7750, 15750 ms.
+    // Waiting past the 3750 ms tick leaves the next automatic attempt 3.75 s
+    // away, so the POST below is unambiguously the taker.
+    await sleep(4_000);
+
+    holder.release();
+    const asked = await fetch(`http://127.0.0.1:${refusedPort}/api/vault/reclaim`, { method: "POST" });
+    expect(asked.status).toBe(200);
+    expect(await asked.json()).toEqual({ ok: true, taken: true });
+    // and the folder is the refused instance's, right now
+    const secondPid = second.pid;
+    if (secondPid === undefined) throw new Error("the refused sidecar has no pid");
+    // SAFETY: the lock record is JSON written by the reclaiming sidecar
+    expect((JSON.parse(fs.readFileSync(path.join(dir, "vault.lock"), "utf8")) as { pid: number }).pid).toBe(secondPid);
+  });
+
+  itPosix("a refused start that shuts down cleanly leaves the owner's port record alone (#277)", async () => {
+    // The refused start publishes its own per-pid registry entry (the desktop
+    // shell's identity check) and never the canonical record. Its shutdown
+    // must withdraw exactly that entry: recomputing the canonical would
+    // repoint or delete a record the owner is still serving.
+    api = startApi(port);
+    await waitForHealth(port);
+    const portFile = path.join(dir, "run", ".dokan-port");
+    const registryDir = path.join(dir, "run", ".dokan-port.registry");
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(portFile); attempt += 1) await sleep(50);
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
+    const ownerPid = api.pid;
+    if (ownerPid === undefined) throw new Error("the owner has no pid");
+    // The owner's registry entry goes, so the canonical record is now one the
+    // registry does not vouch for. This is the case that separates "removes its
+    // own entry" from "reconciles the record": a refused start that recomputed
+    // the canonical on its way out would find no survivor and DELETE a record
+    // the owner is still serving (Greptile issue 6 on #298).
+    fs.rmSync(path.join(registryDir, String(ownerPid)), { force: true });
+
+    const refusedPort = await freePort();
+    second = startApi(refusedPort);
+    await waitForRefusal(refusedPort);
+    const refusedPid = second.pid;
+    if (refusedPid === undefined) throw new Error("the refused sidecar has no pid");
+    // it published its own entry, and no canonical record of its own
+    expect(fs.existsSync(path.join(registryDir, String(refusedPid)))).toBe(true);
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
+
+    // it shuts down cleanly: SIGTERM runs the shutdown, which reconciles
+    const child = second;
+    second = undefined;
+    child.kill("SIGTERM");
+    const exitCode = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    expect(exitCode).toBe(0);
+    // a record written after the exit would still be visible: wait a beat, so
+    // a late write cannot pass unnoticed
+    await sleep(500);
+
+    // its own entry is withdrawn
+    expect(fs.existsSync(path.join(registryDir, String(refusedPid)))).toBe(false);
+    // and the owner's record is untouched, with the owner still serving
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
+    expect((await fetch(`http://127.0.0.1:${port}/health`)).ok).toBe(true);
+  });
+
+  itPosix("a shutdown while the publication waits for the port lock still withdraws the record (Greptile issue 2)", async () => {
+    // The publication takes the shared port lock. A shutdown inside that window
+    // used to read "this process published nothing" and skip the cleanup,
+    // while the publication landed a moment later: the record then pointed at a
+    // listener that was already gone, and discovery followed it.
+    const lockDir = path.join(dir, "run", ".dokan-port.lock");
+    const registryDir = path.join(dir, "run", ".dokan-port.registry");
+    const portFile = path.join(dir, "run", ".dokan-port");
+    api = startApi(port);
+    await waitForHealth(port);
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(portFile); attempt += 1) await sleep(50);
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
+
+    const childPort = await freePort();
+    await withPortFileLock(lockDir, async () => {
+      // a plaintext start publishes at bind, and its publication waits for the
+      // lock this test holds
+      const child = startApi(childPort, { DOKAN_VAULT: "disabled" });
+      second = child;
+      await waitForHealth(childPort);
+      // the shutdown lands while the publication is still waiting
+      child.kill("SIGTERM");
+      await sleep(500);
+    });
+    // the lock is free again: the pending publication lands, and the shutdown
+    // that waited for it withdraws what it wrote
+    const child = second;
+    if (child === undefined) throw new Error("the plaintext sidecar is gone");
+    const exitCode = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    expect(exitCode).toBe(0);
+    // a publication that lands AFTER the exit is the bug this test is about:
+    // wait a beat so a late write cannot pass unnoticed
+    await sleep(2_000);
+    // no entry of the child's own is left behind
+    expect(fs.existsSync(path.join(registryDir, String(child.pid)))).toBe(false);
+    // and the owner's record is the one that is left
+    expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
   });
 
   itHeavy("an unreadable lock file serves the standalone page and starts no retry loop (#298)", async () => {
@@ -623,9 +755,12 @@ describe("vault single-writer lock over a live sidecar", () => {
     // clean exit, and it unlinks the record
     holder.release();
 
-    // the CLOSE story: the lock file is GONE, not stale. A hard kill would
-    // have left it behind, and the waiter would have had to reclaim it.
-    expect(fs.existsSync(lockFile)).toBe(false);
+    // the CLOSE story: the OLD owner's record is gone, not stale. A hard kill
+    // would have left it behind, and the waiter would have had to reclaim it.
+    // The file itself may already be the waiter's: the waiter can take the
+    // folder before this test looks, and that is the recovery working, not a
+    // failure (Greptile issue 3 on #298).
+    expectOldOwnerGone(lockFile, process.pid);
 
     // the waiter's next tick sees ENOENT and takes the folder on the FIRST
     // attempt: the exclusive create succeeds, with no stale-reclaim path
@@ -679,8 +814,11 @@ describe("vault single-writer lock over a live sidecar", () => {
     holder.kill("SIGTERM");
     await new Promise<void>((resolve) => holder.once("exit", () => resolve()));
 
-    // the CLOSE story: the lock file is GONE, not stale
-    expect(fs.existsSync(lockFile)).toBe(false);
+    // the CLOSE story: the OLD owner's record is gone, not stale (the waiter
+    // may already have written its own record here — Greptile issue 3)
+    const holderPid = holder.pid;
+    if (holderPid === undefined) throw new Error("the holder has no pid");
+    expectOldOwnerGone(lockFile, holderPid);
 
     // the waiter's next tick sees ENOENT and takes the folder on the FIRST
     // attempt: the exclusive create succeeds, with no stale-reclaim path

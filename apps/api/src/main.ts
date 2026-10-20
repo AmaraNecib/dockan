@@ -17,6 +17,7 @@ import { AppLogger } from "./lib/logger";
 import { classifyPlaintextCleanup } from "./lib/vault/cleanup-status";
 import { createOverlay, type RequestHandler } from "./lib/overlay";
 import { portRecordReconcileMode } from "./lib/port-reconcile";
+import { PortPublication } from "./lib/port-publish";
 import { forgetOwnRegistryEntry, forgetPort as forgetPortRecord, portIsReachable, publishPort, writeRegistryEntry } from "./lib/port-record";
 import { createSchemaRefusalApp, guardBootStep } from "./lib/schema-refusal";
 import { UnsupportedSchemaVersionError, assertSchemaVersionSupported } from "./lib/schema-version";
@@ -83,9 +84,19 @@ let refused = false;
 let refusalError: VaultAlreadyLockedError | VaultLockUnreadableError | undefined;
 /** The reclaim loop while refused; cleared once this instance owns the folder. */
 let reclaim: ReclaimRetry | undefined;
+/**
+ * When the canonical port record may go out (#277). It needs two facts — this
+ * instance may be pointed at (it owns the folder, or it is a plaintext start),
+ * and the listener is up — and they arrive in no fixed order: a refused
+ * instance that reclaims the folder can beat a slow bind. The class publishes
+ * when both are true, whichever arrives last (Greptile issue 1).
+ */
+const publication = new PortPublication();
 if (config.vault === "on") {
   try {
     vaultLock = acquireVaultLock(config.dataDir, { logger, onLost: onLockLost });
+    // this instance owns the folder from the start
+    publication.setPublishable();
   } catch (error) {
     if (error instanceof VaultAlreadyLockedError) {
       // Do not exit and do not serve a standalone page: this instance binds
@@ -300,8 +311,10 @@ async function reclaimUntilOwned(): Promise<void> {
         // the first write into it (#277 AC3)
         openVaultManager();
         activeHandler = buildOverlay(undefined);
-        // the port record is published by the caller once the loop resolves:
-        // firing it from here would exit the process outside any await
+        // the folder is owned, so the record may go out as soon as the listener
+        // has reported its port (the publication waits for it when the bind is
+        // slow — Greptile issue 1)
+        publication.setPublishable();
         resolve();
       },
     });
@@ -819,8 +832,6 @@ async function firstFreePort(start: number, host: string): Promise<number> {
  * schema-refusal page can own the port first.
  */
 let server: ReturnType<typeof serve> | undefined;
-/** The port the server actually bound; set in the listen callback. */
-let boundPort: number | undefined;
 /** True once this process published the canonical record (shutdown reconciles it). */
 let portPublished = false;
 /** True once this process wrote its own registry entry (shutdown reaps only its own). */
@@ -899,18 +910,21 @@ function openVaultManager(): VaultManager {
 }
 
 function startServer(): void {
+  // The ONE place the canonical port record goes out (#277). It waits for the
+  // two facts it needs — this instance may be pointed at, and the listener is
+  // up on a known port — and they arrive in no fixed order: a refused
+  // instance that reclaims the folder can beat a slow bind (Greptile issue 1).
+  // One site, one order-independent decision: the old two-site order
+  // published at the bind and skipped the record when the port was not known
+  // yet, which left that instance serving a port discovery never learned
+  // about.
+  void publication.run(publishOwnedPort);
   server = serve(
     { fetch: (request, env) => activeHandler(request, env), port, hostname: config.host },
     async (info) => {
-      boundPort = info.port;
-      // A refused start does not own the folder yet: publishing would point
-      // the proxy (and the owner's clients) at the refusal server, so it
-      // stays silent until the reclaim succeeds (#277, round-7 finding 2).
-      // Only a REFUSED start suppresses publication (#277). Plaintext starts
-      // have no vault lock at all and still own the port, so keying this off
-      // `vaultLock` alone silently broke port discovery for
-      // DOKAN_VAULT=disabled (Greptile P1): Vite kept walking the previous
-      // record while the API listened somewhere else.
+      // the listener is up: the canonical record may go out now, if this
+      // instance may be pointed at (Greptile issue 1)
+      publication.setBoundPort(info.port);
       if (refused) {
         // The shell must still verify the child it spawned, or it kills the one
         // process that can take the folder by itself (#277). Its check reads the
@@ -920,8 +934,6 @@ function startServer(): void {
           "VAULT_LOCK_REFUSED",
           `serving the in-use refusal on http://${info.address}:${info.port} (canonical port record untouched: this start does not own the folder)`,
         );
-      } else {
-        await publishOwnedPort(info.port);
       }
       logger.info("SERVER_STARTED", "Dokan API booted", {
         url: `http://${info.address}:${info.port}`,
@@ -1010,6 +1022,12 @@ async function closeStoreThenLock(): Promise<number> {
 /** Cleanup must be observable: exiting successfully after a failed reconcile
  * leaves the proxy with stale discovery data. */
 async function reconcileBeforeExit(): Promise<void> {
+  // A publication that has not started yet is cancelled, and one that is in
+  // flight is awaited: it may write the record a moment from now, and a
+  // record that outlives its listener points discovery at a dead port (Greptile
+  // issue 2). Waiting here is what makes the duty below true.
+  publication.cancel();
+  await publication.settled();
   // Three duties (#277): a start that published the canonical record withdraws
   // its entry and repoints the canonical at a survivor; a refused start
   // published only its own per-pid entry, so it removes that one and probes
@@ -1080,14 +1098,10 @@ if (config.vault === "on") {
   // with the vault gate once the folder is ours.
   if (refused) {
     await reclaimUntilOwned();
-    // now (and only now) the proxy may be pointed at this instance. Awaited, not
-    // fired and forgotten: publication failure exits the process, and the
-    // handler has already been swapped to the vault gate.
-    if (boundPort === undefined) {
-      logger.error("SERVER_ERROR", "the reclaim succeeded but the bound port was never reported");
-      process.exit(1);
-    }
-    await publishOwnedPort(boundPort);
+    // now (and only now) the proxy may be pointed at this instance: the
+    // publication site in startServer() has both facts and writes the record.
+    // Nothing is published here — one site, one decision, in any order
+    // (Greptile issue 1).
   }
   const manager = vaultManager;
   if (config.vaultBroker && manager !== undefined) {
@@ -1099,6 +1113,10 @@ if (config.vault === "on") {
     "DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)",
   );
   await startPlaintext();
+  // a plaintext start owns its port: it takes no vault lock, so nothing else
+  // can claim the folder, and its record is what the dev proxy walks
+  // (Greptile P1 on #298)
+  publication.setPublishable();
   startServer();
 }
 

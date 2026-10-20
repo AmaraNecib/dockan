@@ -10,6 +10,11 @@ import { portRecordReconcileMode } from "./port-reconcile";
  * writes the canonical `.dokan-port`, which belongs to the copy that owns the
  * folder. So its shutdown removes its own entry and must not reconcile the
  * owner's record.
+ *
+ * These cases pin the pure decision only. The proof that main.ts ACTS on it
+ * lives in `vault/lock.integration.test.ts` ("a refused start that shuts down
+ * cleanly leaves the owner's port record alone"), because a unit test of a
+ * function cannot tell whether the caller consults it (Greptile issue 6).
  */
 describe("port record shutdown duty", () => {
   it("reconciles the canonical record only when this instance published it", () => {

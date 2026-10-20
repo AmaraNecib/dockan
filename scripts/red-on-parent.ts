@@ -166,6 +166,8 @@ export type FileRun = {
 export type Classification = {
   verdicts: Verdict[];
   usedWaiverLines: Set<number>;
+  /** Problems the file's waivers raise on their own (a waiver covering every test). */
+  problems: string[];
 };
 
 // ---------------------------------------------------------------------------
@@ -355,6 +357,33 @@ function matches(waiver: Waiver, result: TestResult): boolean {
   return re.test(displayName(result)) || re.test(result.name);
 }
 
+/**
+ * Waivers that match every test in a file with more than one test, and so
+ * excuse the whole file.
+ *
+ * `// red-on-parent-waive: ".*"` matches all three tests of a three-test file,
+ * which is the broad file-level skip the design forbids: the pattern names no
+ * test, so a reviewer cannot tell which one it was written for, and every
+ * characterization test in the file drops out of the "must be red" check at
+ * once. The design does allow several tests to share one waiver line, and that
+ * still works — the line is refused only when it covers the whole file. A
+ * one-test file is exempt, because there "the only test" and "the test it
+ * names" are the same thing.
+ */
+function fileLevelWaiverProblems(
+  file: string,
+  waivers: Waiver[],
+  results: TestResult[],
+): string[] {
+  if (results.length < 2) return [];
+  return waivers
+    .filter((waiver) => results.every((result) => matches(waiver, result)))
+    .map(
+      (waiver) =>
+        `${file}: the waiver on line ${waiver.line} matches all ${results.length} tests in this file, so it is a file-level skip — name the test it is for`,
+    );
+}
+
 function classifyResult(
   file: string,
   result: TestResult,
@@ -482,11 +511,12 @@ export function classifyFileRun(
       waiver: null,
       waivers: [],
     });
-    return { verdicts, usedWaiverLines: used };
+    return { verdicts, usedWaiverLines: used, problems: [] };
   }
 
   if (run.junit === null) {
     const reason = loadFailureReason(run.stdout);
+    const waiverProblems = fileLevelWaiverProblems(run.file, waivers, changeResults);
     // Nothing ran on the parent, so its test list is empty and a waiver cannot
     // be judged against it. The change side still knows which tests the file
     // registers, and that is the only list available here. This used to attach
@@ -512,7 +542,7 @@ export function classifyFileRun(
         waiver: null,
         waivers: [],
       });
-      return { verdicts, usedWaiverLines: used };
+      return { verdicts, usedWaiverLines: used, problems: waiverProblems };
     }
     for (const result of changeResults) {
       const matching = waivers.filter((candidate) => matches(candidate, result));
@@ -531,10 +561,11 @@ export function classifyFileRun(
         waivers: matching,
       });
     }
-    return { verdicts, usedWaiverLines: used };
+    return { verdicts, usedWaiverLines: used, problems: waiverProblems };
   }
 
   const results = parseJunit(run.junit, run.file);
+  const waiverProblems = fileLevelWaiverProblems(run.file, waivers, results);
   // A waiver is used when it matches a test, not when it is the one this run
   // happened to pick. A broad pattern ("case") matches "case one" as well as a
   // narrower "case one" does, and attaching only the first made the second look
@@ -552,7 +583,7 @@ export function classifyFileRun(
       waiver: null,
       waivers: [],
     });
-    return { verdicts, usedWaiverLines: used };
+    return { verdicts, usedWaiverLines: used, problems: waiverProblems };
   }
 
   for (const result of results) {
@@ -561,7 +592,7 @@ export function classifyFileRun(
     if (waiver !== null) used.add(waiver.line);
     verdicts.push(classifyResult(run.file, result, waiver, matching));
   }
-  return { verdicts, usedWaiverLines: used };
+  return { verdicts, usedWaiverLines: used, problems: waiverProblems };
 }
 
 /**
@@ -618,7 +649,7 @@ export function unregisteredVerdicts(
       waivers: matching,
     });
   }
-  return { verdicts, usedWaiverLines: used };
+  return { verdicts, usedWaiverLines: used, problems: [] };
 }
 
 export function loadFailureReason(stdout: string): string {
@@ -879,33 +910,104 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Whether the process that wrote this lock's pid file is gone. */
-export function lockHolderIsGone(lockPath: string): boolean {
+/**
+ * What a lock directory says about its holder, and how strongly.
+ *
+ * `holder` names a pid whose process is gone (ESRCH). `unclaimed` is a
+ * directory with no pid file that is older than the grace: the only evidence a
+ * crash between `mkdirSync` and the pid write leaves behind.
+ */
+type LockObservation =
+  | { kind: "alive" }
+  | { kind: "holder"; pid: number }
+  | { kind: "unclaimed"; mtimeMs: number };
+
+/**
+ * Observe the lock without deciding, so a reclaimer can bind its rename to the
+ * exact state it judged stale.
+ *
+ * The pid file's existence is not checked separately from reading it: a release
+ * can `rmSync` the directory between the two calls, and an unguarded
+ * `readFileSync` then throws ENOENT out of `acquireWorktreeLock` (which only
+ * catches `EEXIST`) and kills the run with a stack trace instead of retrying.
+ * A vanished pid file is "not gone": the waiter retries and the next pass either
+ * takes the lock or judges the directory it now sees.
+ */
+export function observeLockHolder(lockPath: string): LockObservation {
   const pidFile = join(lockPath, "pid");
-  if (!existsSync(pidFile)) {
-    // A crash between taking the lock and writing its pid leaves a lock that no
-    // run can ever reclaim if "no pid" means "holder alive": every later run
-    // waits its whole budget and refuses, forever. Grader than the write itself,
-    // the directory's own age is the only evidence left.
+  let raw: string;
+  try {
+    raw = readFileSync(pidFile, "utf8");
+  } catch {
+    // No pid file. If the directory is gone too, or young, there is no evidence
+    // of a dead holder: retry rather than reclaim.
     try {
-      return Date.now() - statSync(lockPath).mtimeMs > LOCK_PID_GRACE_MS;
+      const mtimeMs = statSync(lockPath).mtimeMs;
+      return Date.now() - mtimeMs > LOCK_PID_GRACE_MS
+        ? { kind: "unclaimed", mtimeMs }
+        : { kind: "alive" };
     } catch {
-      // It went away between the EEXIST and this stat; the caller retries and
-      // takes it.
-      return false;
+      return { kind: "alive" };
     }
   }
-  const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return { kind: "alive" };
   try {
     process.kill(pid, 0);
-    return false;
+    return { kind: "alive" };
   } catch (error) {
     // ESRCH: no such process, so the holder died without releasing. EPERM: it
     // exists but belongs to another user — treat that as alive.
     // SAFETY: `process.kill` is the only throw source here and rejects with a
     // NodeJS.ErrnoException, whose string `code` is what this test reads.
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
+    return (error as NodeJS.ErrnoException).code === "ESRCH"
+      ? { kind: "holder", pid }
+      : { kind: "alive" };
+  }
+}
+
+/** Whether the process that wrote this lock's pid file is gone. */
+export function lockHolderIsGone(lockPath: string): boolean {
+  return observeLockHolder(lockPath).kind !== "alive";
+}
+
+/**
+ * Remove the lock `observed` described, unless the name now holds a different,
+ * live lock.
+ *
+ * `renameSync` is the only step that can race: between observing a dead holder
+ * and renaming its directory away, another waiter can reclaim the same lock and
+ * take it, so the name about to be renamed can hold a fresh lock by then. The
+ * rename is therefore a claim on the directory, verified against `observed`, and
+ * undone when it moved something else. Without the check the second waiter
+ * renamed and deleted the first waiter's live lock, and both runs then held "the
+ * lock" and shared one worktree.
+ */
+export function reclaimStaleLock(lockPath: string, observed: LockObservation): void {
+  if (observed.kind === "alive") return;
+  const tombstone = `${lockPath}.stale-${process.pid}`;
+  try {
+    renameSync(lockPath, tombstone);
+  } catch {
+    // Another run broke it (or reclaimed it) first; the retry takes the lock.
+    return;
+  }
+  const moved = observeLockHolder(tombstone);
+  const sameLock =
+    observed.kind === "holder"
+      ? moved.kind === "holder" && moved.pid === observed.pid
+      : moved.kind === "unclaimed" && moved.mtimeMs === observed.mtimeMs;
+  if (sameLock) {
+    rmSync(tombstone, { recursive: true, force: true });
+    return;
+  }
+  // We moved a lock that is not the one we judged stale — a live run now holds
+  // it. Put it back; if the name is taken again, leave the directory where it is
+  // rather than delete a live lock.
+  try {
+    renameSync(tombstone, lockPath);
+  } catch {
+    // The tombstone stays behind, named for a run that is not its holder.
   }
 }
 
@@ -937,14 +1039,9 @@ function acquireWorktreeLock(lockPath: string, lockWaitMs: number): () => void {
       // SAFETY: `mkdirSync` rejects with a NodeJS.ErrnoException, and its `code`
       // is the documented way to tell "already held" from a real failure.
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (lockHolderIsGone(lockPath)) {
-        const tombstone = `${lockPath}.stale-${process.pid}`;
-        try {
-          renameSync(lockPath, tombstone);
-          rmSync(tombstone, { recursive: true, force: true });
-        } catch {
-          // Another run broke it first; the retry below takes the lock.
-        }
+      const observed = observeLockHolder(lockPath);
+      if (observed.kind !== "alive") {
+        reclaimStaleLock(lockPath, observed);
         continue;
       }
       if (Date.now() > deadline) {
@@ -1161,7 +1258,7 @@ function readAtRevision(repo: string, head: string, path: string): string {
  * match HEAD, or the names enumerated belong to a version the gate is not
  * judging; that is reported instead of guessed at.
  */
-function changeSideResults(
+export function changeSideResults(
   repo: string,
   file: string,
   junitPath: string,
@@ -1328,22 +1425,31 @@ function gateBaseWorktree(input: {
         ? changeSideResults(repo, file, join(outDir, `${copied.length}-change.xml`), problems)
         : [];
       const classified = classifyFileRun(fileRun, parsed.waivers, changeResults);
+      for (const problem of classified.problems) problems.push(problem);
       const unregistered =
         parentResults.length === 0
-          ? { verdicts: [], usedWaiverLines: new Set<number>() }
+          ? { verdicts: [], usedWaiverLines: new Set<number>(), problems: [] }
           : unregisteredVerdicts(file, parentResults, changeResults, parsed.waivers);
       verdicts.push(...classified.verdicts, ...unregistered.verdicts);
       // A test that is red on the change as well is a broken test: it pins
       // nothing, and the guide used to promise that a right-reason red "passes
       // on the change" while nothing read the change side's status. The
       // change's own run is already made, so its statuses cost nothing to read.
-      const notOnParent = new Set(unregistered.verdicts.map((verdict) => verdict.test));
+      // Only an *unexcused* NOT ON PARENT row already fails the run, so only
+      // that row makes a second RED ON CHANGE row redundant. When the NOT ON
+      // PARENT row passes — a waiver excused it — the change-side red must still
+      // be reported: a waiver says why the parent could not run the test, not
+      // that the test works. Skipping it unconditionally printed PASS over a
+      // test that fails on the change.
+      const unexcusedNotOnParent = new Set(
+        unregistered.verdicts
+          .filter((verdict) => !verdictPasses(verdict))
+          .map((verdict) => verdict.test),
+      );
       for (const changeResult of changeResults) {
         if (changeResult.status !== "failed") continue;
         const test = displayName(changeResult);
-        // A test the parent never reported is already reported as NOT ON
-        // PARENT; two rows for one test would say the same thing twice.
-        if (notOnParent.has(test)) continue;
+        if (unexcusedNotOnParent.has(test)) continue;
         verdicts.push({
           file,
           test,
@@ -1469,7 +1575,9 @@ export function renderReport(run: GateRun, problems: string[]): string {
     // added test files" used to cover both "this change adds no test" and "this
     // change adds five tests the gate never looked at".
     if (run.skipped.length > 0) {
-      lines.push("skipped test files:");
+      lines.push(
+        "skipped test files (only *.test.* and *.spec.* names are recognised; a test file named any other way is not listed):",
+      );
       for (const entry of run.skipped) lines.push(`  ${entry.path} — ${entry.reason}`);
     }
     // A run that judged nothing still owes its problems: an empty diff is the
@@ -1543,7 +1651,9 @@ export function renderReport(run: GateRun, problems: string[]): string {
   // change that added a test the gate never looked at must not read as a
   // change that added no test.
   if (run.skipped.length > 0) {
-    lines.push("skipped test files:");
+    lines.push(
+      "skipped test files (only *.test.* and *.spec.* names are recognised; a test file named any other way is not listed):",
+    );
     for (const entry of run.skipped) lines.push(`  ${entry.path} — ${entry.reason}`);
   }
   const failed = failing.length > 0 || problems.length > 0;
@@ -1628,16 +1738,41 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--help" || arg === "-h") parsed.help = true;
     else if (arg === "--fresh") parsed.fresh = true;
     else if (arg === "--base") {
-      parsed.base = argv[index + 1] ?? null;
+      parsed.base = flagValue(argv, "--base", index);
       index += 1;
-    } else if (arg.startsWith("--base=")) parsed.base = arg.slice("--base=".length);
-    else if (arg === "--head") {
-      parsed.head = argv[index + 1] ?? "HEAD";
+    } else if (arg.startsWith("--base=")) {
+      parsed.base = inlineValue("--base", arg);
+    } else if (arg === "--head") {
+      parsed.head = flagValue(argv, "--head", index);
       index += 1;
-    } else if (arg.startsWith("--head=")) parsed.head = arg.slice("--head=".length);
-    else throw new GateError(`unknown argument ${JSON.stringify(arg)}\n\n${USAGE}`);
+    } else if (arg.startsWith("--head=")) {
+      parsed.head = inlineValue("--head", arg);
+    } else throw new GateError(`unknown argument ${JSON.stringify(arg)}\n\n${USAGE}`);
   }
   return parsed;
+}
+
+/**
+ * The value after a flag, refusing a missing or flag-shaped one.
+ *
+ * `--base` with no value used to leave `base === null`, which `resolveBase`
+ * reads as "use origin/develop" — the gate then judged a different parent than
+ * the one the caller named, and could PASS on a diff nobody asked about. A
+ * missing value is a usage error, not a fallback.
+ */
+function flagValue(argv: string[], flag: string, index: number): string {
+  const value = argv[index + 1];
+  if (value === undefined || value.length === 0 || value.startsWith("-")) {
+    throw new GateError(`${flag} needs a value\n\n${USAGE}`);
+  }
+  return value;
+}
+
+/** The value of an `--flag=value` argument, refusing an empty one. */
+function inlineValue(flag: string, arg: string): string {
+  const value = arg.slice(`${flag}=`.length);
+  if (value.length === 0) throw new GateError(`${flag} needs a value\n\n${USAGE}`);
+  return value;
 }
 
 export function main(argv: string[]): number {
@@ -1665,11 +1800,22 @@ export function main(argv: string[]): number {
     const failed = run.verdicts.some((verdict) => !verdictPasses(verdict)) || run.problems.length > 0;
     return failed ? 1 : 0;
   } catch (error) {
+    // Anything that is not a GateError is still "the gate could not run", not a
+    // verdict. An uncaught throw exits 1, the same code as a legitimate gate
+    // failure, so a caller that retries on 1 and gives up on 2 is misled. The
+    // documented contract is 0 pass / 1 failed / 2 could not run; this makes it
+    // true for a filesystem error as well as a typed refusal, and keeps the
+    // stack in the log so a real bug is still diagnosable.
     if (error instanceof GateError) {
       process.stderr.write(`red-on-parent: cannot run — ${error.message}\n`);
-      return 2;
+    } else {
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`red-on-parent: cannot run — unexpected error: ${detail}\n`);
+      if (error instanceof Error && error.stack !== undefined) {
+        process.stderr.write(`${error.stack}\n`);
+      }
     }
-    throw error;
+    return 2;
   }
 }
 

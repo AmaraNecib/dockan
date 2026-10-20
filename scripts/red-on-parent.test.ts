@@ -22,21 +22,24 @@
 
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import * as gateModule from "./red-on-parent";
 import {
   bunOnlyRefusal,
+  changeSideResults,
   classifyFileRun,
   decodeXml,
   displayName,
   isGatedTestPath,
   lockHolderIsGone,
   main,
+  observeLockHolder,
   parseJunit,
   parseWaivers,
+  reclaimStaleLock,
   renderReport,
   runGate,
   unregisteredVerdicts,
@@ -189,6 +192,28 @@ export function brandNew(n: number): number {
 
 const PKG: File = { path: "package.json", text: `{ "name": "fixture", "type": "module" }\n` };
 const HELPER: File = { path: "packages/core/src/helper.ts", text: HELPER_BEFORE };
+
+/**
+ * The hook-throws file, committed by both the e2e fixture and the capture test.
+ * A `beforeEach` throw prints the same `(fail) <name>` line an assertion red
+ * prints, so a gate that greps the reporter calls it a pass; junit types it
+ * `Error`, because the body never ran.
+ */
+const HOOK_TEST = `import { beforeEach, describe, expect, test } from "bun:test";
+import { guard } from "./helper";
+describe("hooky", () => {
+  beforeEach(() => {
+    try {
+      guard(0);
+    } catch (error) {
+      if ((error as Error).message === "zero") throw new Error("hook boom");
+    }
+  });
+  test("never gets to assert", () => {
+    expect(guard(1)).toBe(1);
+  });
+});
+`;
 
 // ---------------------------------------------------------------------------
 // Fixtures — one per verdict, each observed end to end
@@ -758,24 +783,7 @@ describe("the hook-throws fixture, where a grep-based gate is wrong", () => {
       [PKG, HELPER],
       [
         { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
-        {
-          path: "packages/core/src/hook.test.ts",
-          text: `import { beforeEach, describe, expect, test } from "bun:test";
-import { guard } from "./helper";
-describe("hooky", () => {
-  beforeEach(() => {
-    try {
-      guard(0);
-    } catch (error) {
-      if ((error as Error).message === "zero") throw new Error("hook boom");
-    }
-  });
-  test("never gets to assert", () => {
-    expect(guard(1)).toBe(1);
-  });
-});
-`,
-        },
+        { path: "packages/core/src/hook.test.ts", text: HOOK_TEST },
       ],
     );
     try {
@@ -806,13 +814,9 @@ describe("the trap a grep-based gate falls into", () => {
   // A transcript as bun prints it for a hook that throws: the reporter writes
   // the same `(fail) <name>` line a real assertion red writes, while junit
   // records `type="Error"` because the body never ran. The gate must not read
-  // the reporter. A grep-based gate does, and passes a fixture that proves
-  // nothing. (Round 3 captures this transcript from a real run below.)
-  const hookTranscript = [
-    "(fail) hooky > never gets to assert [0.42ms]",
-    "error: hook boom",
-    "      at <anonymous> (/tmp/wt/packages/core/src/hook.test.ts:5:32)",
-  ].join("\n");
+  // the reporter. The first test below captures that transcript from a real bun
+  // run of the same file the hook fixture commits, so the premise is measured
+  // against bun's output and not against a literal written to satisfy the helper.
   const hookJunit = `<?xml version="1.0" encoding="UTF-8"?>
 <testsuites name="bun test" tests="1">
   <testsuite name="hook.test.ts" tests="1">
@@ -822,15 +826,57 @@ describe("the trap a grep-based gate falls into", () => {
   </testsuite>
 </testsuites>`;
 
-  test("a grep-based gate calls the hook fixture RIGHT-REASON RED", () => {
-    expect(naiveGrepVerdict(hookTranscript)).toBe("RIGHT_REASON_RED");
-  });
+  test("bun's real transcript for a hook throw carries `(fail)`", () => {
+    // The parent-side run is the file copied into the base worktree, so the
+    // helper it imports is the pre-change one: `guard(0)` throws "zero", the
+    // hook re-throws, and the reporter prints `(fail)`. Leaving helper.ts
+    // unchanged here reproduces exactly that run (with the change helper,
+    // which throws "ZERO", the hook would not fire and the test would pass).
+    const fixture = createFixture([PKG, HELPER], [
+      { path: "packages/core/src/hook.test.ts", text: HOOK_TEST },
+    ]);
+    try {
+      const junitPath = join(mkdtempSync(join(tmpdir(), "ronp-hook-junit-")), "out.xml");
+      const run = spawnSync(
+        process.execPath,
+        [
+          "test",
+          "packages/core/src/hook.test.ts",
+          "--reporter=junit",
+          `--reporter-outfile=${junitPath}`,
+        ],
+        { cwd: fixture.repo, encoding: "utf8" },
+      );
+      const stdout = `${run.stdout ?? ""}${run.stderr ?? ""}`;
+      // The premise, from bun itself: the reporter writes the `(fail)` line an
+      // assertion red writes, so a grep-based gate would call this a pass.
+      expect(stdout).toContain("(fail) hooky > never gets to assert");
+      expect(naiveGrepVerdict(stdout)).toBe("RIGHT_REASON_RED");
+      // The junit type the gate actually reads is not fooled by it.
+      const realJunit = readFileSync(junitPath, "utf8");
+      const parsed = parseJunit(realJunit);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]?.failureType).toBe("Error");
+      const classified = classifyFileRun(
+        { file: "packages/core/src/hook.test.ts", junit: realJunit, stdout, error: "" },
+        [],
+      );
+      expect(classified.verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
 
-  test("the gate calls it WRONG-REASON RED on the assertion counter, not the reporter", () => {
+  test("the unit fixture carries the same discriminator the real report does", () => {
     const [result] = parseJunit(hookJunit);
     expect(result?.assertions).toBe(0);
     const classified = classifyFileRun(
-      { file: "hook.test.ts", junit: hookJunit, stdout: hookTranscript, error: "" },
+      {
+        file: "hook.test.ts",
+        junit: hookJunit,
+        stdout: "(fail) hooky > never gets to assert",
+        error: "",
+      },
       [],
     );
     expect(classified.verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
@@ -1596,6 +1642,10 @@ describe("other", () => {
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain("scripts/outside.test.ts");
       expect(stdout).toContain("skipped test files");
+      // The list is only an inventory of test-like *names*; a test file named
+      // any other way is invisible, so the reporting site says which naming
+      // conventions it covers rather than implying it saw every test file.
+      expect(stdout).toContain("only *.test.* and *.spec.* names are recognised");
       expect(stdout).toContain("added test files: 0");
       expect(status).toBe(0);
     } finally {
@@ -1733,6 +1783,291 @@ test("rejects zero", () => {
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain(`bun ${process.versions.bun ?? "unknown"}`);
       expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 9 — the CLI, the change-side fail-closed paths, the lock's reclamation
+// binding, the per-file promise, the file-level waiver and the exit-code
+// contract. Every one is a path the earlier fixtures could not reach.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 9 — parseArgs", () => {
+  test("reads the documented flags", () => {
+    expect(gateModule.parseArgs([])).toEqual({
+      base: null,
+      head: "HEAD",
+      fresh: false,
+      help: false,
+    });
+    expect(
+      gateModule.parseArgs(["--base", "origin/develop", "--head", "abc", "--fresh"]),
+    ).toEqual({ base: "origin/develop", head: "abc", fresh: true, help: false });
+    expect(gateModule.parseArgs(["--base=origin/develop", "--head=abc"])).toEqual({
+      base: "origin/develop",
+      head: "abc",
+      fresh: false,
+      help: false,
+    });
+    expect(gateModule.parseArgs(["--help"]).help).toBe(true);
+    expect(gateModule.parseArgs(["-h"]).help).toBe(true);
+  });
+
+  test("refuses a flag with no value instead of falling back to origin/develop", () => {
+    // `--base` with no value used to leave base === null, which `resolveBase`
+    // reads as "use origin/develop": the gate judged a different parent than the
+    // caller named and could PASS on a diff nobody asked about.
+    expect(() => gateModule.parseArgs(["--base"])).toThrow("--base needs a value");
+    expect(() => gateModule.parseArgs(["--base", "--head", "abc"])).toThrow(
+      "--base needs a value",
+    );
+    expect(() => gateModule.parseArgs(["--base="])).toThrow("--base needs a value");
+    expect(() => gateModule.parseArgs(["--head"])).toThrow("--head needs a value");
+    expect(() => gateModule.parseArgs(["--head="])).toThrow("--head needs a value");
+    expect(() => gateModule.parseArgs(["--wat"])).toThrow("unknown argument");
+  });
+
+  test("main exits 2 on a valueless --base", () => {
+    // The unit above pins parseArgs; this pins the exit code a shell sees.
+    expect(main(["--base"])).toBe(2);
+  });
+});
+
+describe("red-on-parent round 9 — the change-side fail-closed paths", () => {
+  test("an added file edited in the working tree is reported, not judged", () => {
+    // The change side runs in the checkout, so an edited added file means the
+    // gate cannot tell which tests the change registers. It must say so rather
+    // than enumerate a version HEAD does not hold.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/dirty.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("x", () => {\n  expect(1).toBe(1);\n});\n`,
+        },
+      ],
+    );
+    try {
+      writeFileSync(
+        join(fixture.repo, "packages/core/src/dirty.test.ts"),
+        `import { expect, test } from "bun:test";\ntest("x", () => {\n  expect(2).toBe(2);\n});\n`,
+      );
+      const problems: string[] = [];
+      const out = join(mkdtempSync(join(tmpdir(), "ronp-junit-")), "out.xml");
+      changeSideResults(fixture.repo, "packages/core/src/dirty.test.ts", out, problems);
+      expect(problems.join(" ")).toContain("has uncommitted changes");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("a change-side run that wrote no junit report is reported", () => {
+    // bun writes the report only when the file loaded and ran; a filter that
+    // matches no file leaves none, so the change side must fail closed instead
+    // of reading an empty test list as "the change registers nothing".
+    const fixture = createFixture([PKG, HELPER], [
+      { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+    ]);
+    try {
+      const problems: string[] = [];
+      const out = join(mkdtempSync(join(tmpdir(), "ronp-junit-")), "out.xml");
+      changeSideResults(fixture.repo, "packages/core/src/not-there.test.ts", out, problems);
+      expect(problems.join(" ")).toContain("wrote no junit report");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("red-on-parent round 9 — the lock", () => {
+  test("a vanished lock is not-gone and does not throw", () => {
+    // The pid file's existence and its read are not atomic, and a release can
+    // remove the directory in between. `acquireWorktreeLock` only catches
+    // EEXIST, so an unguarded read threw ENOENT out of runGate and killed the
+    // run with a stack trace instead of retrying.
+    const lockPath = join(mkdtempSync(join(tmpdir(), "ronp-lock-")), "gone.lock");
+    expect(() => lockHolderIsGone(lockPath)).not.toThrow();
+    expect(lockHolderIsGone(lockPath)).toBe(false);
+    expect(observeLockHolder(lockPath).kind).toBe("alive");
+  });
+
+  test("a stale unclaimed lock is reclaimed", () => {
+    const lockPath = join(mkdtempSync(join(tmpdir(), "ronp-lock-")), "wt.lock");
+    mkdirSync(lockPath);
+    const stale = new Date(Date.now() - 60_000);
+    utimesSync(lockPath, stale, stale);
+    const observed = observeLockHolder(lockPath);
+    expect(observed.kind).toBe("unclaimed");
+    reclaimStaleLock(lockPath, observed);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  test("reclaiming does not delete a live lock another waiter already took", () => {
+    // Two waiters read the same dead pid; the first reclaims and takes the lock
+    // (writing its own pid). The second, holding its earlier observation, used
+    // to rename and delete the first waiter's live lock, and both runs then
+    // shared one worktree. The rename is now verified against the observation.
+    const lockPath = join(mkdtempSync(join(tmpdir(), "ronp-lock-")), "wt.lock");
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "pid"), `${process.pid}\n`);
+    reclaimStaleLock(lockPath, { kind: "holder", pid: 999_999 });
+    expect(existsSync(join(lockPath, "pid"))).toBe(true);
+  });
+});
+
+describe("red-on-parent round 9 — the per-file promise", () => {
+  test("the gate judges every added gated file, not only the first", () => {
+    // Every other fixture adds exactly one gated file, so a gate that judged
+    // only the first scored 76 pass / 0 fail. Here the first file is a clean
+    // right-reason red and the second is green on the parent with no waiver: a
+    // gate that stops after file one prints PASS over a test that pins nothing.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/first.test.ts",
+          text: `import { expect, test } from "bun:test";\nimport { guard } from "./helper";\ntest("rejects zero", () => {\n  expect(() => guard(0)).toThrow("ZERO");\n});\n`,
+        },
+        {
+          path: "packages/core/src/second.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("pins nothing", () => {\n  expect(1).toBe(1);\n});\n`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("second.test.ts");
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).toContain("added test files: 2");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 90_000);
+});
+
+describe("red-on-parent round 9 — the file-level waiver", () => {
+  test("a waiver that matches every test in the file is a file-level skip", () => {
+    // `.*` matches all three tests, so one line drops the whole file out of the
+    // "must be red" check — the broad file-level skip the design forbids. The
+    // fixture is green on the parent everywhere, so without the refusal it PASSES.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        {
+          path: "packages/core/src/char.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("char a", () => {\n  expect(1).toBe(1);\n});\ntest("char b", () => {\n  expect(2).toBe(2);\n});\ntest("char c", () => {\n  expect(3).toBe(3);\n});\n// red-on-parent-waive: ".*" — pre-existing\n`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("file-level skip");
+      expect(stdout).toContain("red-on-parent: FAIL");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a waiver may still cover several tests when it does not cover the file", () => {
+    // The design allows one line to name more than one test. Refusing every
+    // pattern that matches >1 test would punish this, so the refusal is only the
+    // every-test shape.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        {
+          path: "packages/core/src/partial.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("keeps a", () => {\n  expect(1).toBe(1);\n});\ntest("keeps b", () => {\n  expect(2).toBe(2);\n});\ntest("pins something", () => {\n  expect(3).toBe(3);\n});\n// red-on-parent-waive: "keeps " — behaviour that already worked\n`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).not.toContain("file-level skip");
+      // The third test pins nothing and no waiver names it, so the run fails for
+      // that reason — not because the shared line covered two tests.
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 9 — the exit-code contract", () => {
+  test("a filesystem crash exits 2, not the 1 a gate verdict uses", () => {
+    // main used to rethrow anything that was not a GateError, and bun exits 1 on
+    // an uncaught throw — the same code as a legitimate gate failure. The
+    // contract is 2 for "could not run", so a caller that retries on 1 and gives
+    // up on 2 is no longer misled. A cache path that is a file makes mkdirSync
+    // throw a plain EEXIST before any verdict is computed.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/x.test.ts",
+          text: `import { expect, test } from "bun:test";\nimport { guard } from "./helper";\ntest("rejects zero", () => {\n  expect(() => guard(0)).toThrow("ZERO");\n});\n`,
+        },
+      ],
+    );
+    try {
+      const cacheFile = join(fixture.repo, "not-a-dir");
+      writeFileSync(cacheFile, "x");
+      const { status, stdout } = runGateFixture(fixture, {
+        RED_ON_PARENT_CACHE: cacheFile,
+      });
+      expect(stdout).toContain("cannot run");
+      expect(status).toBe(2);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 9 — a waiver cannot hide a change-side failure", () => {
+  test("a waived NOT ON PARENT does not suppress RED ON CHANGE", () => {
+    // The change registers `brand new works` only when the helper has the new
+    // export, so the parent never reported it — a waiver legitimately excuses
+    // that. The same test fails on the change, though, and a waiver says why the
+    // parent could not run it, not that it works. Skipping every NOT ON PARENT
+    // test unconditionally printed PASS over a broken test; only an *unexcused*
+    // NOT ON PARENT row may make the RED ON CHANGE row redundant.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/conditional.test.ts",
+          text: `import { expect, test } from "bun:test";
+import * as mod from "./helper";
+import { guard } from "./helper";
+test("always rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+if ("brandNew" in mod) {
+  test("brand new works", () => {
+    expect(1).toBe(2);
+  });
+}
+// red-on-parent-waive: "brand new works" — the parent cannot register it
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("NOT-ON-PARENT");
+      expect(stdout).toContain("RED-ON-CHANGE");
+      expect(stdout).toContain("red-on-parent: FAIL");
+      expect(status).toBe(1);
     } finally {
       fixture.cleanup();
     }

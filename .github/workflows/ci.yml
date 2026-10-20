@@ -211,9 +211,22 @@ jobs:
       - name: Tests
         run: bun run test
 
+      # The gate reads the *checked-out* commit's tests, and actions/checkout
+      # leaves a pull_request checkout at refs/pull/N/merge — the merge commit,
+      # not head.sha. Passing --head would name a commit this checkout does not
+      # hold, and the gate refuses that ("--head ... is not the checked-out
+      # commit") on exactly the PRs it exists for: the ones that add a gated test
+      # file. The merge commit's tree is the PR's files merged into the base tip,
+      # and merge-base(base.sha, merge) is base.sha, so the diff is still the
+      # PR's. Checking head out instead would change what every other step in
+      # this job proves (the merge result), so the gate uses the checkout it has.
+      # timeout-minutes is under the job's 15: a wedged run (a cold install, a
+      # hung test) dies here and the build and audit after it still run — a
+      # job-level timeout would discard everything after the hang.
       - name: Red-on-parent gate
         if: github.event_name == 'pull_request'
-        run: bun scripts/red-on-parent.ts --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }}
+        timeout-minutes: 8
+        run: bun scripts/red-on-parent.ts --base ${{ github.event.pull_request.base.sha }}
 
       # The production bundle adds a PR-time `vite build` alongside the one the
       # `rust` job runs for crate-affecting diffs. It is an additional build,

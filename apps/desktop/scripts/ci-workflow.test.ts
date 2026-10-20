@@ -264,6 +264,48 @@ describe("PR CI workflow", () => {
     expect(jobTimeout - runTimeout).toBeGreaterThanOrEqual(E2E_SETUP_AND_UPLOAD_ALLOWANCE_MINUTES);
   });
 
+  it("wires the red-on-parent gate to the commit the checks job actually checks out", () => {
+    // The gate enumerates the change side's tests from the *checked-out* commit,
+    // so a `--head` the checkout does not hold is refused ("--head ... is not the
+    // checked-out commit"). actions/checkout leaves a pull_request checkout at
+    // refs/pull/N/merge, and this step once passed head.sha against it: the gate
+    // then failed on every PR that adds a gated test file — exactly the
+    // population it exists for — while staying green on its own PR, which adds
+    // none. Deleting the step, dropping `--base`, or passing a `--head` the
+    // checkout cannot hold must all turn this suite red.
+    const checks = parseSteps(WORKFLOW_SOURCE, "checks");
+    const gate = stepNamed(checks, "Red-on-parent gate");
+    expect(gate.condition).toContain("github.event_name == 'pull_request'");
+    expect(
+      commandArgvs(gate.run).some(
+        (argv) => argv[0] === "bun" && argv[1] === "scripts/red-on-parent.ts",
+      ),
+      `Red-on-parent gate must run the script, got: ${gate.run}`,
+    ).toBe(true);
+    // GitHub expressions contain spaces, so the "value" of a flag is read with a
+    // regex over the run text, not by whitespace tokenisation.
+    const base = /--base\s+(\$\{\{[^}]*\}\}|\S+)/u.exec(gate.run);
+    expect(base?.[1], `Red-on-parent gate must pass --base, got: ${gate.run}`).toBe(
+      "${{ github.event.pull_request.base.sha }}",
+    );
+    // If the step passes --head, the checkout must hold it. The `checks`
+    // checkout sets no `ref:`, so it is the merge commit; `--head head.sha`
+    // therefore names a commit the gate cannot enumerate and refuses. Keep the
+    // two in lockstep: no --head (the merge checkout is the change), or a
+    // checkout ref equal to the --head expression.
+    const head = /--head\s+(\$\{\{[^}]*\}\}|\S+)/u.exec(gate.run);
+    if (head !== null) {
+      expect(stepNamed(checks, "Checkout").with.get("ref")).toBe(head[1]);
+    }
+    // A wedged run (a cold install, a hung test) must die inside the step, not
+    // at the job's 15-minute ceiling: a job timeout kills the build and audit
+    // that follow it.
+    const jobTimeout = Number(jobField(WORKFLOW_SOURCE, "checks", "timeout-minutes"));
+    const stepTimeout = Number(gate.timeoutMinutes);
+    expect(stepTimeout).toBeGreaterThan(0);
+    expect(stepTimeout).toBeLessThan(jobTimeout);
+  });
+
   it("keeps the production web build in checks", () => {
     // #226 gates the rust job on crate-affecting paths. `checks` runs an
     // additional PR-time `vite build`; `rust` still runs its own for

@@ -169,7 +169,13 @@ jobs:
   checks:
     name: typecheck, lint, test, audit
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 25, not 15: the red-on-parent step below may spend its own 14 minutes on a
+    # cold install plus two runs of one gated file, and the typecheck, lint,
+    # tests, build and audit after it still have to run. At 15 the job died
+    # first, which cancels the step mid-run — and a cancelled step prints no
+    # verdict and no remedy, which is exactly the failure mode this gate exists
+    # to remove.
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -230,15 +236,16 @@ jobs:
       #
       # Checking head out instead would change what every other step in
       # this job proves (the merge result), so the gate uses the checkout it has.
-      # timeout-minutes is under the job's 15: a wedged run (a cold install, a
+      # timeout-minutes is under the job's 25: a wedged run (a cold install, a
       # hung test) dies here and the build and audit after it still run — a
       # job-level timeout would discard everything after the hang. It is 14 and
       # not less because the script's own budget is longer than 8: a cold
       # install in the base worktree gets 10 minutes, and each gated file gets
       # two runs of 2 minutes, so one file can need 14 minutes on a slow
       # machine. A PR that adds many files can still exceed this — that is the
-      # job's 15-minute limit, not this step's, and raising that is a change to
-      # the whole job.
+      # job's limit, not this step's. The job carried 15 until #297, which equals
+      # this step's worst case plus nothing, so the job died first with one
+      # minute of install and lint left over; a cancelled step prints no verdict.
       - name: Red-on-parent gate
         if: github.event_name == 'pull_request'
         timeout-minutes: 14

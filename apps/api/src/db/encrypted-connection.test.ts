@@ -935,6 +935,78 @@ describe("snapshot fence (#280)", () => {
     }
   });
 
+  it("a proven checkpoint records the version, so an unchanged second one does not rewrite (#309)", () => {
+    // The `mine` row's consequence on the synchronous driver: a proven write is
+    // what lets the NEXT checkpoint answer from bookkeeping instead of writing
+    // a multi-megabyte snapshot again. Nothing pinned that on this path — an
+    // outcome that never said "durable" would only cost a rewrite per
+    // checkpoint, which no test would notice without the byte comparison.
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+    conn.checkpoint();
+    const written = fs.readFileSync(snapshotPath());
+    expect(diskFence()?.stamp).toBe(tokenA);
+
+    // nothing changed since: the version this checkpoint proved durable is the
+    // current one, so a second checkpoint owes no write — and a rewrite would
+    // be visible, because the nonce is random
+    conn.checkpoint();
+    expect(fs.readFileSync(snapshotPath()).equals(written)).toBe(true);
+    conn.close();
+  });
+
+  it("a checkpoint whose fence will not read is written but unproven, not fatal (#309)", async () => {
+    // The synchronous driver runs the same three-verdict table as the async
+    // one, and its `unreadable` row is the row with no test of its own: the
+    // write lands, nothing proves it, and the shutdown path must not die over
+    // a transaction that IS on disk. Pinned on the sync path because that is
+    // where the copy drifted last time (#291's lens round patched checkpoint()
+    // separately), and a table that only the async driver honours is a table
+    // with two answers again.
+    const events: string[] = [];
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeStamp: () => tokenB,
+      logger: { warn: (event) => events.push(event) },
+    });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+
+    // SAFETY: the fence reader (`lib/vault/fence.ts`) is the only code that opens
+    // the snapshot path, and it passes exactly (path, "r")
+    const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
+    // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
+    // parameters are the (path, flags) overload production calls
+    const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
+      if (String(file) === snapshotPath()) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      return realOpenSync(file, flags);
+    }) as typeof fs.openSync);
+    let settled: Buffer;
+    try {
+      expect(() => conn.checkpoint()).not.toThrow();
+      // the bytes landed and are this holder's: a read failure is not evidence
+      // that another writer took the file
+      expect(diskFence()?.stamp).toBe(tokenB);
+      expect(events).toContain("VAULT_SNAPSHOT_FENCE_UNREADABLE");
+      settled = fs.readFileSync(snapshotPath());
+    } finally {
+      spy.mockRestore();
+    }
+
+    // and the version was NOT recorded durable: with the fence readable again,
+    // the next checkpoint owes the same version a rewrite. A `persistedVersion`
+    // that had advanced on the unproven row would satisfy `snapshotIsCurrent()`
+    // and skip the write, leaving bytes nothing ever proved on disk.
+    conn.checkpoint();
+    expect(fs.readFileSync(snapshotPath()).equals(settled)).toBe(false);
+    expect(diskFence()?.stamp).toBe(tokenB);
+    await conn.close();
+  });
+
   it("refuses to bundle a snapshot that is not this holder's", async () => {
     const conn = createEncryptedConnection({
       vaultId,
@@ -1372,7 +1444,7 @@ describe("closed connection and unreadable paths (#291)", () => {
     // a unit that arrives after the close: the handle is released and the key
     // is zeroed, so nothing was written and nothing can be
     conn.markDirty();
-    await expect(conn.persistIfDirty()).resolves.toBe("dropped");
+    await expect(conn.persistIfDirty()).rejects.toMatchObject({ reason: "dropped" });
     expect(fs.readFileSync(snapshotPath()).equals(durable)).toBe(true);
 
     // the drop is not silent: it is named, once, at error. A committed unit

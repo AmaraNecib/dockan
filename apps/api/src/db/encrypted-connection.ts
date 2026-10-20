@@ -4,12 +4,20 @@ import path from "node:path";
 
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
-import type { DrizzleDb, PersistOutcome } from "./connection";
+import type { DrizzleDb } from "./connection";
 import * as schema from "./schema";
+import {
+  SnapshotPersistenceError,
+  readVerifiedSnapshot,
+  sealSnapshot,
+  sleepSync,
+  writeSnapshot,
+  writeSnapshotSync,
+} from "./snapshot-durability";
 import { snapshotFailurePolicy } from "./snapshot-failure-policy";
-import { cleanupStalePartials, writeFileAtomic, writeFileAtomicSync } from "../lib/atomic-file";
+import { cleanupStalePartials, writeFileAtomic } from "../lib/atomic-file";
 import { createVaultBackupBundle, readVaultBackupBundle } from "../lib/vault/backup";
-import { open, seal } from "../lib/vault/crypto";
+import { open } from "../lib/vault/crypto";
 import {
   MAX_SNAPSHOT_STAMP_BYTES,
   VAULT_SNAPSHOT_LEGACY_VERSION,
@@ -17,11 +25,18 @@ import {
   VAULT_SNAPSHOT_VERSION,
   parseVaultHeader,
   readSnapshotFence,
-  snapshotAad,
   snapshotAadFor,
   type VaultWrap,
 } from "../lib/vault/format";
-import { type FenceVerdict, fromEnvelope, fromPath } from "../lib/vault/fence";
+import { fromEnvelope, fromPath, type FenceVerdict } from "../lib/vault/fence";
+
+/**
+ * The write half of the vault lives in `snapshot-durability`, and the reason a
+ * failure carries lives with it. Re-exported here so the callers that already
+ * name this module (main, the store, the tests) keep one import.
+ */
+export { SnapshotPersistenceError } from "./snapshot-durability";
+export type { SnapshotFailureReason } from "./snapshot-durability";
 import { assertSchemaVersionSupported, readSchemaVersion } from "../lib/schema-version";
 import type { StoreLogger } from "../store/port";
 
@@ -54,12 +69,14 @@ export type EncryptedConnection = {
   vaultId: string;
   markDirty(): void;
   /**
-   * Write the committed image if it is dirty, and say what happened. `dropped`
-   * is not "nothing to do": the connection had already closed, so the version
-   * this flush would have written is not on disk and cannot be. A caller that
-   * treats every resolved flush as saved reports a lost transaction as saved.
+   * Write the committed image if it is dirty. Every failure THROWS with its
+   * reason, including a connection that closed before the write: a caller that
+   * has to decide whether a committed unit may be reported saved reads one
+   * thing, and a resolved promise always means the image is on disk. An
+   * unreadable read-back is not a failure — the bytes landed — so it resolves
+   * and the version is simply not recorded durable.
    */
-  persistIfDirty(): Promise<PersistOutcome>;
+  persistIfDirty(): Promise<void>;
   flush(): Promise<void>;
   checkpoint(): void;
   close(): Promise<void>;
@@ -158,81 +175,6 @@ export class VaultCorruptionError extends Error {
   }
 }
 
-/**
- * How a snapshot write failed, in terms the caller can act on. The reason
- * travels with the error so the process is told what happened instead of
- * guessing: "the disk could not be written" and "another writer replaced the
- * file" call for different responses, and a caller that only sees "write
- * failed" blames the disk for a stolen file.
- */
-export type SnapshotFailureReason =
-  /** the atomic write itself failed (a full disk, a refused rename) */
-  | "write-failed"
-  /** another holder's envelope landed on the one this holder wrote */
-  | "foreign"
-  /** the legacy unfenced envelope landed on the one this holder wrote */
-  | "unstamped"
-  /** the snapshot is fenced and this connection has no stamp to check it against */
-  | "unfenced-holder"
-  /** the bytes on disk are not an envelope this build knows */
-  | "undecidable"
-  /** the snapshot file is gone */
-  | "absent"
-  /** the fence could not be read */
-  | "unreadable"
-  /**
-   * the connection closed before the write: nothing was written, and nothing
-   * can be — the handle is released and the key is zeroed. Distinct from
-   * "write-failed" because the disk is not implicated: the unit is lost
-   * because there is no writer left, which is the one failure a retry cannot
-   * fix.
-   */
-  | "dropped";
-
-/** A committed unit could not be written to its durable snapshot. */
-export class SnapshotPersistenceError extends Error {
-  constructor(
-    cause: Error,
-    readonly reason: SnapshotFailureReason = "write-failed",
-  ) {
-    super(`snapshot persistence failed: ${cause.message}`);
-    this.name = "SnapshotPersistenceError";
-  }
-}
-
-/** A verdict that refuses a write: every fence outcome except "mine". */
-type RefusingVerdict = Exclude<FenceVerdict, { outcome: "mine" }>;
-
-/**
- * The reason a fence verdict gives a refused write. This is the one job left
- * here: a verdict that is not "mine" means a write is refused, and the reason
- * is which kind of not-mine it was. What the reason then MEANS — the event, the
- * severity, the words — is `snapshotFailurePolicy`'s answer, not this module's.
- *
- * Narrowing the parameter to the refusing verdicts is what removes the dead
- * `mine` branch: every caller tests `outcome === "mine"` first and returns, so a
- * verdict that reaches here cannot be one this holder wrote.
- */
-function fenceFailureReason(verdict: RefusingVerdict): SnapshotFailureReason {
-  switch (verdict.outcome) {
-    case "foreign":
-      return "foreign";
-    case "unstamped":
-      return "unstamped";
-    case "unfenced-holder":
-      return "unfenced-holder";
-    case "undecidable":
-      return "undecidable";
-    case "absent":
-      return "absent";
-    case "unreadable":
-      return "unreadable";
-  }
-}
-
-const WRITE_ATTEMPTS = 3;
-const WRITE_RETRY_DELAY_MS = 50;
-/** Ask twice: one retry absorbs a transient EBUSY. A decidable fence cannot change by asking again. */
 const FENCE_READ_ATTEMPTS = 2;
 /**
  * The gap between two attempts at the same file. The write path already
@@ -243,17 +185,6 @@ const FENCE_READ_ATTEMPTS = 2;
  * that was perfectly healthy. Same spacing, same reason.
  */
 const FENCE_READ_RETRY_DELAY_MS = 50;
-
-/**
- * A synchronous pause. The fence read runs on the async persist path AND on
- * the synchronous checkpoint path, so one implementation has to serve both,
- * and `Atomics.wait` is the only sleep a sync function can do. It is used
- * only between two attempts at opening a file that refused, so the event loop
- * is held for that one window and for nothing else.
- */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /**
  * A holder stamp that cannot be sealed is refused at OPEN, not at each write:
@@ -273,28 +204,6 @@ function assertStampUsable(stamp: string): void {
   if (stampBytes.toString("utf8") !== stamp) {
     throw new Error("the snapshot holder stamp is not text that survives a UTF-8 round trip");
   }
-}
-
-/**
- * Build the envelope. With a holder stamp it is the fenced format (#280):
- * `magic ‖ 2 ‖ stampLen ‖ stamp ‖ sealed`, and the stamp is bound into the AAD
- * so a reader can trust whose bytes it holds. Without one it is the legacy
- * format, exactly what every released build wrote.
- */
-function sealSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array, stamp: string | undefined): Buffer {
-  if (stamp === undefined) {
-    const sealed = seal(masterKey, image, snapshotAad(vaultId));
-    return Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_LEGACY_VERSION]), sealed]);
-  }
-  const stampBytes = Buffer.from(stamp, "utf8");
-  const sealed = seal(masterKey, image, snapshotAadFor(vaultId, stamp));
-  return Buffer.concat([
-    VAULT_SNAPSHOT_MAGIC,
-    Buffer.from([VAULT_SNAPSHOT_VERSION]),
-    Buffer.from([stampBytes.length]),
-    stampBytes,
-    sealed,
-  ]);
 }
 
 /**
@@ -594,8 +503,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     return mutationVersion === persistedVersion && readFence().outcome === "mine";
   }
 
-  async function persistNow(): Promise<PersistOutcome> {
-    if (await snapshotIsCurrentAsync()) return "on-disk";
+  async function persistNow(): Promise<void> {
+    if (await snapshotIsCurrentAsync()) return;
     // The await above parks this job, and the store is not frozen while it is
     // parked: `close()` can release the database handle and a unit can BEGIN.
     // So the guard is read HERE, on the near side of the serializer, and not
@@ -618,88 +527,44 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       options.logger?.error?.(
         "SNAPSHOT_PERSIST_DROPPED",
         // The words come from the policy, not from here: the store logs the same
-        // event for the same fact when a persist returns "dropped", and a second
+        // event for the same fact when this throws "dropped", and a second
         // hand-written sentence would let one fact carry two texts — with the
         // policy's edit never reaching this row. The connection adds nothing to
         // the meaning, so it adds nothing to the sentence.
         snapshotFailurePolicy("dropped").sentence,
       );
-      return "dropped";
+      // And it THROWS, rather than resolving with a value the caller has to
+      // read. `dropped` is a failure by every measure that matters to a caller:
+      // a committed unit is not on disk and never will be. Signalling it as a
+      // resolved promise put the same fact in two unions — a return value and a
+      // throw — and left the store rebuilding the error this module owns
+      // (#309). The reason still travels, so the policy still files it under
+      // SNAPSHOT_PERSIST_DROPPED.
+      throw new SnapshotPersistenceError(new Error(snapshotFailurePolicy("dropped").sentence), "dropped");
     }
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
-    if (connection.inTransaction) return "on-disk";
+    if (connection.inTransaction) return;
+    // The four-step sequence and its three-verdict table are
+    // `snapshot-durability`'s, not this module's: seal, place with the guard
+    // before the rename, read the fence back, retry a refusal. What is decided
+    // here is only what the outcome means for the version counter — and the
+    // mutating version is read BEFORE the write, so a mutation that lands
+    // during it advances past `version` and schedules the next flush.
     const version = mutationVersion;
-    const envelope = sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp);
-    // The guard's refusal is never a write failure and is never retried, on the
-    // pre-write check and on the pre-rename one alike. Recording it here is how
-    // the catch below tells the two apart without this module knowing what the
-    // guard's error type is.
-    let guardRefusal: Error | undefined;
-    const runGuard = (): void => {
-      try {
-        options.writeGuard?.();
-      } catch (error) {
-        guardRefusal = error instanceof Error ? error : new Error(String(error));
-        throw guardRefusal;
-      }
-    };
-    let lastError: Error | undefined;
-    for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
-      // ADR-0012: a persist queued before the lock was stolen must refuse
-      // rather than overwrite the new owner's snapshot, so the guard is asked
-      // at the instant of the write and its throw is never retried
-      runGuard();
-      try {
-        // the single-writer lock (lib/vault/lock.ts) keeps a second process
-        // from holding a competing in-memory image, so this rename is the only
-        // writer for the folder. The guard is asked AGAIN inside the write,
-        // immediately before the rename: asking only before the temp write
-        // leaves the serialize + encrypt + write + fsync as the window a theft
-        // can land in, and our rename then overwrites the new owner's snapshot
-        // without the post-write fence read ever seeing it.
-        await writeFileAtomic(snapshotPath, envelope, { beforeRename: runGuard });
-      } catch (error) {
-        if (guardRefusal !== undefined) throw guardRefusal;
-        lastError = new SnapshotPersistenceError(error instanceof Error ? error : new Error(String(error)), "write-failed");
-        if (attempt < WRITE_ATTEMPTS) await delay(WRITE_RETRY_DELAY_MS);
-        continue;
-      }
-      // the bytes landed; report the version durable only while the folder is
-      // still ours, so a theft during the write is never mistaken for saved data
-      runGuard();
-      // #280: a rename from the previous holder can land on top of ours in the
-      // same window. Re-read the fence; a stamp that is not ours means the
-      // version just written is NOT on disk, so it is not durable and the
-      // write is redone.
-      const verdict = await readFenceAsync();
-      if (verdict.outcome === "mine") {
-        // only now is the version durable; a mutation during the write set
-        // mutationVersion beyond `version` and schedules the next flush
-        persistedVersion = version;
-        return "on-disk";
-      }
-      if (verdict.outcome === "unreadable") {
-        // The bytes landed; the fence could not be read back. An unreadable
-        // prefix is NOT evidence that another writer took the file — a
-        // replacement would have been read and named — so this is not the
-        // "another writer" failure, and it must not kill the process over a
-        // transaction that is on disk. The version is not recorded durable:
-        // a later write re-seals it, which is the safe direction (a version
-        // reported durable over an unreadable file costs the committed
-        // transaction it claimed to save). Reported here, per persist, so the
-        // words match the guarantee: written, but not proven durable.
-        reportFence({ outcome: "unreadable" }, "warn");
-        // "unproven", not "on-disk": the write landed but nothing proved it,
-        // and saying otherwise in the outcome would be the same lie this
-        // branch's comment exists to avoid.
-        return "unproven";
-      }
-      const reason = fenceFailureReason(verdict);
-      lastError = new SnapshotPersistenceError(new Error(snapshotFailurePolicy(reason).sentence), reason);
-      continue;
-    }
-    throw lastError ?? new SnapshotPersistenceError(new Error("unknown write failure"));
+    const durability = await writeSnapshot({
+      snapshotPath,
+      image: raw.serialize(),
+      masterKey: connectionKey,
+      vaultId,
+      stamp: connectionStamp,
+      writeGuard: options.writeGuard,
+      onUnproven: (verdict) => reportFence(verdict, "warn"),
+      readFence: readFenceAsync,
+    });
+    // only a proven write records the version durable; an unproven one is
+    // reported and re-sealed by the next write, and neither is a refusal
+    if (durability === "durable") persistedVersion = version;
   }
 
   const connection: EncryptedConnection = {
@@ -727,9 +592,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // queue, released the handle, and the persist then woke up and serialized
       // it (#291). The currency check keeps its place and its meaning — it runs
       // on the queue now, one await inside the slot, instead of at request time.
-      const run = persistQueue.then(async (): Promise<PersistOutcome> => {
-        if (await snapshotIsCurrentAsync()) return "on-disk";
-        return persistNow();
+      const run = persistQueue.then(async (): Promise<void> => {
+        if (await snapshotIsCurrentAsync()) return;
+        await persistNow();
       });
       // the queue only needs to know WHEN the job settled, not what it decided
       persistQueue = run.then(
@@ -765,32 +630,25 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // for the post-commit flush.
       if (connection.inTransaction) return;
       if (snapshotIsCurrent() && fs.existsSync(snapshotPath)) return;
-      // the same write guard as persistNow: a shutdown or backup checkpoint
-      // must not overwrite a snapshot the folder's new owner already wrote
-      options.writeGuard?.();
-      // and again immediately before the rename, for the same reason as the
-      // async path: the guard that only ran before the temp write leaves the
-      // serialize + write + fsync as the window a takeover can land in
-      writeFileAtomicSync(snapshotPath, sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp), {
-        beforeRename: options.writeGuard,
+      // The same sequence the async persist runs, on the synchronous driver:
+      // guard before the write and again before the rename, the fence read back,
+      // and the refusal thrown with its reason. The driver takes ONE attempt —
+      // a checkpoint runs on the shutdown and backup paths, where the caller has
+      // nothing to retry with.
+      const durability = writeSnapshotSync({
+        snapshotPath,
+        image: raw.serialize(),
+        masterKey: connectionKey,
+        vaultId,
+        stamp: connectionStamp,
+        writeGuard: options.writeGuard,
+        onUnproven: (verdict) => reportFence(verdict, "warn"),
+        readFence,
       });
-      // #280: the synchronous path can lose the same rename race; a stamp that
-      // is not ours means the just-written version is not on disk, so it is
-      // refused
-      const verdict = readFence();
-      if (verdict.outcome === "mine") {
-        persistedVersion = mutationVersion;
-        return;
-      }
-      if (verdict.outcome === "unreadable") {
-        // the bytes landed and the fence could not be read back. The write is
-        // on disk, so this is not fatal: the version is simply not recorded
-        // durable, and the next holder re-seals it. Reported per persist.
-        reportFence({ outcome: "unreadable" }, "warn");
-        return;
-      }
-      const reason = fenceFailureReason(verdict);
-      throw new SnapshotPersistenceError(new Error(snapshotFailurePolicy(reason).sentence), reason);
+      // the bytes landed and the fence could not be read back: on disk, so not
+      // fatal — the version is simply not recorded durable, and the next holder
+      // re-seals it
+      if (durability === "durable") persistedVersion = mutationVersion;
     },
     async close() {
       // wait for an in-flight async snapshot write, then checkpoint the current
@@ -861,16 +719,14 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // catch it — it derives the AEAD context from the envelope's own stamp,
       // so a foreign-stamped envelope decrypts cleanly and `quick_check` passes
       // on a coherent but stale image. The fence is the only observer that can
-      // tell, and it sees the buffer, not the file.
-      const snapshot = fs.readFileSync(snapshotPath);
-      const verdict = fromEnvelope(snapshot, connectionStamp);
-      if (verdict.outcome !== "mine") {
-        const reason = fenceFailureReason(verdict);
-        throw new SnapshotPersistenceError(
-          new Error(`refusing to bundle a snapshot that is not this holder's: ${snapshotFailurePolicy(reason).sentence}`),
-          reason,
-        );
-      }
+      // tell, and it sees the buffer, not the file. `readVerifiedSnapshot` is
+      // that spelling of the same table: not this holder's bytes, refused with
+      // its reason rather than bundled.
+      const snapshot = readVerifiedSnapshot(
+        snapshotPath,
+        connectionStamp,
+        "refusing to bundle a snapshot that is not this holder's",
+      );
       await writeFileAtomic(destPath, createVaultBackupBundle(headerText, snapshot));
     },
   };

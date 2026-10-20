@@ -1,6 +1,6 @@
 import type { LogEvent } from "@dokan/contracts";
 
-import type { SnapshotFailureReason } from "./encrypted-connection";
+import type { SnapshotFailureReason } from "./snapshot-durability";
 
 /**
  * What one snapshot failure reason MEANS, answered once.
@@ -16,8 +16,8 @@ import type { SnapshotFailureReason } from "./encrypted-connection";
  *
  * Beside the enum, in `db/`, because that is where the reason is declared. The
  * import of the union is `import type`, so nothing is loaded at runtime and the
- * module graph stays one-directional: `db/encrypted-connection` calls this,
- * this calls nothing.
+ * module graph stays one-directional: `db/snapshot-durability` (which owns the
+ * write) calls this, and this calls nothing.
  *
  * # Adding a reason
  *

@@ -332,9 +332,11 @@ describe("vault-mode store", () => {
     conn.markDirty();
     // the flush is refused quietly (an ordinary event while the process goes
     // down), and the direct persist says what happened: the unit was DROPPED,
-    // not written
+    // not written — as a throw carrying the reason, because a resolved persist
+    // is the promise that the image is on disk
     await expect(conn.flush()).resolves.toBeUndefined();
-    await expect(conn.persistIfDirty()).resolves.toBe("dropped");
+    await expect(conn.persistIfDirty()).rejects.toThrow(SnapshotPersistenceError);
+    await expect(conn.persistIfDirty()).rejects.toMatchObject({ reason: "dropped" });
     // nothing was written for the closed connection
     expect(fs.readFileSync(conn.dbPath).equals(durable)).toBe(true);
   });
@@ -351,7 +353,12 @@ describe("vault-mode store", () => {
     const dropping = {
       ...conn,
       onFatalError: (error: Error) => fatal.push(error),
-      persistIfDirty: async () => "dropped" as const,
+      // the connection's own refusal, in the shape it now has: a throw that
+      // carries the reason, not a resolved "dropped" the store has to rebuild
+      // into an error it does not own (#309)
+      persistIfDirty: async () => {
+        throw new SnapshotPersistenceError(new Error(snapshotFailurePolicy("dropped").sentence), "dropped");
+      },
     };
     // What the store says about the drop comes from the policy, not from a copy
     // here (#305): the code is the one the reason carries, so a unit that was

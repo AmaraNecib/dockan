@@ -44,6 +44,7 @@ import type {
 import { ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SnapshotPersistenceError } from "../db/encrypted-connection";
+import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
@@ -770,37 +771,24 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         // lost sale, and a client told "failed" would retry a committed one
         // (#291). The connection named the drop under SNAPSHOT_PERSIST_DROPPED;
         // this is the store's consequence of it.
-        throw new SnapshotPersistenceError(
-          new Error("the connection closed before this committed unit reached the snapshot; the unit was not written"),
-          "dropped",
-        );
+        throw new SnapshotPersistenceError(new Error(snapshotFailurePolicy("dropped").sentence), "dropped");
       }
       // "unproven" is NOT a failure: the bytes landed and only the proof did
       // not, so the next write re-seals them. An unreadable prefix is never
       // fatal (the design record), and the unit IS on disk.
     } catch (error) {
       const wrapped = error instanceof Error ? error : new Error(String(error));
-      // The cause travels with the error, so a fence refusal is not reported as
-      // a disk failure: the headline names what actually happened. A readable
-      // replacement is an incident in its own right — another process put bytes
-      // on top of the ones just written — so its message says so instead of
-      // claiming a disk failure.
-      //
-      // The EVENT code is SNAPSHOT_PERSIST_FAILED in both branches, and that
-      // is the truth: the fence's own codes (VAULT_SNAPSHOT_FENCE_FOREIGN and
-      // the rest) are emitted by the connection that READ the fence, not by
-      // the store that saw the refusal. One failure, one code, two places
-      // that each say what they know.
+      // What the reason MEANS comes from one place (`snapshotFailurePolicy`), so
+      // this line no longer names a cause by hand: the event, the severity and
+      // the sentence are the policy's answer, and only the store's own
+      // consequence — the committed data is not on disk — is added here. That
+      // is what stops this call site claiming a fence code the branch does not
+      // emit (#291): the code is no longer written down here at all.
       const reason = error instanceof SnapshotPersistenceError ? error.reason : "write-failed";
-      if (reason === "foreign" || reason === "unstamped") {
-        logger?.error?.(
-          "SNAPSHOT_PERSIST_FAILED",
-          "another writer's envelope replaced the snapshot; the committed data is not on disk",
-          wrapped,
-        );
-      } else {
-        logger?.error?.("SNAPSHOT_PERSIST_FAILED", `committed data could not be written to the encrypted snapshot (${reason})`, wrapped);
-      }
+      const policy = snapshotFailurePolicy(reason);
+      const message = `committed data is not on disk (${policy.sentence})`;
+      if (policy.severity === "warn") logger?.warn(policy.event, message);
+      else logger?.error?.(policy.event, message, wrapped);
       conn.onFatalError?.(wrapped);
       throw wrapped;
     }

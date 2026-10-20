@@ -11,6 +11,7 @@ import { createAuth } from "./auth/auth";
 import { createAppConfig, type AppConfig } from "./config";
 import { openConnection, type Connection } from "./db/connection";
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
+import { snapshotFailurePolicy } from "./db/snapshot-failure-policy";
 import { openVaultStore } from "./db/vault-store";
 import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
@@ -457,18 +458,18 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     }
     // A fence refusal is not a disk failure either, and the message must not
     // blame one: the bytes WERE written, and another process replaced them. The
-    // cause is on the error rather than guessed from the text, so the owner
-    // reads which of the two happened instead of "could not be written" for a
-    // file that was written three times.
-    if (error instanceof SnapshotPersistenceError && error.reason !== "write-failed") {
-      logger.error(
-        "SNAPSHOT_PERSIST_FAILED",
-        `FATAL: the encrypted snapshot was not durable (${error.reason}); exiting to avoid divergence`,
-        error,
-      );
-      process.exit(1);
-    }
-    logger.error("SNAPSHOT_PERSIST_FAILED", "FATAL: encrypted snapshot could not be written; exiting to avoid divergence", error);
+    // reason is on the error rather than guessed from its text, and what that
+    // reason MEANS — the event, the severity, the words — is one place's answer
+    // (`snapshotFailurePolicy`), not this handler's. A plain Error gets the
+    // write-failed meaning, the same default the store applies when it wraps an
+    // untyped throw.
+    const reason = error instanceof SnapshotPersistenceError ? error.reason : "write-failed";
+    const policy = snapshotFailurePolicy(reason);
+    logger.error(policy.event, `FATAL: the encrypted snapshot is not durable (${policy.sentence}); exiting to avoid divergence`, error);
+    // The policy decides whether this reason stops the process. Every reason is
+    // fatal today, and the store has already refused to report success either
+    // way, so a reason the policy calls survivable is logged and served on.
+    if (!policy.fatal) return;
     process.exit(1);
   };
   // Declared before the `try` so the catch can release it, assigned INSIDE it:
@@ -1033,11 +1034,14 @@ async function closeStoreThenLock(): Promise<number> {
     // A snapshot refusal carries why: another writer's envelope took the file,
     // the legacy envelope replaced ours, the file is gone, or the fence would
     // not read. Naming it is what keeps the shutdown row out of the disk-failure
-    // bucket the write path already distinguishes (main's onFatalError above).
+    // bucket the write path already distinguishes (main's onFatalError above),
+    // and the words are `snapshotFailurePolicy`'s — the third reader of the same
+    // reason is exactly why it lives in one module.
     if (error instanceof SnapshotPersistenceError) {
+      const policy = snapshotFailurePolicy(error.reason);
       logger.error(
-        "SNAPSHOT_PERSIST_FAILED",
-        `FATAL: the last committed version is not durable at shutdown (${error.reason}); exiting non-zero so the loss is not read as a clean stop`,
+        policy.event,
+        `FATAL: the last committed version is not durable at shutdown (${policy.sentence}); exiting non-zero so the loss is not read as a clean stop`,
         error,
       );
       return 1;

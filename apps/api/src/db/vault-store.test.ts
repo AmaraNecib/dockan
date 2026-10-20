@@ -3,25 +3,33 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { LogEvent } from "@dokan/contracts";
-
-import { openVaultStore } from "./vault-store";
 import { readSnapshotFence } from "../lib/vault/format";
+import { openVaultStore } from "./vault-store";
 
 /**
- * The production wiring of the snapshot fence (#280). Every other fence test
- * calls `createEncryptedConnection` directly, so none of them proves that the
- * seam PRODUCTION uses — `openVaultStore` -> `createEncryptedConnection` — ever
- * passes the holder's token down. Deleting that pass-through would leave
- * production writing unfenced legacy envelopes forever, with every test in
- * the repository still green. This file is that missing link.
+ * What `openVaultStore` is for: one bootstrap call yields the connection AND
+ * the store standing on it, so main.ts, the gate tests and the backup
+ * round-trip all share one pair instead of each composing their own. What it
+ * actually owns is the pairing: the same `logger` reaches both halves, and the
+ * caller gets both seams back.
+ *
+ * The connection's fields cannot be dropped here — `OpenVaultStoreInput` IS
+ * `EncryptedConnectionOptions` and the whole object is passed unchanged. That
+ * protection is the spread, not the compiler, and not a per-field test: a
+ * field-by-field copy would still compile while omitting an optional field such
+ * as `writeStamp`, `writeGuard` or `logger`. #280 and #291 both shipped fully
+ * green with exactly that line deleted.
+ *
+ * The store's logger is the one explicit read left (`createDrizzleStore(conn,
+ * input.logger)`), so it is not covered by the spread. The first test below is
+ * what keeps the whole path honest: it asserts a `writeStamp` handed to the
+ * adapter reaches the bytes on disk, which fails if the spread is ever turned
+ * back into a re-listing.
  */
 
 let dir: string;
 const vaultId = "11111111-2222-3333-4444-555555555555";
 const masterKey = Buffer.alloc(32, 7);
-const tokenA = "a".repeat(32);
-const tokenB = "b".repeat(32);
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-vault-store-"));
@@ -34,89 +42,50 @@ afterEach(() => {
 const snapshotPath = (): string => path.join(dir, "dokan.db.enc");
 const headerPath = (): string => path.join(dir, "vault.json");
 
-describe("openVaultStore wires the snapshot fence (#280)", () => {
-  it("stamps the holder's token into the snapshot the store writes", async () => {
-    const { conn } = openVaultStore({
+describe("openVaultStore composes the connection and the store", () => {
+  it("serves a store write back from the encrypted snapshot on the next open", async () => {
+    // The stamp is the assertion that matters: it is the only thing in this
+    // suite tying what the adapter was HANDED to the bytes on disk. Turn the
+    // spread back into a re-listing and this fails, instead of production
+    // writing unfenced snapshots with every test green.
+    const token = "f".repeat(32);
+    const first = openVaultStore({
       vaultId,
       masterKey,
       snapshotPath: snapshotPath(),
       headerPath: headerPath(),
       fresh: true,
-      writeStamp: () => tokenA,
+      writeStamp: () => token,
     });
-    conn.raw.exec("CREATE TABLE t(a TEXT)");
-    conn.markDirty();
-    await conn.persistIfDirty();
+    await first.store.setup();
+    await first.store.setSetting("composition-probe", "written-through-the-store");
+    // flush, not persistIfDirty: the write is only real once it is on disk
+    await first.conn.flush();
+    await first.conn.close();
 
-    const fence = readSnapshotFence(fs.readFileSync(snapshotPath()));
-    expect(fence?.stamp).toBe(tokenA);
-    await conn.close();
-  });
+    // the connection's snapshot is the store's only copy of that row
+    expect(fs.existsSync(snapshotPath())).toBe(true);
+    expect(readSnapshotFence(fs.readFileSync(snapshotPath()))?.stamp).toBe(token);
 
-  it("forwards the logger, so a fence the connection cannot verify still reports", async () => {
-    // The shared vocabulary in packages/contracts/src/core.ts is the only place
-    // a fence code may come from; a literal here would let the test invent one.
-    const foreignFenceEvent: LogEvent = "VAULT_SNAPSHOT_FENCE_FOREIGN";
-
-    // a former holder's snapshot: their token, so it is not ours to verify
-    const former = openVaultStore({
+    const second = openVaultStore({
       vaultId,
       masterKey,
       snapshotPath: snapshotPath(),
       headerPath: headerPath(),
-      fresh: true,
-      writeStamp: () => tokenA,
     });
-    former.conn.raw.exec("CREATE TABLE t(a TEXT)");
-    former.conn.markDirty();
-    await former.conn.persistIfDirty();
-    expect(readSnapshotFence(fs.readFileSync(snapshotPath()))?.stamp).toBe(tokenA);
-    await former.conn.close();
-
-    // The opening fence is reported by the CONNECTION, not the store. Dropping
-    // the logger pass-through in openVaultStore therefore loses the one record
-    // that this holder is rewriting bytes it cannot verify, while every other
-    // test here — which never supplies a logger — stays green.
-    const events: string[] = [];
-    const current = openVaultStore({
-      vaultId,
-      masterKey,
-      snapshotPath: snapshotPath(),
-      headerPath: headerPath(),
-      writeStamp: () => tokenB,
-      logger: {
-        warn: (event) => events.push(`warn:${event}`),
-        info: (event) => events.push(`info:${event}`),
-      },
-    });
-    // info, not warn: a restart always leaves the previous session's stamp, so
-    // the routine case is information (a warn per boot hides the real incident)
-    expect(events).toEqual([`info:${foreignFenceEvent}`]);
-    await current.conn.close();
+    expect(await second.store.getSetting("composition-probe")).toBe("written-through-the-store");
+    await second.conn.close();
   });
 
-  it("leaves the snapshot unfenced when the caller passes no stamp", async () => {
-    const { conn } = openVaultStore({
-      vaultId,
-      masterKey,
-      snapshotPath: snapshotPath(),
-      headerPath: headerPath(),
-      fresh: true,
-    });
-    conn.raw.exec("CREATE TABLE t(a TEXT)");
-    conn.markDirty();
-    await conn.persistIfDirty();
-
-    const fence = readSnapshotFence(fs.readFileSync(snapshotPath()));
-    expect(fence?.stamp).toBeUndefined();
-    await conn.close();
-  });
-
-  it("main.ts hands the store the lock's own token, through the tested helper", () => {
-    // main.ts boots the whole app when imported, so its half of the wiring
-    // cannot be reached from a unit test. The source scan is what pins it:
-    // the stamp must come from the lock, and it must come from the helper
-    // whose two branches (a held lock, no lock) are unit tested above.
+  it("main.ts hands the store the lock's own token", () => {
+    // main.ts boots the whole app when imported, so its half of the #280 wiring
+    // cannot be reached from a unit test. The source scan is what pins it: the
+    // stamp must come from the lock, through the helper whose branches (a held
+    // lock, no lock) are unit tested in lib/vault/lock.test.ts.
+    //
+    // This is NOT a forwarding test: it constrains what production puts in the
+    // input, not what the adapter does with it. Deleting it would let main.ts
+    // ship an unfenced stamp source with every test still green.
     const source = fs.readFileSync(new URL("../main.ts", import.meta.url), "utf8");
     // a boolean, not a string compare: a failed `toContain` on a whole file
     // prints the file, and the failure line is the only useful part

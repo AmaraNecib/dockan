@@ -154,8 +154,12 @@ before the lane reports.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.
-- **Evidence lands in `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**, which
-  `guard` checks before a push.
+- **Evidence lands in a local, untracked `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**,
+  which `guard` checks before a push. Review reports are never committed: a committed
+  report is a file the reviewer reads instead of the code, it burns the reviewer's
+  credits, and writing the next report changes a tracked file, which makes the
+  previous one stale and asks for another review. The PR carries a summary comment
+  instead — the three lens names, the SHA they read, the verdict and the counts.
 - **The lenses return findings; they do not author.** Neither reviewer writes to
   the worktree or takes the e2e slot (one full `test:e2e` run at a time). The
   authoring session applies the fixes and re-runs the lens where the tier

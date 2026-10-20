@@ -3505,3 +3505,100 @@ import "./real.test.ts";
     ).toEqual(["./real.test.ts"]);
   });
 });
+
+describe("red-on-parent round 22 — the masker replaced by the TypeScript scanner", () => {
+  // The four failures that ended the hand-written mask's life, each pinned by
+  // the shape that produced it. Every one of them is a scan reading something
+  // that is not code as code: an apostrophe in JSX prose, the inside of a JSX
+  // attribute, a `</` inside a string, a string continued over CRLF. The
+  // scanner and the parser know all four by construction, which is the whole
+  // reason the mask is gone.
+  const TSX = "apps/web/src/note.test.tsx";
+  const TS = "apps/web/src/note.test.ts";
+
+  test("a quote in JSX text does not blank the waiver below it", () => {
+    // Round 21 fixed this one shape and left the mask in place; it is pinned
+    // here because dropping the mask has to keep the fix. `<div>Don't …` is
+    // prose between two tags, so its `'` is not a string's delimiter.
+    const source = [
+      'test("renders the note", () => {',
+      "  render(<div>Don't delete</div>);",
+      "});",
+      '// red-on-parent-waive: "renders the note" — characterizes behaviour the refactor kept',
+      "",
+    ].join("\n");
+    const parsed = parseWaivers(source, TSX);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["renders the note"]);
+    expect(parsed.waivers[0]?.line).toBe(4);
+  });
+
+  test("a comment inside a JSX attribute is not code", () => {
+    // `emitTag` copied a whole tag verbatim, comments and strings included. The
+    // block comment below holds a specifier, and a mask that keeps it makes the
+    // import scan report an import the file does not make — so the gate refuses
+    // a valid test file.
+    const source = `<div title={1 /* import "./fake.test.ts" */} />;\n`;
+    expect(importedTestFiles(source, TSX)).toEqual([]);
+  });
+
+  test("a waiver inside a template attribute is not a waiver", () => {
+    // The other half of the same copy: a multiline template literal inside an
+    // attribute is data, and the marker line inside it used to be handed to the
+    // file as a waiver it never declared. `unusedWaiverVerdicts` then rejects
+    // the file for a waiver that matches nothing.
+    const source = [
+      "<div title={`",
+      '// red-on-parent-waive: "a generated test" — this line belongs to the data',
+      'test("generated", () => {});',
+      "`} />;",
+      "",
+    ].join("\n");
+    const parsed = parseWaivers(source, TSX);
+    expect(parsed.waivers).toEqual([]);
+    expect(parsed.problems).toEqual([]);
+  });
+
+  test("a `<Foo>` type assertion in a .ts file is not a JSX element", () => {
+    // `hasClosingTagAfter` read any `</` after the assertion as proof of an
+    // element, and `"</div>"` on the next line supplied it. The file then read
+    // as JSX text from the assertion to that string, prose kept the
+    // commented-out import, and the gate refused a file that imports nothing.
+    // The extension decides: `<Foo>"ok"` is a type assertion in `.ts`.
+    const source = [
+      'const x = <Foo>"ok";',
+      '// import "./fake.test.ts"',
+      'const html = "</div>";',
+      "",
+    ].join("\n");
+    expect(importedTestFiles(source, TS)).toEqual([]);
+  });
+
+  test("a backslash-CRLF continuation keeps the rest of the string inside the string", () => {
+    // `stringEnd` skipped the backslash and the `\r`, then returned null at the
+    // `\n`, so the quote was read as text and the second line of the string was
+    // read as code: the marker inside the string became a real waiver, with the
+    // string's last two characters glued onto its reason.
+    const BACKSLASH = "\\";
+    const source = [
+      `const s = "a${BACKSLASH}`,
+      '// red-on-parent-waive: "not a waiver" — this line is string data";',
+      'test("y", () => {});',
+      "",
+    ].join("\r\n");
+    const parsed = parseWaivers(source, TS);
+    expect(parsed.waivers).toEqual([]);
+    expect(parsed.problems).toEqual([]);
+    // A real waiver in the same CRLF file is still read, so the fix is the
+    // continuation and not a scan that stopped seeing markers.
+    const withWaiver = [
+      `const s = "a${BACKSLASH}`,
+      '// this line is string data";',
+      '// red-on-parent-waive: "a real one" — because',
+      "",
+    ].join("\r\n");
+    expect(parseWaivers(withWaiver, TS).waivers.map((waiver) => waiver.pattern)).toEqual([
+      "a real one",
+    ]);
+  });
+});

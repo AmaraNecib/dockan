@@ -74,6 +74,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import ts from "typescript";
+
 import { GateError } from "./lib/gate-error";
 import { INSTALL_TIMEOUT_MS, testTimeoutMs } from "./lib/gate-limits";
 import { acquireWorktreeLock, lockWaitBudget } from "./lib/worktree-lock";
@@ -323,373 +325,117 @@ const waiverLinePattern = () =>
   /^[ \t]*\/\/[ \t]*red-on-parent-waive[ \t]*:[ \t]*(?:"([^"]*)"|'([^']*)')[ \t]*(?:[—–]{1,2}|-{1,2}|:)?[ \t]*(.*)$/u;
 
 /**
- * The last token in the code scanned so far, for telling a regex from a
- * division.
+ * The `ScriptKind` a file's extension asks for.
  *
- * A word run comes back whole so it can be matched against the keyword set.
- * With no word run the token is the single character before the spaces — `)`,
- * `]`, `}`, a quote, an operator — because that character is the whole answer
- * to the question being asked: can a value end here?
- *
- * Returning the empty string there was a lie the caller had to guess about.
- * In `const x = value() / total` followed on the same line by a block comment
- * that holds a fake import, the `)` produced no token, `slashStartsRegex` read
- * an empty token as "the start of the file, so a regex", and the division was
- * lexed as a regex literal ending at the block comment's opening delimiter.
- * The comment's text then survived the strip, the import scan found a test file
- * the source never imported, and the gate refused a valid file.
+ * The extension decides, because the same characters mean two different things
+ * in the two files: `<Foo>"ok";` is a type assertion in `.ts` and a JSX element
+ * in `.tsx`. A scan that picked one reading for both would either invent an
+ * element or miss one, and the gate judges `.test.ts` and `.test.tsx` alike.
+ * `createSourceFile` is given this, so the parser reads the file with the same
+ * rule the runtime will.
  */
-function previousToken(out: string): string {
-  let end = out.length;
-  while (end > 0 && /\s/u.test(out[end - 1]!)) end -= 1;
-  let start = end;
-  while (start > 0 && /[\w$]/u.test(out[start - 1]!)) start -= 1;
-  if (start === end && end > 0) return out[end - 1]!;
-  return out.slice(start, end);
-}
-
-/** Tokens after which a `/` opens a regex literal rather than dividing. */
-const REGEX_KEYWORDS = new Set([
-  "await",
-  "case",
-  "delete",
-  "do",
-  "else",
-  "in",
-  "instanceof",
-  "new",
-  "of",
-  "return",
-  "typeof",
-  "void",
-  "yield",
-]);
-
-/**
- * Whether the `/` at the end of `out` starts a regex literal.
- *
- * A `/` is a regex only where a *value* cannot already stand: after an operator,
- * an opening bracket, a comma or a keyword like `return`, and never after an
- * identifier, a number, a closing bracket or a string. That test is what keeps
- * `const quote = /"/;` from being read as the start of a string: the `"` inside
- * it is a regex body character, and a scanner that does not know that blanks the
- * rest of the file from the `"` up to the next quote — including the waiver
- * comment the file really declared.
- */
-function slashStartsRegex(out: string): boolean {
-  const token = previousToken(out);
-  // Nothing before it at all: a file — or a scan — that starts with a regex.
-  // With a token in hand the character decides, which is why the empty string
-  // is only ever the start of the input and never a closing bracket.
-  if (token.length === 0) return true;
-  if (REGEX_KEYWORDS.has(token)) return true;
-  if (/^[\w$]/u.test(token)) return false;
-  return "(,=:[!&|?{};+-*%<>^~".includes(token[token.length - 1]!);
-}
-
-/**
- * The index of the `/` that closes the regex literal starting at `start`, or
- * null when the run does not reach one on the same line.
- *
- * A `/` inside a character class does not close the literal, and neither does
- * an escaped one: `/[//]/` and `/\//` are both one regex.
- */
-function regexLiteralEnd(source: string, start: number): number | null {
-  let index = start + 1;
-  let inClass = false;
-  while (index < source.length) {
-    const char = source[index]!;
-    if (char === "\n") return null;
-    if (char === "\\") {
-      index += 2;
-      continue;
-    }
-    if (inClass) {
-      if (char === "]") inClass = false;
-      index += 1;
-      continue;
-    }
-    if (char === "[") {
-      inClass = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/") return index;
-    index += 1;
+function scriptKindFor(path: string): ts.ScriptKind {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (lower.endsWith(".jsx")) return ts.ScriptKind.JSX;
+  if (lower.endsWith(".mts") || lower.endsWith(".cts") || lower.endsWith(".ts")) {
+    return ts.ScriptKind.TS;
   }
-  return null;
-}
-
-/**
- * The one scanner under both readers of a source file: the waiver parse and
- * the import scan. It is one function because there used to be two, character
- * for character the same machine with two different opinions about what to
- * keep, and a fix applied to one of them left the other misreading. One machine,
- * one place to be wrong.
- *
- * `"keep-line-comments"` is the waiver route. Waivers *are* line comments, so
- * they survive exactly; every other literal's contents become spaces. That is
- * what stops the parse from reading text that merely looks like a waiver: a
- * test that generates test source carries an embedded
- * `// red-on-parent-waive:` line inside a template literal, declares no waiver,
- * and a parse that reads the literal as one hands the file an outer waiver it
- * never wrote. `unusedWaiverVerdicts` then reports a waiver that matched nothing
- * and rejects a test whose red was good. Length is preserved character for
- * character, newlines included, so a problem's line number still points into the
- * file the author wrote.
- *
- * `"keep-code"` is the import route. A commented-out import is not an import,
- * and a text scan that cannot tell the two reads `// import "./setup.test.ts"`
- * as a real one — which names an import that never happens and fails a correct
- * change. String literals are kept here because a specifier lives inside one,
- * and a `//` inside a string is not a comment.
- *
- * A regex literal is neither a string nor a comment, and both routes depend on
- * getting it right. `const quote = /"/;` is one line of ordinary code, and a
- * scanner that takes its `"` for a string delimiter blanks everything up to the
- * next quote — which is whatever the author wrote below it, waiver comment
- * included. The file then reads as a test that declared no waiver at all, and a
- * characterization test whose red is legitimately on the parent is rejected as
- * GREEN_ON_PARENT. On the import route the same mistake ends a regex at a `*`,
- * which leaves a block comment's text standing as code.
- */
-type MaskMode = "keep-line-comments" | "keep-code";
-
-/**
- * The index of the quote that closes the literal opened at `start`, or null when
- * the scan finds no end for it.
- *
- * A `'` or `"` literal cannot span a line, so an unescaped newline ends the
- * search: an apostrophe in prose is not the start of a literal, and a scan that
- * runs one to the next quote in the file blanks everything in between — the
- * waiver a file really declared included.
- */
-function stringEnd(source: string, start: number): number | null {
-  const quote = source[start]!;
-  let index = start + 1;
-  while (index < source.length) {
-    const char = source[index]!;
-    if (char === "\\") {
-      index += 2;
-      continue;
-    }
-    if (char === quote) return index;
-    if (char === "\n" && quote !== "`") return null;
-    index += 1;
+  if (lower.endsWith(".mjs") || lower.endsWith(".cjs") || lower.endsWith(".js")) {
+    return ts.ScriptKind.JS;
   }
-  return null;
-}
-
-/** A JSX tag, as far as the mask needs it: where it ends, and what it does to the nesting. */
-type JsxTag = { closing: boolean; selfClosing: boolean; end: number };
-
-const JSX_NAME_PART = /[A-Za-z0-9_$.:-]/u;
-
-/**
- * Whether a closing tag follows `from` in this source.
- *
- * It is what tells `return <div>text</div>` from a `<Foo>` type assertion, whose
- * `<` also sits where an expression starts. Reading the assertion as an element
- * makes the rest of the file prose, and prose keeps the comments a `keep-code`
- * scan is supposed to blank.
- */
-function hasClosingTagAfter(source: string, from: number): boolean {
-  return source.indexOf("</", from) !== -1;
+  return ts.ScriptKind.TS;
 }
 
 /**
- * The JSX tag that starts at `index`, or null when what is there is not one.
+ * The source with every JSX child's text blanked, character for character.
  *
- * A masking heuristic rather than a parser. It needs the element's `>` so the
- * text after it is read as prose and not as code, and it gives up on anything
- * that does not look like a tag instead of guessing. Attribute values and `{...}`
- * expressions are skipped whole, so a `>` inside one does not end the tag.
+ * JSX text is prose, and the lexer cannot know that: deciding that `<div>` opens
+ * an element and the words after its `>` are not code is the parser's job, and
+ * the scanner tokenizes them as code. So a lone backtick in prose reads as the
+ * start of a template literal and swallows the comment tokens below it. The
+ * parser already recognised those ranges on its way through the file, so they
+ * are blanked here and the scan never reads a marker out of prose.
+ *
+ * Length is preserved and newlines are kept, so every position the scan reports
+ * is still a position in the file the author wrote. Only waivers are read from
+ * the result; imports come from the AST, which never reads text at all.
+ *
+ * One consequence, and it is the safe side of the error: in a `.tsx` file that
+ * does not parse — `<Foo>value;` followed later by `"</div>"` opens an element
+ * the parser never closes, so the rest of the file is its text — a real waiver
+ * inside that text is blanked with it. Such a file cannot load on either side of
+ * the gate, so it fails on its own terms before the missing waiver matters, and
+ * a waiver the file never declared (the expensive direction) stays impossible.
  */
-function jsxTagAt(source: string, index: number): JsxTag | null {
-  let at = index + 1;
-  const closing = source[at] === "/";
-  if (closing) at += 1;
-  // `<>` and `</>`: a fragment has no name and moves the nesting the same way.
-  if (source[at] === ">") return { closing, selfClosing: false, end: at };
-  const nameStart = at;
-  while (at < source.length && JSX_NAME_PART.test(source[at]!)) at += 1;
-  const name = source.slice(nameStart, at);
-  // A tag's name starts at the `<` and starts like an identifier, which is what
-  // keeps `< div>` and a type argument's `<string>` out.
-  if (name.length === 0 || !/[A-Za-z_$]/u.test(name[0]!)) return null;
-  let braces = 0;
-  let quote: string | null = null;
-  while (at < source.length) {
-    const char = source[at]!;
-    if (quote !== null) {
-      if (char === "\\") {
-        at += 2;
-        continue;
-      }
-      if (char === quote) quote = null;
-      at += 1;
-      continue;
+function withoutJsxProse(source: string, kind: ts.ScriptKind): string {
+  if (kind !== ts.ScriptKind.TSX && kind !== ts.ScriptKind.JSX) return source;
+  const file = ts.createSourceFile("source.tsx", source, ts.ScriptTarget.Latest, true, kind);
+  const ranges: ts.TextRange[] = [];
+  const collect = (node: ts.Node): void => {
+    if (node.kind === ts.SyntaxKind.JsxText) {
+      ranges.push({ pos: node.getStart(file), end: node.end });
     }
-    if (braces > 0) {
-      if (char === "{") braces += 1;
-      else if (char === "}") braces -= 1;
-      else if (char === '"' || char === "'" || char === "`") quote = char;
-      at += 1;
-      continue;
-    }
-    if (char === "{") {
-      braces = 1;
-      at += 1;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      at += 1;
-      continue;
-    }
-    if (char === ">") {
-      let last = at - 1;
-      while (last > index && /\s/u.test(source[last]!)) last -= 1;
-      return { closing, selfClosing: source[last] === "/", end: at };
-    }
-    if (char === "<") return null;
-    at += 1;
-  }
-  return null;
-}
-
-function maskSource(source: string, mode: MaskMode): string {
-  const keepLineComments = mode === "keep-line-comments";
-  let out = "";
-  let index = 0;
-  // The JSX elements still open, and how deep inside a `{...}` of their text the
-  // scan is. A quote is a literal's delimiter only in code: between an element's
-  // tags it is an apostrophe in prose, and reading it as one blanks every line
-  // after it.
-  let jsxDepth = 0;
-  let jsxExpressionDepth = 0;
-  const blank = (char: string): string => (char === "\n" ? "\n" : " ");
-  const emitTag = (tag: JsxTag): void => {
-    out += source.slice(index, tag.end + 1);
-    index = tag.end + 1;
-    if (tag.closing) jsxDepth = Math.max(0, jsxDepth - 1);
-    else if (!tag.selfClosing) jsxDepth += 1;
+    ts.forEachChild(node, collect);
   };
-  while (index < source.length) {
-    const char = source[index]!;
-    if (jsxDepth > 0 && jsxExpressionDepth === 0) {
-      // JSX text: prose, kept whole. A tag in it still moves the nesting, and a
-      // `{` starts an expression that is code again.
-      if (char === "<") {
-        const tag = jsxTagAt(source, index);
-        if (tag !== null) {
-          emitTag(tag);
-          continue;
-        }
-      }
-      if (char === "{") {
-        jsxExpressionDepth = 1;
-        out += char;
-        index += 1;
-        continue;
-      }
-      out += char;
-      index += 1;
-      continue;
+  collect(file);
+  if (ranges.length === 0) return source;
+  const chars = source.split("");
+  for (const range of ranges) {
+    for (let index = range.pos; index < range.end; index += 1) {
+      const char = chars[index];
+      if (char === undefined || char === "\n" || char === "\r") continue;
+      chars[index] = " ";
     }
-    if (char === "/" && source[index + 1] === "/") {
-      while (index < source.length && source[index] !== "\n") {
-        out += keepLineComments ? source[index]! : blank(source[index]!);
-        index += 1;
-      }
-      continue;
-    }
-    if (char === "/" && source[index + 1] === "*") {
-      out += "  ";
-      index += 2;
-      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
-        out += blank(source[index]!);
-        index += 1;
-      }
-      if (index < source.length) {
-        out += "  ";
-        index += 2;
-      }
-      continue;
-    }
-    if (char === "/" && slashStartsRegex(out)) {
-      const closing = regexLiteralEnd(source, index);
-      if (closing !== null) {
-        const start = index;
-        index = closing + 1;
-        while (index < source.length && /[A-Za-z]/u.test(source[index]!)) index += 1;
-        if (keepLineComments) {
-          // The delimiters and the flags stay, so the next `/` is still read as
-          // a division; only the body becomes spaces, so no quote or `//` in it
-          // can start a string or a comment.
-          out += "/";
-          for (let inner = start + 1; inner < closing; inner += 1) out += blank(source[inner]!);
-          out += "/" + source.slice(closing + 1, index);
-        } else {
-          // Whole, and for the other reason: `/[//]/` holds a `//` that is a
-          // character class, not the start of a comment, and a scan that read
-          // it as one would drop the rest of the line — the line a real import
-          // could be on.
-          out += source.slice(start, index);
-        }
-        continue;
-      }
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      const closing = stringEnd(source, index);
-      if (closing === null) {
-        // A literal whose end the scan never sees is not a literal. Blanking
-        // from here to EOF is how a mask eats a file, and a file that declared a
-        // waiver then reads as one that declared none — GREEN_ON_PARENT. So the
-        // quote is text, and the scan carries on after it.
-        out += char;
-        index += 1;
-        continue;
-      }
-      out += char;
-      for (let inner = index + 1; inner < closing; inner += 1) {
-        const literal = source[inner]!;
-        if (literal === "\\" && inner + 1 < closing) {
-          out += keepLineComments
-            ? blank(literal) + blank(source[inner + 1]!)
-            : literal + source[inner + 1]!;
-          inner += 1;
-          continue;
-        }
-        out += keepLineComments ? blank(literal) : literal;
-      }
-      out += source[closing]!;
-      index = closing + 1;
-      continue;
-    }
-    if (char === "<" && slashStartsRegex(out)) {
-      // A `<` where an expression could start opens a JSX element or fragment;
-      // where an operand would sit it is a comparison (`a < b`) or a type
-      // argument (`Array<string>`). `slashStartsRegex` is the same "what came
-      // before it" test, because both are only ever expressions. An opening tag
-      // also has to have a close somewhere, which is what keeps a `<Foo>` type
-      // assertion from turning the rest of the file into prose.
-      const tag = jsxTagAt(source, index);
-      if (tag !== null && (tag.closing || tag.selfClosing || hasClosingTagAfter(source, tag.end))) {
-        emitTag(tag);
-        continue;
-      }
-    }
-    // `{` and `}` are depth only inside a JSX expression container, which is
-    // where the text around them is prose and the expression is code.
-    if (jsxDepth > 0 && (char === "{" || char === "}")) {
-      jsxExpressionDepth =
-        char === "{" ? jsxExpressionDepth + 1 : Math.max(0, jsxExpressionDepth - 1);
-    }
-    out += char;
-    index += 1;
   }
-  return out;
+  return chars.join("");
+}
+
+/** A comment token: where it starts and ends, and whether it is a line comment. */
+type CommentRange = { pos: number; end: number; lineComment: boolean };
+
+/**
+ * The comment tokens in a source file, and nothing else.
+ *
+ * This is the piece the hand-written mask kept getting wrong, so it is the
+ * TypeScript scanner's job now. `skipTrivia: false` makes the scanner *return*
+ * trivia instead of skipping it, so a comment arrives as a token with
+ * `getTokenPos()` … `getTextPos()` — the exact range, from a scanner that
+ * already knows template literals, regex literals, escapes and line
+ * continuations, and that cannot mistake `//` inside a string for a comment.
+ *
+ * The four failures that ended the mask, each one a case added to the
+ * heuristic:
+ *
+ *   - `render(<div>Don't delete</div>)` — an apostrophe in JSX prose, read as
+ *     the start of a string that ran to the end of the file;
+ *   - a comment inside a JSX attribute (`title={1 /* import "./fake.test.ts"`),
+ *     which the mask copied out as code and the import scan then believed;
+ *   - `const x = <Foo>"ok";` … `const html = "</div>";` — the `</` inside that
+ *     string, read as proof of an element;
+ *   - `"a\` + CRLF — a string continued across the line break, read as the
+ *     string ending.
+ *
+ * A waiver is a line comment and only a line comment, so a marker inside a
+ * string, a template literal or a JSX attribute is not one — by construction,
+ * not by a case.
+ */
+function commentRanges(source: string, kind: ts.ScriptKind): CommentRange[] {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    /* skipTrivia */ false,
+    ts.LanguageVariant.Standard,
+    withoutJsxProse(source, kind),
+  );
+  const ranges: CommentRange[] = [];
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    const lineComment = token === ts.SyntaxKind.SingleLineCommentTrivia;
+    if (!lineComment && token !== ts.SyntaxKind.MultiLineCommentTrivia) continue;
+    const pos = scanner.getTokenPos();
+    const end = scanner.getTextPos();
+    ranges.push({ pos, end, lineComment });
+  }
+  return ranges;
 }
 
 /**
@@ -699,22 +445,41 @@ function maskSource(source: string, mode: MaskMode): string {
  *
  * The reason is required: the marker is what a reviewer reads in the diff, and
  * a waiver with no reason is a waiver nobody can judge.
+ *
+ * The markers are read from the comment tokens and from nowhere else, so a
+ * marker that is a string's contents, a template literal's data or a JSX
+ * attribute's comment is not a waiver this file declared. `path` decides how the
+ * file is parsed — `.tsx` prose is blanked before the scan — and the gate passes
+ * the path the file really has.
  */
-export function parseWaivers(text: string): WaiverParse {
+export function parseWaivers(text: string, path = "file.ts"): WaiverParse {
   const waivers: Waiver[] = [];
   const problems: string[] = [];
   const linePattern = waiverLinePattern();
   const startsAsWaiver = new RegExp(`^[ \\t]*//[ \\t]*${WAIVER_MARKER}`, "u");
-  let line = 0;
-  // Split on CRLF too: a Windows checkout hands this a file with `\r` at the end
-  // of every line, and the `$` anchor in the pattern does not match before `\r`.
-  // The text under the scan is the file with its literals blanked out, so a
-  // marker that is a string's contents is not a waiver the file declared.
-  for (const raw of maskSource(text, "keep-line-comments").split(/\r?\n/u)) {
-    line += 1;
+  // The line a comment token sits on, tracked by walking the file once in
+  // token order rather than by splitting the text: a comment's own range is the
+  // only thing that decides where it starts, and the line is the address a
+  // problem is reported at. CRLF needs no special case here — the `\r` belongs
+  // to the previous line's tail and a line begins after its `\n`.
+  let line = 1;
+  let lineStart = 0;
+  let walked = 0;
+  for (const range of commentRanges(text, scriptKindFor(path))) {
+    while (walked < range.pos) {
+      if (text[walked] === "\n") {
+        line += 1;
+        lineStart = walked + 1;
+      }
+      walked += 1;
+    }
+    // A waiver is a line comment. A block comment that mentions the marker is
+    // prose about the convention, not a declaration.
+    if (!range.lineComment) continue;
     // Only a line that *is* a waiver counts. A line that merely mentions the
-    // marker — documenting the convention, or a string literal — used to be
-    // parsed, fail the anchored pattern, and fail the whole run.
+    // marker, or carries the marker after code, is not one; the anchored
+    // pattern is what says so, applied to the line the comment starts on.
+    const raw = text.slice(lineStart, range.end);
     if (!startsAsWaiver.test(raw)) continue;
     const match = linePattern.exec(raw);
     if (match === null) {
@@ -1274,45 +1039,33 @@ export function isGatedTestPath(path: string): boolean {
 const TEST_LIKE_BASENAME = /\.(test|spec)(\.[cm]?[jt]sx?)?$/u;
 
 /**
- * The source with its comments removed, for the import scan.
- *
- * A commented-out import is not an import, and a text scan that cannot tell
- * the two reads `// import "./setup.test.ts"` as a real one — which would name
- * an import that never happens and fail a correct change. String literals are
- * kept: a specifier lives inside one, and a `//` inside a string is not a
- * comment. A regex literal is kept whole for the same reason: `/[//]/` holds a
- * `//` that is a character class, not the start of a comment, and a scan that
- * read it as one would drop the rest of the line — the line a real import could
- * be on.
- *
- * This is `maskSource` in its `"keep-code"` mode, not a second scanner: the
- * two readers of a source file used to carry the same machine twice, and a fix
- * applied to one of them left the other misreading.
- */
-function withoutComments(source: string): string {
-  return maskSource(source, "keep-code");
-}
-
-/**
- * Whether an import clause names only types, and is therefore erased before
+ * Whether a module reference names only types, and is therefore erased before
  * the file runs.
  *
  * `import type { X } from` and `export type { X } from` are erased, and so is
- * `import { type X } from` — but `import { type X, Y } from` still imports Y
- * at runtime, and so does `import X, { type Y } from`.
+ * `import { type X } from` — but `import { type X, Y } from` still imports Y at
+ * runtime, and so does `import X, { type Y } from`. The parser already decided
+ * all of that: `isTypeOnly` is set on the clause or on each specifier, so this
+ * asks the node instead of re-reading the clause's text.
  */
-function isTypeOnlyClause(clause: string): boolean {
-  const trimmed = clause.trim();
-  if (trimmed.startsWith("type ")) return true;
-  if (!trimmed.startsWith("{")) return false;
-  const end = trimmed.lastIndexOf("}");
-  if (end < 0) return false;
-  const entries = trimmed
-    .slice(1, end)
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry !== "");
-  return entries.length > 0 && entries.every((entry) => entry === "type" || entry.startsWith("type "));
+function isTypeOnlyReference(node: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
+  if (ts.isExportDeclaration(node)) {
+    if (node.isTypeOnly) return true;
+    const clause = node.exportClause;
+    if (clause === undefined || !ts.isNamedExports(clause)) return false;
+    const elements = clause.elements;
+    return elements.length > 0 && elements.every((element) => element.isTypeOnly);
+  }
+  const clause = node.importClause;
+  if (clause === undefined) return false;
+  if (clause.isTypeOnly) return true;
+  // A default or namespace binding is a runtime import whatever the named list
+  // says: `import Default, { type A } from` still evaluates the module.
+  if (clause.name !== undefined) return false;
+  const bindings = clause.namedBindings;
+  if (bindings === undefined || !ts.isNamedImports(bindings)) return false;
+  const elements = bindings.elements;
+  return elements.length > 0 && elements.every((element) => element.isTypeOnly);
 }
 
 /**
@@ -1326,13 +1079,31 @@ function isTypeOnlyClause(clause: string): boolean {
  * The import is found in the source instead, because the report cannot be
  * asked.
  *
- * Two shapes are not seen, and both mix the reports the same way: a dynamic
- * import whose specifier is a variable (`await import(name)`), and an import
- * of a module that itself imports a test file. They are known limits of a
- * source scan, not a claim that the gate covers them.
+ * The specifiers come from the AST, not from a text scan. That is what makes a
+ * commented-out import impossible to report: `// import "./setup.test.ts"` is
+ * not a node, so there is nothing for this function to find. The text scan it
+ * replaced needed a mask over every comment and literal in the file to make the
+ * same distinction, and each of the mask's four bugs was a shape it read as code
+ * that was not code. `path` decides how the file is parsed, because `<Foo>"ok"`
+ * is a type assertion in `.ts` and JSX in `.tsx`.
+ *
+ * `require("…")` and `import("…")` are read here too, from the call nodes, since
+ * both load a module the report cannot attribute. Two shapes are still not seen,
+ * and both mix the reports the same way: a dynamic import whose specifier is a
+ * variable (`await import(name)`), and an import of a module that itself imports
+ * a test file. They are known limits of asking the source, not a claim that the
+ * gate covers them.
  */
-export function importedTestFiles(source: string): string[] {
-  const code = withoutComments(source);
+export function importedTestFiles(source: string, path = "file.ts"): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    // Parents are set because the walk asks nodes for their own text; the gate
+    // reads nothing but the tree.
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
   const specifiers = new Set<string>();
   const add = (specifier: string | undefined): void => {
     if (specifier === undefined) return;
@@ -1341,15 +1112,36 @@ export function importedTestFiles(source: string): string[] {
     if (!TEST_LIKE_BASENAME.test(name)) return;
     specifiers.add(specifier);
   };
-  // `import ... from "x"` and `export ... from "x"`. The clause says whether
-  // the statement imports anything at runtime.
-  for (const match of code.matchAll(/\b(?:import|export)\s+([^;'"]*?)\s*from\s*["']([^"']+)["']/gu)) {
-    if (isTypeOnlyClause(match[1] ?? "")) continue;
-    add(match[2]);
-  }
-  for (const match of code.matchAll(/\bimport\s*["']([^"']+)["']/gu)) add(match[1]);
-  for (const match of code.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/gu)) add(match[1]);
-  for (const match of code.matchAll(/\brequire\(\s*["']([^"']+)["']\s*\)/gu)) add(match[1]);
+  const addModule = (node: ts.ImportDeclaration | ts.ExportDeclaration): void => {
+    const module = node.moduleSpecifier;
+    if (module === undefined || !ts.isStringLiteral(module)) return;
+    if (isTypeOnlyReference(node)) return;
+    add(module.text);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      addModule(node);
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      // `import X = require("x")`, which is also what the old text scan saw as a
+      // bare `require("x")`.
+      const reference = node.moduleReference;
+      if (!node.isTypeOnly && ts.isExternalModuleReference(reference)) {
+        const expression = reference.expression;
+        if (expression !== undefined && ts.isStringLiteral(expression)) add(expression.text);
+      }
+    } else if (ts.isCallExpression(node)) {
+      // One string argument and nothing else, which is the shape both loaders
+      // take: a computed specifier is not a specifier this scan can name.
+      const only = node.arguments.length === 1 ? node.arguments[0] : undefined;
+      if (only !== undefined && ts.isStringLiteral(only)) {
+        const dynamic = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+        const required = ts.isIdentifier(node.expression) && node.expression.text === "require";
+        if (dynamic || required) add(only.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
   return [...specifiers];
 }
 
@@ -2024,14 +1816,14 @@ function gateBaseWorktree(input: {
   try {
     for (const file of files) {
       const source = readAtRevision(repo, head, file);
-      const parsed = parseWaivers(source);
+      const parsed = parseWaivers(source, file);
       for (const problem of parsed.problems) problems.push(`${file}: ${problem}`);
       // A file that imports another test file pulls that file's cases into its
       // own report, and bun names every case after the entry, so the report
       // cannot say whose test failed. Judging it would put the other file's
       // green case against this file — and demand a waiver for a test this
       // file does not contain. The gate names the import and judges nothing.
-      const imports = importedTestFiles(source);
+      const imports = importedTestFiles(source, file);
       if (imports.length > 0) {
         problems.push(
           `${file}: imports another test file (${imports.join(", ")}), so one run would report that file's cases as well and the gate could not tell whose test failed — this file was not judged; keep each file's cases in its own file`,

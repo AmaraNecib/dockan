@@ -428,6 +428,13 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   /** the mutation version covered by the last successful snapshot write */
   let persistedVersion = 0;
   let persistQueue: Promise<void> = Promise.resolve();
+  /**
+   * True once `close()` has checkpointed and released the handle. Every async
+   * persist reads it AFTER its awaits: the job is parked there, and a close
+   * (a shutdown, a lock loss, a test teardown) can land in that window and
+   * release the handle underneath it (#291).
+   */
+  let closed = false;
 
   /**
    * What the snapshot on disk says right now, read as the header prefix so it
@@ -608,6 +615,13 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
 
   async function persistNow(): Promise<void> {
     if (await snapshotIsCurrentAsync()) return;
+    // The await above parks this job, and the store is not frozen while it is
+    // parked: `close()` can release the database handle and a unit can BEGIN.
+    // So the guards are read HERE, on the near side of the serializer, and not
+    // before the await: a stale answer reached `raw.serialize()` on a handle
+    // that close() had already closed, which throws
+    // "Can't do this on a closed database" (#291).
+    if (closed) return;
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
     if (connection.inTransaction) return;
@@ -615,6 +629,10 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     const envelope = sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp);
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
+      // Each attempt is another chance for a close to land in the gap: a retry
+      // that starts after the handle is released must write nothing at all, not
+      // re-rename the envelope it sealed while the store was still open.
+      if (closed) return;
       // ADR-0012: a persist queued before the lock was stolen must refuse
       // rather than overwrite the new owner's snapshot, so the guard is asked
       // at the instant of the write and its throw is never retried
@@ -637,6 +655,11 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // version just written is NOT on disk, so it is not durable and the
       // write is redone.
       const verdict = await readFenceAsync();
+      // Closed while the fence was being read back: the bytes are on disk, so
+      // nothing is lost, but a version recorded durable for a released handle
+      // is bookkeeping nobody can act on and a retry would write over a folder
+      // this connection no longer owns.
+      if (closed) return;
       if (verdict.outcome === "mine") {
         // only now is the version durable; a mutation during the write set
         // mutationVersion beyond `version` and schedules the next flush
@@ -673,8 +696,16 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       mutationVersion += 1;
     },
     async persistIfDirty() {
-      if (await snapshotIsCurrentAsync()) return;
-      const run = persistQueue.then(() => persistNow());
+      // The job is chained onto the queue HERE, synchronously: a close() that
+      // reads persistQueue after this call is then waiting for THIS persist.
+      // Chaining it after an await left a window in which close() saw a drained
+      // queue, released the handle, and the persist then woke up and serialized
+      // it (#291). The currency check keeps its place and its meaning — it runs
+      // on the queue now, one await inside the slot, instead of at request time.
+      const run = persistQueue.then(async () => {
+        if (await snapshotIsCurrentAsync()) return;
+        await persistNow();
+      });
       persistQueue = run.catch(() => undefined);
       await run;
     },
@@ -720,6 +751,10 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       try {
         connection.checkpoint();
       } finally {
+        // Marked closed before the handle is released, and with no await in
+        // between: any persist this close() did not wait for now refuses to
+        // serialize instead of throwing from under a dead handle (#291).
+        closed = true;
         // The key zeroing and the raw close run even when that final checkpoint
         // refuses (#280). A key that outlives its connection, and a leaked
         // SQLite handle, are the wrong taste in a vault module on a path whose

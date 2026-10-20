@@ -1,23 +1,23 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-1570 |         },
-1571 |       ],
-1572 |     );
-1573 |     try {
-1574 |       const { status, stdout } = runGateFixture(fixture);
-1575 |       expect(stdout).toContain("scripts/outside.test.ts");
+1648 |         },
+1649 |       ],
+1650 |     );
+1651 |     try {
+1652 |       const { status, stdout } = runGateFixture(fixture);
+1653 |       expect(stdout).toContain("scripts/outside.test.ts");
                             ^
 error: expect(received).toContain(expected)
 
 Expected to contain: "scripts/outside.test.ts"
-Received: "red-on-parent: base 9cde66c81471 (worktree (none), cached)\nno added test files this gate covers: nothing to gate\nadded test files: 0\n"
+Received: "red-on-parent: base d340378e6977 (worktree (none), cached) · bun 1.4.2\nno added test files this gate covers: nothing to gate\nadded test files: 0\n"
 
-      at <anonymous> (D:\worktrees\mani-project\t3-0e0532b3\scripts\red-on-parent.test.ts:1575:22)
-(fail) red-on-parent round 8 > a test file outside the gate's scope is named, not silently ignored [685.49ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1653:22)
+(fail) red-on-parent round 8 > a test file outside the gate's scope is named, not silently ignored [707.02ms]
 
  0 pass
- 73 filtered out
+ 93 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [708.00ms]
+Ran 1 test across 1 file. [739.00ms]

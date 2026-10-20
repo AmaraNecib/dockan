@@ -60,7 +60,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const BUN = process.execPath;
 
@@ -92,9 +93,9 @@ const DEFAULT_TEST_TIMEOUT_MS = 120_000;
 const GIT_TIMEOUT_MS = 60_000;
 /** The cold `bun install` in the base worktree. Inside the lock, so the lock
  * wait budget has to cover it. */
-const INSTALL_TIMEOUT_MS = 10 * 60_000;
+export const INSTALL_TIMEOUT_MS = 10 * 60_000;
 /** The slack a waiting run gets past the work it knows can be inside the lock. */
-const LOCK_WAIT_SLACK_MS = 60_000;
+export const LOCK_WAIT_SLACK_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -247,10 +248,11 @@ export function parseJunit(xml: string, onlyFile?: string): TestResult[] {
   const results: TestResult[] = [];
   const testcase = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/gu;
   for (const match of xml.matchAll(testcase)) {
-    // bun's positional argument is a *substring filter* over the discovered test
-    // files, not a selector: `cart.test.ts` also runs `cart.test.tsx`. Those
-    // testcases belong to a file this pass is not judging, and judging them
-    // fails a correct change with "GREEN ON PARENT: <another file's test>".
+    // No file filter: the gate imports exactly the file it judges, so every
+    // testcase in its report belongs to that file. `onlyFile` is for callers
+    // that ran a bare path filter instead — bun's positional argument is a
+    // *substring* filter, so `cart.test.ts` matches `cart.test.tsx` too, and
+    // those testcases belong to a file the caller is not judging.
     if (onlyFile !== undefined) {
       const reported = enclosingSuiteFile(xml, match.index ?? 0);
       if (reported !== null && !sameTestFile(reported, onlyFile)) continue;
@@ -564,8 +566,20 @@ export function classifyFileRun(
     return { verdicts, usedWaiverLines: used, problems: waiverProblems };
   }
 
-  const results = parseJunit(run.junit, run.file);
-  const waiverProblems = fileLevelWaiverProblems(run.file, waivers, results);
+  // No file filter, for the same reason the caller passes none: the run
+  // imported exactly this file, and the report's suite name is the entry.
+  const results = parseJunit(run.junit);
+  // The file-level check asks whether a waiver excuses the *whole file*, and
+  // the file is the change's, not the parent's. A test registered behind a
+  // condition the change newly satisfies is absent from the parent's report, so
+  // judging against that list calls a waiver that covers two of the change's
+  // three tests a file-level skip — and fails a correct change. The change-side
+  // run is the only list of every test the file declares.
+  const waiverProblems = fileLevelWaiverProblems(
+    run.file,
+    waivers,
+    changeResults.length > 0 ? changeResults : results,
+  );
   // A waiver is used when it matches a test, not when it is the one this run
   // happened to pick. A broad pattern ("case") matches "case one" as well as a
   // narrower "case one" does, and attaching only the first made the second look
@@ -771,12 +785,24 @@ function modifiedInWorkingTree(repo: string, path: string): boolean {
  * React test that correctly tests the change dies at load and the gate calls it
  * WRONG-REASON RED. Each file runs from the nearest ancestor directory that owns
  * a `bunfig.toml`, under its path relative to that directory.
+ *
+ * The file is selected through a one-line entry beside the junit report, not by
+ * passing its path to `bun test`: that positional argument is a substring
+ * filter over the discovered files, so `cart.test.ts` also runs `cart.test.tsx`.
+ * The sibling's `beforeAll` can then hang or rewrite a shared fixture, and this
+ * run reports the added file as RUN INCOMPLETE or judges it against a tree the
+ * sibling changed. Importing the one file is the only exact selection bun has,
+ * and it also means the report holds one file's testcases and needs no filter by
+ * suite name — bun names the report's suite after the entry, not the file.
  */
 function runFrom(root: string, file: string, junitPath: string): CommandResult {
   const here = relativeToWorkspace(root, file);
+  const entry = join(dirname(junitPath), `${basename(junitPath, ".xml")}.entry.test.ts`);
+  const absolute = join(root, file).split("\\").join("/");
+  writeFileSync(entry, `import ${JSON.stringify(pathToFileURL(absolute).href)};\n`);
   return run(
     BUN,
-    ["test", here.path, "--reporter=junit", `--reporter-outfile=${junitPath}`],
+    ["test", entry, "--reporter=junit", `--reporter-outfile=${junitPath}`],
     here.cwd,
     testTimeoutMs(),
   );
@@ -1056,6 +1082,25 @@ function acquireWorktreeLock(lockPath: string, lockWaitMs: number): () => void {
   return () => rmSync(lockPath, { recursive: true, force: true });
 }
 
+/**
+ * Put a reused base worktree back to the commit it is keyed to.
+ *
+ * The worktree is cached per base SHA, and the tests that ran in it are the
+ * change's own tests. One that writes a fixture — or a source file it imports —
+ * leaves the tree changed, and the next run then judges the parent against that
+ * changed tree instead of the commit. Only the files the last run copied are
+ * known by name, so the rest is restored the way git can: tracked files back to
+ * the commit, untracked files removed. `reset --hard` rather than `checkout -- .`
+ * because a test that ran `git add` leaves the change in the index, and a
+ * checkout from the index restores the change it was meant to discard. Ignored
+ * files are left alone, which is what keeps `node_modules` from being
+ * reinstalled on every run.
+ */
+export function resetBaseWorktree(worktree: string): void {
+  gitText(worktree, ["reset", "--hard", "HEAD"]);
+  gitText(worktree, ["clean", "-fd"]);
+}
+
 function ensureBaseWorktree(
   repo: string,
   baseSha: string,
@@ -1067,6 +1112,7 @@ function ensureBaseWorktree(
     const head = git(worktree, ["rev-parse", "HEAD"]);
     if (head.ok && head.stdout.trim() === baseSha) {
       clearPreviousCopies(repo, worktree, baseSha);
+      resetBaseWorktree(worktree);
       return { path: worktree, created: false };
     }
   }
@@ -1280,14 +1326,18 @@ export function changeSideResults(
     );
     return [];
   }
-  return parseJunit(readFileSync(junitPath, "utf8"), file);
+  return parseJunit(readFileSync(junitPath, "utf8"));
 }
 
 /** How long a run waits for the lock, given what can legitimately be inside it. */
 export function lockWaitBudget(fileCount: number): number {
   const override = Number.parseInt(process.env.RED_ON_PARENT_LOCK_WAIT_MS ?? "", 10);
   if (Number.isInteger(override) && override > 0) return override;
-  return INSTALL_TIMEOUT_MS + fileCount * testTimeoutMs() + LOCK_WAIT_SLACK_MS;
+  // Two runs per file, not one: the lock covers the parent-side run and the
+  // change-side run the classifier compares it against. A budget of one run per
+  // file expires while the holder is still doing the second, and the waiter is
+  // told to wait for a run that has not finished — with a deadline that has.
+  return INSTALL_TIMEOUT_MS + fileCount * 2 * testTimeoutMs() + LOCK_WAIT_SLACK_MS;
 }
 
 export function runGate(options: GateOptions): GateRun {
@@ -1412,7 +1462,10 @@ function gateBaseWorktree(input: {
             : "",
       };
       stdoutByFile.set(file, fileRun.stdout);
-      const parentResults = junit === null ? [] : parseJunit(junit, file);
+      // No file filter: the run imported exactly this file, so every testcase in
+      // the report is one this pass is judging (the report's suite name is the
+      // entry, which is not the file's name).
+      const parentResults = junit === null ? [] : parseJunit(junit);
       // Only a file the parent could load can register *fewer* tests there than
       // on the change. A file that did not load is already one whole-file
       // failure, and comparing its empty parent list against the change would

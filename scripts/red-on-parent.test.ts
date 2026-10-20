@@ -33,8 +33,11 @@ import {
   classifyFileRun,
   decodeXml,
   displayName,
+  INSTALL_TIMEOUT_MS,
   isGatedTestPath,
   lockHolderIsGone,
+  LOCK_WAIT_SLACK_MS,
+  lockWaitBudget,
   main,
   observeLockHolder,
   parseJunit,
@@ -42,6 +45,7 @@ import {
   reclaimStaleLock,
   renderReport,
   runGate,
+  testTimeoutMs,
   unregisteredVerdicts,
   unusedWaiverVerdicts,
   verdictPasses,
@@ -86,6 +90,12 @@ function commitAll(repo: string, message: string): void {
     "user.email=gate@fixture.invalid",
     "-c",
     "user.name=gate fixture",
+    // A contributor with `commit.gpgsign = true` in their config cannot run this
+    // suite otherwise: the fixture's commits have no key to sign with. The
+    // identity above is already set for the same reason, and a command-line `-c`
+    // outranks the machine's config and `GIT_CONFIG_*`.
+    "-c",
+    "commit.gpgsign=false",
     "commit",
     "-q",
     "-m",
@@ -2070,6 +2080,173 @@ if ("brandNew" in mod) {
       expect(status).toBe(1);
     } finally {
       fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 10 — the findings at 5ab9a2c4", () => {
+  test("a shared waiver over the parent's tests is not a file-level skip", () => {
+    // The change registers `brand new` only when the helper has the new export,
+    // so the parent's report holds the two `keeps` tests and not the third. A
+    // `keeps ` line is therefore not a file-level skip on the change, and the
+    // third test carries its own waiver. Judging the file-level rule against the
+    // parent's list called the shared line a whole-file excuse and failed a
+    // correct change.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/conditional.test.ts",
+          text: `import { expect, test } from "bun:test";
+import * as mod from "./helper";
+test("keeps a", () => {
+  expect(1).toBe(1);
+});
+test("keeps b", () => {
+  expect(2).toBe(2);
+});
+if ("brandNew" in mod) {
+  test("brand new", () => {
+    expect(mod.brandNew(1)).toBe(1);
+  });
+}
+// red-on-parent-waive: "keeps " — behaviour that already worked
+// red-on-parent-waive: "brand new" — the parent cannot register it
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).not.toContain("file-level skip");
+      expect(stdout).toContain("NOT-ON-PARENT");
+      expect(stdout).toContain("red-on-parent: PASS");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a sibling whose name extends the added file's is never run", () => {
+    // `bun test cart.test.ts` is a substring filter, so it also runs
+    // `cart.test.tsx`. That sibling blocks forever here: what is being pinned is
+    // that the added file is selected by importing it, not by a filter that
+    // cannot tell the two apart.
+    const fixture = createFixture(
+      [PKG, HELPER, { path: "packages/core/src/cart.test.tsx", text: "for (;;) {}\n" }],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/cart.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero with ZERO", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture, {
+        RED_ON_PARENT_TEST_TIMEOUT_MS: "2000",
+      });
+      expect(stdout).not.toContain("RUN-INCOMPLETE");
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("the lock wait budget covers both runs of every file", () => {
+    // The holder runs each file on the parent side and again on the change side,
+    // and the lock covers both. A budget of one run per file expires while the
+    // holder is still inside its second, and the waiter is then refused for
+    // waiting on work that is still in progress. The absolute value pins the
+    // install and the slack as well as the slope.
+    expect(lockWaitBudget(2) - lockWaitBudget(1)).toBe(2 * testTimeoutMs());
+    expect(lockWaitBudget(3)).toBe(
+      INSTALL_TIMEOUT_MS + 3 * 2 * testTimeoutMs() + LOCK_WAIT_SLACK_MS,
+    );
+    const saved = process.env.RED_ON_PARENT_LOCK_WAIT_MS;
+    process.env.RED_ON_PARENT_LOCK_WAIT_MS = "1234";
+    try {
+      expect(lockWaitBudget(3)).toBe(1234);
+    } finally {
+      if (saved === undefined) delete process.env.RED_ON_PARENT_LOCK_WAIT_MS;
+      else process.env.RED_ON_PARENT_LOCK_WAIT_MS = saved;
+    }
+  });
+
+  test("a reused worktree is restored, not judged as the last run left it", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        HELPER,
+        { path: "packages/core/src/data.json", text: `{"v":1}\n` },
+        { path: "packages/core/src/other.json", text: `{"kept":true}\n` },
+      ],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/cart.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+test("rejects zero with ZERO", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    const worktree = join(fixture.cache, `wt-${fixture.base}`);
+    const cached = join(worktree, "packages/core/src/data.json");
+    const other = join(worktree, "packages/core/src/other.json");
+    const leftover = join(worktree, "leftover.txt");
+    try {
+      expect(runGateFixture(fixture).status).toBe(0);
+      // What a test that ran in the cached worktree can leave behind: a tracked
+      // file changed and staged, another deleted, and an untracked one. The next
+      // run must judge the commit, not any of them. Staged matters: a checkout
+      // from the index would restore the change it was meant to discard.
+      writeFileSync(cached, `{"v":2}\n`);
+      execFileSync("git", ["add", "packages/core/src/data.json"], { cwd: worktree });
+      rmSync(other);
+      writeFileSync(leftover, "leftover\n");
+      expect(runGateFixture(fixture).status).toBe(0);
+      expect(readFileSync(cached, "utf8")).not.toContain(`"v":2`);
+      expect(readFileSync(other, "utf8")).toContain(`"kept"`);
+      expect(existsSync(leftover)).toBe(false);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 120_000);
+
+  test("a fixture commits with signing configured globally", () => {
+    // `commitAll` names the identity but used to leave `commit.gpgsign` to the
+    // machine's config, so a contributor with signing on could not run this
+    // suite at all. The bogus program makes the failure deterministic instead of
+    // depending on whether a key is present.
+    const keys = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"];
+    const saved = keys.map((key) => [key, process.env[key]] as const);
+    process.env.GIT_CONFIG_COUNT = "2";
+    process.env.GIT_CONFIG_KEY_0 = "commit.gpgsign";
+    process.env.GIT_CONFIG_VALUE_0 = "true";
+    process.env.GIT_CONFIG_KEY_1 = "gpg.program";
+    process.env.GIT_CONFIG_VALUE_1 = "no-such-gpg-for-this-test";
+    try {
+      const fixture = createFixture([PKG], []);
+      // The commit is the thing under test: a fixture whose commits silently
+      // never landed would make this test green for no reason at all.
+      expect(fixture.base).toMatch(/^[0-9a-f]{40}$/u);
+      fixture.cleanup();
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   }, 60_000);
 });

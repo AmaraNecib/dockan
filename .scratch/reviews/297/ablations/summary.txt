@@ -1,9 +1,15 @@
 RED  A1-F1-red-on-change: 0 pass, 1 fail — F1: a test that fails on the change as well is reported as RED_ON_CHANGE
 RED  A2-F2-no-timeout: 0 pass, 1 fail — F2: a hung test is stopped and reported as RUN_INCOMPLETE
-RED  A3-F3-unused-waiver: 0 pass, 2 fail — F3: a waiver that matches no test is reported as WAIVER-MISFILED
+RED  A3-F3-unused-waiver: 1 pass, 2 fail — F3: a waiver that matches no test is reported as WAIVER-MISFILED
 RED  A4-C1-uncommitted: 0 pass, 1 fail — C1: an uncommitted test file fails the run instead of warning
 RED  A4b-C1-staged: 0 pass, 1 fail — C1: a staged test file fails the run instead of warning
 RED  A5-C2-waiver-scope: 0 pass, 2 fail — C2: a waiver excuses the test it names, and only that test
 RED  A6-C3-skipped: 0 pass, 1 fail — C3: a test file the gate does not gate is named in the report
 RED  A7-C4-manifest: 0 pass, 1 fail — C4: the manifest is written on every copy, so a half-dead run leaves no orphan
 RED  A8-C5-containment: 0 pass, 2 fail — C5: a manifest path that leaves the worktree names nothing and deletes nothing
+RED  A9-R1-file-level-waiver: 0 pass, 1 fail — R1: the file-level waiver rule judges the change's test list, not the parent's
+RED  A10-R2-exact-file: 0 pass, 1 fail — R2: the run imports exactly the added file, so a same-prefix sibling never runs
+RED  A11-R3-lock-budget: 0 pass, 1 fail — R3: the lock wait budget covers the parent-side and change-side run of each file
+RED  A12-R4-cache-reset: 0 pass, 1 fail — R4: a reused worktree is reset to its commit before the next run judges it
+RED  A13-R4-index-reset: 0 pass, 1 fail — R4b: the reset discards the index too, so a staged write is not restored from it
+RED  A14-R4-deleted-file: 0 pass, 1 fail — R4c: a file a test deleted is restored, not left missing for the next run

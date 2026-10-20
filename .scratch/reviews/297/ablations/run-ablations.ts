@@ -10,9 +10,13 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-const REPO = "D:/worktrees/mani-project/t3-0e0532b3";
+// Derived from this file's own location, so the evidence can be re-run in
+// whatever checkout it is read in. A hard-coded worktree path only worked on
+// the machine that wrote it, and on a machine that still had that path it
+// edited a tree nobody was looking at.
+const REPO = resolve(import.meta.dir, "../../../..");
 const GATE = join(REPO, "scripts/red-on-parent.ts");
 // Outside the repo: the file below is a byte-for-byte copy of the gate, and a
 // second copy of it in the tree is only noise for a reader.
@@ -95,6 +99,48 @@ const ablations: Ablation[] = [
     from: "  return target.startsWith(`${root}${sep}`) ? target : null;",
     to: "  return target;",
   },
+  {
+    name: "A9-R1-file-level-waiver",
+    test: "a shared waiver over the parent's tests is not a file-level skip",
+    claim: "R1: the file-level waiver rule judges the change's test list, not the parent's",
+    from: `    changeResults.length > 0 ? changeResults : results,`,
+    to: `    results,`,
+  },
+  {
+    name: "A10-R2-exact-file",
+    test: "a sibling whose name extends the added file's is never run",
+    claim: "R2: the run imports exactly the added file, so a same-prefix sibling never runs",
+    from: `["test", entry, `,
+    to: `["test", here.path, `,
+  },
+  {
+    name: "A11-R3-lock-budget",
+    test: "the lock wait budget covers both runs of every file",
+    claim: "R3: the lock wait budget covers the parent-side and change-side run of each file",
+    from: `fileCount * 2 * testTimeoutMs()`,
+    to: `fileCount * testTimeoutMs()`,
+  },
+  {
+    name: "A12-R4-cache-reset",
+    test: "a reused worktree is restored, not judged as the last run left it",
+    claim: "R4: a reused worktree is reset to its commit before the next run judges it",
+    from: `      resetBaseWorktree(worktree);\n`,
+    to: ``,
+  },
+  {
+    name: "A13-R4-index-reset",
+    test: "a reused worktree is restored, not judged as the last run left it",
+    claim: "R4b: the reset discards the index too, so a staged write is not restored from it",
+    from: `  gitText(worktree, ["reset", "--hard", "HEAD"]);`,
+    to: `  gitText(worktree, ["checkout", "--", "."]);`,
+  },
+  {
+    name: "A14-R4-deleted-file",
+    test: "a reused worktree is restored, not judged as the last run left it",
+    claim: "R4c: a file a test deleted is restored, not left missing for the next run",
+    from: `  gitText(worktree, ["reset", "--hard", "HEAD"]);\n`,
+    to: ``,
+  },
 ];
 
 function restoreBaseline(): void {
@@ -103,34 +149,41 @@ function restoreBaseline(): void {
 
 const summary: string[] = [];
 copyFileSync(GATE, BASELINE);
-for (const ablation of ablations) {
-  restoreBaseline();
-  const source = readFileSync(GATE, "utf8");
-  // The gate is checked out with CRLF on Windows, so a mutation written with
-  // LF newlines must be re-spelled in the file's own line ending.
-  const eol = source.includes("\r\n") ? "\r\n" : "\n";
-  const from = ablation.from.replaceAll("\n", eol);
-  const to = ablation.to.replaceAll("\n", eol);
-  if (!source.includes(from)) {
-    summary.push(`${ablation.name}: MUTATION DID NOT APPLY`);
-    continue;
+try {
+  for (const ablation of ablations) {
+    restoreBaseline();
+    const source = readFileSync(GATE, "utf8");
+    // The gate is checked out with CRLF on Windows, so a mutation written with
+    // LF newlines must be re-spelled in the file's own line ending.
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
+    const from = ablation.from.replaceAll("\n", eol);
+    const to = ablation.to.replaceAll("\n", eol);
+    if (!source.includes(from)) {
+      summary.push(`${ablation.name}: MUTATION DID NOT APPLY`);
+      continue;
+    }
+    writeFileSync(GATE, source.replace(from, to));
+    const result = spawnSync(
+      "bun",
+      ["test", "./scripts/red-on-parent.test.ts", "-t", ablation.test],
+      { cwd: REPO, encoding: "utf8", timeout: 600_000 },
+    );
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    writeFileSync(join(OUT, `${ablation.name}.txt`), output);
+    const fails = (output.match(/^\(fail\)/gmu) ?? []).length;
+    const passes = (output.match(/^\(pass\)/gmu) ?? []).length;
+    const red = fails > 0;
+    summary.push(
+      `${red ? "RED " : "NOT RED"} ${ablation.name}: ${passes} pass, ${fails} fail — ${ablation.claim}`,
+    );
+    restoreBaseline();
   }
-  writeFileSync(GATE, source.replace(from, to));
-  const result = spawnSync(
-    "bun",
-    ["test", "./scripts/red-on-parent.test.ts", "-t", ablation.test],
-    { cwd: REPO, encoding: "utf8", timeout: 600_000 },
-  );
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  writeFileSync(join(OUT, `${ablation.name}.txt`), output);
-  const fails = (output.match(/^\(fail\)/gmu) ?? []).length;
-  const passes = (output.match(/^\(pass\)/gmu) ?? []).length;
-  const red = fails > 0;
-  summary.push(
-    `${red ? "RED " : "NOT RED"} ${ablation.name}: ${passes} pass, ${fails} fail — ${ablation.claim}`,
-  );
+  writeFileSync(join(OUT, "summary.txt"), `${summary.join("\n")}\n`);
+  console.log(summary.join("\n"));
+} finally {
+  // The whole point of the loop is to leave a deliberately broken gate in place
+  // for the length of one test run. A throw between the mutation and the restore
+  // — a failed write of the result file, say — must not leave it broken on disk
+  // for whoever runs next.
   restoreBaseline();
 }
-restoreBaseline();
-writeFileSync(join(OUT, "summary.txt"), `${summary.join("\n")}\n`);
-console.log(summary.join("\n"));

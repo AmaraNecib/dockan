@@ -17,7 +17,7 @@ import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment 
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
-import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
+import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { tokenMatches } from "../lib/boot-token";
@@ -317,7 +317,7 @@ async function partyOutstandingDebt(
  * the shop owes, so the polarity here is `balance < 0`.
  */
 async function defaultSupplierCashBack(tx: StorePort, supplierId: string, returnValue: number): Promise<number> {
-  const balance = supplierBalance(await tx.listSupplierEntries(supplierId));
+  const balance = supplierBalance(await tx.listSupplierEntries(supplierId), supplierId);
   return balance < 0 ? 0 : returnValue;
 }
 
@@ -358,9 +358,32 @@ export function createRpcRouter(deps: RpcDeps) {
     return session;
   };
 
+  /**
+   * #317 — a supplier account holding a row the rule table cannot sign used to
+   * reach the owner as an unmapped internal error, and the UI's `serverErrorKey`
+   * passes only known keys, so every such bug read as "an error occurred" on a
+   * screen whose whole point is naming the broken account.
+   *
+   * One translation, applied where every session-guarded procedure enters
+   * (`guarded` / `guardedInput`), so the read that folds, the write that folds and
+   * the dashboard that spans every account all report it the same way. The
+   * supplier id travels in `data` for the log and the support story; the message is
+   * the stable key the web translates.
+   */
+  const unsignableEntryRefusal = (error: UnsignableSupplierEntryError) =>
+    new ORPCError("INTERNAL_SERVER_ERROR", {
+      message: "SUPPLIER_ENTRY_UNSIGNABLE",
+      data: { supplierId: error.supplierId, entryId: error.entryId, kind: error.kind },
+    });
+
   const guarded = <T>(handler: (context: RpcContext) => Promise<T>) => async ({ context }: { context: RpcContext }): Promise<T> => {
     await requireSession(context);
-    return handler(context);
+    try {
+      return await handler(context);
+    } catch (error) {
+      if (error instanceof UnsignableSupplierEntryError) throw unsignableEntryRefusal(error);
+      throw error;
+    }
   };
 
   /** Like guarded, but passes the procedure input through as well. */
@@ -369,7 +392,12 @@ export function createRpcRouter(deps: RpcDeps) {
     context,
   }: { input: I; context: RpcContext }): Promise<T> => {
     await requireSession(context);
-    return handler(input, context);
+    try {
+      return await handler(input, context);
+    } catch (error) {
+      if (error instanceof UnsignableSupplierEntryError) throw unsignableEntryRefusal(error);
+      throw error;
+    }
   };
 
   return {
@@ -947,7 +975,7 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_PAYMENT ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(entries), entries };
+          return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
@@ -1060,13 +1088,13 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           if (cashBack > 0) {
             const before = await tx.listSupplierEntries(input.supplierId);
-            const availableCredit = availableSupplierCredit(supplierBalance(before));
+            const availableCredit = availableSupplierCredit(supplierBalance(before, input.supplierId));
             if (cashBack > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
             await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "REFUND", amount: cashBack, invoiceId: null, note: reason, ref: returnNumber, occurredAt });
           }
           await tx.insertActivity({ type: "RETURN_RECORDED", summary: `SUPPLIER_RETURN ${returnNumber} ${amount} ${supplier.name}`, ref: returnId });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(entries), entries };
+          return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
@@ -1076,7 +1104,7 @@ export function createRpcRouter(deps: RpcDeps) {
           const supplier = await tx.getParty("supplier", input.supplierId);
           if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          const availableCredit = availableSupplierCredit(supplierBalance(entries));
+          const availableCredit = availableSupplierCredit(supplierBalance(entries, input.supplierId));
           if (input.amount > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
           const occurredAt = localDateTime();
           await tx.insertSupplierEntry({
@@ -1090,7 +1118,7 @@ export function createRpcRouter(deps: RpcDeps) {
           });
           await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_REFUND ${input.amount} ${supplier.name}`, ref: supplier.id });
           const next = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(next), entries: next };
+          return { balance: supplierBalance(next, input.supplierId), entries: next };
         }),
       ),
     ),
@@ -1143,7 +1171,7 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(entries), entries };
+          return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
@@ -1266,7 +1294,7 @@ export function createRpcRouter(deps: RpcDeps) {
           const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];
           for (const row of plan) {
             const entries = await tx.listSupplierEntries(row.supplierId);
-            accounts.push({ supplierId: row.supplierId, name: row.name, balance: supplierBalance(entries) });
+            accounts.push({ supplierId: row.supplierId, name: row.name, balance: supplierBalance(entries, row.supplierId) });
           }
           return { created: plan.length, accounts };
         }),

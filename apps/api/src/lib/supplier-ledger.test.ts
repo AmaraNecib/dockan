@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { supplierEntryKinds } from "@dokan/contracts";
+
 import {
   adjustmentDedupKey,
   allocateOldestFirst,
@@ -38,6 +40,39 @@ describe("supplierEntrySign", () => {
     expect(() => supplierEntrySign("ADJUSTMENT")).toThrow(/direction/);
     expect(() => supplierEntrySign("ADJUSTMENT", null)).toThrow(/direction/);
   });
+
+  it("refuses a kind the rule table does not define instead of crashing", () => {
+    // `kind` is TEXT NOT NULL with no CHECK (db/schema.ts), so a row the write
+    // seams cannot produce but the database allows reaches this fold. The SQL
+    // reader answers NULL for it; the TypeScript fold must refuse the same way,
+    // not die on an undefined rule.
+    let caught: UnsignableSupplierEntryError | undefined;
+    try {
+      supplierEntrySign("BOGUS", null, "entry-9", "supplier-3");
+    } catch (error) {
+      if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(UnsignableSupplierEntryError);
+    expect(caught).toMatchObject({ kind: "BOGUS", entryId: "entry-9", supplierId: "supplier-3" });
+    expect(caught?.message).toContain("BOGUS");
+  });
+
+  it("refuses a direction Object.prototype happens to own", () => {
+    // `directions` is an object literal, so `direction in directions` is true for
+    // every inherited name and would hand back a FUNCTION where a sign belongs.
+    for (const direction of ["toString", "constructor", "valueOf", "hasOwnProperty"]) {
+      let caught: UnsignableSupplierEntryError | undefined;
+      try {
+        supplierEntrySign("ADJUSTMENT", direction);
+      } catch (error) {
+        if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+        caught = error;
+      }
+      expect(caught, `${direction} signed instead of refusing`).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(caught).toMatchObject({ kind: "ADJUSTMENT", direction });
+    }
+  });
 });
 
 /**
@@ -48,7 +83,16 @@ describe("supplierEntrySign", () => {
 describe("SUPPLIER_ENTRY_RULES — one table decides every kind's sign (#317)", () => {
   it("holds every kind exactly once", () => {
     expect([...SUPPLIER_ENTRY_KINDS].sort()).toEqual(["ADJUSTMENT", "PAYMENT", "PURCHASE", "REFUND", "RETURN"]);
-    expect(Object.keys(SUPPLIER_ENTRY_RULES).sort()).toEqual([...SUPPLIER_ENTRY_KINDS].sort());
+  });
+
+  it("is pinned to the contracts kind list, so a new kind names its own omission", () => {
+    // The canonical list feeds the DB enum, the zod schema and the port. Adding a
+    // kind there and forgetting this table used to surface as a cryptic widening
+    // error where the wider type met the narrower one; the diff below names the
+    // kind instead.
+    const missingFromRules = supplierEntryKinds.filter((kind) => !SUPPLIER_ENTRY_KINDS.includes(kind));
+    const missingFromContract = SUPPLIER_ENTRY_KINDS.filter((kind) => !supplierEntryKinds.includes(kind));
+    expect({ missingFromRules, missingFromContract }).toEqual({ missingFromRules: [], missingFromContract: [] });
   });
 
   // The expected sign is the SPEC (#260), written out here rather than read back

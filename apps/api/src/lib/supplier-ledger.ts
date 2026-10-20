@@ -62,24 +62,69 @@ const SUPPLIER_ENTRY_KIND_LIST = Object.keys(SUPPLIER_ENTRY_RULES) as readonly S
 export { SUPPLIER_ENTRY_KIND_LIST as SUPPLIER_ENTRY_KINDS };
 
 /**
- * The typed refusal for a row the rule table cannot sign — today one thing: an
- * ADJUSTMENT with no usable direction. It names the kind, the direction it got
- * (null when none) and the entry when the caller knows it, so the data can be
- * fixed instead of guessed at. Both readers throw THIS class (#317), so a
- * direction-less row fails every screen together rather than signing negative on
- * one and throwing on another.
+ * The rule for one kind, or undefined when the table has none.
+ *
+ * The parameter is a plain `string` on purpose: `supplier_account_entries.kind`
+ * is `TEXT NOT NULL` with no CHECK constraint, so a row the write seams cannot
+ * produce but a migrated database can hold reaches the fold as any text at all.
+ * A caller typed against `SupplierEntryKind` still widens here, so an unknown
+ * kind is a refusal rather than a crash.
+ *
+ * `Object.hasOwn`, never `in` or a bare index: the table is an object literal, so
+ * a miss would otherwise answer with `Object.prototype`'s `toString` and hand an
+ * object where a rule belongs.
+ */
+export function supplierEntryRule(kind: string): SupplierEntryRule | undefined {
+  if (!Object.hasOwn(SUPPLIER_ENTRY_RULES, kind)) return undefined;
+  // SAFETY: Object.hasOwn proved the key is one of the table's own keys, and the
+  // table satisfies Record<SupplierEntryKind, …>, so those keys are exactly the
+  // union's members.
+  return SUPPLIER_ENTRY_RULES[kind as SupplierEntryKind];
+}
+
+/** What a refusal observed. Every field is optional because the readers know
+ * different amounts: the fold has the row, the SQL aggregate has only the account
+ * it grouped. Nothing here is inferred — a field stays null when the read did not
+ * see it, so a refusal never sends the owner to a row it never looked at. */
+export type UnsignableSupplierEntryRefusal = {
+  /** the row's kind, or null when the read could not name one (the SQL aggregate) */
+  kind?: string | null;
+  /** the direction the row carried, or null when it carried none */
+  direction?: string | null;
+  /** the entry, when the caller has the row in hand */
+  entryId?: string | null;
+  /** the account the un-signable row belongs to */
+  supplierId?: string | null;
+};
+
+/**
+ * The typed refusal for a row the rule table cannot sign: an unknown kind (the
+ * column has no CHECK), an ADJUSTMENT with no usable direction, or a direction
+ * that is not one the table defines. It names what the reader observed — the
+ * kind, the direction it got, the entry and the supplier where they are known —
+ * so the data can be fixed instead of guessed at. Both readers throw THIS class
+ * (#317), so a direction-less row fails every screen together rather than signing
+ * negative on one and throwing on another.
  */
 export class UnsignableSupplierEntryError extends Error {
-  readonly kind: SupplierEntryKind;
-  readonly direction: SupplierAdjustmentDirection | null;
+  readonly kind: string | null;
+  readonly direction: string | null;
   readonly entryId: string | null;
+  readonly supplierId: string | null;
 
-  constructor(kind: SupplierEntryKind, direction: SupplierAdjustmentDirection | null, entryId: string | null = null) {
-    super(`${kind} supplier account entry ${entryId ?? "(no id)"} needs a direction`);
+  constructor(refusal: UnsignableSupplierEntryRefusal = {}) {
+    const entry = refusal.entryId ?? null;
+    const supplier = refusal.supplierId ?? null;
+    const kind = refusal.kind ?? null;
+    super(
+      `supplier account entry ${entry ?? "(no id)"}${supplier === null ? "" : ` of supplier ${supplier}`} cannot be signed: ` +
+        `kind ${kind ?? "(unread by this read)"}, direction ${refusal.direction ?? "(none)"}`,
+    );
     this.name = "UnsignableSupplierEntryError";
     this.kind = kind;
-    this.direction = direction ?? null;
-    this.entryId = entryId;
+    this.direction = refusal.direction ?? null;
+    this.entryId = entry;
+    this.supplierId = supplier;
   }
 }
 
@@ -88,29 +133,42 @@ export class UnsignableSupplierEntryError extends Error {
  * the one rule table (#317).
  *
  * A fixed kind ignores the direction it was handed: only ADJUSTMENT takes its sign
- * from a direction, and a missing one there is refused rather than defaulted.
- * `entryId` is optional context for that refusal (the fold passes it so the error
- * names the row).
+ * from a direction, and a missing or undefined one there is refused rather than
+ * defaulted. The parameter types are the runtime types, not the union: a corrupt
+ * row is exactly the case this function has to answer for. `entryId` and
+ * `supplierId` are optional context for that refusal (the fold passes both so the
+ * error names the row and the account).
  */
 export function supplierEntrySign(
-  kind: SupplierEntryKind,
-  direction: SupplierAdjustmentDirection | null = null,
+  kind: string,
+  direction: string | null = null,
   entryId: string | null = null,
+  supplierId: string | null = null,
 ): 1 | -1 {
-  const rule = SUPPLIER_ENTRY_RULES[kind];
+  const rule = supplierEntryRule(kind);
+  if (rule === undefined) throw new UnsignableSupplierEntryError({ kind, direction, entryId, supplierId });
   if (!rule.directionRequired) return rule.sign;
-  // `in` also refuses a value the type system never saw (a corrupt legacy row): a
-  // direction the table does not define cannot sign anything
-  if (direction !== null && direction in rule.directions) return rule.directions[direction];
-  throw new UnsignableSupplierEntryError(kind, direction, entryId);
+  // `Object.hasOwn`, not `in`: `directions` is an object literal, so `in` answers
+  // true for `toString`, `constructor` and `valueOf` and would return a FUNCTION
+  // where a sign belongs. A direction the table does not define cannot sign
+  // anything, and that includes a direction the type system never saw.
+  if (direction !== null && Object.hasOwn(rule.directions, direction)) {
+    // SAFETY: Object.hasOwn proved the key is one of the record's own keys, and
+    // the record is keyed by the direction union.
+    return rule.directions[direction as SupplierAdjustmentDirection];
+  }
+  throw new UnsignableSupplierEntryError({ kind, direction, entryId, supplierId });
 }
 
-/** The signed balance of a supplier account: Σ amount × sign(kind). */
+/** The signed balance of a supplier account: Σ amount × sign(kind). `supplierId`
+ * is context for the refusal only: without it the error names the entry but not
+ * the account whose screens are blank. */
 export function supplierBalance(
   entries: readonly { id?: string; kind: SupplierEntryKind; amount: number; direction?: SupplierAdjustmentDirection | null }[],
+  supplierId: string | null = null,
 ): number {
   return entries.reduce(
-    (sum, entry) => sum + supplierEntrySign(entry.kind, entry.direction ?? null, entry.id ?? null) * entry.amount,
+    (sum, entry) => sum + supplierEntrySign(entry.kind, entry.direction ?? null, entry.id ?? null, supplierId) * entry.amount,
     0,
   );
 }

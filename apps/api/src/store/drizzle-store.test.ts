@@ -2626,8 +2626,26 @@ describe("#317 one rule decides what a supplier balance means", () => {
     };
   };
 
-  /** The refusal a reader raised, or a failure naming the number it quoted instead. */
-  const refusalOf = async (read: Promise<unknown>): Promise<Error> => {
+  /**
+   * A direction-less ADJUSTMENT, written the way a MIGRATED database can hold one:
+   * the ALTER path cannot add the fresh DDL's CHECK, which is why every read has
+   * to be the boundary. The caller deletes the row — the store tests share one
+   * database, so leaving it behind makes every later reader refuse.
+   */
+  const insertDirectionlessRow = (supplierId: string, amount: number): string => {
+    const entryId = crypto.randomUUID();
+    conn.raw.exec("PRAGMA ignore_check_constraints = ON");
+    try {
+      conn.raw
+        .query("INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, dedup_key, occurred_at, created_at) VALUES (?, ?, 'ADJUSTMENT', ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)")
+        .run(entryId, supplierId, amount, localDateTime(), localDateTime());
+    } finally {
+      conn.raw.exec("PRAGMA ignore_check_constraints = OFF");
+    }
+    return entryId;
+  };
+
+  /** The refusal a reader raised, or a failure naming the number it quoted instead. */  const refusalOf = async (read: Promise<unknown>): Promise<Error> => {
     try {
       const value = await read;
       throw new Error(`expected the reader to refuse a row it cannot sign, got ${JSON.stringify(value)}`);
@@ -2670,44 +2688,96 @@ describe("#317 one rule decides what a supplier balance means", () => {
     const supplier = await newSupplier("بلا-اتجاه");
     // a migrated database can hold this row: the ALTER path cannot add the CHECK
     // the fresh DDL carries, which is why the READ has to be the boundary.
-    const badEntryId = crypto.randomUUID();
-    conn.raw.exec("PRAGMA ignore_check_constraints = ON");
-    try {
-      conn.raw
-        .query("INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, dedup_key, occurred_at, created_at) VALUES (?, ?, 'ADJUSTMENT', 700, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)")
-        .run(badEntryId, supplier.id, localDateTime(), localDateTime());
-    } finally {
-      conn.raw.exec("PRAGMA ignore_check_constraints = OFF");
-    }
+    const badEntryId = insertDirectionlessRow(supplier.id, 700);
 
     try {
       const entries = await store.listSupplierEntries(supplier.id);
-      // the fold refuses, and names the entry and its kind so the data can be fixed
+      // the fold refuses, and names the entry, its kind and the account so the
+      // data can be fixed
       let foldError: unknown;
       try {
-        supplierBalance(entries);
+        supplierBalance(entries, supplier.id);
       } catch (error) {
         foldError = error;
       }
       expect(foldError).toBeInstanceOf(UnsignableSupplierEntryError);
-      expect(foldError).toMatchObject({ kind: "ADJUSTMENT", entryId: badEntryId });
+      expect(foldError).toMatchObject({ kind: "ADJUSTMENT", entryId: badEntryId, supplierId: supplier.id });
 
-      // …and every SQL reader refuses with the same class instead of quoting the
-      // negative the old CASE silently signed
-      for (const read of [
-        store.listSupplierAccountSummaries(),
-        store.listParties("supplier"),
-        store.partyDetail("supplier", supplier.id),
-        store.debtSummaries(),
-        store.dashboardSummary(localDate()),
-      ]) {
+      // …and every reader refuses with the same class instead of quoting the
+      // negative the old CASE silently signed. `partyDetail` goes through the
+      // FOLD, which has the row in hand, so it names the entry and its kind; the
+      // SQL aggregates never surfaced a row, so they name only the ACCOUNT they
+      // read and invent no kind — naming the first direction-required kind (always
+      // ADJUSTMENT) sent the owner to fix the wrong row.
+      const readers: ReadonlyArray<[Promise<unknown>, { kind: string | null; entryId?: string | null; supplierId: string | null }]> = [
+        [store.partyDetail("supplier", supplier.id), { kind: "ADJUSTMENT", entryId: badEntryId, supplierId: supplier.id }],
+        [store.listSupplierAccountSummaries(), { kind: null, supplierId: supplier.id }],
+        [store.listParties("supplier"), { kind: null, supplierId: supplier.id }],
+        [store.debtSummaries(), { kind: null, supplierId: supplier.id }],
+        // the dashboard nets EVERY account in one row, so its refusal names none of
+        // them: the read that names the account is the suppliers list above
+        [store.dashboardSummary(localDate()), { kind: null, supplierId: null }],
+      ];
+      for (const [read, observed] of readers) {
         const refusal = await refusalOf(read);
         expect(refusal).toBeInstanceOf(UnsignableSupplierEntryError);
-        expect(refusal).toMatchObject({ kind: "ADJUSTMENT" });
+        expect(refusal).toMatchObject(observed);
       }
     } finally {
       // never leave a row the readers refuse in the shared test database
       conn.raw.query("DELETE FROM supplier_account_entries WHERE id = ?").run(badEntryId);
     }
+  });
+
+  it("refuses the invoice-grouped /debts arm too, not only the credit-only one", async () => {
+    // The /debts read has TWO arms: the invoice aggregate (a supplier with an open
+    // purchase invoice) and the credit-only list (a supplier whose purchase
+    // invoices are all settled). A supplier with no invoices only reaches the
+    // second, so a refusal test written that way proves nothing about the first —
+    // and `DebtSummary.accountBalance` is nullable, so a regression there would
+    // still validate output while the page substituted the invoice debt.
+    const supplier = await newSupplier("فاتورة-مفتوحة");
+    await store.insertInvoice({
+      invoiceNumber: `INV-DEBT-${stamp()}`,
+      kind: "PURCHASE",
+      counterpartyId: supplier.id,
+      counterpartyName: supplier.name,
+      invoiceDate: localDate(),
+      totalAmount: 1_000,
+      paidAmount: 0,
+      remainingAmount: 1_000,
+      notes: null,
+    });
+    const badEntryId = await insertDirectionlessRow(supplier.id, 700);
+
+    try {
+      // the invoice arm: `remaining_amount > 0` puts this supplier in the
+      // aggregate, so the NULL balance beside a known counterparty is the refusal
+      const refusal = await refusalOf(store.debtSummaries());
+      expect(refusal).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(refusal).toMatchObject({ kind: null, supplierId: supplier.id });
+    } finally {
+      conn.raw.query("DELETE FROM supplier_account_entries WHERE id = ?").run(badEntryId);
+    }
+  });
+
+  it("reads an account with no entries as 0 rather than a refusal", async () => {
+    // `WHEN COUNT(*) = 0 THEN 0` is the aggregate's only untested arm, and its
+    // failure mode is a TOTAL outage: a NULL there makes `toPartyListItem` throw
+    // for every supplier with no entries, blanking the suppliers list, the
+    // opening-balance screen and /debts at once.
+    const empty = await newSupplier("بلا-حركات");
+    const listRow = (await store.listParties("supplier")).find((row) => row.id === empty.id);
+    expect(listRow).toMatchObject({ accountBalance: 0, accountEntryCount: 0 });
+
+    // the summaries list only carries suppliers WITH entries (the caller defaults
+    // a missing id to 0/0), so an empty account is absent and never a refusal
+    expect((await store.listSupplierAccountSummaries()).some((row) => row.id === empty.id)).toBe(false);
+    expect((await store.partyDetail("supplier", empty.id))?.account).toEqual({ balance: 0, entries: [] });
+
+    // …and no read that spans every account refuses because one is empty
+    const dashboard = await store.dashboardSummary(localDate());
+    expect(dashboard.weOwe).toBeNumber();
+    await store.debtSummaries();
   });
 });

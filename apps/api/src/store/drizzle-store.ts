@@ -48,7 +48,7 @@ import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
-import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
+import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntryRule, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
@@ -66,75 +66,110 @@ const duplicateKeyRefusal = (error: Error): SupplierAdjustmentError | null =>
   isUniqueViolation(error) ? new SupplierAdjustmentError("DUPLICATE") : null;
 
 /**
- * #317 — the SQL face of `SUPPLIER_ENTRY_RULES`, built from that table at module
- * load so the store cannot restate a sign the ledger owns. One pass over the table
- * emits three fragments:
+ * #317 — the SQL face of `SUPPLIER_ENTRY_RULES`, built from that table so the
+ * store cannot restate a sign the ledger owns. One pass over the table emits, for
+ * one alias:
  *
- *   - `SUPPLIER_SIGNED_AMOUNT_SQL`: one `CASE` arm per direction the table defines,
- *     with `ELSE NULL`. A row the table cannot sign (an unknown kind, or a kind
- *     whose sign needs a direction it does not carry) is never guessed at — the old
- *     hand-written CASE signed it negative and said nothing.
- *   - `SUPPLIER_SIGNABLE_SQL`: the same arms as a predicate, "the table can sign
- *     this row".
- *   - `SUPPLIER_SIGNED_TOTAL_SQL`: the aggregate every reader uses — 0 for an empty
- *     account, the signed total when every row is signable, and NULL when any row
- *     is not. NULL is the SQL face of the typed refusal the TypeScript fold throws,
- *     so a partial total cannot escape the read.
+ *   - the signed amount: one `CASE` arm per rule, with `ELSE NULL` for a row the
+ *     table cannot sign — an unknown kind (`supplier_account_entries.kind` is TEXT
+ *     with no CHECK), or a kind whose sign needs a direction it does not carry.
+ *     That ELSE is live, not defensive padding: it is how such a row becomes NULL
+ *     instead of a guessed number, which the old hand-written CASE signed
+ *     negative and said nothing about.
+ *   - the signed total: 0 for an account with no rows, NULL when ANY row is
+ *     un-signable, the signed total otherwise. `COUNT(expr)` counts non-NULL, so
+ *     one un-signable row makes the two counts disagree. NULL is the SQL face of
+ *     the typed refusal the TypeScript fold throws, so a partial total cannot
+ *     escape a read.
  *
- * The arms are literals emitted once at import, so the query plan keeps the shape
- * the hand-written CASE had. The alias is a closed literal and every kind and
- * direction is a table key, never input.
+ * It is ONE generated expression instead of the OR-chain predicate plus CASE this
+ * replaced, so only one thing has to stay aligned with the rule table. It is NOT
+ * cheaper, and this comment says so because the previous one claimed a smaller
+ * plan it did not have: SQLite evaluates the CASE once for COUNT and once for SUM,
+ * and a CASE arm costs more than an OR term. Measured on the whole-ledger read —
+ * 7 cases (empty, all-good, credit-only, debt-only, missing direction, unknown
+ * kind, prototype-named direction) gave identical results; 10k rows over 200
+ * accounts took 2.4 ms against 2.1 ms, and 200k rows 51.1 ms against 45.3 ms. The
+ * reason it stayed is the single expression, not the plan.
+ *
+ * The alias is a PARAMETER, never a constant baked into the fragments: a fragment
+ * built for one alias and used under another compiles fine and then fails at
+ * query time.
  */
 const SUPPLIER_ENTRY_ALIAS = "e";
 
-const buildSupplierSignArms = (): ReadonlyArray<{ match: string; signedAmount: string }> => {
-  const arms: Array<{ match: string; signedAmount: string }> = [];
+type SupplierSignFragment = { total: string };
+
+const supplierSignFragments = (alias: string): SupplierSignFragment => {
   const signedAmount = (sign: 1 | -1) =>
-    sign > 0 ? `${SUPPLIER_ENTRY_ALIAS}.amount` : `-${SUPPLIER_ENTRY_ALIAS}.amount`;
+    sign > 0 ? `${alias}.amount` : `-${alias}.amount`;
+  const arms: string[] = [];
   for (const kind of SUPPLIER_ENTRY_KINDS) {
     const rule = SUPPLIER_ENTRY_RULES[kind];
     if (rule.directionRequired) {
       // SAFETY: `directions` is a Record keyed by the direction union, so its keys
       // are exactly SupplierAdjustmentDirection members.
       for (const direction of Object.keys(rule.directions) as SupplierAdjustmentDirection[]) {
-        arms.push({
-          match: `${SUPPLIER_ENTRY_ALIAS}.kind = '${kind}' AND ${SUPPLIER_ENTRY_ALIAS}.direction = '${direction}'`,
-          signedAmount: signedAmount(rule.directions[direction]),
-        });
+        arms.push(
+          `WHEN ${alias}.kind = '${kind}' AND ${alias}.direction = '${direction}' THEN ${signedAmount(rule.directions[direction])}`,
+        );
       }
       continue;
     }
-    arms.push({ match: `${SUPPLIER_ENTRY_ALIAS}.kind = '${kind}'`, signedAmount: signedAmount(rule.sign) });
+    arms.push(`WHEN ${alias}.kind = '${kind}' THEN ${signedAmount(rule.sign)}`);
   }
-  return arms;
+  const signedExpr = `CASE ${arms.join(" ")} ELSE NULL END`;
+  return {
+    total: `CASE WHEN COUNT(*) = 0 THEN 0 WHEN COUNT(${signedExpr}) = COUNT(*) THEN SUM(${signedExpr}) END`,
+  };
 };
 
-const SUPPLIER_SIGN_ARMS = buildSupplierSignArms();
+/** Built once per alias, so the three aggregates do not rebuild the literals. */
+const SUPPLIER_SIGN_FRAGMENTS = new Map<string, SupplierSignFragment>();
 
-const SUPPLIER_SIGNED_AMOUNT_SQL = `CASE ${SUPPLIER_SIGN_ARMS.map((arm) => `WHEN ${arm.match} THEN ${arm.signedAmount}`).join(" ")} ELSE NULL END`;
+const supplierSignFragment = (alias: string): SupplierSignFragment => {
+  const cached = SUPPLIER_SIGN_FRAGMENTS.get(alias);
+  if (cached !== undefined) return cached;
+  const built = supplierSignFragments(alias);
+  SUPPLIER_SIGN_FRAGMENTS.set(alias, built);
+  return built;
+};
 
-const SUPPLIER_SIGNABLE_SQL = `(${SUPPLIER_SIGN_ARMS.map((arm) => `(${arm.match})`).join(" OR ")})`;
+/** The signed total of ONE account as a correlated subquery. One builder, so the
+ * alias inside the aggregate and the alias in its FROM cannot disagree. */
+const supplierAccountBalanceSql = (ownerIdSql: string, alias: string = SUPPLIER_ENTRY_ALIAS): string =>
+  `(SELECT ${supplierSignFragment(alias).total} FROM supplier_account_entries ${alias} WHERE ${alias}.supplier_id = ${ownerIdSql})`;
 
-const SUPPLIER_SIGNED_TOTAL_SQL = `CASE WHEN COUNT(*) = 0 THEN 0 WHEN SUM(CASE WHEN ${SUPPLIER_SIGNABLE_SQL} THEN 1 ELSE 0 END) = COUNT(*) THEN SUM(${SUPPLIER_SIGNED_AMOUNT_SQL}) END`;
+/** Every account that carries at least one entry, with its signed balance and
+ * entry count. Only suppliers with entries appear — the caller defaults a missing
+ * id to 0/0 — so a group is never empty and a NULL balance here is the refusal. */
+const supplierAccountSummariesSql = (alias: string = SUPPLIER_ENTRY_ALIAS): string =>
+  `SELECT ${alias}.supplier_id AS id, ${supplierSignFragment(alias).total} AS accountBalance, COUNT(*) AS accountEntryCount FROM supplier_account_entries ${alias} GROUP BY ${alias}.supplier_id`;
+
+/** The signed net of EVERY supplier account, as a one-row read aliased `total`. */
+const supplierLedgerNetSql = (alias: string = SUPPLIER_ENTRY_ALIAS): string =>
+  `SELECT ${supplierSignFragment(alias).total} AS total FROM supplier_account_entries ${alias}`;
 
 /**
- * The refusal a SQL read raises when `SUPPLIER_SIGNED_TOTAL_SQL` came back NULL: a
- * row in that balance cannot be signed. The SQL never read a row, so this cannot
- * name the entry; it names the kind from the same rule table, and the message says
- * the balance carries a direction-less row so the data can be fixed.
+ * The refusal a SQL read raises when a signed total came back NULL: a row in that
+ * account cannot be signed. The SQL surfaced no row, so this names only what the
+ * read observed — the supplier whose account holds it, and the entry where the
+ * caller has the row in hand. It names NO kind on purpose: the previous form
+ * picked the first direction-required kind in the table (always ADJUSTMENT) and
+ * reported a BOGUS row as a direction-less adjustment, which sent the owner to fix
+ * a row that was fine.
  */
-const unsignableBalanceRefusal = (): UnsignableSupplierEntryError => {
-  const kind = SUPPLIER_ENTRY_KINDS.find((candidate) => SUPPLIER_ENTRY_RULES[candidate].directionRequired);
-  if (kind === undefined) throw new Error("the supplier entry rule table defines no direction-required kind");
-  return new UnsignableSupplierEntryError(kind, null);
-};
+const unsignableBalanceRefusal = (supplierId: string | null, entryId: string | null = null): UnsignableSupplierEntryError =>
+  new UnsignableSupplierEntryError({ supplierId, entryId });
 
 /** The whole-ledger supplier net (the dashboard's `weOwe`). A NULL total is the
  * #317 refusal, so it is raised rather than read as zero — the dashboard must not
- * quote a net the rule table cannot vouch for. */
+ * quote a net the rule table cannot vouch for. This read spans every account, so
+ * the refusal names no supplier; the read that names it is the suppliers list,
+ * which refuses on its own and says which account to fix. */
 const supplierNetTotal = (rows: ReadonlyArray<{ total: SqlScalar }>): number => {
   const total = rows[0]?.total;
-  if (total === null || total === undefined) throw unsignableBalanceRefusal();
+  if (total === null || total === undefined) throw unsignableBalanceRefusal(null);
   return Number(total);
 };
 
@@ -142,12 +177,19 @@ const supplierNetTotal = (rows: ReadonlyArray<{ total: SqlScalar }>): number => 
  * table requires (issue 176, read from the table since #317). The SQL expression
  * refuses to sign such a row, and so does every read; validating here keeps every
  * persistence path on the same side of that line (the ALTER migration cannot add a
- * table-level CHECK, so this is the boundary the fresh DDL CHECK complements). */
-const assertAdjustmentDirection = (kind: SupplierEntryKind, direction: SupplierAdjustmentDirection | null | undefined): void => {
-  const rule = SUPPLIER_ENTRY_RULES[kind];
+ * table-level CHECK, so this is the boundary the fresh DDL CHECK complements). An
+ * unknown kind is refused here too: writing one is how the row the readers choke on
+ * gets into the table. */
+const assertAdjustmentDirection = (
+  kind: SupplierEntryKind,
+  direction: SupplierAdjustmentDirection | null | undefined,
+  supplierId: string | null = null,
+): void => {
+  const rule = supplierEntryRule(kind);
+  if (rule === undefined) throw new UnsignableSupplierEntryError({ kind, direction: direction ?? null, supplierId });
   if (!rule.directionRequired) return;
-  if (direction === null || direction === undefined || !(direction in rule.directions)) {
-    throw new UnsignableSupplierEntryError(kind, direction ?? null);
+  if (direction === null || direction === undefined || !Object.hasOwn(rule.directions, direction)) {
+    throw new UnsignableSupplierEntryError({ kind, direction: direction ?? null, supplierId });
   }
 };
 
@@ -244,7 +286,8 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => {
   // #317 — the supplier branch always yields a balance (0 for an account with no
   // entries), so a NULL balance beside a non-null entry count is the SQL refusal,
   // never a customer row: the account holds an entry the rule table cannot sign.
-  if (accountBalance === null && accountEntryCount !== null) throw unsignableBalanceRefusal();
+  // The refusal names THIS party, which is the only account this read observed.
+  if (accountBalance === null && accountEntryCount !== null) throw unsignableBalanceRefusal(String(r.id));
   return {
     id: String(r.id),
     name: String(r.name),
@@ -1841,7 +1884,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // disagree with the supplier detail or /debts. Customers stay null.
       const accountSelect =
         role === "supplier"
-          ? sql`, (SELECT ${sql.raw(SUPPLIER_SIGNED_TOTAL_SQL)} FROM supplier_account_entries e WHERE e.supplier_id = p.id) AS accountBalance,
+          ? sql`, ${sql.raw(supplierAccountBalanceSql("p.id"))} AS accountBalance,
                   (SELECT COUNT(*) FROM supplier_account_entries e WHERE e.supplier_id = p.id) AS accountEntryCount`
           : sql`, NULL AS accountBalance, NULL AS accountEntryCount`;
       // SAFETY: the table name comes from a closed literal map (never input);
@@ -1871,17 +1914,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // Only suppliers that carry an entry; the caller defaults a missing id to
       // 0/0. The signed-total expression is the one `listParties` and the detail
       // fold use (#317), so the list and the detail cannot disagree.
-      // SAFETY: the alias is a literal, never input.
-      const rows = (await db.all(sql`
-        SELECT e.supplier_id AS id,
-               ${sql.raw(SUPPLIER_SIGNED_TOTAL_SQL)} AS accountBalance,
-               COUNT(*) AS accountEntryCount
-        FROM supplier_account_entries e
-        GROUP BY e.supplier_id`)) as Array<{ id: SqlScalar; accountBalance: SqlScalar; accountEntryCount: SqlScalar }>;
+      // SAFETY: the builder's alias default is a literal, never input.
+      const rows = (await db.all(sql`${sql.raw(supplierAccountSummariesSql())}`)) as Array<{ id: SqlScalar; accountBalance: SqlScalar; accountEntryCount: SqlScalar }>;
       return rows.map((row): SupplierAccountSummary => {
         // #317 — a group is never empty, so a NULL balance here is the refusal, not
         // an empty account: the balance carries a row the rule table cannot sign.
-        if (row.accountBalance === null || row.accountBalance === undefined) throw unsignableBalanceRefusal();
+        if (row.accountBalance === null || row.accountBalance === undefined) throw unsignableBalanceRefusal(String(row.id));
         return {
           id: String(row.id),
           accountBalance: safeSignedWhole(row.accountBalance),
@@ -1964,7 +2002,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         stats: safePartyStats(stats),
         invoices: detailInvoices,
         payments: mapPartyPayments(paymentRows),
-        account: role === "supplier" ? { balance: supplierBalance(entries), entries } : null,
+        account: role === "supplier" ? { balance: supplierBalance(entries, partyId), entries } : null,
       } satisfies PartyDetail;
     },
 
@@ -2227,7 +2265,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
     // --- supplier account (issue 161) ----------------------------------------
     async insertSupplierEntry(entry: SupplierEntryInsert) {
-      assertAdjustmentDirection(entry.kind, entry.direction);
+      assertAdjustmentDirection(entry.kind, entry.direction, entry.supplierId);
       // #177 — a linked ADJUSTMENT must go through insertSupplierAdjustment,
       // which applies the invoice reduction in the same unit. Allowing it here
       // would let a direct seam caller write the entry without the reduction and
@@ -2281,7 +2319,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // the invariant only holds inside the caller's unit: outside it the
       // duplicate check races and the entry could commit without its reduction
       if (!conn.inTransaction) throw new SupplierAdjustmentError("OUTSIDE_TRANSACTION");
-      assertAdjustmentDirection("ADJUSTMENT", input.direction);
+      assertAdjustmentDirection("ADJUSTMENT", input.direction, input.supplierId);
       // never trust the transport contract here: a negative amount would make the
       // conditional UPDATE increase the invoice's remaining, a fractional one
       // would write non-whole DZD
@@ -2746,8 +2784,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                MIN(invoices.invoice_date) AS oldest_date,
                MAX(invoices.invoice_date) AS latest_date,
                CASE WHEN invoices.kind = 'PURCHASE' AND invoices.counterparty_id IS NOT NULL
-                 THEN (SELECT ${sql.raw(SUPPLIER_SIGNED_TOTAL_SQL)}
-                       FROM supplier_account_entries e WHERE e.supplier_id = invoices.counterparty_id)
+                 THEN ${sql.raw(supplierAccountBalanceSql("invoices.counterparty_id"))}
                  ELSE NULL END AS account_balance
         FROM invoices
         LEFT JOIN customers ON invoices.counterparty_id = customers.id
@@ -2767,8 +2804,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                 })();
         // #317 — a PURCHASE group with an id always carries an account balance (0
         // when the account is empty); NULL there is the SQL refusal, not the CASE's
-        // ELSE-NULL that marks a customer or an unattributed row.
-        if (kind === "PURCHASE" && r.counterparty_id != null && r.account_balance == null) throw unsignableBalanceRefusal();
+        // ELSE-NULL that marks a customer or an unattributed row. Name the supplier
+        // this group is for: naming a kind here would be invented.
+        if (kind === "PURCHASE" && r.counterparty_id != null && r.account_balance == null) throw unsignableBalanceRefusal(String(r.counterparty_id));
         return {
           counterpartyId: r.counterparty_id == null ? null : String(r.counterparty_id),
           counterpartyName: r.counterparty_name == null ? null : String(r.counterparty_name),
@@ -2788,22 +2826,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // balance are SQLite INTEGERs, the id/name/date columns TEXT.
       const creditOnly = (await db.all(sql`
         SELECT s.id AS counterparty_id, s.name AS counterparty_name,
-               (SELECT ${sql.raw(SUPPLIER_SIGNED_TOTAL_SQL)}
-                FROM supplier_account_entries e WHERE e.supplier_id = s.id) AS account_balance,
+               ${sql.raw(supplierAccountBalanceSql("s.id"))} AS account_balance,
                (SELECT COUNT(*) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS invoice_count,
                (SELECT MIN(i.invoice_date) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS oldest_date,
                (SELECT MAX(i.invoice_date) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS latest_date
         FROM suppliers s
         WHERE EXISTS (SELECT 1 FROM supplier_account_entries e WHERE e.supplier_id = s.id)
           AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE' AND i.remaining_amount > 0)
-          AND (SELECT ${sql.raw(SUPPLIER_SIGNED_TOTAL_SQL)}
-               FROM supplier_account_entries e WHERE e.supplier_id = s.id) IS NOT 0
+          AND ${sql.raw(supplierAccountBalanceSql("s.id"))} IS NOT 0
       `)) as Array<{ counterparty_id: unknown; counterparty_name: unknown; account_balance: unknown; invoice_count: unknown; oldest_date: unknown; latest_date: unknown }>;
       for (const row of creditOnly) {
         // #317 — the predicate keeps a NULL balance (a row it cannot sign) with
         // `IS NOT 0`, so the refusal reaches here instead of the supplier silently
         // dropping off /debts with a guessed total.
-        if (row.account_balance == null) throw unsignableBalanceRefusal();
+        if (row.account_balance == null) throw unsignableBalanceRefusal(String(row.counterparty_id));
         summaries.push({
           counterpartyId: String(row.counterparty_id),
           counterpartyName: row.counterparty_name == null ? null : String(row.counterparty_name),
@@ -2849,7 +2885,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         // account so a credit offsets a debt, exactly what /debts shows: a
         // migrated opening balance with no invoice would otherwise be invisible
         // on the dashboard (issue 176).
-        db.all(sql`SELECT ${sql.raw(SUPPLIER_SIGNED_TOTAL_SQL)} AS total FROM supplier_account_entries e`),
+        db.all(sql`${sql.raw(supplierLedgerNetSql())}`),
         // typed-name purchases have no account, so no signed ledger entry: they
         // are always a debt and SUBTRACT from the signed net (the invoice-based
         // path ADR-0009 left untouched).

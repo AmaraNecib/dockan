@@ -1,45 +1,32 @@
 import { createDrizzleStore } from "../store/drizzle-store";
-import type { StoreLogger, StorePort } from "../store/port";
-import { createEncryptedConnection, type EncryptedConnection } from "./encrypted-connection";
+import type { StorePort } from "../store/port";
+import {
+  createEncryptedConnection,
+  type EncryptedConnection,
+  type EncryptedConnectionOptions,
+} from "./encrypted-connection";
 
 /**
  * Open an encrypted store from a vault id and master key: the connection and
  * the StorePort are built together so main.ts, the gate tests, and the backup
  * round-trip all exercise the same bootstrap path (no test-local re-creation).
+ *
+ * The input IS the connection's options — spread through, never re-listed —
+ * with the one field every bootstrap path has made required. A new connection
+ * capability therefore costs one field on `EncryptedConnectionOptions` and no
+ * statement here; anything that needs TRANSFORMING rather than forwarding
+ * belongs in the connection, where the transform can be tested once.
  */
-export type OpenVaultStoreInput = {
-  vaultId: string;
-  masterKey: Uint8Array;
-  snapshotPath: string;
+export type OpenVaultStoreInput = EncryptedConnectionOptions & {
+  /** required here: every bootstrap path has a header to validate and bundle against */
   headerPath: string;
-  /** first-run semantics; unlock paths must omit it */
-  fresh?: boolean;
-  /** decrypted legacy image to adopt on first run */
-  seedBytes?: Uint8Array;
-  logger?: StoreLogger;
-  /** write-path guard: throws when this process no longer owns the folder */
-  writeGuard?: () => void;
-  /** the current holder's lock token, stamped into every snapshot it writes (#280) */
-  writeStamp?: () => string;
 };
 
 /** The two seams one encrypted-store bootstrap produces. */
 export type OpenVaultStore = { conn: EncryptedConnection; store: StorePort };
 
 export function openVaultStore(input: OpenVaultStoreInput): OpenVaultStore {
-  const options: Parameters<typeof createEncryptedConnection>[0] = {
-    vaultId: input.vaultId,
-    masterKey: input.masterKey,
-    snapshotPath: input.snapshotPath,
-    headerPath: input.headerPath,
-  };
-  if (input.fresh === true) options.fresh = true;
-  if (input.seedBytes !== undefined) options.seedBytes = input.seedBytes;
-  if (input.writeGuard !== undefined) options.writeGuard = input.writeGuard;
-  if (input.writeStamp !== undefined) options.writeStamp = input.writeStamp;
-  // the same logger the store gets, so a fence the connection cannot verify at
-  // open reaches the diagnostics log instead of vanishing into a boolean
-  if (input.logger !== undefined) options.logger = input.logger;
-  const conn = createEncryptedConnection(options);
+  const conn = createEncryptedConnection(input);
+  // the same logger the connection got, now for the store's half of the seam
   return { conn, store: createDrizzleStore(conn, input.logger) };
 }

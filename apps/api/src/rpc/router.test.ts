@@ -3183,7 +3183,10 @@ describe("an unsignable supplier balance at the RPC boundary (#317)", () => {
           // below are optional on `LogContext`, so a missing key is a miss.
           return JSON.parse(line) as SavedEntry;
         })
-        .filter((entry) => entry.event === "SUPPLIER_ENTRY_UNSIGNABLE");
+        // SERVER_ERROR, not the RPC code: a log event has to be a code from the
+        // shared vocabulary (#253), and the refusal's own code is not one. The
+        // ids ride in the context, which is what the owner's diagnostics read.
+        .filter((entry) => entry.event === "SERVER_ERROR" && entry.context?.supplierId === supplier.id);
       expect(saved.length).toBeGreaterThan(0);
       expect(saved.some((entry) => entry.context?.supplierId === supplier.id && entry.context?.entryId === entryId)).toBe(true);
       expect(saved.some((entry) => entry.context?.supplierEntryKind === "ADJUSTMENT")).toBe(true);

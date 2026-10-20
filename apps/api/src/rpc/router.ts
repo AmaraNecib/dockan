@@ -376,7 +376,11 @@ export function createRpcRouter(deps: RpcDeps) {
     if (error.supplierId !== null) context.supplierId = error.supplierId;
     if (error.entryId !== null) context.entryId = error.entryId;
     if (error.kind !== null) context.supplierEntryKind = error.kind;
-    deps.logger.error("SUPPLIER_ENTRY_UNSIGNABLE", error.message, error, context);
+    // A log event must be a code from the shared vocabulary (#253); the RPC code
+    // is not one, and using it here put an event outside `logEvents` that the
+    // scan catches. SERVER_ERROR carries the ids in `context` instead, and the
+    // wire code stays on the ORPCError below.
+    deps.logger.error("SERVER_ERROR", error.message, error, context);
     return new ORPCError("INTERNAL_SERVER_ERROR", {
       message: "SUPPLIER_ENTRY_UNSIGNABLE",
       data: { supplierId: error.supplierId, entryId: error.entryId, kind: error.kind },

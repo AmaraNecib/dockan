@@ -53,6 +53,10 @@ itself. The parent's push runs the Husky pre-push hook when the hook is availabl
 
 ### Review evidence checks
 
+Evidence files are LOCAL artifacts: `.scratch/reviews/` is gitignored, the reports are
+never committed, and a PR carries a summary comment instead of the files. Check them
+where they are, on disk, next to the worktree.
+
 For each evidence file `.scratch/reviews/<issue-id>/<sha>-*.md`:
 - Extract the SHA from the filename
 - Compare to current HEAD (`git rev-parse HEAD`)

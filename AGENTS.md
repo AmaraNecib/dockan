@@ -141,15 +141,25 @@ whether the debate happens. Run them in that order, each as its own sub-agent,
 before the lane reports.
 
 - **The lenses run on a different model than the author.** Author lanes run
-  `zen-proxy/deepseek-v4.1-flash-free`; the three lenses run
-  `zen-proxy/glm-5.3-flash-free` (both via `zen-proxy`; the `opencode*` routes
-  have an expired key). A model reviewing its own diff shares the blind spots the
-  lens exists to catch, so the reviewer is never the author.
+  `opencode-go/deepseek-v4.1-flash`; the three lenses run
+  `zen-proxy/minimax-m3.1-flash-free`. A model reviewing its own diff shares the blind spots the
+  lens exists to catch, so the reviewer is never the author. The owner named these two on
+  2026-10-19 after the free tier began refusing this box's IP: the author model is a paid one on the
+  OpenCode Go subscription, the lens model is free, reached through `zen-proxy`. The same MiniMax
+  model is advertised as `opencode-go/minimax-m3.1-flash-free`, but that route answered a CLI probe
+  and then returned `404 status code (no body)` from a real sub-agent run, so use the `zen-proxy`
+  one. `zen-proxy/beam-free` is the next free reviewer to reach for when MiniMax is down or a round
+  wants a third opinion. Free lenses have no parallelism cap, so a review round can go as wide as
+  the work needs; DeepSeek is the fallback when a free route fails.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.
-- **Evidence lands in `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**, which
-  `guard` checks before a push.
+- **Evidence lands in a local, untracked `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**,
+  which `guard` checks before a push. Review reports are never committed: a committed
+  report is a file the reviewer reads instead of the code, it burns the reviewer's
+  credits, and writing the next report changes a tracked file, which makes the
+  previous one stale and asks for another review. The PR carries a summary comment
+  instead — the three lens names, the SHA they read, the verdict and the counts.
 - **The lenses return findings; they do not author.** Neither reviewer writes to
   the worktree or takes the e2e slot (one full `test:e2e` run at a time). The
   authoring session applies the fixes and re-runs the lens where the tier

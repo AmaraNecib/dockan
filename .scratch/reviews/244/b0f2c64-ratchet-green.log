@@ -1,8 +1,0 @@
-### ratchet green at b0f2c64
-
-$ ( cd apps/web && bun test src/lib/blankness-ratchet.test.ts )
-
-29 pass
- 0 fail
- 53 expect() calls
-Ran 29 tests across 1 file. [917.00ms]

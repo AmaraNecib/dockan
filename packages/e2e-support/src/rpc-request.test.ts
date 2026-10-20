@@ -78,4 +78,32 @@ describe("the e2e helper's RPC request (#295)", () => {
   it("reads the token from the key the app's vault client writes", () => {
     expect(VAULT_SESSION_STORAGE_KEY).toBe("dokan.vault.session");
   });
+
+  it("says WHY a refused call failed, not only its status", async () => {
+    // A refusal is the one failure whose cause lives ONLY in the body: the
+    // status says "400", the body says which field or precondition the api
+    // wanted. Dropping it turns a refused seed into "HTTP 400" with nothing to
+    // act on.
+    const original = globalThis.fetch;
+    // SAFETY: the stub answers the shape the api refuses with — a non-2xx
+    // status carrying the app's typed error — and takes the same arguments the
+    // real fetch takes; only the network is replaced
+    globalThis.fetch = (async (_input: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ error: { message: "CATEGORY_REQUIRED" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    try {
+      const call = postRpcInPage({
+        name: "itemsCreateWithStock",
+        payload: "{}",
+        init: rpcRequestInit(null),
+      });
+      await expect(call).rejects.toThrow("itemsCreateWithStock failed with HTTP 400");
+      // the server's own words: a refused seed says what it wanted
+      await expect(call).rejects.toThrow("CATEGORY_REQUIRED");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

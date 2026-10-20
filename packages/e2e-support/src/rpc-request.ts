@@ -92,7 +92,14 @@ export async function postRpcInPage<TOutput>(request: RpcPageRequest): Promise<R
     body: request.payload,
     credentials: request.init.credentials,
   });
-  if (!response.ok) throw new Error(`${request.name} failed with HTTP ${response.status}`);
+  if (!response.ok) {
+    // the status says a call was REFUSED; only the body says why. A seed that
+    // fails for a reason the spec cannot read is a failure with no cause — and
+    // the api's refusals (a missing category, a vault session) name the thing
+    // that was wanted, so hand that text on rather than swallowing it
+    const detail = await response.text().catch(() => "");
+    throw new Error(`${request.name} failed with HTTP ${response.status}${detail === "" ? "" : `: ${detail}`}`);
+  }
   // SAFETY: the oRPC link answers the parsed JSON body of the call, and the
   // caller names the output type it expects under `json`.
   return (await response.json()) as RpcEnvelope<TOutput>;

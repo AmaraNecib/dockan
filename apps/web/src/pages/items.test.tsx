@@ -102,6 +102,9 @@ let resolveCreateWithStock: (() => void) | null = null;
 let itemsGate: Promise<void> | null = null;
 /** counts the items-list reads, so the hot-counter tick is observable */
 let itemsListFetches = 0;
+/** ids the paged read leaves out: what a row moving off the page looks like to
+ * the table, while the catalog read still holds the row (#295 round 4) */
+let pageOmitsIds: string[] = [];
 /** the error code the api refuses a repeated adjustment with (#295) */
 let stockRefuses: string | null = null;
 let releaseItemsGate: (() => void) | null = null;
@@ -128,7 +131,10 @@ mock.module("@/lib/rpc", () => ({
           // the stale-cache test holds this open to make the window observable
           if (itemsGate !== null) await itemsGate;
           itemsListFetches += 1;
-          return { items: items.map((item) => ({ ...item })), total: items.length };
+          // the page is ONE window of the list: `pageOmitsIds` is a row the
+          // page no longer holds (it still exists, it sorted away)
+          const page = items.filter((item) => !pageOmitsIds.includes(item.id));
+          return { items: page.map((item) => ({ ...item })), total: items.length };
         },
       }),
       queryKey: () => ["items"],
@@ -324,6 +330,19 @@ async function waitFor(check: () => boolean, attempts = 120): Promise<void> {
   throw new Error("condition not met within timeout");
 }
 
+/** The off-page editor row's stock cell: the number and its low-stock badge. */
+interface AwayStock {
+  text: string;
+  low: boolean;
+}
+
+function awayStock(): AwayStock {
+  const row = document.querySelector<HTMLTableRowElement>('[data-off-page="true"]');
+  if (row === null) throw new Error("no off-page row");
+  const text = row.querySelector<HTMLElement>('[data-testid="stock-after-cell"]')?.textContent ?? "";
+  return { text, low: text.includes(i18n.t("itemsLowBadge")) };
+}
+
 async function mount(options?: { refreshMs?: number }): Promise<MountedPage> {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -402,6 +421,7 @@ beforeEach(() => {
   resolveCreateWithStock = null;
   itemsGate = null;
   itemsListFetches = 0;
+  pageOmitsIds = [];
   stockRefuses = null;
   releaseItemsGate = null;
   document.body.innerHTML = "";
@@ -469,6 +489,36 @@ describe("items list hot counter (#295)", () => {
     click("edit-cancel");
     await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
     expect(el<HTMLButtonElement>('[data-testid="edit-item-item-1"]').disabled).toBe(false);
+  });
+
+  it("keeps the away row's stock live instead of freezing its snapshot (#295 round 4)", async () => {
+    // The same page-boundary move as the test above, with the row still IN the
+    // catalog. The draft carries a row snapshot so that its editor survives the
+    // move; rendered FROM that snapshot, the row's non-editing cells freeze:
+    // the poll never touches a row the page no longer holds, so the stock
+    // number and the low-stock badge keep the values the edit began with while
+    // every other row converges.
+    const edited = items[items.length - 1]!;
+    edited.stockOnHand = 7; // above the threshold of 5, so no badge yet
+    await mount({ refreshMs: 20 });
+    await waitFor(() => itemsListFetches >= 1);
+    click(`edit-item-${edited.id}`);
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "قيد الكتابة"); // an open, dirty draft
+
+    // an item created in the other window sorts ahead of this one: the page
+    // drops the row while the catalog read still holds it
+    pageOmitsIds = [edited.id];
+    await waitFor(() => document.querySelector('[data-off-page="true"]') !== null);
+    expect(awayStock().text).toContain("7");
+
+    // the other window sells four: the number must move, and the badge must
+    // appear with it — both live off the row, not off the snapshot
+    items = items.map((item) => (item.id === edited.id ? { ...item, stockOnHand: 3 } : item));
+    await waitFor(() => awayStock().text.includes("3") && awayStock().low);
+
+    // and the editor is still the way out of the draft
+    expect(document.querySelector('[data-testid="edit-save"]')).not.toBeNull();
   });
 
   it("carries the background polling flag on the query", async () => {

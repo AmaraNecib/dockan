@@ -7,8 +7,10 @@
 (the refreshed report) → `61ba809` (the round-2 lens fixes: the 10s window, its
 real edge, the checklist's background flag, the tick-bound test) → `99c7b7c7`
 (the reader's real visibility flips) → `80d5084c` (the nine test-audit findings
-and the schema index) → `ac797411` (the develop merge) → the round-3 commit
-(Greptile's four findings, the lens round-3 findings, the mechanism correction)
+and the schema index) → `ac797411` (the develop merge) → `b3f133fd` (the round-3
+commit: Greptile's four findings, the lens round-3 findings, the mechanism
+correction) → the round-4 commit (the away row made live, the e2e refusal's
+body, the blank reason re-verified)
 **Tier:** Standard. **Status:** lane done — committed, not pushed, no PR, no merge.
 
 ## The two questions, answered first
@@ -124,9 +126,13 @@ same array.
   which is what keeps a hidden window's interval alive. The module's header
   states which lever carries which case.
 - `apps/web/src/pages/items.tsx` — the items table (stock on hand) polls on
-  that tick. It had no interval at all before. An open edit draft keeps its own
-  row snapshot, so a poll that pushes the row off the page does not take Save
-  and Cancel with it (Greptile round 3, P1).
+  that tick. It had no interval at all before. An open edit draft keeps its row
+  on screen when a poll pushes it off the page, so Save and Cancel do not
+  disappear while `draftDirty` blocks every other row (Greptile round 3, P1),
+  and that row is read LIVE — the page window while it holds the row, the
+  `itemsAll` catalog read on the same tick while it does not (Greptile round 4,
+  P1). The draft's own snapshot is the last resort (a deleted row, or a failed
+  catalog read), never the source of a number that is supposed to move.
 - `apps/web/src/pages/dashboard.tsx` — the landing summary polls on the same
   tick, shortened from 60s.
 - `apps/web/src/pages/stock.tsx` — an item's history (the running stock
@@ -158,8 +164,9 @@ same array.
   the window's boundary second; a blank reason and no reason are one identity;
   the guard opens the write lock rather than a deferred unit.
 - `apps/web/src/pages/items.test.tsx` — the list polls, the query carries the
-  background flag, an open draft survives its row leaving the page, and the
-  refusal is actionable.
+  background flag, an open draft survives its row leaving the page, the away
+  row's stock number and low-stock badge keep moving while it is off the page,
+  and the refusal is actionable.
 - `apps/web/src/pages/dashboard.test.tsx` — the pending-return notice's NUMBER
   moves on the tick, not merely the fetch count.
 - `apps/web/src/components/app/app-shell.test.tsx` (new) — the shell badge
@@ -200,6 +207,11 @@ same array.
   fails (either order kills its own half);
 - the editor rendered from the page's rows alone → the off-page draft test
   fails;
+- the away row rendered from the draft's snapshot (`liveDraftRow` narrowed to
+the page) → the away-row stock test times out with the cell still reading the
+  edit-time value;
+- `postRpcInPage` throwing the status without the body → the refusal test fails
+  on `Received: "itemsCreateWithStock failed with HTTP 400"`;
 - `seedItem` reading `categories.items[0]` without the fallback → the second
   `--repeat-each` run fails on `undefined.id`.
 
@@ -228,6 +240,68 @@ same array.
   `dashboardSummary` and 0.27 ms per `itemsList` (50 rows), sql only, on a shop
   of 20 items and 500 movements. There is no committed benchmark.
 
+## Round 4 — Greptile's six findings at `b3f133fd`
+
+**The two P1s were one defect, and they got one fix.** The round-3 commit made
+an open draft keep its row visible when a poll pushed it off the page, by
+rendering `draft.row` — a snapshot. The snapshot fixed the lost Save/Cancel and
+created the freeze: a row the page no longer holds is a row the poll never
+touches, so the stock number and the low-stock badge sat at their edit-time
+values for as long as the edit stayed open. Patching the stock in a second
+place would have left two owners of one row's truth. Instead the row is read
+like every other row, from one value:
+
+```ts
+draft === null
+  ? null
+  : (pageItems.find((item) => item.id === draft.id) ??
+    awayRow.data?.items.find((item) => item.id === draft.id) ??
+    draft.row);
+```
+
+`awayRow` is the `itemsAll` read the stock form already mounts on this page,
+put on the hot tick only while the row is away (`enabled`), so nothing extra is
+read when no row is off-page and no new RPC exists. `draft.row` became the last
+resort (a deleted row, or a failed catalog read). The editor keeps its buttons
+because the same value renders it; the stock keeps moving because the same
+value feeds it.
+
+Red before green (ablation: `liveDraftRow` narrowed to the page):
+
+```
+(fail) items list hot counter (#295) > keeps the away row's stock live instead of freezing its snapshot (#295 round 4)
+error: condition not met within timeout
+  at waitFor (items.test.tsx:330:13)
+  at async <anonymous> (items.test.tsx:513:11)
+```
+
+Line 513 is the assertion that the cell reads the number the other window wrote
+(`3`, under the threshold, so the badge must appear with it). At the head the
+cell still reads `7` and has no badge — one `expect()` ran, the second never
+did.
+
+**The four P2s.**
+
+| Finding | Disposition |
+|---|---|
+| `packages/e2e-support/src/rpc-request.ts` dropped the refusal body | **Fixed.** The thrown error appends `: <response text>`, so a refused seed says which field or precondition the api wanted. Red: `Expected to contain: "CATEGORY_REQUIRED"` / `Received: "itemsCreateWithStock failed with HTTP 400"`. `tests/e2e/rpc-helpers.spec.ts` asserts the status prefix by substring, so it still matches. |
+| `.scratch/reviews/295/*` is stale (newest reports cover `7998a8d`) | **Stated, not fabricated.** The paid lens rounds cannot be run from this lane. The free/local gates were run and are listed below; the three lenses (plus a fresh author review) must be re-run by the parent on this head. |
+| `stockAddManual`: a space-only reason vs an untouched one | **Already fixed at `b3f133fd`**, re-verified: the normalization is one `const reason` used by both the guard and the write, and `router.test.ts` "treats a blank reason as no reason" covers both orders. Ablation re-run at this head (`const reason = input.reason ?? null`): `expect(refusedBlankFirst).not.toBeNull()` → `Received: null`, i.e. the repeat was admitted. |
+| `client-freshness.spec.ts` dies on `--repeat-each=2` after its own reset | **Already fixed at `b3f133fd`**: `seedCategoryId` moved into `rpc-helpers.ts` and creates a category when the list is empty. Its red is an e2e run, which this lane does not own — the parent's `--repeat-each=2` is the proof. |
+
+**The commands this round, run free and local:**
+
+| Command | Result |
+|---|---|
+| `bun test src/pages/items.test.tsx src/lib/freshness.test.ts` (in `apps/web`) | **62 pass, 0 fail**, 164 expect calls |
+| `bun test src/rpc/router.test.ts` (in `apps/api`) | **270 pass, 0 fail**, 1209 expect calls |
+| `bun test src/rpc-request.test.ts` (in `packages/e2e-support`) | **5 pass, 0 fail** |
+| `bun run lint` | 0 errors |
+| `bun run typecheck` (`apps/web`, `apps/api`, `packages/e2e-support`) | clean |
+
+The full unit suite and `test:e2e` were NOT run this round: both are heavy and
+the parent owns them.
+
 ## The lenses
 
 - **Debate** — round 1 on `zen-proxy/glm-5.3-flash-free`; its blockers are in
@@ -247,3 +321,11 @@ same array.
 - **The gate still needs the three lenses at the FINAL head.** `guard`
   compares each `<sha>-<lens>.md` with HEAD and calls the evidence stale when
   reviewable files changed since — and every lens fix moved the head.
+- **Round 4: the saved reports are stale and were NOT re-run.** The newest
+  files under `.scratch/reviews/295/` read `7998a8d`, which is three commits and
+  three behaviour changes behind this head (the API's repeat guard, the polling
+  wiring, the e2e spec). The paid lens routes are not available to a lane, so
+  no new report was written and none was invented: the free gates above are
+  what this round actually measured. The parent owes a fresh author review plus
+  a full `debate` → `test-audit` → `code-review` round on the round-4 head
+  before the branch is mergeable.

@@ -42,10 +42,11 @@ describe("supplierEntrySign", () => {
   });
 
   it("refuses a kind the rule table does not define instead of crashing", () => {
-    // `kind` is TEXT NOT NULL with no CHECK (db/schema.ts), so a row the write
-    // seams cannot produce but the database allows reaches this fold. The SQL
-    // reader answers NULL for it; the TypeScript fold must refuse the same way,
-    // not die on an undefined rule.
+    // no CHECK restricts `kind` to the five values (db/schema.ts constrains only
+    // that an ADJUSTMENT carries a direction), so a row the write seams cannot
+    // produce but the database allows reaches this fold. The SQL reader answers
+    // NULL for it; the TypeScript fold must refuse the same way, not die on an
+    // undefined rule.
     let caught: UnsignableSupplierEntryError | undefined;
     try {
       supplierEntrySign("BOGUS", null, "entry-9", "supplier-3");

@@ -84,6 +84,14 @@ export type LogContext = {
   itemName?: string;
   driver?: string;
   storeName?: string;
+  /** #317 — the account whose supplier ledger cannot be signed, so the saved
+   * diagnostics name it after the RPC message was reduced to a stable key */
+  supplierId?: string;
+  /** #317 — the entry the fold refused, when the reading code held the row */
+  entryId?: string;
+  /** #317 — the kind the refused row carried (`supplier_entry_kind`, because a
+   * bare `kind` would read as the log entry's own level or type) */
+  supplierEntryKind?: string;
 };
 
 export type LogEntry = {

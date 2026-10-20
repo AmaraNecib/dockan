@@ -7,7 +7,7 @@ import { rankCatalog } from "../lib/catalog-search";
 import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
 import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
-import type { AppLogger } from "../lib/logger";
+import type { AppLogger, LogContext } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
@@ -364,24 +364,46 @@ export function createRpcRouter(deps: RpcDeps) {
    * passes only known keys, so every such bug read as "an error occurred" on a
    * screen whose whole point is naming the broken account.
    *
-   * One translation, applied where every session-guarded procedure enters
-   * (`guarded` / `guardedInput`), so the read that folds, the write that folds and
-   * the dashboard that spans every account all report it the same way. The
-   * supplier id travels in `data` for the log and the support story; the message is
-   * the stable key the web translates.
+   * The original is logged BEFORE it is replaced: the replacement carries the
+   * stable key as its message and a fresh stack, and `app.ts` saves that stack and
+   * name, so without this line the ids that make the copy actionable exist only on
+   * the wire and never in the diagnostics the owner is told to read.
    */
-  const unsignableEntryRefusal = (error: UnsignableSupplierEntryError) =>
-    new ORPCError("INTERNAL_SERVER_ERROR", {
+  const unsignableEntryRefusal = (error: UnsignableSupplierEntryError) => {
+    // each id is added only when the read observed it: an absent key says "not
+    // seen", which is the whole point of the sentinel the refusal carries
+    const context: LogContext = {};
+    if (error.supplierId !== null) context.supplierId = error.supplierId;
+    if (error.entryId !== null) context.entryId = error.entryId;
+    if (error.kind !== null) context.supplierEntryKind = error.kind;
+    deps.logger.error("SUPPLIER_ENTRY_UNSIGNABLE", error.message, error, context);
+    return new ORPCError("INTERNAL_SERVER_ERROR", {
       message: "SUPPLIER_ENTRY_UNSIGNABLE",
       data: { supplierId: error.supplierId, entryId: error.entryId, kind: error.kind },
     });
+  };
+
+  /**
+   * Every store refusal the router translates, mapped in ONE place. A typed store
+   * error can come out of a read, a write, or a read the write performs as part of
+   * its unit, so the procedure wrapper owns both: `SupplierAdjustmentError` used to
+   * be re-thrown from inside each adjustment handler while this one was mapped at
+   * the wrapper, and two conventions for one job is how the next store refusal gets
+   * mapped in whichever place its author happened to open.
+   */
+  const rethrowStoreRefusal = (error: Error): never => {
+    if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
+    if (error instanceof UnsignableSupplierEntryError) throw unsignableEntryRefusal(error);
+    throw error;
+  };
 
   const guarded = <T>(handler: (context: RpcContext) => Promise<T>) => async ({ context }: { context: RpcContext }): Promise<T> => {
     await requireSession(context);
     try {
       return await handler(context);
     } catch (error) {
-      if (error instanceof UnsignableSupplierEntryError) throw unsignableEntryRefusal(error);
+      // a thrown non-Error (`throw "x"`) carries no store refusal to translate
+      if (error instanceof Error) rethrowStoreRefusal(error);
       throw error;
     }
   };
@@ -395,7 +417,8 @@ export function createRpcRouter(deps: RpcDeps) {
     try {
       return await handler(input, context);
     } catch (error) {
-      if (error instanceof UnsignableSupplierEntryError) throw unsignableEntryRefusal(error);
+      // a thrown non-Error (`throw "x"`) carries no store refusal to translate
+      if (error instanceof Error) rethrowStoreRefusal(error);
       throw error;
     }
   };
@@ -1150,25 +1173,22 @@ export function createRpcRouter(deps: RpcDeps) {
             // request had reduced the invoice. The store's conditional offset
             // still refuses a genuinely oversized link (EXCEEDS_REMAINING).
           }
-          try {
-            await tx.insertSupplierAdjustment({
-              supplierId: input.supplierId,
-              direction: input.direction,
-              amount: input.amount,
-              reason,
-              occurredAt,
-              invoiceId: input.invoiceId ?? null,
-              // when the caller omitted the date the server stamped it, so a
-              // retry cannot be told apart by time: the store matches any time
-              serverStamped: input.occurredAt === undefined,
-              // #181 — an explicit client key is the primary dedup identity;
-              // the #177 signature arm stays in force
-              idempotencyKey: input.idempotencyKey ?? null,
-            });
-          } catch (error) {
-            if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
-            throw error;
-          }
+          // the store's typed refusals (a dedup collision, an oversized link) are
+          // translated once by `guardedInput`; nothing is caught here
+          await tx.insertSupplierAdjustment({
+            supplierId: input.supplierId,
+            direction: input.direction,
+            amount: input.amount,
+            reason,
+            occurredAt,
+            invoiceId: input.invoiceId ?? null,
+            // when the caller omitted the date the server stamped it, so a
+            // retry cannot be told apart by time: the store matches any time
+            serverStamped: input.occurredAt === undefined,
+            // #181 — an explicit client key is the primary dedup identity;
+            // the #177 signature arm stays in force
+            idempotencyKey: input.idempotencyKey ?? null,
+          });
           await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
           return { balance: supplierBalance(entries, input.supplierId), entries };
@@ -1275,20 +1295,16 @@ export function createRpcRouter(deps: RpcDeps) {
             seen.add(key);
           }
           for (const row of plan) {
-            try {
-              await tx.insertSupplierAdjustment({
-                supplierId: row.supplierId,
-                direction: row.direction,
-                amount: row.amount,
-                reason,
-                occurredAt: input.occurredAt,
-                invoiceId: null,
-                ref: "OPENING_BALANCE",
-              });
-            } catch (error) {
-              if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
-              throw error;
-            }
+            // translated by `guardedInput`, like the single-adjustment path
+            await tx.insertSupplierAdjustment({
+              supplierId: row.supplierId,
+              direction: row.direction,
+              amount: row.amount,
+              reason,
+              occurredAt: input.occurredAt,
+              invoiceId: null,
+              ref: "OPENING_BALANCE",
+            });
             await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });
           }
           const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];

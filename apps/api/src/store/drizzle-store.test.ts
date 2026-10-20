@@ -2645,7 +2645,23 @@ describe("#317 one rule decides what a supplier balance means", () => {
     return entryId;
   };
 
-  /** The refusal a reader raised, or a failure naming the number it quoted instead. */  const refusalOf = async (read: Promise<unknown>): Promise<Error> => {
+  /**
+   * A row whose `kind` is not in the rule table at all — not a direction-less
+   * ADJUSTMENT, so the reader cannot reach it through the direction arm. No PRAGMA
+   * is needed: nothing constrains `kind` (the only CHECK is about ADJUSTMENT's
+   * direction), which is exactly why every reader needs a NULL/refusal path for it
+   * and not just for the direction case the other fixtures use.
+   */
+  const insertUnknownKindRow = (supplierId: string, amount: number): string => {
+    const entryId = crypto.randomUUID();
+    conn.raw
+      .query("INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, dedup_key, occurred_at, created_at) VALUES (?, ?, 'BOGUS', ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)")
+      .run(entryId, supplierId, amount, localDateTime(), localDateTime());
+    return entryId;
+  };
+
+  /** The refusal a reader raised, or a failure naming the number it quoted instead. */
+  const refusalOf = async (read: Promise<unknown>): Promise<Error> => {
     try {
       const value = await read;
       throw new Error(`expected the reader to refuse a row it cannot sign, got ${JSON.stringify(value)}`);
@@ -2756,6 +2772,53 @@ describe("#317 one rule decides what a supplier balance means", () => {
       const refusal = await refusalOf(store.debtSummaries());
       expect(refusal).toBeInstanceOf(UnsignableSupplierEntryError);
       expect(refusal).toMatchObject({ kind: null, supplierId: supplier.id });
+    } finally {
+      conn.raw.query("DELETE FROM supplier_account_entries WHERE id = ?").run(badEntryId);
+    }
+  });
+
+  it("refuses an unknown KIND on the SQL readers and the fold, not only a missing direction", async () => {
+    // The direction-less ADJUSTMENT fixtures all reach the reader through the
+    // direction arm of the generated CASE. A kind the table does not define takes
+    // the ELSE-NULL arm instead, and nothing else in the suite proved the SQL side
+    // of that.
+    const supplier = await newSupplier("نوع-مجهول");
+    const badEntryId = insertUnknownKindRow(supplier.id, 300);
+
+    try {
+      // the fold holds the row, so it names the kind and the entry it actually saw
+      let foldError: unknown;
+      try {
+        supplierBalance(await store.listSupplierEntries(supplier.id), supplier.id);
+      } catch (error) {
+        foldError = error;
+      }
+      expect(foldError).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(foldError).toMatchObject({ kind: "BOGUS", entryId: badEntryId, supplierId: supplier.id });
+      // …and it does not invent a direction: this row carried none, and the fold
+      // saw it, so the message says `(none)` rather than `(unread by this read)`
+      // SAFETY: the toBeInstanceOf above proved this is the refusal, whose message
+      // is the only field under test here
+      expect((foldError as Error).message).toContain("kind BOGUS, direction (none)");
+
+      // the SQL reads never surfaced a row: they name the account and nothing else,
+      // in the fields AND in the sentence the log carries
+      for (const read of [store.listParties("supplier"), store.debtSummaries()]) {
+        const refusal = await refusalOf(read);
+        expect(refusal).toBeInstanceOf(UnsignableSupplierEntryError);
+        expect(refusal).toMatchObject({ kind: null, supplierId: supplier.id });
+      }
+      // `partyDetail` is the one SQL-named read that folds, so it reaches the row:
+      // keep that difference honest instead of asserting one shape for both
+      const detailRefusal = await refusalOf(store.partyDetail("supplier", supplier.id));
+      expect(detailRefusal).toMatchObject({ kind: "BOGUS", entryId: badEntryId });
+      expect(detailRefusal.message).toContain("kind BOGUS, direction (none)");
+
+      // the SQL refusal says it did not look, instead of claiming the row carried
+      // no direction — the same invented observation as naming a kind it never saw
+      const sqlRefusal = await refusalOf(store.listParties("supplier"));
+      expect(sqlRefusal.message).toContain("kind (unread by this read), direction (unread by this read)");
+      expect(sqlRefusal.message).not.toContain("direction (none)");
     } finally {
       conn.raw.query("DELETE FROM supplier_account_entries WHERE id = ?").run(badEntryId);
     }

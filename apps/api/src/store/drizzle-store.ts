@@ -67,30 +67,30 @@ const duplicateKeyRefusal = (error: Error): SupplierAdjustmentError | null =>
 
 /**
  * #317 — the SQL face of `SUPPLIER_ENTRY_RULES`, built from that table so the
- * store cannot restate a sign the ledger owns. One pass over the table emits, for
- * one alias:
+ * store cannot restate a sign the ledger owns. One pass over the table emits three
+ * fragments, for one alias:
  *
  *   - the signed amount: one `CASE` arm per rule, with `ELSE NULL` for a row the
- *     table cannot sign — an unknown kind (`supplier_account_entries.kind` is TEXT
- *     with no CHECK), or a kind whose sign needs a direction it does not carry.
- *     That ELSE is live, not defensive padding: it is how such a row becomes NULL
- *     instead of a guessed number, which the old hand-written CASE signed
- *     negative and said nothing about.
+ *     table cannot sign — an unknown kind (no CHECK restricts `kind` to the five
+ *     values), or a kind whose sign needs a direction it does not carry. That ELSE
+ *     is live, not defensive padding: it is how such a row becomes NULL instead of
+ *     a guessed number, which the old hand-written CASE signed negative and said
+ *     nothing about.
+ *   - the signable predicate: the same arms as SQL, "the table can sign this row".
  *   - the signed total: 0 for an account with no rows, NULL when ANY row is
- *     un-signable, the signed total otherwise. `COUNT(expr)` counts non-NULL, so
- *     one un-signable row makes the two counts disagree. NULL is the SQL face of
- *     the typed refusal the TypeScript fold throws, so a partial total cannot
- *     escape a read.
+ *     un-signable, the signed total otherwise. NULL is the SQL face of the typed
+ *     refusal the TypeScript fold throws, so a partial total cannot escape a read.
  *
- * It is ONE generated expression instead of the OR-chain predicate plus CASE this
- * replaced, so only one thing has to stay aligned with the rule table. It is NOT
- * cheaper, and this comment says so because the previous one claimed a smaller
- * plan it did not have: SQLite evaluates the CASE once for COUNT and once for SUM,
- * and a CASE arm costs more than an OR term. Measured on the whole-ledger read —
- * 7 cases (empty, all-good, credit-only, debt-only, missing direction, unknown
- * kind, prototype-named direction) gave identical results; 10k rows over 200
- * accounts took 2.4 ms against 2.1 ms, and 200k rows 51.1 ms against 45.3 ms. The
- * reason it stayed is the single expression, not the plan.
+ * The predicate and the amount are two fragments of one table, not two statements
+ * of one rule: both are generated from `SUPPLIER_ENTRY_RULES` here, so neither can
+ * drift from the ledger. Folding them into a single `COUNT(signed)` expression was
+ * tried in the first fold of #329 and reverted: it bought no single-source property
+ * the predicate did not already have, and it cost size and speed on a money read.
+ * The emitted total is 600 characters split against 688 merged (+14.7%), and the
+ * whole-ledger read takes 2.6 ms against 2.9 ms at 10k rows over 200 accounts and
+ * 52.0 ms against 56.9 ms at 200k (median of 7, in-memory SQLite, one `SELECT` per
+ * form). `SUM(CASE WHEN signable THEN 1 END)` leaves NULL for an un-signable row
+ * rather than counting 0, and SUM ignores it, so the two counts still disagree.
  *
  * The alias is a PARAMETER, never a constant baked into the fragments: a fragment
  * built for one alias and used under another compiles fine and then fails at
@@ -98,36 +98,38 @@ const duplicateKeyRefusal = (error: Error): SupplierAdjustmentError | null =>
  */
 const SUPPLIER_ENTRY_ALIAS = "e";
 
-type SupplierSignFragment = { total: string };
+type SupplierSignFragments = { total: string };
 
-const supplierSignFragments = (alias: string): SupplierSignFragment => {
+const supplierSignFragments = (alias: string): SupplierSignFragments => {
   const signedAmount = (sign: 1 | -1) =>
     sign > 0 ? `${alias}.amount` : `-${alias}.amount`;
-  const arms: string[] = [];
+  const arms: Array<{ match: string; signedAmount: string }> = [];
   for (const kind of SUPPLIER_ENTRY_KINDS) {
     const rule = SUPPLIER_ENTRY_RULES[kind];
     if (rule.directionRequired) {
       // SAFETY: `directions` is a Record keyed by the direction union, so its keys
       // are exactly SupplierAdjustmentDirection members.
       for (const direction of Object.keys(rule.directions) as SupplierAdjustmentDirection[]) {
-        arms.push(
-          `WHEN ${alias}.kind = '${kind}' AND ${alias}.direction = '${direction}' THEN ${signedAmount(rule.directions[direction])}`,
-        );
+        arms.push({
+          match: `${alias}.kind = '${kind}' AND ${alias}.direction = '${direction}'`,
+          signedAmount: signedAmount(rule.directions[direction]),
+        });
       }
       continue;
     }
-    arms.push(`WHEN ${alias}.kind = '${kind}' THEN ${signedAmount(rule.sign)}`);
+    arms.push({ match: `${alias}.kind = '${kind}'`, signedAmount: signedAmount(rule.sign) });
   }
-  const signedExpr = `CASE ${arms.join(" ")} ELSE NULL END`;
+  const signedExpr = `CASE ${arms.map((arm) => `WHEN ${arm.match} THEN ${arm.signedAmount}`).join(" ")} ELSE NULL END`;
+  const signableExpr = `(${arms.map((arm) => `(${arm.match})`).join(" OR ")})`;
   return {
-    total: `CASE WHEN COUNT(*) = 0 THEN 0 WHEN COUNT(${signedExpr}) = COUNT(*) THEN SUM(${signedExpr}) END`,
+    total: `CASE WHEN COUNT(*) = 0 THEN 0 WHEN SUM(CASE WHEN ${signableExpr} THEN 1 END) = COUNT(*) THEN SUM(${signedExpr}) END`,
   };
 };
 
 /** Built once per alias, so the three aggregates do not rebuild the literals. */
-const SUPPLIER_SIGN_FRAGMENTS = new Map<string, SupplierSignFragment>();
+const SUPPLIER_SIGN_FRAGMENTS = new Map<string, SupplierSignFragments>();
 
-const supplierSignFragment = (alias: string): SupplierSignFragment => {
+const supplierSignFragment = (alias: string): SupplierSignFragments => {
   const cached = SUPPLIER_SIGN_FRAGMENTS.get(alias);
   if (cached !== undefined) return cached;
   const built = supplierSignFragments(alias);
@@ -153,20 +155,20 @@ const supplierLedgerNetSql = (alias: string = SUPPLIER_ENTRY_ALIAS): string =>
 /**
  * The refusal a SQL read raises when a signed total came back NULL: a row in that
  * account cannot be signed. The SQL surfaced no row, so this names only what the
- * read observed — the supplier whose account holds it, and the entry where the
- * caller has the row in hand. It names NO kind on purpose: the previous form
- * picked the first direction-required kind in the table (always ADJUSTMENT) and
- * reported a BOGUS row as a direction-less adjustment, which sent the owner to fix
- * a row that was fine.
+ * read observed — the supplier whose account holds it. It takes no kind, no
+ * direction and no entry id, because this read saw none of them: inventing a
+ * direction (`(none)`) is the same defect as inventing a kind, one field over. The
+ * fold, which does hold the row, names the entry and its kind.
  */
-const unsignableBalanceRefusal = (supplierId: string | null, entryId: string | null = null): UnsignableSupplierEntryError =>
-  new UnsignableSupplierEntryError({ supplierId, entryId });
+const unsignableBalanceRefusal = (supplierId: string | null): UnsignableSupplierEntryError =>
+  new UnsignableSupplierEntryError({ supplierId });
 
 /** The whole-ledger supplier net (the dashboard's `weOwe`). A NULL total is the
  * #317 refusal, so it is raised rather than read as zero — the dashboard must not
  * quote a net the rule table cannot vouch for. This read spans every account, so
- * the refusal names no supplier; the read that names it is the suppliers list,
- * which refuses on its own and says which account to fix. */
+ * the refusal names no supplier; the suppliers list refuses on its own and carries
+ * the id of the account that holds the row, which the router puts in the RPC
+ * `data` for the log rather than in the sentence the owner reads. */
 const supplierNetTotal = (rows: ReadonlyArray<{ total: SqlScalar }>): number => {
   const total = rows[0]?.total;
   if (total === null || total === undefined) throw unsignableBalanceRefusal(null);

@@ -64,8 +64,9 @@ export { SUPPLIER_ENTRY_KIND_LIST as SUPPLIER_ENTRY_KINDS };
 /**
  * The rule for one kind, or undefined when the table has none.
  *
- * The parameter is a plain `string` on purpose: `supplier_account_entries.kind`
- * is `TEXT NOT NULL` with no CHECK constraint, so a row the write seams cannot
+ * The parameter is a plain `string` on purpose: no CHECK restricts
+ * `supplier_account_entries.kind` to these five values (`db/schema.ts` constrains
+ * only that an ADJUSTMENT carries a direction), so a row the write seams cannot
  * produce but a migrated database can hold reaches the fold as any text at all.
  * A caller typed against `SupplierEntryKind` still widens here, so an unknown
  * kind is a refusal rather than a crash.
@@ -84,12 +85,16 @@ export function supplierEntryRule(kind: string): SupplierEntryRule | undefined {
 
 /** What a refusal observed. Every field is optional because the readers know
  * different amounts: the fold has the row, the SQL aggregate has only the account
- * it grouped. Nothing here is inferred — a field stays null when the read did not
- * see it, so a refusal never sends the owner to a row it never looked at. */
+ * it grouped. Nothing here is inferred — a field is OMITTED when the read did not
+ * see it, and null when the read saw a row that carried no value. The message
+ * reads those two apart (`(unread by this read)` versus `(none)`), so a refusal
+ * never sends the owner to a row it never looked at, and never reports an
+ * absence it did not observe either. */
 export type UnsignableSupplierEntryRefusal = {
   /** the row's kind, or null when the read could not name one (the SQL aggregate) */
   kind?: string | null;
-  /** the direction the row carried, or null when it carried none */
+  /** the direction the row carried; null when the fold saw a row carrying none,
+   * omitted when the read never saw the row */
   direction?: string | null;
   /** the entry, when the caller has the row in hand */
   entryId?: string | null;
@@ -108,6 +113,8 @@ export type UnsignableSupplierEntryRefusal = {
  */
 export class UnsignableSupplierEntryError extends Error {
   readonly kind: string | null;
+  /** the direction the read observed, null when it observed none OR when it never
+   * saw the row; `message` says which of the two, because a field alone cannot */
   readonly direction: string | null;
   readonly entryId: string | null;
   readonly supplierId: string | null;
@@ -116,9 +123,14 @@ export class UnsignableSupplierEntryError extends Error {
     const entry = refusal.entryId ?? null;
     const supplier = refusal.supplierId ?? null;
     const kind = refusal.kind ?? null;
+    // an OMITTED direction is a read that never saw the row; a null one is a row
+    // that carried none. Reporting the second when the first happened is the same
+    // invented observation as naming a kind the read did not see (#329 round 2).
+    const direction =
+      refusal.direction === undefined ? "(unread by this read)" : (refusal.direction ?? "(none)");
     super(
       `supplier account entry ${entry ?? "(no id)"}${supplier === null ? "" : ` of supplier ${supplier}`} cannot be signed: ` +
-        `kind ${kind ?? "(unread by this read)"}, direction ${refusal.direction ?? "(none)"}`,
+        `kind ${kind ?? "(unread by this read)"}, direction ${direction}`,
     );
     this.name = "UnsignableSupplierEntryError";
     this.kind = kind;

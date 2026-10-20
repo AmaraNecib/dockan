@@ -3170,6 +3170,23 @@ describe("an unsignable supplier balance at the RPC boundary (#317)", () => {
         code: "INTERNAL_SERVER_ERROR",
         message: "SUPPLIER_ENTRY_UNSIGNABLE",
       });
+
+      // the SAVED diagnostics must name the account. The page tells the owner to
+      // look the movement up, so an id that only ever travelled on the wire is a
+      // sentence with no destination — `app.ts` saves the replacement's stack, and
+      // the replacement has no ids, so the original has to be logged with them.
+      type SavedEntry = { event: string; context?: { supplierId?: string; entryId?: string; supplierEntryKind?: string } };
+      const saved = logger
+        .tail(500)
+        .lines.map((line) => {
+          // SAFETY: the logger writes one JSON object per line, and the fields read
+          // below are optional on `LogContext`, so a missing key is a miss.
+          return JSON.parse(line) as SavedEntry;
+        })
+        .filter((entry) => entry.event === "SUPPLIER_ENTRY_UNSIGNABLE");
+      expect(saved.length).toBeGreaterThan(0);
+      expect(saved.some((entry) => entry.context?.supplierId === supplier.id && entry.context?.entryId === entryId)).toBe(true);
+      expect(saved.some((entry) => entry.context?.supplierEntryKind === "ADJUSTMENT")).toBe(true);
     } finally {
       conn.raw.query("DELETE FROM supplier_account_entries WHERE id = ?").run(entryId);
     }

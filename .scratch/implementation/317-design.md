@@ -1,106 +1,84 @@
 # #317 — One rule decides what a supplier balance means
 
-Base: `develop` @ `ae9e416a68e9ff661ca1db45811d05b787ec3291` (merge-base, fetched).
+Base: `develop` @ `ae9e416a` (merge-base, fetched). Tier: High-assurance, because the
+change decides the sign of money owed to a supplier.
 
-## Tier: High-assurance
+## The two readers
 
-Justification: the change decides the **sign of money owed to a supplier**, and the
-tier's named failure mode (3) is exactly "debt direction is wrong (who owes whom)".
-A wrongly-signed row is the failure the owner cannot see. The parent runs the debate
-re-run on the final head; this lane runs no lens and claims none.
+`apps/api/src/lib/supplier-ledger.ts` folds a supplier's entries in TypeScript;
+`apps/api/src/store/drizzle-store.ts` sums them in SQL for the list, the summaries, the
+`/debts` groups and the dashboard. Before this ticket each carried its own hand-written
+list of kinds and signs. They agreed on every row a store seam can write, and disagreed on
+a row only a migrated database can hold: SQL signed a direction-less `ADJUSTMENT`
+negative, the fold threw.
 
-## The two readers today
+## Decision 1 — the table is the data, and both readers are derived from it
 
-| Reader | Where | Shape |
-| --- | --- | --- |
-| SQL | `apps/api/src/store/drizzle-store.ts:76` `supplierSignedAmountSql`, used at 6 sites | `SUM(CASE WHEN kind IN ('PAYMENT','RETURN') OR (kind='ADJUSTMENT' AND direction='THEY_OWE') THEN amount ELSE -amount END)` |
-| TypeScript | `apps/api/src/lib/supplier-ledger.ts:33` `supplierEntrySign` | branch on kind, throw when an ADJUSTMENT has no direction |
+`SUPPLIER_ENTRY_RULES` holds one rule per kind: the sign a fixed kind always carries, or —
+for `ADJUSTMENT` — the sign per direction plus the fact that a direction is required.
+`SUPPLIER_ENTRY_KINDS` is derived from the table's keys and asserted equal to the
+contracts' `supplierEntryKinds`, so a new kind fails on a diff that names it.
 
-They agree on every row that can be written through a store seam
-(`assertAdjustmentDirection` refuses a direction-less ADJUSTMENT), and disagree on a
-row that exists only in a migrated database, where the ALTER path could not add the
-`CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL)` the fresh DDL carries:
-SQL signs it **negative**, the fold **throws**.
+The store generates its SQL from the same table at module load: a `CASE` arm per rule plus
+an `ELSE NULL`, and the aggregate every reader uses — `0` for an account with no rows, the
+signed total when every row is signable, `NULL` when any row is not. Two fragments, one
+per concern (the signable predicate and the signed amount), because folding them into one
+`COUNT(signed)` expression was measured at +14.7% emitted size (600 → 688 characters) and
+slower at every row count, and bought no property the two did not already have.
 
-## Design
+A row the table cannot sign therefore has one meaning in both readers: unknown kind, or a
+direction-required kind with no usable direction. The fold throws; SQL returns `NULL`.
 
-### 1. The table (data, one home)
+## Decision 2 — refuse, do not skip
 
-`apps/api/src/lib/supplier-ledger.ts` gains `SUPPLIER_ENTRY_RULES`: one entry per
-kind, holding the sign the kind carries and whether a direction is required.
+A row that cannot be signed stops the read. Skipping is the silent-wrong-number failure
+this ticket exists to kill: `/debts` would show a smaller debt than the account holds, and
+the owner would pay the wrong amount believing the list. So every balance read refuses
+together — the fold, the party list, the account summaries, both `/debts` arms and the
+dashboard net — with one class, `UnsignableSupplierEntryError`.
 
-```ts
-type SupplierEntryRule =
-  | { directionRequired: false; sign: 1 | -1 }
-  | { directionRequired: true; directions: Record<SupplierAdjustmentDirection, 1 | -1> };
-```
+Each refusal names only what its reader observed. The fold has the row, so it carries the
+kind, the direction, the entry id and the supplier id. The SQL aggregate never surfaced a
+row, so it carries the supplier id and nothing else; `kind` and `direction` stay absent and
+the message says `(unread by this read)` rather than inventing a kind or claiming the row
+carried no direction.
 
-`SUPPLIER_ENTRY_KINDS` is derived from the table's keys (not typed twice), and
-`supplierEntrySign` becomes a lookup into the table. Its signature, its positive =
-supplier-owes-us convention and its existing message are unchanged.
+## Decision 3 — a typed RPC code, because the screen must say something useful
 
-### 2. SQL derived from the table (in the store, not the pure lib)
+`SUPPLIER_ENTRY_UNSIGNABLE` (`apps/web/src/lib/i18n.ts`), carrying `supplierId`, `entryId`
+and `kind` in `data`. Unmapped, the refusal reached the owner as the generic internal error
+on a screen whose whole point is naming the broken account.
 
-`supplier-ledger.ts` stays a pure module with no SQL; the store generates the SQL
-from the table at module load, so adding a kind is one edit in the table:
+The mapping belongs at the procedure wrapper, not inside handlers, because the refusal is
+raised by reads as well as writes — `guarded` / `guardedInput` translate it once, and
+`SupplierAdjustmentError` moved there too so the router keeps one convention instead of two.
+The original error is logged with its ids before the replacement is thrown, because
+`app.ts` saves the replacement's stack and name and the replacement has no ids.
 
-- `supplierSignedAmountSql(alias)` — one `CASE` arm per table row, generated by
-  iterating `SUPPLIER_ENTRY_RULES`, with **no** hand-written arm list left beside it.
-  A row no arm matches (an unknown kind, or a direction-required kind with a missing
-  or unrecognised direction) falls to `ELSE NULL`: SQL never invents a sign.
-- `supplierSignableSql(alias)` — the same table, as a predicate: "this row can be
-  signed".
-- `supplierSignedTotalSql(alias)` — the aggregate every reader uses:
-  `0` when the set is empty, the signed total when every row is signable, **NULL**
-  when any row is not. A partial total therefore cannot escape: the whole read
-  refuses.
+Two consequences landed with it. The Arabic copy names the supplier's ledger, not a
+"movement mentioned in the log": `tError` renders `message` only, so the sentence is true
+for every reader and the ids are for the diagnostics. And `/debts` checks `isError` before
+`isPending || !data`, because `!data` is also true for a rejected query and the old order
+showed loading placeholders forever.
 
-The generated arms are literals in the emitted string (built once at module load),
-so the query plan is the same shape as the hand-written CASE.
+## Tests
 
-### 3. The behaviour a missing direction gets
+- `supplier-ledger.test.ts` — the sign per kind from the table, a direction-less
+  `ADJUSTMENT` and an unknown kind refused as the typed class, and a direction named
+  `toString` refused rather than answered from `Object.prototype`.
+- `drizzle-store.test.ts` — one fixture row set folded through every reader and compared per
+  kind, in total and per account; the same fixture plus a direction-less row and a
+  non-`ADJUSTMENT` unknown kind, where every reader refuses (the direction-less row is
+  inserted with `PRAGMA ignore_check_constraints`, standing in for a migrated database); and
+  an account with no entries reading `0` rather than a refusal.
+- `router.test.ts` — the refusal reaching the wire as `SUPPLIER_ENTRY_UNSIGNABLE` for a read
+  and for a write that folds, the write's unit rolled back, and the ids present in the saved
+  diagnostics.
+- `apps/web/src/pages/debts.test.tsx` — a rejected read renders the refusal, not skeletons.
 
-**A typed refusal, in both readers**, because a money row that cannot be signed must
-stop the read rather than contribute an amount nobody can justify:
+## Risks
 
-- the fold throws `UnsignableSupplierEntryError` (a new `Error` subclass) naming the
-  kind, the direction it got (none) and the entry id when the caller supplied one;
-- every SQL balance read (`listParties`, `listSupplierAccountSummaries`,
-  `debtSummaries` ×2, `dashboardSummary`) turns the generated NULL into the **same**
-  class with the same fields, so a supplier list, a debt row, the dashboard and the
-  detail screen fail together instead of quoting different numbers.
-
-Why refusal and not "skip the row": skipping is the silent-wrong-number failure the
-issue exists to kill — the debts screen would show a smaller debt than the account
-holds, and the owner would pay the wrong amount believing the list. Why not the
-schema `CHECK` alone: the ALTER migration cannot add it, so the read must stay the
-boundary that covers already-migrated databases.
-
-No new RPC error code is introduced: this is a read failure of corrupt data, not a
-contract branch a form can hit, so no i18n key is owed (and `apps/web/**` is another
-lane's file).
-
-### 4. Tests (seams)
-
-- `apps/api/src/lib/supplier-ledger.test.ts` — one test per kind pinning the sign
-  from `SUPPLIER_ENTRY_RULES`, and the direction-required kind refusing loudly
-  (class, kind, entry id) instead of defaulting.
-- `apps/api/src/store/drizzle-store.test.ts` — the **parity test**: one fixture row
-  set folded through every reader (SQL list, SQL summary, detail fold, total) and
-  compared per kind and in total; plus the same fixture with one direction-less
-  ADJUSTMENT, where every reader must refuse. The direction-less row is inserted
-  with `PRAGMA ignore_check_constraints` to stand in for a migrated database.
-- No Playwright test: no user-facing flow or web file changes — the screens'
-  numbers now come from one rule, and the store parity test is the seam that proves
-  it. Guard's `test:e2e` condition ("when UI flows changed") does not fire.
-
-### 5. Risks
-
-- A corrupt supplier entry now blanks the supplier list, /debts and the dashboard
-  instead of showing a guessed number. Intentional; the module already states that a
-  wrongly-signed money row is worse than an error. The refusal names the entry so
-  the data can be fixed.
-- The generated aggregate adds one `COUNT`-shaped `SUM` per site; the same table
-  scan the site already paid for.
-- `ELSE NULL` in the per-row term means a future kind added to the union but not to
-  the table fails loudly instead of silently signing negative.
+A corrupt supplier entry now blanks the supplier list, `/debts` and the dashboard instead of
+showing a guessed number. Intentional. The blank screens name the account in the log, which
+is the data the fix needs; they do not name it on the screen, because the payload that
+reaches `tError` is the stable key alone.

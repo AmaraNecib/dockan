@@ -69,12 +69,17 @@ describe("e2e-selection map", () => {
     const dead = patterns.filter((p) => {
       const re = globToRegExp(p); // throws on a malformed pattern
       if (tracked.some((f) => re.test(f))) return false;
+      // An exact pattern names one path, so it is live only when that path is
+      // tracked. Existence on disk will not do: a deleted, ignored leftover in
+      // a working tree cannot appear in a diff, so grading it alive hides a
+      // pattern that has stopped matching anything (.dokan-port did exactly
+      // that after the PR stopped tracking it).
+      const wildcard = p.search(/[*?]/);
+      if (wildcard === -1) return true;
       // A directory-scoped pattern can be live without matching a tracked file
       // (`docs/**` matches nothing only if docs/ is empty). Accept it when its
-      // literal prefix exists. An exact pattern's prefix is the path itself, so
-      // a deleted file is dead.
-      const wildcard = p.search(/[*?]/);
-      const prefix = wildcard === -1 ? p : p.slice(0, wildcard);
+      // literal prefix exists.
+      const prefix = p.slice(0, wildcard);
       return !(prefix && existsSync(join(ROOT, prefix.replace(/\/$/, ""))));
     });
     expect(dead).toEqual([]);

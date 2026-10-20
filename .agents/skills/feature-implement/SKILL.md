@@ -119,8 +119,9 @@ Load relevant skills from the workflow's quality check table:
 Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
 
-Run this lens, `test-audit` and `code-review` on `zen-proxy/glm-5.3-flash-free` —
-never on the model that wrote the diff (`zen-proxy/deepseek-v4.1-flash-free`). The
+Run this lens, `test-audit` and `code-review` on `zen-proxy/minimax-m3.1-flash-free` —
+never on the model that wrote the diff (`opencode-go/deepseek-v4.1-flash`). When MiniMax is down,
+`zen-proxy/beam-free` is the free reviewer. The
 reviewer is never the author. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.
 
@@ -172,11 +173,14 @@ Branch naming: `feat/<issue-id>-<short-description>`, `fix/<issue-id>-<descripti
 git push origin <branch-name>
 gh pr create --base develop \
   --title "<description> (closes #<issue-id>)" \
-  --body "See .scratch/reviews/<issue-id>/ for review evidence"
+  --body "<what changed, how it was verified, and the SHA>"
 ```
 
 After opening the PR, the parent publishes a concise review-evidence summary as a
-PR comment.
+PR comment: the three lens names, the SHA they read, the verdict and the counts.
+The reports themselves stay local — `.scratch/reviews/` is gitignored, and a
+committed report makes the reviewer judge our notes instead of our code, burns
+credits, and makes the previous report stale.
 
 ### 11. CI + Greptile — parent-owned
 

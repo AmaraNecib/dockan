@@ -1,6 +1,0 @@
-### round-4 failing-first probe at ef32177 (script: .scratch/reviews/244/round4-before-probe.ts, run against the round-3 scanner 1af565f)
-
-appended draft escapes (finding 1)       => [] (ESCAPES)
-block comment joins tokens (finding 2)   => [] (ESCAPES)
-nested template mis-scopes (finding 3)   => [] (ESCAPES)
-exit: 0

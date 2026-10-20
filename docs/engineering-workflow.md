@@ -84,10 +84,14 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 - **Reviewers are independent.** `debate`, `test-audit` and `code-review` run as
   separate sub-agents. A child that reports "I ran the gates in-lane" has not run
   them — re-run the lenses where the tool exists, and record the disclosure.
-- **The lenses run on a different model than the author.** Author lanes run
-  `zen-proxy/deepseek-v4.1-flash-free`; `debate`, `test-audit` and `code-review`
-  run `zen-proxy/glm-5.3-flash-free`. A model that reviews its own diff shares
-  the blind spots the lens exists to catch, so the reviewer is never the author.
+- **The lenses run on a different model than the author (owner decision, 2026-10-19).** Author
+  lanes run `opencode-go/deepseek-v4.1-flash`; `debate`, `test-audit` and `code-review` run
+  `zen-proxy/minimax-m3.1-flash-free`. A model that reviews its own diff shares the blind spots the lens exists to
+  catch, so the reviewer is never the author. For one stretch on 2026-10-19 the owner required a
+  single model for both roles; that is no longer the rule, and these two are the pair.
+  `zen-proxy/beam-free` is the next free reviewer when MiniMax is down or a round wants a third
+  opinion. Free lenses carry no parallelism cap; `opencode-go/deepseek-v4.1-flash` is the fallback
+  when a free route fails.
 - **All three lenses run at Standard and above.** `debate` is no longer reserved
   for High-assurance (owner decision, 2026-10-18); the tier decides how much
   scrutiny a failure mode earns, not whether the debate happens.
@@ -125,8 +129,17 @@ reviewable next to the verdict instead of being invisible.
 
 - Draft tickets live in `.scratch/issues/` (ignored) until they graduate to GitHub issues.
 - Designs live in `.scratch/implementation/<issue-id>-design.md`.
-- Review evidence lives in `.scratch/reviews/<issue-id>/<head-sha>-<gate>.md`. Evidence filenames
-  must contain the exact reviewed HEAD SHA; any later reviewable-file change makes evidence stale.
+- Review evidence lives in `.scratch/reviews/<issue-id>/<head-sha>-<gate>.md` and is a
+  **local, untracked artifact**. It never enters a diff: a committed review report is
+  a file a reviewer must read, and reading it makes the reviewer judge our notes
+  instead of our code, burns credits, and — because writing a new report changes a
+  tracked file — makes the previous report stale, which asks for another review. The
+  loop is closed by keeping the evidence out of the repository. The PR carries the
+  summary instead: the three lens names, the SHA they read, the verdict and the
+  counts, in one comment.
+- Evidence filenames must contain the exact reviewed HEAD SHA; any later change to a
+  **reviewable** file makes the evidence stale. `.scratch/` is not reviewable, so
+  local evidence never goes stale by being written.
 - **Wisdom: parent-owned generation, every lane's consumption.** A lane reads
   `.agents/wisdom/` before it starts, applies what bears on its task and says in
   its commit message body which lessons it applied (and which it deliberately did not)

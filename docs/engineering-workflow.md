@@ -104,6 +104,27 @@ buys nothing: the parent reads the file when it needs the argument.
 - **A green suite is not a review.** Every gate names the commands it ran and
   their exit codes; an unstated gate is an unrun gate.
 
+## Merge queue
+
+A stacked PR — one whose base is another branch, not `develop` — gets **no CI at all**:
+`.github/workflows/ci.yml` runs on `pull_request` into `develop`, on `push` to `develop`, and on
+manual dispatch. A child of a stack therefore shows two or three checks (the security scanners) and
+nothing else: no typecheck, no lint, no tests, no e2e. Green there is not a signal.
+
+So the order is not a preference, it is the only sequence that verifies anything:
+
+1. The base PR merges into `develop`.
+2. The child rebases onto the new `develop` **and** has its base changed to `develop`. Rebasing
+   alone is not enough — the child would still target the branch it was stacked on, and still run
+   no CI.
+3. Now CI runs, and the child's head is new, so the review request is asked once more at that
+   head.
+4. The child merges.
+
+The rebase conflict is planned *before* step 1, while the base is still moving: a plan written
+against a base that has not landed is worth more than a merge started against one that has, because
+the plan names the symbols a resolution must preserve from both sides.
+
 ## Architecture review
 
 **Runs after Greptile says 5/5, and it is parent-owned** (owner decision, 2026-10-20). The order is:

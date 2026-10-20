@@ -129,8 +129,17 @@ reviewable next to the verdict instead of being invisible.
 
 - Draft tickets live in `.scratch/issues/` (ignored) until they graduate to GitHub issues.
 - Designs live in `.scratch/implementation/<issue-id>-design.md`.
-- Review evidence lives in `.scratch/reviews/<issue-id>/<head-sha>-<gate>.md`. Evidence filenames
-  must contain the exact reviewed HEAD SHA; any later reviewable-file change makes evidence stale.
+- Review evidence lives in `.scratch/reviews/<issue-id>/<head-sha>-<gate>.md` and is a
+  **local, untracked artifact**. It never enters a diff: a committed review report is
+  a file a reviewer must read, and reading it makes the reviewer judge our notes
+  instead of our code, burns credits, and — because writing a new report changes a
+  tracked file — makes the previous report stale, which asks for another review. The
+  loop is closed by keeping the evidence out of the repository. The PR carries the
+  summary instead: the three lens names, the SHA they read, the verdict and the
+  counts, in one comment.
+- Evidence filenames must contain the exact reviewed HEAD SHA; any later change to a
+  **reviewable** file makes the evidence stale. `.scratch/` is not reviewable, so
+  local evidence never goes stale by being written.
 - **Wisdom: parent-owned generation, every lane's consumption.** A lane reads
   `.agents/wisdom/` before it starts, applies what bears on its task and says in
   its commit message body which lessons it applied (and which it deliberately did not)

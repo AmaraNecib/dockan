@@ -39,4 +39,9 @@ coverage/
 # local crew session state (harness-managed)
 .scratch/sessions/
 
+# review evidence: a LOCAL artifact, never part of a diff (issue: Greptile
+# re-reviewed our own reports, and each committed report made the previous one
+# stale). The PR carries a summary comment instead of the files.
+.scratch/reviews/
+
 .e2e-data/

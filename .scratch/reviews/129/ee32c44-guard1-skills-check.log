@@ -1,2 +1,0 @@
-$ bun scripts/sync-claude-skills.ts --check
-skills mirror in sync: 32 skills in .claude/skills == .agents/skills

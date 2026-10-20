@@ -22,6 +22,13 @@ describe("stock movement reason tokens", () => {
     expect(movementReasonText(t, "opening")).toBe("opening");
   });
 
+  it("keeps the rejection note inside the sentence (#322 renamed the option off `context`)", () => {
+    const rendered = movementReasonText(t, "RETURN_REJECTED_DAMAGED RTN-7 — scratched");
+    expect(rendered).toContain("RTN-7 — scratched");
+    // an unfilled template would leak the braces onto the screen
+    expect(rendered).not.toContain("{{");
+  });
+
   it("styles a zero-delta cost correction as neutral, never as a loss", () => {
     expect(movementDeltaClass(0)).not.toBe("text-destructive");
     expect(movementDeltaClass(0)).toBe("text-muted-foreground");

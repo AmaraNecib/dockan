@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { MessageKey } from "@/lib/i18n";
 import {
   Activity,
   BarChart3,
@@ -21,7 +22,7 @@ import {
 export type NavItem = {
   key: string;
   /** i18n key for the item label (existing nav* keys map onto Dokan's sections). */
-  labelKey: string;
+  labelKey: MessageKey;
   to: string;
   icon: ComponentType<{ className?: string; size?: number }>;
   /**
@@ -33,7 +34,7 @@ export type NavItem = {
 };
 
 export type NavGroup = {
-  labelKey: string;
+  labelKey: MessageKey;
   /** true renders the group as a click-to-expand sub-group (the rare "System" cluster). */
   collapsible?: boolean;
   items: NavItem[];

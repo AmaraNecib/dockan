@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { VAULT_ERROR_CODES } from "@dokan/contracts";
 
-import i18n, { PHONE_EXAMPLE_INTL, PHONE_EXAMPLE_LOCAL, authErrorKey, serverErrorKey, tError } from "./i18n";
+import i18n, { PHONE_EXAMPLE_INTL, PHONE_EXAMPLE_LOCAL, authErrorKey, serverErrorKey, tError, type MessageKey } from "./i18n";
 
 /**
  * Issue #100 — a failure the app can name must say what it is. These cases are
@@ -357,5 +357,36 @@ describe("opening-balance save count follows the Arabic plural rules (issue 255)
     expect(i18n.t("supplierOpeningSave", { count: 10 })).toBe("حفظ 10 تسويات");
     expect(i18n.t("supplierOpeningSave", { count: 11 })).toBe("حفظ 11 تسوية");
     expect(i18n.t("supplierOpeningSave", { count: 200 })).toBe("حفظ 200 تسوية");
+  });
+});
+
+/**
+ * #322 — the arrow that catches the next raw key.
+ *
+ * `t` is checked against the catalogue (see the `CustomTypeOptions` augmentation
+ * in `./i18n`), so a key that is not in `resources` is a compile error. That
+ * cannot be asserted at run time: i18next happily answers with the key itself,
+ * which is exactly the broken screen this issue removed.
+ *
+ * The assertion is therefore the `@ts-expect-error` below, and it inverts twice
+ * over. Delete the augmentation and the directive has nothing to suppress, so
+ * `tsc` reports it as unused; add `vaultInvald` to the catalogue and the same
+ * thing happens. Either way `bun run typecheck` fails, which is the point.
+ * `bun test` never typechecks, so this file guards the typing only through
+ * `bun run typecheck`.
+ */
+describe("the translation surface is typed against the catalogue (#322)", () => {
+  it("a misspelled key is a compile error, not an Arabic lookup", () => {
+    // @ts-expect-error — `vaultInvald` is a misspelling, not a message key
+    const rendered = i18n.t("vaultInvald");
+    // i18next's untranslated fallback is the raw key: the runtime half of the
+    // bug, showing why the compile-time half is the only real guard
+    expect(rendered).toBe("vaultInvald");
+  });
+
+  it("the catalogue's key type rejects a non-key even without calling t", () => {
+    type NonKeyIsRejected = "vaultInvald" extends MessageKey ? false : true;
+    const rejected: NonKeyIsRejected = true;
+    expect(rejected).toBe(true);
   });
 });

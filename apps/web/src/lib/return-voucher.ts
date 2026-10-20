@@ -1,4 +1,4 @@
-import type { ReturnDetail, Settings } from "@dokan/contracts";
+import type { ReturnDetail, ReturnPayoutMethod, ReturnStatus, Settings } from "@dokan/contracts";
 
 import { paginateLineSlices, textRowUnits } from "./print-pagination";
 
@@ -32,7 +32,10 @@ export interface ReturnVoucher {
   invoiceNumber: string;
   invoiceDate: string;
   counterpartyName: string | null;
-  payoutMethod: string;
+  /** the contract's closed union, not `string`: the voucher's copy is chosen by
+   * a template literal key (`pmtMethod_${payoutMethod}`), and #322 makes that key
+   * checked only while the value is a union of literals. */
+  payoutMethod: ReturnPayoutMethod;
   /** total return value; cashPaidOut + debtOffset = refundAmount */
   refundAmount: number;
   /** cash handed back to the customer now */
@@ -42,7 +45,9 @@ export interface ReturnVoucher {
   /** portion of debtOffset already applied to the invoice (#68: acceptance applies it) */
   debtApplied: number;
   reason: string | null;
-  status: string;
+  /** same reasoning as `payoutMethod`: `returnsStatus_${status}` must collapse
+   * to literal keys for the compiler to check the copy exists. */
+  status: ReturnStatus;
   lines: ReturnVoucherLine[];
 }
 

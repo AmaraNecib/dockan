@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
-import i18n from "../lib/i18n";
+import i18n, { type MessageKey } from "../lib/i18n";
 
 /** today's tail the api returns — newest-last (chronological append order) */
 interface TailFixture {
@@ -186,10 +186,10 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
       expect(await page.waitFor(() => page.rows() === 4)).toBe(true);
       const shown = page.rowsText().join("\n");
 
-      for (const key of ["logEvent_FIRST_TIME_SETUP", "logEvent_VAULT_CREATED", "logEvent_SERVER_BOOT_DONE", "logEvent_SERVER_STARTED"]) {
+      for (const key of ["logEvent_FIRST_TIME_SETUP", "logEvent_VAULT_CREATED", "logEvent_SERVER_BOOT_DONE", "logEvent_SERVER_STARTED"] satisfies MessageKey[]) {
         expect(shown).toContain(i18n.t(key));
       }
-      for (const key of ["logMessage_firstTimeSetup", "logMessage_vaultCreated", "logMessage_serverBootVault", "logMessage_serverStarted"]) {
+      for (const key of ["logMessage_firstTimeSetup", "logMessage_vaultCreated", "logMessage_serverBootVault", "logMessage_serverStarted"] satisfies MessageKey[]) {
         expect(shown).toContain(i18n.t(key));
       }
       // no raw English event code or sentence leaks for these rows

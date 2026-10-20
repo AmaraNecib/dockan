@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
 import { useSession, authClient } from "@/lib/auth-client";
+import type { MessageKey } from "@/lib/i18n";
 import { logoutAndReload } from "@/lib/logout";
 import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { SLOW_REFETCH_MS } from "@/lib/freshness";
@@ -25,7 +26,7 @@ import { NAV_GROUPS, activeNavKey } from "./navigation";
 import { useSaleDraft } from "./sale-draft";
 import { useSidebarCollapsed } from "./sidebar-state";
 
-function pageTitleFor(activeKey: string | null): string | null {
+function pageTitleFor(activeKey: string | null): MessageKey | null {
   if (!activeKey) return null;
   for (const group of NAV_GROUPS) {
     const item = group.items.find((i) => i.key === activeKey);

@@ -337,7 +337,11 @@ test("a second instance on this folder: the browser is told the folder is in use
 
   const inUse = page.getByTestId("vault-status-in-use");
   await expect(inUse).toBeVisible();
-  await expect(inUse).toHaveText("البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.");
+  // #277/#298: the screen names what happens next — this instance retries the
+  // folder on its own schedule and takes it when the other copy closes — so the
+  // copy must not ask for the restart the feature removed. The exact match is
+  // the pin: a carried-over "then reopen the app" sentence fails here.
+  await expect(inUse).toHaveText("البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.");
   // the server-down story must not appear for a refusal
   await expect(page.getByTestId("vault-status-unavailable")).toHaveCount(0);
   await expect(page.getByText("تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.")).toHaveCount(0);
@@ -366,8 +370,10 @@ test("a lock held by an alive pid that stopped beating names the lock file (#283
   await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
   const stale = page.getByTestId("vault-status-stale-lock");
   await expect(stale).toBeVisible();
+  // the recycled-pid story runs on the same retry loop, so it also promises the
+  // self-take; only the unreadable-lock page still says "then reopen the app"
   await expect(stale).toHaveText(
-    "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات ثم أعد فتح التطبيق.",
+    "القفل ممسوك بعملية لا تبدو نسخة أخرى من دكان. إن لم تكن هناك نسخة أخرى مفتوحة، فاحذف ملف vault.lock من مجلد البيانات، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
   );
   await expect(page.getByTestId("vault-status-in-use")).toHaveCount(0);
 });

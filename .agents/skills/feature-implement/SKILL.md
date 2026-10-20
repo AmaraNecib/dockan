@@ -13,6 +13,21 @@ CI/Greptile, the architecture review, the merge decision and wisdom. The lane's
 last act is its **commit**; its completion wakes the parent. It never pushes,
 never opens a PR and never merges.
 
+**A quiet child is not a stuck child.** A child that is thinking, waiting on a
+long command, or finished touches no files, so file mtimes prove nothing about
+it. Before you interrupt anything, read the child's last message and its
+status: `completed` or `idle` means the turn ended, and a turn that ended
+without a commit is a dead lane to relaunch (read its dirty diff first), not a
+child to kill. Stopping a child on a hunch costs the hours it had already
+spent. This cost six hours on one board: two lanes were killed for being
+silent, and both had work in hand.
+
+**Watch the pull requests; do not poll them.** `watch_pull_request` is the
+trigger for everything a PR does: a new head, a CI run that finished, a
+conflict, a review comment. It wakes the thread with the fact attached, so
+the parent never has to sit in a `gh pr checks` loop and never has to guess
+whether a run is still going.
+
 **A lane never ends its turn with work in flight.** If it cannot finish the item
 it is on, it commits a checkpoint — a WIP commit is fine when the message says so —
 and then reports. A turn that ends with "step 2 of 3 is in flight" is a dead lane:

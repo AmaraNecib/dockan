@@ -11,12 +11,17 @@ import { openVaultStore } from "./vault-store";
  * round-trip all share one pair instead of each composing their own.
  *
  * Field forwarding is deliberately NOT tested here. `OpenVaultStoreInput` IS
- * `EncryptedConnectionOptions`, spread through unchanged, so a test per field
- * could only prove the adapter copies what its own parameter type already
- * carries — and the interesting failure (a capability the connection supports
- * silently not arriving) is now a type error, not a green-suite-with-a-missing
- * line. #280 and #291 both shipped fully green with a forwarding line deleted,
- * which is why that proof moved into the type.
+ * `EncryptedConnectionOptions` and the whole input object is passed unchanged,
+ * so there is no per-field copy left to drop. A test per field could only prove
+ * the adapter forwards what its own parameter type already carries, and the
+ * failure that matters — a capability the connection supports silently not
+ * arriving — can no longer be introduced by adding a field, because the object
+ * is passed whole.
+ *
+ * That protection is the spread, not the compiler. A field-by-field copy would
+ * still compile while omitting an optional field such as `writeStamp`,
+ * `writeGuard` or `logger`. #280 and #291 both shipped fully green with exactly
+ * that line deleted, which is why there is no copy left to delete.
  */
 
 let dir: string;

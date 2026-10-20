@@ -17,7 +17,8 @@ import {
 import { snapshotFailurePolicy } from "./snapshot-failure-policy";
 import { cleanupStalePartials, writeFileAtomic } from "../lib/atomic-file";
 import { createVaultBackupBundle, readVaultBackupBundle } from "../lib/vault/backup";
-import { open } from "../lib/vault/crypto";import {
+import { open } from "../lib/vault/crypto";
+import {
   MAX_SNAPSHOT_STAMP_BYTES,
   VAULT_SNAPSHOT_LEGACY_VERSION,
   VAULT_SNAPSHOT_MAGIC,
@@ -721,7 +722,11 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // tell, and it sees the buffer, not the file. `readVerifiedSnapshot` is
       // that spelling of the same table: not this holder's bytes, refused with
       // its reason rather than bundled.
-      const snapshot = readVerifiedSnapshot(snapshotPath, connectionStamp);
+      const snapshot = readVerifiedSnapshot(
+        snapshotPath,
+        connectionStamp,
+        "refusing to bundle a snapshot that is not this holder's",
+      );
       await writeFileAtomic(destPath, createVaultBackupBundle(headerText, snapshot));
     },
   };

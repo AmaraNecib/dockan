@@ -180,9 +180,10 @@ function fenceFailureReason(verdict: RefusingVerdict): SnapshotFailureReason {
 }
 
 /** A refused write, in the shape every caller acts on. */
-function snapshotRefusal(verdict: RefusingVerdict): SnapshotPersistenceError {
+function snapshotRefusal(verdict: RefusingVerdict, clause?: string): SnapshotPersistenceError {
   const reason = fenceFailureReason(verdict);
-  return new SnapshotPersistenceError(new Error(snapshotFailurePolicy(reason).sentence), reason);
+  const sentence = snapshotFailurePolicy(reason).sentence;
+  return new SnapshotPersistenceError(new Error(clause ? `${clause}: ${sentence}` : sentence), reason);
 }
 
 /**
@@ -376,9 +377,14 @@ export function writeSnapshot(write: AsyncSnapshotWrite): Promise<DurabilityOutc
  * the AEAD context from the envelope's own stamp, so a foreign-stamped envelope
  * decrypts cleanly and `quick_check` passes on a coherent but stale image.
  */
-export function readVerifiedSnapshot(snapshotPath: string, stamp: string | undefined): Buffer {
+export function readVerifiedSnapshot(
+  snapshotPath: string,
+  stamp: string | undefined,
+  /** what the caller was about to do, so the refusal names the lost action */
+  clause: string,
+): Buffer {
   const bytes = fs.readFileSync(snapshotPath);
   const verdict = fromEnvelope(bytes, stamp);
-  if (verdict.outcome !== "mine") throw snapshotRefusal(verdict);
+  if (verdict.outcome !== "mine") throw snapshotRefusal(verdict, clause);
   return bytes;
 }

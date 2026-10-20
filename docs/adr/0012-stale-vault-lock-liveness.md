@@ -67,10 +67,11 @@ still alive, so one shared helper decides both.
   outcome the lock exists to prevent. So the guarantee is mechanical, not
   intended: `VaultLock.assertHeld()` re-reads the lock's token at the instant of
   the write, `EncryptedConnectionOptions.writeGuard` runs it before each attempt
-  and again before `persistedVersion` advances (the asynchronous write; the
-  synchronous `checkpoint()` cannot be interleaved in-process, so it checks
-  once before it), and shutdown skips the abandoned
-  store's final checkpoint. Two holes remain, deferred with issues of their own
+  and again before `persistedVersion` advances, and shutdown skips the abandoned
+  store's final checkpoint. Both drivers ask it the same number of times per
+  attempt — the synchronous `checkpoint()` now walks the same sequence as the
+  asynchronous write (one attempt instead of three, because its caller has
+  nothing to retry with). Two holes remain, deferred with issues of their own
   rather than claimed closed: an in-flight write that passed the guard before the
   theft can still land, so the new owner can briefly believe in a version it does
   not hold on disk (#280), and an unreadable lock file is indistinguishable from

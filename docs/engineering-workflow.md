@@ -54,7 +54,9 @@ commit — the lane stops here
     ↓
 Push + open PR
     ↓
-Greptile review (cli-review skill or @greptile-apps on the PR)
+Greptile review (cli-review skill or @greptile-apps on the PR) — to a 5/5
+    ↓
+Architecture review — improve-codebase-architecture (only once the code is accepted)
     ↓
 Guard Phase 3 — pre-report gate
     ↓
@@ -95,8 +97,83 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 - **All three lenses run at Standard and above.** `debate` is no longer reserved
   for High-assurance (owner decision, 2026-10-18); the tier decides how much
   scrutiny a failure mode earns, not whether the debate happens.
+- **A lens returns findings, not an essay.** The evidence file holds the detail; the message back to
+the parent holds the finding list, each one line with file:line, severity and the smallest fix. A
+lens that pastes its whole report into the conversation costs the same tokens as ten findings and
+buys nothing: the parent reads the file when it needs the argument.
 - **A green suite is not a review.** Every gate names the commands it ran and
   their exit codes; an unstated gate is an unrun gate.
+
+## Architecture review
+
+**Runs after Greptile says 5/5, and it is parent-owned** (owner decision, 2026-10-20). The order is:
+lenses → push, open the PR → Greptile to a 5/5 → **architecture review** → fold what it found →
+merge. Running it earlier spends the token budget on code whose acceptability is still in question;
+run it once the diff is known to work, and its findings are about quality only.
+
+The vocabulary is cheaper than the review and applies from the first line of code:
+
+| When | Skill | Form |
+| --- | --- | --- |
+| While designing and writing | `codebase-design`, `domain-modeling` | Vocabulary and glossary only: deep modules, seams, `CONTEXT.md` terms. No report. |
+| After the 5/5 | `improve-codebase-architecture` | The deep pass, and only then. |
+
+A lane cannot run the deep pass: it ends by asking *which candidate to explore*, and that pick is
+the owner's.
+
+**Two forms, and the trigger decides which.**
+
+| Trigger | Form |
+| --- | --- |
+| The diff adds a **module**, moves a **seam**, adds an **adapter**, or widens an existing **interface** | The full pass: walk the codebase, write the HTML report to the OS temp dir, hand the owner the path and the candidate list |
+| Anything else | One line in the PR evidence comment: `architecture: no seam moved` |
+
+Both forms are cheap; skipping the question is not. The report **never lands in the repo** — it is
+written to the OS temp dir and its absolute path goes in the PR evidence comment so the review is
+reproducible from the PR alone.
+
+**It is a loop with a fixed point, not a one-shot step.** Greptile's 5/5 and this review have to agree
+on the same head, and a finding has exactly three ways out:
+
+```
+Greptile 5/5?  ── no ──→ fix ──→ ask once more at the new head
+      ↓ yes
+architecture review (this diff only)
+      ↓
+finding about this diff?
+      ├─ nothing ────→ merge
+      ├─ fixable here ──→ fix → push → Greptile 5/5 → review again (two rounds max)
+      └─ too big for this PR ──→ its own issue + its own PR/lane → merge this one on its 5/5
+```
+
+**Small fix here, big fix elsewhere.** A finding the diff can absorb is fixed on the branch, and the
+head moves, so Greptile is asked once more there. A finding that needs its own PR — a seam move, a
+deepening across several modules — does not hold this PR hostage: it gets an issue and a lane, and
+this PR merges on the 5/5 it already has. What it does not do is vanish, so the guardrail is: **read
+the evidence comment before merging and confirm the follow-up issue number is in it.**
+
+**Stop rule: two rounds, then the owner.** If the second review still finds something, it is not a
+detail — it is a disagreement about the design, and it goes to the owner rather than round three. An
+unbounded loop spends Greptile credit and never converges.
+
+**Scope is always the diff under review.** A finding about older code is an issue, never a loop
+iteration; otherwise the loop never terminates. A review that finds nothing about this diff costs
+nothing: the 5/5 stands and the PR merges.
+
+**The two vocabulary skills are always on, like TDD** (owner decision, 2026-10-20). `codebase-design`
+supplies the words for every design conversation and `domain-modeling` keeps `CONTEXT.md` current while
+the code is written — not at the gate. The deep pass is the audit that the habit happened.
+
+**Budget: it has to earn its tokens.** The review runs on the diff's hot paths, never on the whole
+repository, and it is paid for once per PR.
+
+| Guard | Rule |
+| --- | --- |
+| Scope | The modules the diff touches and their direct callers. No repo-wide sweep. |
+| Output | At most five candidates, each with a deletion-test verdict and one sentence of change. |
+| Chat | The report path goes in the PR comment; the HTML is never pasted back into the conversation. |
+| Re-runs | None. Findings are folded once, and the lenses check the fold. |
+| Default | No seam moved means no report at all — the one-line form costs one sentence. |
 
 ## Review tiers
 

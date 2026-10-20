@@ -123,14 +123,17 @@ you are in — do not improvise a process.**
 | Any code-changing issue, start to finish | `feature-implement` (the lifecycle orchestrator — read it first) |
 | Design conversation before code | `grill-with-docs` |
 | Review round, in order | `debate` → `test-audit` → `code-review` |
+| After Greptile's 5/5, before the merge | `improve-codebase-architecture` (parent only; the deep pass when a module, seam, adapter or interface changed) |
 | Before the push | `guard` |
 | Greptile, either path | `cli-review` |
 | After a repeated failure | `capture-wisdom` (parent only) |
 | Every piece of writing, always | `unslop` |
 
-Two rules that hold across all of them: a lane **reads** wisdom and never writes it, and a
-lane **commits and reports** — it never pushes, opens a PR or merges. The parent owns those,
-plus CI, Greptile and the merge decision.
+Three rules that hold across all of them: a lane **reads** wisdom and never writes it, a lane
+**commits and reports** — it never pushes, opens a PR or merges — and `codebase-design` plus
+`domain-modeling` are **always on**, the way TDD is. They supply the words while the code is
+designed and written; the deep architecture pass after Greptile's 5/5 is only the audit that the
+habit happened. The parent owns push, CI, Greptile and the merge decision.
 
 ## Review lenses
 

@@ -67,6 +67,21 @@ export type EncryptedConnection = {
   /** write a self-contained backup (header wraps + snapshot) to destPath */
   writeBackupTo(destPath: string): Promise<void>;
   /**
+   * Re-read the snapshot fence WITHOUT writing (#292): the probe the holder's
+   * heartbeat rides. It is the same reader and the same stamps comparison the
+   * write points use, so the module still has ONE fence comparison rather than
+   * a fourth; what it adds is a look BETWEEN the write points, which is the
+   * window a zombie's rename used to sit in unnoticed until the next persist,
+   * checkpoint or close.
+   *
+   * A verdict that is not `mine` is reported through the log (once per CHANGE,
+   * so a beat every 10 s does not grow the log). It writes nothing: detection
+   * is not a repair, and a write on a heartbeat tick could land inside an open
+   * unit. It reads the fence prefix only (~90 bytes), so a beat costs one open,
+   * one short read and one close.
+   */
+  recheckFence(): FenceVerdict;
+  /**
    * Production fail-stop hook: called when a snapshot write fails after
    * retries. main.ts exits the process here, because a committed SQLite unit
    * that cannot be persisted must never be reported as a failed business
@@ -685,6 +700,15 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     vaultId,
     markDirty() {
       mutationVersion += 1;
+    },
+    recheckFence() {
+      // A probe can arrive after close(): the heartbeat outlives the connection
+      // by however long the lock stays held, and once the key is zeroed and the
+      // handle released there is nothing left to read. The last verdict is the
+      // honest answer; opening the file again would be a claim about a snapshot
+      // this process no longer owns.
+      if (closed) return lastSeenFence;
+      return readFence();
     },
     async persistIfDirty() {
       // The job is chained onto the queue HERE, synchronously: a close() that

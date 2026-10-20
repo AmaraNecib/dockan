@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
 import { acquireVaultLock, VaultAlreadyLockedError, type VaultLock, type VaultLockOptions } from "./lock";
+import { createEncryptedConnection, buildEncryptedSnapshot } from "../../db/encrypted-connection";
+import { readSnapshotFence } from "./format";
 import { withPortFileLock } from "../port-record";
 
 /**
@@ -291,6 +294,84 @@ afterEach(async () => {
       Bun.sleepSync(50);
     }
   }
+});
+
+describe("the holder's heartbeat re-reads the snapshot fence (#292)", () => {
+  const vaultId = "11111111-2222-3333-4444-555555555555";
+  const masterKey = Buffer.alloc(32, 7);
+  const zombieToken = "z".repeat(32);
+
+  const snapshotPath = () => path.join(dir, "dokan.db.enc");
+  const diskStamp = () => readSnapshotFence(fs.readFileSync(snapshotPath()))?.stamp;
+
+  /** A serialized image, for the envelope the zombie renames over the holder's. */
+  function serializedImage(rows: string[]): Buffer {
+    const image = new Database(":memory:");
+    image.exec("CREATE TABLE t(a TEXT)");
+    for (const row of rows) image.exec(`INSERT INTO t VALUES ('${row}')`);
+    const bytes = image.serialize();
+    image.close();
+    return bytes;
+  }
+
+  it("names a rename that lands while the holder is idle within one heartbeat tick", async () => {
+    // Holder A: takes the folder, opens a fenced connection on it, writes and
+    // VERIFIES — then goes idle. This is the state #280 cannot see: every fence
+    // read lives on the persist, checkpoint and close paths, and none of them
+    // runs while the holder is quiet.
+    const lock = holdFolder({ heartbeatIntervalMs: 20 });
+    const events: string[] = [];
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeStamp: () => lock.currentOwner().token,
+      logger: {
+        warn: (event) => events.push(`warn:${event}`),
+        info: (event) => events.push(`info:${event}`),
+      },
+    });
+    // the wiring main.ts does: the holder's beat is the fence probe
+    let probes = 0;
+    let detectedAtProbe: number | undefined;
+    lock.onHeartbeat(() => {
+      probes += 1;
+      if (conn.recheckFence().outcome !== "mine" && detectedAtProbe === undefined) detectedAtProbe = probes;
+    });
+    try {
+      conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+      conn.markDirty();
+      await conn.persistIfDirty();
+      expect(diskStamp()).toBe(lock.currentOwner().token);
+
+      // No await between the counter's read and the rename, so no timer can run
+      // in between: the next probe is the FIRST probe after the bytes landed,
+      // and that is what makes "within one heartbeat" an assertion rather than
+      // a hope.
+      const probesBefore = probes;
+      const temp = path.join(dir, ".dokan.db.enc.tmp-zombie");
+      fs.writeFileSync(temp, buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), zombieToken));
+      fs.renameSync(temp, snapshotPath());
+
+      // nothing here calls persist, checkpoint or close: the heartbeat is the
+      // only observer left, which is the whole sequence the issue describes.
+      const deadline = Date.now() + 2_000;
+      while (detectedAtProbe === undefined && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(detectedAtProbe).toBeDefined();
+      expect(detectedAtProbe! - probesBefore).toBe(1);
+      expect(events).toEqual(["warn:VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+      // A does not fight for the file on a tick: the zombie's bytes are still
+      // what is on disk, and the repair is the next persist's or checkpoint's
+      // job — a write on a heartbeat could land inside an open unit
+      expect(diskStamp()).toBe(zombieToken);
+    } finally {
+      await conn.close();
+    }
+  });
 });
 
 describe("vault single-writer lock over a live sidecar", () => {

@@ -566,6 +566,78 @@ describe("vault single-writer lock", () => {
     lock.release();
   });
 
+  it("rides registered work on the heartbeat tick, and a throwing listener does not stop the beat (#292)", async () => {
+    const beats: number[] = [];
+    const warns: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      heartbeatIntervalMs: 20,
+      logger: {
+        warn(event, message) {
+          warns.push(`${event}::${message}`);
+        },
+        error() {
+          /* no errors expected on this path */
+        },
+      },
+    });
+    try {
+      const unsubscribe = lock.onHeartbeat(() => beats.push(Date.now()));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // one call per tick, not one per registration: a listener that ran on
+      // every await would make the fence probe's cost unbounded
+      expect(beats.length).toBeGreaterThanOrEqual(2);
+
+      // a probe that throws is a programming error, and it must cost the tick
+      // its extra work — not the heartbeat, which is what keeps the folder
+      // ours. Uncaught, it would abort the process from a `setInterval`.
+      lock.onHeartbeat(() => {
+        throw new Error("the fence probe exploded");
+      });
+      const beforeThrow = beats.length;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(beats.length).toBeGreaterThan(beforeThrow);
+      expect(warns.length).toBeGreaterThanOrEqual(1);
+      expect(warns.filter((line) => !line.startsWith("SERVER_ERROR::"))).toEqual([]);
+      expect(warns[0]).toContain("the fence probe exploded");
+
+      // unsubscribing stops the calls; a released lock never calls at all
+      unsubscribe();
+      const beforeUnsubscribe = beats.length;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(beats.length).toBe(beforeUnsubscribe);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it("a listener registered after release is a no-op, and release drops what it held (#292)", async () => {
+    // Retention is the only observable behind the two guards, so the count is
+    // read directly: what the set holds is a closed connection's closure in
+    // main.ts, and "it was never called" cannot see that.
+    const lock = acquireVaultLock(dir, { heartbeatIntervalMs: 20 });
+    let called = 0;
+    lock.onHeartbeat(() => {
+      called += 1;
+    });
+    expect(lock.heartbeatListenerCount()).toBe(1);
+
+    lock.release();
+    // the tick is over, so nothing registered on it can run again: keeping the
+    // closure would retain it for the rest of the process's life
+    expect(lock.heartbeatListenerCount()).toBe(0);
+
+    // and a registration after release is refused outright rather than left in
+    // the set waiting for a beat that cannot come — the docstring promises
+    // "never once the lock is lost or released", so the unsubscribe is a no-op
+    const unsubscribe = lock.onHeartbeat(() => {
+      called += 1;
+    });
+    expect(lock.heartbeatListenerCount()).toBe(0);
+    unsubscribe();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(called).toBe(0);
+  });
+
   it("release never deletes another owner's lock", () => {
     const lock = acquireVaultLock(dir);
     // simulate a steal of the file by a different owner

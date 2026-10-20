@@ -137,23 +137,35 @@ price of a merge-base parent, and it is paid on every PR of that shape.
 
 **Known limits of the source scan.** The gate finds a file that imports another
 test file by reading the source, because bun names every testcase after the
-entry file and the report cannot say whose case it holds. The scan strips
-comments and keeps string literals, so two shapes are misread: a fixture string
-that quotes an import (`const fixture = "import { a } from './shared.test.ts'"`)
-and a regex literal with an unbalanced quote in front of a commented-out
-import. Both make the gate refuse a file that imports no test file — a false
-failure, never a false pass. The fix is a code mask (string bodies blanked,
-offsets preserved) with the specifier read from the original text at the same
-offsets.
+entry file and the report cannot say whose case it holds. The scan reads the
+TypeScript AST, not the text: `import` / `export … from` / `import X = require`
+and the `require(…)` / `import(…)` call nodes. A commented-out import is not a
+node, so it cannot be reported; the string, regex and JSX shapes that a text
+scan has to mask away never reach it. Two spellings were added after the AST
+reader landed and are read like any other: a no-substitution template specifier
+(``import(`./a.test.ts`)``) and a call whose specifier is the first of several
+arguments (``import("./a.test.ts", { with: { type: "text" } })``). `require` is
+recognised bare, qualified (`module.require`), element-accessed
+(`module["require"]`) and parenthesised (`(require)`).
+
+Its limits are the ones the AST cannot answer. **Only relative specifiers
+(`./`, `../`) are read**, so an alias the package resolves through `tsconfig`
+paths — `@/lib/fixtures.test.ts` — is invisible. A specifier held in a variable
+(`await import(name)`) is not read either. Both are false failures at worst: the
+gate refuses a file it cannot attribute, never accepts one it cannot.
 
 The scan reads the added file's own imports, so an import *through* a helper —
 the added test imports `shared.ts`, and `shared.ts` imports another test file —
-is not seen. The cases of that second file land in the report and are judged as
-the added file's own. The junit carries the file each case came from, and
-`parseJunit` can filter on it, so the machinery to close this is written; the
-gate does not use it yet, because using it would drop the other file's cases
-silently instead of saying so. The loud version — a refusal, like the direct
-import — is the one to write.
+is not seen, and that second file's cases land in the report as the added file's
+own. The junit cannot close this: measured on bun 1.4.2, a run whose entry
+`a.test.ts` imports `b.test.ts` writes `file="a.test.ts"` on **every** testcase,
+including the one `b.test.ts` declared. So `parseJunit`'s `onlyFile` filter —
+which does separate two *entries* that bun's substring filter both matched, such
+as `cart.test.ts` and `cart.test.tsx` — returns nothing for the contributing
+file and cannot attribute a thing. The gap needs the loud version: a refusal,
+like the direct import, or a scan that follows the helper. (`parseJunit` has no
+caller that passes `onlyFile` today; the gate imports exactly the file it
+judges.)
 
 **Known limit of the red's attribution.** A hook that *throws* on the parent
 reports `<failure type="Error">` and is read as a wrong-reason red. A hook that

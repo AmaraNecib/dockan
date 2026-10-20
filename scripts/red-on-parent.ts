@@ -111,6 +111,21 @@ export { INSTALL_TIMEOUT_MS, LOCK_WAIT_SLACK_MS, testTimeoutMs } from "./lib/gat
 const BUN = process.execPath;
 
 /**
+ * `process.versions`, with bun's own key named.
+ *
+ * Bun adds `bun` to `process.versions` and the type does not list it. The cast
+ * lives here once because three readers need it: `bunOnlyRefusal`,
+ * `bunVersion` and `runGate` (which forwards to the first). Three copies of the
+ * cast and two copies of the default-parameter expression were three places for
+ * a later edit to miss one.
+ */
+function bunVersions(): { bun?: string } {
+  // SAFETY: `process.versions` is a plain object and bun adds a `bun` key to it,
+  // so reading an optional property cannot throw; the cast only names that key.
+  return process.versions as { bun?: string };
+}
+
+/**
  * The refusal text when the gate is not running under bun, or null when it is.
  *
  * Node 22+ strips TypeScript types, so `node scripts/red-on-parent.ts` starts
@@ -119,18 +134,13 @@ const BUN = process.execPath;
  * would turn that into a PASS. The gate cannot tell its bun is not bun unless it
  * asks, so it asks once, before any work.
  */
-export function bunOnlyRefusal(
-  // SAFETY: `process.versions` is a plain object and bun adds a `bun` key to it,
-  // so reading an optional property cannot throw; the cast only names that key.
-  versions: { bun?: string } = process.versions as { bun?: string },
-): string | null {
+export function bunOnlyRefusal(versions: { bun?: string } = bunVersions()): string | null {
   if (versions.bun !== undefined) return null;
   return "red-on-parent: run this with bun, not node — every parent-side run spawns `bun test` from process.execPath, and under node each file reads as a whole-file load failure\n";
 }
 /** The bun this process is running on, which is the bun every child run inherits. */
 export function bunVersion(): string {
-  // SAFETY: `process.versions` is a plain object and bun adds a `bun` key to it.
-  return (process.versions as { bun?: string }).bun ?? "unknown";
+  return bunVersions().bun ?? "unknown";
 }
 
 const WAIVER_MARKER = "red-on-parent-waive";
@@ -291,13 +301,18 @@ export function parseJunit(xml: string, onlyFile?: string): TestResult[] {
   for (const match of xml.matchAll(testcase)) {
     // No file filter: the gate imports exactly the file it judges, so every
     // testcase in its report belongs to that file. `onlyFile` has no caller
-    // inside the gate today — the entry file the gate generates imports one
-    // test file, so the report never mixes two. It stays because the case it
-    // covers is real: bun's positional argument is a *substring* filter, so a
-    // caller that ran a bare path filter gets the cases of `cart.test.tsx`
-    // alongside `cart.test.ts`. It is also the mechanism that would close the
-    // gap the import scan leaves — a test file reached through a helper is
-    // not seen by the scan, and its cases land in the report.
+    // inside the gate, and it covers one narrower case: bun's positional
+    // argument is a *substring* filter, so a caller that ran `bun test ./cart`
+    // gets the cases of `cart.test.tsx` alongside `cart.test.ts`, one suite per
+    // entry with its own `file` attribute. Filtering on that attribute separates
+    // them.
+    //
+    // What it cannot do is attribute the cases of a test file reached through an
+    // import. Measured on bun 1.4.2: a run whose entry `a.test.ts` imports
+    // `b.test.ts` writes `file="a.test.ts"` on **both** testcases, including the
+    // one `b.test.ts` declared, so asking for `b.test.ts` returns nothing and the
+    // report cannot say whose case it holds. The import scan is what refuses that
+    // shape, and this filter is not an alternative to it.
     if (onlyFile !== undefined) {
       const reported = enclosingSuiteFile(xml, match.index ?? 0);
       if (reported !== null && !sameTestFile(reported, onlyFile)) continue;
@@ -351,95 +366,89 @@ function scriptKindFor(path: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
-/**
- * The source with every JSX child's text blanked, character for character.
- *
- * JSX text is prose, and the lexer cannot know that: deciding that `<div>` opens
- * an element and the words after its `>` are not code is the parser's job, and
- * the scanner tokenizes them as code. So a lone backtick in prose reads as the
- * start of a template literal and swallows the comment tokens below it. The
- * parser already recognised those ranges on its way through the file, so they
- * are blanked here and the scan never reads a marker out of prose.
- *
- * Length is preserved and newlines are kept, so every position the scan reports
- * is still a position in the file the author wrote. Only waivers are read from
- * the result; imports come from the AST, which never reads text at all.
- *
- * One consequence, and it is the safe side of the error: in a `.tsx` file that
- * does not parse — `<Foo>value;` followed later by `"</div>"` opens an element
- * the parser never closes, so the rest of the file is its text — a real waiver
- * inside that text is blanked with it. Such a file cannot load on either side of
- * the gate, so it fails on its own terms before the missing waiver matters, and
- * a waiver the file never declared (the expensive direction) stays impossible.
- */
-function withoutJsxProse(source: string, kind: ts.ScriptKind): string {
-  if (kind !== ts.ScriptKind.TSX && kind !== ts.ScriptKind.JSX) return source;
-  const file = ts.createSourceFile("source.tsx", source, ts.ScriptTarget.Latest, true, kind);
-  const ranges: ts.TextRange[] = [];
-  const collect = (node: ts.Node): void => {
-    if (node.kind === ts.SyntaxKind.JsxText) {
-      ranges.push({ pos: node.getStart(file), end: node.end });
-    }
-    ts.forEachChild(node, collect);
-  };
-  collect(file);
-  if (ranges.length === 0) return source;
-  const chars = source.split("");
-  for (const range of ranges) {
-    for (let index = range.pos; index < range.end; index += 1) {
-      const char = chars[index];
-      if (char === undefined || char === "\n" || char === "\r") continue;
-      chars[index] = " ";
-    }
-  }
-  return chars.join("");
-}
-
-/** A comment token: where it starts and ends, and whether it is a line comment. */
+/** Where a comment is in a file, and whether it is a line comment. */
 type CommentRange = { pos: number; end: number; lineComment: boolean };
 
+/** The comments a file declares, and where each of its code tokens ends. */
+type SourceScan = { comments: CommentRange[]; tokenEnds: number[] };
+
 /**
- * The comment tokens in a source file, and nothing else.
+ * The comments in a source file, read where the parser says trivia is.
  *
- * This is the piece the hand-written mask kept getting wrong, so it is the
- * TypeScript scanner's job now. `skipTrivia: false` makes the scanner *return*
- * trivia instead of skipping it, so a comment arrives as a token with
- * `getTokenPos()` … `getTextPos()` — the exact range, from a scanner that
- * already knows template literals, regex literals, escapes and line
- * continuations, and that cannot mistake `//` inside a string for a comment.
+ * The scanner loop this replaced never called `reScanTemplateToken`, so the
+ * closing backtick of an interpolated template (`x${1}y`) was read as an opener
+ * and swallowed every waiver below it. That was not one bug: a backtick inside a
+ * regex literal, a block comment in front of a marker on the same line, a BOM
+ * and a CR-only file all lost waivers through the same property — a lexer
+ * driven by hand has to re-derive, token by token, the state the parser already
+ * tracks, and each gap was one state it did not re-derive.
  *
- * The four failures that ended the mask, each one a case added to the
- * heuristic:
+ * So the ranges come from the tree. Every node and every token the parser
+ * produced names two positions, `getFullStart()` and `getEnd()`, and
+ * `getLeadingCommentRanges` / `getTrailingCommentRanges` read the trivia at
+ * those with the parser's own scanner, where the enclosing literal, template or
+ * regex is already known. `getChildren` is walked as well as `forEachChild`,
+ * because a comment on its own line at the end of a block is leading trivia of
+ * the closing `}` — a token, not a node — and a node-only walk drops every
+ * waiver written after the last test in a `describe`.
  *
- *   - `render(<div>Don't delete</div>)` — an apostrophe in JSX prose, read as
- *     the start of a string that ran to the end of the file;
- *   - a comment inside a JSX attribute (`title={1 /* import "./fake.test.ts"`),
- *     which the mask copied out as code and the import scan then believed;
- *   - `const x = <Foo>"ok";` … `const html = "</div>";` — the `</` inside that
- *     string, read as proof of an element;
- *   - `"a\` + CRLF — a string continued across the line break, read as the
- *     string ending.
+ * JSX child text is prose, so that node is skipped outright and any comment a
+ * trivia scan still claims inside it is dropped. A `//` at the start of a line
+ * of prose is a comment to any scanner that reaches it, and prose is not code.
  *
- * A waiver is a line comment and only a line comment, so a marker inside a
- * string, a template literal or a JSX attribute is not one — by construction,
- * not by a case.
+ * `tokenEnds` serves the rule that a waiver is the first thing on its line: a
+ * comment declares a waiver only when no code token ends on the same line before
+ * it. Another comment may precede it (a block comment, then the marker on the
+ * same line); code may not (`const x = 1; // marker`).
  */
-function commentRanges(source: string, kind: ts.ScriptKind): CommentRange[] {
-  const scanner = ts.createScanner(
+function scanSource(source: string, kind: ts.ScriptKind): SourceScan {
+  const file = ts.createSourceFile(
+    "source.ts",
+    source,
     ts.ScriptTarget.Latest,
-    /* skipTrivia */ false,
-    ts.LanguageVariant.Standard,
-    withoutJsxProse(source, kind),
+    // Parents are set because `getChildren` needs them to resolve every token.
+    /* setParentNodes */ true,
+    kind,
   );
-  const ranges: CommentRange[] = [];
-  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
-    const lineComment = token === ts.SyntaxKind.SingleLineCommentTrivia;
-    if (!lineComment && token !== ts.SyntaxKind.MultiLineCommentTrivia) continue;
-    const pos = scanner.getTokenPos();
-    const end = scanner.getTextPos();
-    ranges.push({ pos, end, lineComment });
-  }
-  return ranges;
+  const comments: CommentRange[] = [];
+  const tokenEnds: number[] = [];
+  const prose: ts.TextRange[] = [];
+  const seen = new Set<number>();
+  const collect = (ranges: readonly ts.CommentRange[] | undefined): void => {
+    for (const range of ranges ?? []) {
+      if (seen.has(range.pos)) continue;
+      seen.add(range.pos);
+      comments.push({
+        pos: range.pos,
+        end: range.end,
+        lineComment: range.kind === ts.SyntaxKind.SingleLineCommentTrivia,
+      });
+    }
+  };
+  const walk = (node: ts.Node): void => {
+    if (node.kind === ts.SyntaxKind.JsxText) {
+      prose.push({ pos: node.getStart(file), end: node.end });
+      tokenEnds.push(node.end);
+      return;
+    }
+    collect(ts.getLeadingCommentRanges(source, node.getFullStart()));
+    collect(ts.getTrailingCommentRanges(source, node.getEnd()));
+    const children = node.getChildren(file);
+    if (children.length === 0) {
+      tokenEnds.push(node.getEnd());
+      return;
+    }
+    for (const child of children) walk(child);
+  };
+  walk(file);
+  return {
+    comments: comments
+      .filter(
+        (comment) => !prose.some((range) => comment.pos >= range.pos && comment.pos < range.end),
+      )
+      .sort((left, right) => left.pos - right.pos),
+    tokenEnds: tokenEnds.sort((left, right) => left - right),
+  };
 }
 
 /**
@@ -450,40 +459,54 @@ function commentRanges(source: string, kind: ts.ScriptKind): CommentRange[] {
  * The reason is required: the marker is what a reviewer reads in the diff, and
  * a waiver with no reason is a waiver nobody can judge.
  *
- * The markers are read from the comment tokens and from nowhere else, so a
- * marker that is a string's contents, a template literal's data or a JSX
- * attribute's comment is not a waiver this file declared. `path` decides how the
- * file is parsed — `.tsx` prose is blanked before the scan — and the gate passes
- * the path the file really has.
+ * The markers are read from the comment ranges the parser reports and from
+ * nowhere else, so a marker that is a string's contents, a template literal's
+ * data or a JSX child's prose is not a waiver this file declared. A waiver also
+ * has to be the first thing on its line — another comment may come first, code
+ * may not.
+ *
+ * `path` is required, and it is the path the file really has. It decides how the
+ * file is parsed, because `<Foo>"ok"` is a type assertion in `.ts` and a JSX
+ * element in `.tsx`; a default would have let a `.tsx` file be read as `.ts` and
+ * reported a waiver set the real file never declares.
  */
-export function parseWaivers(text: string, path = "file.ts"): WaiverParse {
+export function parseWaivers(text: string, path: string): WaiverParse {
   const waivers: Waiver[] = [];
   const problems: string[] = [];
   const linePattern = waiverLinePattern();
   const startsAsWaiver = new RegExp(`^[ \\t]*//[ \\t]*${WAIVER_MARKER}`, "u");
-  // The line a comment token sits on, tracked by walking the file once in
-  // token order rather than by splitting the text: a comment's own range is the
-  // only thing that decides where it starts, and the line is the address a
-  // problem is reported at. CRLF needs no special case here — the `\r` belongs
-  // to the previous line's tail and a line begins after its `\n`.
+  const { comments, tokenEnds } = scanSource(text, scriptKindFor(path));
+  // The line and its start, walked once in comment order rather than by
+  // splitting the text: the line is the address a problem is reported at. `\r`
+  // alone ends a line as well as `\n` does, because a file written with CR only
+  // is still a file with lines; in CRLF the `\n` is the one counted, so the pair
+  // is one break.
   let line = 1;
   let lineStart = 0;
   let walked = 0;
-  for (const range of commentRanges(text, scriptKindFor(path))) {
+  let tokenIndex = 0;
+  for (const range of comments) {
     while (walked < range.pos) {
-      if (text[walked] === "\n") {
+      const char = text[walked];
+      if (char === "\n" || (char === "\r" && text[walked + 1] !== "\n")) {
         line += 1;
         lineStart = walked + 1;
       }
       walked += 1;
     }
-    // A waiver is a line comment. A block comment that mentions the marker is
-    // prose about the convention, not a declaration.
-    if (!range.lineComment) continue;
-    // Only a line that *is* a waiver counts. A line that merely mentions the
-    // marker, or carries the marker after code, is not one; the anchored
-    // pattern is what says so, applied to the line the comment starts on.
-    const raw = text.slice(lineStart, range.end);
+    // The end of the last code token before this comment. Trivia and tokens
+    // never overlap, so one forward pass serves every comment.
+    while (tokenIndex < tokenEnds.length && (tokenEnds[tokenIndex] ?? 0) <= range.pos) {
+      tokenIndex += 1;
+    }
+    const codeEndsAt = tokenIndex > 0 ? (tokenEnds[tokenIndex - 1] ?? 0) : 0;
+    // A waiver is a line comment whose line begins with the marker. A line that
+    // merely mentions the marker, or carries it after code, is not one; the
+    // anchored pattern says the first, and `codeEndsAt <= lineStart` says the
+    // second. Another comment before it on the line is still trivia, so
+    // `/* note */ // marker` is read.
+    if (!range.lineComment || codeEndsAt > lineStart) continue;
+    const raw = text.slice(range.pos, range.end);
     if (!startsAsWaiver.test(raw)) continue;
     const match = linePattern.exec(raw);
     if (match === null) {
@@ -1089,16 +1112,27 @@ function isTypeOnlyReference(node: ts.ImportDeclaration | ts.ExportDeclaration):
  * replaced needed a mask over every comment and literal in the file to make the
  * same distinction, and each of the mask's four bugs was a shape it read as code
  * that was not code. `path` decides how the file is parsed, because `<Foo>"ok"`
- * is a type assertion in `.ts` and JSX in `.tsx`.
+ * is a type assertion in `.ts` and JSX in `.tsx`, and it is required: a default
+ * let a `.tsx` file be read as `.ts`, and the same source then reported an import
+ * the real file does not have (or missed one it does).
+ *
+ * Only **relative** specifiers (`./`, `../`) are read. An alias resolved by the
+ * package's `tsconfig` paths — `@/lib/fixtures.test.ts` — is invisible here, so a
+ * file that reaches another test file that way is judged on a mixed report.
  *
  * `require("…")` and `import("…")` are read here too, from the call nodes, since
- * both load a module the report cannot attribute. Two shapes are still not seen,
- * and both mix the reports the same way: a dynamic import whose specifier is a
- * variable (`await import(name)`), and an import of a module that itself imports
- * a test file. They are known limits of asking the source, not a claim that the
- * gate covers them.
+ * both load a module the report cannot attribute. A specifier written as a
+ * no-substitution template (a dynamic import whose argument is a backtick
+ * literal) is as static as a quoted one, import attributes after it change
+ * nothing, and `require` is recognised bare, qualified (`module.require`),
+ * element-accessed (`module["require"]`) and parenthesised (`(require)`). Three
+ * shapes are still not seen, and all three mix the reports the same way: a
+ * specifier that is a variable (`await import(name)`), a dynamic specifier
+ * computed at run time, and an import of a module that itself imports a test
+ * file. They are known limits of asking the source, not a claim that the gate
+ * covers them.
  */
-export function importedTestFiles(source: string, path = "file.ts"): string[] {
+export function importedTestFiles(source: string, path: string): string[] {
   const file = ts.createSourceFile(
     path,
     source,
@@ -1116,6 +1150,34 @@ export function importedTestFiles(source: string, path = "file.ts"): string[] {
     if (!TEST_LIKE_BASENAME.test(name)) return;
     specifiers.add(specifier);
   };
+  /**
+   * A specifier the loader resolves without running anything: a quoted string, or
+   * a no-substitution template, which is the same literal with different quotes.
+   */
+  const staticText = (node: ts.Expression | undefined): string | undefined => {
+    if (node === undefined) return undefined;
+    return ts.isStringLiteralLike(node) ? node.text : undefined;
+  };
+  /**
+   * Whether a callee is `require`, in any spelling the loader accepts.
+   *
+   * The qualified forms matter: `module.require` and `module["require"]` take the
+   * same path in Bun's loader, and the text scan this replaced saw both. A
+   * bare-identifier test let a file import another test file and still be judged
+   * on the mixed report — the refusal this scan exists to make.
+   */
+  const namesRequire = (expression: ts.Expression): boolean => {
+    if (ts.isIdentifier(expression)) return expression.text === "require";
+    // `(require)(...)`: the parentheses change nothing about what is called.
+    if (ts.isParenthesizedExpression(expression)) return namesRequire(expression.expression);
+    if (ts.isPropertyAccessExpression(expression)) {
+      return ts.isIdentifier(expression.name) && expression.name.text === "require";
+    }
+    if (ts.isElementAccessExpression(expression)) {
+      return staticText(expression.argumentExpression) === "require";
+    }
+    return false;
+  };
   const addModule = (node: ts.ImportDeclaration | ts.ExportDeclaration): void => {
     const module = node.moduleSpecifier;
     if (module === undefined || !ts.isStringLiteral(module)) return;
@@ -1130,27 +1192,16 @@ export function importedTestFiles(source: string, path = "file.ts"): string[] {
       // bare `require("x")`.
       const reference = node.moduleReference;
       if (!node.isTypeOnly && ts.isExternalModuleReference(reference)) {
-        const expression = reference.expression;
-        if (expression !== undefined && ts.isStringLiteral(expression)) add(expression.text);
+        add(staticText(reference.expression));
       }
     } else if (ts.isCallExpression(node)) {
-      // One string argument and nothing else, which is the shape both loaders
-      // take: a computed specifier is not a specifier this scan can name.
-      const only = node.arguments.length === 1 ? node.arguments[0] : undefined;
-      if (only !== undefined && ts.isStringLiteral(only)) {
+      // The first argument, whatever follows it: `import("./a.test.ts", { with:
+      // { type: "text" } })` names the same module as the bare call, and a
+      // specifier that is not a literal is not one this scan can name.
+      const specifier = staticText(node.arguments[0]);
+      if (specifier !== undefined) {
         const dynamic = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-        // `require(...)` and any qualified spelling of it — `module.require(...)`
-        // takes the same path in Bun's loader, and the text scan this replaced
-        // caught it too. A bare-identifier test here let a file import another
-        // test file and still be judged on the mixed report, which is the
-        // refusal this scan exists to make.
-        const callee = node.expression;
-        const required =
-          (ts.isIdentifier(callee) && callee.text === "require") ||
-          (ts.isPropertyAccessExpression(callee) &&
-            ts.isIdentifier(callee.name) &&
-            callee.name.text === "require");
-        if (dynamic || required) add(only.text);
+        if (dynamic || namesRequire(node.expression)) add(specifier);
       }
     }
     ts.forEachChild(node, visit);
@@ -1707,13 +1758,7 @@ export function changeSideResults(
   return parseJunit(readFileSync(junitPath, "utf8"));
 }
 
-export function runGate(
-  options: GateOptions,
-  // SAFETY: `process.versions` is a plain object and bun adds a `bun` key to
-  // it, so reading an optional property cannot throw; the cast only names
-  // that key.
-  versions: { bun?: string } = process.versions as { bun?: string },
-): GateRun {
+export function runGate(options: GateOptions, versions: { bun?: string } = bunVersions()): GateRun {
   // The gate asks once, before any work, whether it is running under bun. The
   // ask used to live in `main` alone, so a caller that used the exported
   // `runGate` skipped it: every parent-side run then read as a whole-file load
@@ -2145,7 +2190,14 @@ export function renderReport(run: GateRun, problems: string[]): string {
       lines.push("red-on-parent: PASS");
     } else {
       lines.push(`red-on-parent: PASS (${waived.length} waived)`);
-      const unjudged = waived.filter((verdict) => verdict.name === "WRONG_REASON_RED").length;
+      // Two verdicts mean "there was no red to judge here": WRONG REASON RED is
+      // a parent that could not run the test, NOT ON PARENT a parent that never
+      // reported it. Counting only the first printed `PASS (1 waived)` with no
+      // explanation for a run whose only waived row was the second, while the
+      // guide for that verdict says the same thing.
+      const unjudged = waived.filter(
+        (verdict) => verdict.name === "WRONG_REASON_RED" || verdict.name === "NOT_ON_PARENT",
+      ).length;
       if (unjudged > 0) {
         lines.push(
           `  ${unjudged} of them: the parent could not run the test, so nothing was judged there`,

@@ -71,6 +71,19 @@ import {
 const ROOT = join(import.meta.dir, "..");
 const GATE = join(ROOT, "scripts", "red-on-parent.ts");
 
+/**
+ * The path a waiver or import probe is parsed as.
+ *
+ * `parseWaivers` and `importedTestFiles` take the path the file really has,
+ * because the extension decides how the file is parsed: `<Foo>"ok"` is a type
+ * assertion in `.ts` and a JSX element in `.tsx`. A probe that omits the path
+ * gets no reading at all, which is the point — the default it used to have read
+ * a `.tsx` file as `.ts` and reported a waiver set the real file never declares.
+ */
+const PROBE_TS = "apps/api/src/probe.test.ts";
+/** The same, for a probe whose source is JSX and has to be parsed as `.tsx`. */
+const PROBE_TSX = "apps/web/src/probe.test.tsx";
+
 // ---------------------------------------------------------------------------
 // Fixture plumbing
 // ---------------------------------------------------------------------------
@@ -974,6 +987,7 @@ describe("parseWaivers", () => {
   test("reads the pattern and the reason", () => {
     const { waivers, problems } = parseWaivers(
       `// red-on-parent-waive: "gr keeps a positive number" — behaviour the refactor kept`,
+      PROBE_TS,
     );
     expect(problems).toEqual([]);
     expect(waivers).toEqual([
@@ -982,27 +996,27 @@ describe("parseWaivers", () => {
   });
 
   test("accepts single quotes and an ASCII dash", () => {
-    const { waivers, problems } = parseWaivers(`// red-on-parent-waive: 'x y' - why`);
+    const { waivers, problems } = parseWaivers(`// red-on-parent-waive: 'x y' - why`, PROBE_TS);
     expect(problems).toEqual([]);
     expect(waivers[0]?.pattern).toBe("x y");
     expect(waivers[0]?.reason).toBe("why");
   });
 
   test("a missing reason is a problem, not a waiver", () => {
-    const { waivers, problems } = parseWaivers(`// red-on-parent-waive: "x"`);
+    const { waivers, problems } = parseWaivers(`// red-on-parent-waive: "x"`, PROBE_TS);
     expect(waivers).toEqual([]);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("no reason");
   });
 
   test("a marker with no quoted name is a problem", () => {
-    const { problems } = parseWaivers(`// red-on-parent-waive: because I said so`);
+    const { problems } = parseWaivers(`// red-on-parent-waive: because I said so`, PROBE_TS);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("must read");
   });
 
   test("an invalid regex is a problem", () => {
-    const { problems } = parseWaivers(`// red-on-parent-waive: "(" — broken pattern`);
+    const { problems } = parseWaivers(`// red-on-parent-waive: "(" — broken pattern`, PROBE_TS);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("not a valid regex");
   });
@@ -1010,6 +1024,7 @@ describe("parseWaivers", () => {
   test("marks each waiver with its own line", () => {
     const { waivers } = parseWaivers(
       `// a comment\n// red-on-parent-waive: "one" — first\n\n// red-on-parent-waive: "two" — second`,
+      PROBE_TS,
     );
     expect(waivers.map((waiver) => waiver.line)).toEqual([2, 4]);
   });
@@ -1017,6 +1032,7 @@ describe("parseWaivers", () => {
   test("reads a CRLF file, which is what a Windows checkout gives", () => {
     const { waivers, problems } = parseWaivers(
       `// a comment\r\n// red-on-parent-waive: "one" — first\r\n`,
+      PROBE_TS,
     );
     expect(problems).toEqual([]);
     expect(waivers).toEqual([{ pattern: "one", reason: "first", line: 2 }]);
@@ -1342,6 +1358,7 @@ describe("red-on-parent round 5", () => {
         '// red-on-parent-waive: "a real one" — because',
         '// red-on-parent-waive "missing colon" — malformed',
       ].join("\n"),
+      PROBE_TS,
     );
     expect(waivers.map((parsed) => parsed.pattern)).toEqual(["a real one"]);
     expect(problems).toHaveLength(1);
@@ -1365,6 +1382,7 @@ describe("red-on-parent round 5", () => {
         "*/",
         '// red-on-parent-waive: "a real one" — because',
       ].join("\n"),
+      PROBE_TS,
     );
     expect(waivers.map((parsed) => parsed.pattern)).toEqual(["a real one"]);
     expect(problems).toEqual([]);
@@ -2308,53 +2326,54 @@ test("rejects zero with ZERO", () => {
 
   test("the import that names another test file is found in the source", () => {
     // The report cannot say whose case it holds, so the source is asked.
-    expect(importedTestFiles(`import "./helper.test.ts";\n`)).toEqual(["./helper.test.ts"]);
-    expect(importedTestFiles(`import { x } from "../shared/other.test";\n`)).toEqual([
+    expect(importedTestFiles(`import "./helper.test.ts";\n`, PROBE_TS)).toEqual(["./helper.test.ts"]);
+    expect(importedTestFiles(`import { x } from "../shared/other.test";\n`, PROBE_TS)).toEqual([
       "../shared/other.test",
     ]);
-    expect(importedTestFiles(`const m = await import("./late.test.ts");\n`)).toEqual([
+    expect(importedTestFiles(`const m = await import("./late.test.ts");\n`, PROBE_TS)).toEqual([
       "./late.test.ts",
     ]);
-    expect(importedTestFiles(`const h = require("./req.test.ts");\n`)).toEqual(["./req.test.ts"]);
+    expect(importedTestFiles(`const h = require("./req.test.ts");\n`, PROBE_TS)).toEqual(["./req.test.ts"]);
     // A qualified require reaches the same loader in Bun, so it hides the same
     // second test file. The bare-identifier test that replaced the text scan let
     // it through and the gate judged a mixed report as this file's.
-    expect(importedTestFiles(`const q = module.require("./qualified.test.ts");\n`)).toEqual([
+    expect(importedTestFiles(`const q = module.require("./qualified.test.ts");\n`, PROBE_TS)).toEqual([
       "./qualified.test.ts",
     ]);
-    expect(importedTestFiles(`export * from "./reexport.test.ts";\n`)).toEqual([
+    expect(importedTestFiles(`export * from "./reexport.test.ts";\n`, PROBE_TS)).toEqual([
       "./reexport.test.ts",
     ]);
     // A type-only import is erased before the file runs: it imports nothing.
     // Measured on bun 1.4.2: `import { type X } from` is erased as well.
-    expect(importedTestFiles(`import type { Case } from "./cases.test.ts";\n`)).toEqual([]);
-    expect(importedTestFiles(`import { type Case } from "./cases.test.ts";\n`)).toEqual([]);
-    expect(importedTestFiles(`export type { Case } from "./cases.test.ts";\n`)).toEqual([]);
+    expect(importedTestFiles(`import type { Case } from "./cases.test.ts";\n`, PROBE_TS)).toEqual([]);
+    expect(importedTestFiles(`import { type Case } from "./cases.test.ts";\n`, PROBE_TS)).toEqual([]);
+    expect(importedTestFiles(`export type { Case } from "./cases.test.ts";\n`, PROBE_TS)).toEqual([]);
     expect(
       importedTestFiles(
         `import type { Aaaaaaaaaa, Bbbbbbbbbb, Cccccccccc, Dddddddddd, Eeeeeeeeee, Ffffffffff, Gggggggggg, Hhhhhhhhhh, Iiiiiiiiii } from "./cases.test.ts";\n`,
+        PROBE_TS,
       ),
     ).toEqual([]);
     // One runtime name in the clause is enough to make the statement import
     // something, so the file is named.
-    expect(importedTestFiles(`import { type A, B } from "./cases.test.ts";\n`)).toEqual([
+    expect(importedTestFiles(`import { type A, B } from "./cases.test.ts";\n`, PROBE_TS)).toEqual([
       "./cases.test.ts",
     ]);
     // A commented-out import is not an import, and a comment must not silence
     // a real one.
-    expect(importedTestFiles(`// import type { Q } from "./old.test.ts";\n`)).toEqual([]);
+    expect(importedTestFiles(`// import type { Q } from "./old.test.ts";\n`, PROBE_TS)).toEqual([]);
     expect(
-      importedTestFiles(`// import type { Q } from "./old.test.ts";\nimport "./real.test.ts";\n`),
+      importedTestFiles(`// import type { Q } from "./old.test.ts";\nimport "./real.test.ts";\n`, PROBE_TS),
     ).toEqual(["./real.test.ts"]);
     // A helper that is not a test file, and a package that is not local.
-    expect(importedTestFiles(`import { guard } from "./helper";\n`)).toEqual([]);
-    expect(importedTestFiles(`import { expect } from "bun:test";\n`)).toEqual([]);
-    expect(importedTestFiles(`import "./fixtures.test.json";\n`)).toEqual([]);
-    expect(importedTestFiles(`import "./helper.test-data.ts";\n`)).toEqual([]);
+    expect(importedTestFiles(`import { guard } from "./helper";\n`, PROBE_TS)).toEqual([]);
+    expect(importedTestFiles(`import { expect } from "bun:test";\n`, PROBE_TS)).toEqual([]);
+    expect(importedTestFiles(`import "./fixtures.test.json";\n`, PROBE_TS)).toEqual([]);
+    expect(importedTestFiles(`import "./helper.test-data.ts";\n`, PROBE_TS)).toEqual([]);
     // Known limits, pinned so a change to the scan cannot quietly widen or
     // narrow them: a dynamic import whose specifier is a variable is not seen,
     // and neither is the import of a module that itself imports a test file.
-    expect(importedTestFiles(`const m = await import(name);\n`)).toEqual([]);
+    expect(importedTestFiles(`const m = await import(name);\n`, PROBE_TS)).toEqual([]);
   });
 });
 
@@ -3073,9 +3092,9 @@ describe("red-on-parent round 16 — the standards-review findings at 8a618ed9",
     // strip had no assertion that could fail without it: the assertions that
     // existed were type-only clauses, which the other half of the fix already
     // skips. A file with a commented-out import was refused, wrongly.
-    expect(importedTestFiles('// import "./old.test.ts";\n')).toEqual([]);
-    expect(importedTestFiles('/* import "./old.test.ts"; */\n')).toEqual([]);
-    expect(importedTestFiles('// import "./old.test.ts";\nimport "./real.test.ts";\n')).toEqual([
+    expect(importedTestFiles('// import "./old.test.ts";\n', PROBE_TS)).toEqual([]);
+    expect(importedTestFiles('/* import "./old.test.ts"; */\n', PROBE_TS)).toEqual([]);
+    expect(importedTestFiles('// import "./old.test.ts";\nimport "./real.test.ts";\n', PROBE_TS)).toEqual([
       "./real.test.ts",
     ]);
   });
@@ -3136,7 +3155,7 @@ test("gr keeps the quote", () => {
   expect(quote.source).toBe('"');
 });
 `;
-    const parsed = parseWaivers(source);
+    const parsed = parseWaivers(source, PROBE_TS);
     expect(parsed.problems).toEqual([]);
     expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["gr keeps the quote"]);
     expect(parsed.waivers[0]?.line).toBe(5);
@@ -3146,7 +3165,7 @@ test("gr keeps the quote", () => {
     // The same scan feeds the import check, which keeps literals. A `//` in a
     // character class is not the start of a comment, and reading it as one
     // drops the rest of the line — the line a real import can be on.
-    expect(importedTestFiles(String.raw`const slash = /[//]/; import "./real.test.ts";`)).toEqual([
+    expect(importedTestFiles(String.raw`const slash = /[//]/; import "./real.test.ts";`, PROBE_TS)).toEqual([
       "./real.test.ts",
     ]);
   });
@@ -3246,21 +3265,21 @@ describe("red-on-parent round 18 — the Greptile findings at 07b7896d", () => {
     // as code: the gate then refused a valid test file for importing a test
     // file it never imported.
     const source = `const x = value() / total /* import "./fake.test.ts" */ / 2;\n`;
-    expect(importedTestFiles(source)).toEqual([]);
+    expect(importedTestFiles(source, PROBE_TS)).toEqual([]);
   });
 
   test("a division after a closing bracket is a division, not a regex", () => {
     // The same lie after `]`. Both closers are in the fix's blast radius, and
     // neither is a word character, so both returned the empty token.
     const source = `const x = rows[i] / n /* import "./fake.test.ts" */ / 2;\n`;
-    expect(importedTestFiles(source)).toEqual([]);
+    expect(importedTestFiles(source, PROBE_TS)).toEqual([]);
   });
 
   test("the division fix does not stop a real import being found", () => {
     // The failure mode of an over-correction: a scan that gave up on `/` and
     // reported nothing would pass the two tests above and silently accept a
     // mixed report.
-    expect(importedTestFiles(`const x = value() / 2; import "./real.test.ts";\n`)).toEqual([
+    expect(importedTestFiles(`const x = value() / 2; import "./real.test.ts";\n`, PROBE_TS)).toEqual([
       "./real.test.ts",
     ]);
   });
@@ -3274,7 +3293,7 @@ describe("red-on-parent round 18 — the Greptile findings at 07b7896d", () => {
     // no waiver, and a characterization test whose red is on the parent was
     // refused as GREEN_ON_PARENT.
     const source = `const x = value() / total /* don't */ / 2;\n// red-on-parent-waive: "gr divides" — characterizes behaviour the refactor kept\ntest("gr divides", () => {\n  expect(x).toBe(1);\n});\n`;
-    const parsed = parseWaivers(source);
+    const parsed = parseWaivers(source, PROBE_TS);
     expect(parsed.problems).toEqual([]);
     expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["gr divides"]);
   });
@@ -3424,23 +3443,12 @@ describe("red-on-parent round 20 — the Greptile findings at e1ea567c", () => {
   });
 });
 describe("red-on-parent round 21 — the Greptile findings at 25d60eb9", () => {
-  test("a quote in JSX text does not blank the waiver below it", () => {
-    // The mask read every `'` as the start of a string. In `.tsx` a quote
-    // between an element's `>` and its close is prose, so `<div>Don't delete</div>`
-    // opened a literal that ran to EOF and blanked the waiver below it:
-    // `parseWaivers` returned no waivers and no problems, and a test whose red
-    // was legitimately on the parent was refused as GREEN_ON_PARENT.
-    const source = String.raw`test("renders the note", () => {
-  render(<div>Don't delete</div>);
-});
-// red-on-parent-waive: "renders the note" — characterizes behaviour the refactor kept
-`;
-    const parsed = parseWaivers(source);
-    expect(parsed.problems).toEqual([]);
-    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["renders the note"]);
-    expect(parsed.waivers[0]?.line).toBe(4);
-  });
-
+  // The quote-in-JSX-prose shape was pinned twice, here and in round 22, from
+  // the same source. This copy read it as `.ts`, where the scan only survived
+  // the apostrophe because an unterminated string ends at the line break — the
+  // pin held for a reason that had nothing to do with JSX, so it would have
+  // stayed green if JSX prose went back to being lexed as code. Round 22's copy
+  // is the one that names `.tsx`; this one is gone.
   test("an unterminated string does not blank the rest of the file", () => {
     // The failure mode every masking bug shares, and the one that matters more
     // than any single cause: a mask that eats the file turns a declared waiver
@@ -3453,7 +3461,7 @@ test("still judged", () => {
   expect(note).toContain("unterminated");
 });
 `;
-    const parsed = parseWaivers(source);
+    const parsed = parseWaivers(source, PROBE_TS);
     expect(parsed.problems).toEqual([]);
     expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["still judged"]);
     expect(parsed.waivers[0]?.line).toBe(2);
@@ -3501,13 +3509,13 @@ test("still judged", () => {
 // import "./fake.test.ts"
 const y = x as unknown as number;
 `;
-    expect(importedTestFiles(source)).toEqual([]);
+    expect(importedTestFiles(source, PROBE_TS)).toEqual([]);
     // An element with a close is text, and the same scan still finds a real
     // import beside it.
     expect(
       importedTestFiles(`const view = <div>it's fine</div>;
 import "./real.test.ts";
-`),
+`, PROBE_TS),
     ).toEqual(["./real.test.ts"]);
   });
 });
@@ -3606,5 +3614,210 @@ describe("red-on-parent round 22 — the masker replaced by the TypeScript scann
     expect(parseWaivers(withWaiver, TS).waivers.map((waiver) => waiver.pattern)).toEqual([
       "a real one",
     ]);
+  });
+});
+
+describe("red-on-parent round 23 — the lens findings at 0f95d7d4", () => {
+  // The scanner loop read comments and the parser read imports, and the split
+  // was the bug: a hand-driven lexer has to re-derive the state the parser
+  // already tracks, and every gap below was one state it did not re-derive.
+  // The ranges come from the tree now, so each fix below is a property rather
+  // than a case — but each is pinned by the shape that measured it.
+  const BACKTICK = "`";
+
+  test("an interpolated template literal does not swallow the waivers below it", () => {
+    // `createScanner` was never told to `reScanTemplateToken`, so the closing
+    // backtick of an interpolated template was read as the opener of a second
+    // template that ran to the end of the file. Every waiver below it was inside
+    // that template's data: `parseWaivers` returned no waivers and no problems,
+    // and the gate refused a characterization test whose red was legitimately on
+    // the parent.
+    const source = `const t = ${BACKTICK}x\${1}y${BACKTICK};\n// red-on-parent-waive: "real" - why\n`;
+    const parsed = parseWaivers(source, PROBE_TS);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["real"]);
+  });
+
+  test("a backtick inside a regex literal does not swallow the waiver below it", () => {
+    // The same property, one literal kind over: the scanner did not know it was
+    // inside a regex, so the backtick in the character class opened a template.
+    const source = `const r = /${BACKTICK}/;\n// red-on-parent-waive: "real" - why\n`;
+    const parsed = parseWaivers(source, PROBE_TS);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["real"]);
+  });
+
+  test("a waiver after another comment is still read, and keeps its own reason", () => {
+    // The scan took its line slice from a position cached for a previous token,
+    // so a block comment before the marker on the same line was matched against
+    // the wrong text and the waiver vanished. Another comment is trivia: the line
+    // still begins with trivia, so the marker is a declaration.
+    const source = `/* note */ // red-on-parent-waive: "real" - why\n`;
+    const parsed = parseWaivers(source, PROBE_TS);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers).toEqual([{ pattern: "real", reason: "why", line: 1 }]);
+  });
+
+  test("a marker that follows code on its line is not a waiver", () => {
+    // The other half of the rule the test above relaxes: a line that carries code
+    // before the marker declares nothing. `const x = 1; // marker` is a comment
+    // about the convention, and reading it as a waiver would excuse a test the
+    // author never excused.
+    const source = `const x = 1; // red-on-parent-waive: "not a waiver" - why\n`;
+    const parsed = parseWaivers(source, PROBE_TS);
+    expect(parsed.waivers).toEqual([]);
+    expect(parsed.problems).toEqual([]);
+  });
+
+  test("a BOM in front of the file does not lose the first waiver", () => {
+    // The byte-order mark is the first character, so a scan that started its
+    // comment search at a position it derived by hand never reached the marker on
+    // line 1. The parser skips the BOM as trivia, so the tree already knows.
+    const source = `\uFEFF// red-on-parent-waive: "real" - why\n`;
+    const parsed = parseWaivers(source, PROBE_TS);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["real"]);
+  });
+
+  test("a CR-only file is a file with lines, and its second waiver is read", () => {
+    // A file a Windows tool wrote with CR alone as the line break: the line
+    // counter only knew `\n`, so line 2 was never reached and the waiver on it was
+    // never seen. A line break is CRLF, CR or LF.
+    const source = `const x = 1;\r// red-on-parent-waive: "real" - why\r`;
+    const parsed = parseWaivers(source, PROBE_TS);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers).toEqual([{ pattern: "real", reason: "why", line: 2 }]);
+  });
+
+  test("a waiver after the last test in a block is read", () => {
+    // The comment is leading trivia of the block's closing brace — a token, not a
+    // node. A walk that only visited nodes would drop this shape, and this is the
+    // shape a waiver is actually written in: at the end of the file, after the
+    // last test. The walk visits tokens for exactly this case.
+    const source = [
+      'describe("cart", () => {',
+      '  test("totals two", () => {',
+      "    expect(1).toBe(1);",
+      "  });",
+      '  // red-on-parent-waive: "totals two" - why',
+      "});",
+      "",
+    ].join("\n");
+    const parsed = parseWaivers(source, PROBE_TS);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers).toEqual([{ pattern: "totals two", reason: "why", line: 5 }]);
+  });
+
+  test("a lone backtick in JSX prose does not swallow the waiver below it", () => {
+    // The shape round 22 needed a JSX-blanking pass for, kept and relabelled: a
+    // hand-driven lexer read the backtick as a template opener and the waiver
+    // below it as template data. The parser never lexes prose, so the waiver now
+    // survives by construction — and what the test pins is the *path*. The same
+    // source read as `.ts` is a different file (`<div>` is a type assertion
+    // there), and the waiver is lost there, which is exactly why the path is an
+    // argument the caller must supply rather than a default that guesses `.ts`.
+    const source = [
+      'test("renders the note", () => {',
+      `  render(<div>a ${BACKTICK} b</div>);`,
+      "});",
+      '// red-on-parent-waive: "renders the note" - why',
+      "",
+    ].join("\n");
+    const asTsx = parseWaivers(source, PROBE_TSX);
+    expect(asTsx.problems).toEqual([]);
+    expect(asTsx.waivers.map((waiver) => waiver.pattern)).toEqual(["renders the note"]);
+    expect(asTsx.waivers[0]?.line).toBe(4);
+    // The other reading, so a test that passed for the wrong reason cannot be
+    // the whole pin: `.ts` is the wrong file, and it declares no waiver.
+    expect(parseWaivers(source, PROBE_TS).waivers).toEqual([]);
+  });
+
+  test("a marker inside JSX prose is prose, not a waiver", () => {
+    // The carve-out's real job, and the shape that reddens when it is deleted: a
+    // `//` at the start of a line of JSX child text is a comment to any trivia
+    // scan that reaches it, and prose is not code. Left in, the marker line
+    // declares a waiver the file never wrote, `unusedWaiverVerdicts` then finds
+    // it matching no test, and the gate refuses a valid file.
+    const source = [
+      'test("renders the note", () => {',
+      "  render(<div>",
+      '    // red-on-parent-waive: "generated" - this line is prose',
+      "  </div>);",
+      "});",
+      "",
+    ].join("\n");
+    const parsed = parseWaivers(source, PROBE_TSX);
+    expect(parsed.waivers).toEqual([]);
+    expect(parsed.problems).toEqual([]);
+  });
+
+  test("a no-substitution template specifier is as static as a quoted one", () => {
+    // A dynamic import whose argument is a backtick literal is one literal with
+    // different quotes: the loader resolves it without running anything, so the
+    // second file's cases land in this file's report exactly as a quoted import's
+    // would.
+    expect(importedTestFiles(`await import(${BACKTICK}./a.test.ts${BACKTICK});`, PROBE_TS)).toEqual([
+      "./a.test.ts",
+    ]);
+  });
+
+  test("import attributes after the specifier do not hide the import", () => {
+    // The scan required exactly one argument, so an import with attributes was
+    // invisible and the mixed report was judged as this file's own. The specifier
+    // is the first argument; what follows it is not a reason to stop reading.
+    const source = `await import("./a.test.ts", { with: { type: "text" } });`;
+    expect(importedTestFiles(source, PROBE_TS)).toEqual(["./a.test.ts"]);
+  });
+
+  test("an element-accessed require is a require", () => {
+    // `module["require"]` takes the same path in Bun's loader as `require`, and
+    // the callee test only knew an identifier and a property access.
+    expect(importedTestFiles(`module["require"]("./a.test.ts");`, PROBE_TS)).toEqual([
+      "./a.test.ts",
+    ]);
+  });
+
+  test("a parenthesised require is a require", () => {
+    // `(require)(...)` calls the same function; the parentheses were read as an
+    // unknown callee, so the import went unseen and the mixed report was judged.
+    expect(importedTestFiles(`(require)("./a.test.ts");`, PROBE_TS)).toEqual(["./a.test.ts"]);
+  });
+
+  test("a waived NOT ON PARENT row is counted in the pass line", () => {
+    // The count covered WRONG REASON RED only, so a run whose only waived row was
+    // NOT ON PARENT printed `PASS (1 waived)` with no explanation — while the
+    // guide for that very verdict says there is no red to judge. Both verdicts
+    // mean "the parent never ran this test", and both are counted now.
+    const waiver: Waiver = {
+      pattern: "brand new",
+      reason: "registered only on the change",
+      line: 9,
+    };
+    const waivedRow: Verdict = {
+      file: "packages/core/src/cart.test.ts",
+      test: "brand new",
+      name: "NOT_ON_PARENT",
+      detail: "the change registers this test and the parent's run never reported it",
+      waiver,
+      waivers: [waiver],
+    };
+    const run: GateRun = {
+      baseSha: "0f95d7d4aaaa",
+      worktree: "(none)",
+      worktreeCreated: false,
+      installLog: "",
+      files: ["packages/core/src/cart.test.ts"],
+      verdicts: [waivedRow],
+      stdoutByFile: new Map(),
+      problems: [],
+      uncommitted: [],
+      skipped: [],
+    };
+    const report = renderReport(run, []);
+    expect(verdictPasses(waivedRow)).toBe(true);
+    expect(report).toContain("red-on-parent: PASS (1 waived)");
+    expect(report).toContain(
+      "1 of them: the parent could not run the test, so nothing was judged there",
+    );
   });
 });

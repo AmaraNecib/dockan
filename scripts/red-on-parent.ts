@@ -540,6 +540,18 @@ export function parseWaivers(text: string, path: string): WaiverParse {
 // Classification
 // ---------------------------------------------------------------------------
 
+/**
+ * The gate's whole product, named once.
+ *
+ * A run passes when nothing was reported as a problem and every verdict
+ * passes. `main` decides the exit code from this and `renderReport` prints the
+ * last line from this: the same expression written twice is how a reviewer ends
+ * up reading PASS while CI exits 1, which is the one thing a gate cannot do.
+ */
+export function runPasses(run: { verdicts: Verdict[]; problems: string[] }): boolean {
+  return run.problems.length === 0 && run.verdicts.every(verdictPasses);
+}
+
 export function verdictPasses(verdict: Verdict): boolean {
   switch (verdict.name) {
     case "RIGHT_REASON_RED":
@@ -2109,7 +2121,7 @@ export function renderReport(run: GateRun, problems: string[]): string {
     // The report states its verdict in every other shape. A run that judged
     // nothing still decided something, and a reader who cannot find the
     // verdict cannot tell a decided run from a silent one.
-    lines.push(problems.length > 0 ? "red-on-parent: FAIL" : "red-on-parent: PASS");
+    lines.push(runPasses({ verdicts: run.verdicts, problems }) ? "red-on-parent: PASS" : "red-on-parent: FAIL");
     return `${lines.join("\n")}\n`;
   }
   if (run.installLog.length > 0) lines.push(`installed the parent's dependencies: ${run.installLog}`);
@@ -2178,7 +2190,7 @@ export function renderReport(run: GateRun, problems: string[]): string {
     );
     for (const entry of run.skipped) lines.push(`  ${entry.path} — ${entry.reason}`);
   }
-  const failed = failing.length > 0 || problems.length > 0;
+  const failed = !runPasses({ verdicts: run.verdicts, problems });
   if (failed) {
     lines.push("red-on-parent: FAIL");
   } else {
@@ -2346,8 +2358,7 @@ export function main(argv: string[]): number {
     const base = resolveBase(repo, args.base);
     const run = runGate({ repo, base, head: args.head, fresh: args.fresh });
     process.stdout.write(renderReport(run, run.problems));
-    const failed = run.verdicts.some((verdict) => !verdictPasses(verdict)) || run.problems.length > 0;
-    return failed ? 1 : 0;
+    return runPasses(run) ? 0 : 1;
   } catch (error) {
     // Anything that is not a GateError is still "the gate could not run", not a
     // verdict. An uncaught throw exits 1, the same code as a legitimate gate

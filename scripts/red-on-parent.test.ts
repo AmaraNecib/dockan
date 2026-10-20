@@ -54,6 +54,7 @@ import {
   parseWaivers,
   reclaimClaimName,
   renderReport,
+  runPasses,
   runFinished,
   runGate,
   unregisteredVerdicts,
@@ -3815,6 +3816,16 @@ describe("red-on-parent round 23 — the lens findings at 0f95d7d4", () => {
     };
     const report = renderReport(run, []);
     expect(verdictPasses(waivedRow)).toBe(true);
+    // The printed verdict and the exit code come from one decision now. Before
+    // that they were two expressions, which is how a reviewer reads PASS while
+    // CI exits 1.
+    expect(runPasses(run)).toBe(true);
+    expect(report).toMatch(/^red-on-parent: PASS/mu);
+    // One problem fails the run even when every verdict passes, and the printed
+    // line says so — the same function decides both.
+    const withProblem = { ...run, problems: ["cart.test.ts: has uncommitted changes"] };
+    expect(runPasses(withProblem)).toBe(false);
+    expect(renderReport(withProblem, withProblem.problems)).toMatch(/^red-on-parent: FAIL/mu);
     expect(report).toContain("red-on-parent: PASS (1 waived)");
     expect(report).toContain(
       "1 of them: the parent could not run the test, so nothing was judged there",

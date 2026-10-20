@@ -20,7 +20,6 @@
     "apps/web/package.json",
     "apps/api/package.json",
     "packages/*/package.json",
-    ".dokan-port",
 
     "$comment: web entry, shared chrome and shared primitives; every screen renders through these",
     "apps/web/vite.config.ts",

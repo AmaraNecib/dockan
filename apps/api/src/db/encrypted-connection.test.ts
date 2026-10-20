@@ -1161,6 +1161,30 @@ describe("snapshot fence (#280)", () => {
     await current.close();
   });
 
+  it("a checkpoint at version zero is a write this connection verified (#292)", async () => {
+    // `persistedVersion > 0` cannot answer "is there a write of mine on disk":
+    // a checkpoint with no mutation writes and verifies a snapshot while both
+    // counters stay at 0, and the old test reported that as not durable.
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeStamp: () => tokenB,
+    });
+    try {
+      conn.raw.exec("CREATE TABLE t(a TEXT)");
+      // Nothing has been written yet, and the counters agree with each other,
+      // so this must NOT read as durable.
+      expect(conn.snapshotIsDurable()).toBe(false);
+      conn.checkpoint();
+      expect(diskFence()?.stamp).toBe(tokenB);
+      expect(conn.snapshotIsDurable()).toBe(true);
+    } finally {
+      await conn.close();
+    }
+  });
+
   it("names a foreign fence on a re-read, without writing and once per change (#292)", async () => {
     const events: string[] = [];
     const conn = createEncryptedConnection({

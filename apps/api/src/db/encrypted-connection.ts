@@ -465,6 +465,12 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   let mutationVersion = 0;
   /** the mutation version covered by the last successful snapshot write */
   let persistedVersion = 0;
+  // Whether a write on this connection has been VERIFIED as ours. Not the same
+  // question as `persistedVersion > 0`: both counters start at zero, and a
+  // `checkpoint()` with no mutation writes and verifies a fresh snapshot while
+  // the version stays 0. Greptile caught the difference (#292); without this
+  // flag a verified write at version zero reported itself as not durable.
+  let verifiedWrite = false;
   let persistQueue: Promise<void> = Promise.resolve();
   /**
    * True once `close()` has checkpointed and released the handle. The async
@@ -746,6 +752,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         // only now is the version durable; a mutation during the write set
         // mutationVersion beyond `version` and schedules the next flush
         persistedVersion = version;
+        verifiedWrite = true;
         return "on-disk";
       }
       if (verdict.outcome === "unreadable") {
@@ -790,10 +797,13 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       return readFence();
     },
     snapshotIsDurable() {
-      // `persistedVersion > 0` is "a write has been recorded": before the first
-      // one both counters sit at 0 and there is nothing on disk to be durable.
+      // `verifiedWrite` is the question being asked: has a write on THIS
+      // connection been read back as ours. The counter alone cannot answer it —
+      // a `checkpoint()` at version zero writes and verifies while both counters
+      // stay 0 — and `persistedVersion === mutationVersion` alone is true before
+      // anything has been written at all.
       return (
-        !closed && persistedVersion > 0 && persistedVersion === mutationVersion && lastSeenFence.outcome === "mine"
+        !closed && verifiedWrite && persistedVersion === mutationVersion && lastSeenFence.outcome === "mine"
       );
     },
     async persistIfDirty() {
@@ -856,6 +866,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       const verdict = readFence();
       if (verdict.outcome === "mine") {
         persistedVersion = mutationVersion;
+        verifiedWrite = true;
         return;
       }
       if (verdict.outcome === "unreadable") {

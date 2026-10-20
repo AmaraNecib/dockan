@@ -434,7 +434,11 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // fence would go back to being invisible, so a missing lock is an error here
   // rather than a skipped registration.
   if (vaultLock === undefined) throw new Error("the vault snapshot fence probe started without a held lock");
-  vaultLock.onHeartbeat(() => conn.recheckFence());
+  // The unsubscribe is kept, not dropped: a failed bootstrap closes `conn`, and
+  // a callback left on the lock would hold that closed connection for the
+  // lock's lifetime while adding work to every beat. Greptile caught the leak
+  // (#292); the catch below is where it is released.
+  const stopHeartbeatProbe = vaultLock.onHeartbeat(() => conn.recheckFence());
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed
   // (a retry would duplicate a sale/payment). Exiting here means the client
@@ -527,6 +531,9 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     if (!input.fresh && readyHandlerFor(lockLost) === "live") await runVaultDailyBackup();
     logger.info("SERVER_BOOT_DONE", "vault store and auth ready", { driver: "sqlite-encrypted" });
   } catch (error) {
+    // The probe must not outlive the connection it reads: release it before the
+    // close, so no beat can land on a connection that is on its way out.
+    stopHeartbeatProbe();
     // a lost folder abandons the store: closing it would run the final
     // checkpoint over the new owner's snapshot (ADR-0012 clause 3)
     if (!lockLost) await conn.close();

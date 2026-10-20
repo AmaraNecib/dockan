@@ -217,8 +217,18 @@ jobs:
       # hold, and the gate refuses that ("--head ... is not the checked-out
       # commit") on exactly the PRs it exists for: the ones that add a gated test
       # file. The merge commit's tree is the PR's files merged into the base tip,
-      # and merge-base(base.sha, merge) is base.sha, so the diff is still the
-      # PR's. Checking head out instead would change what every other step in
+      # so the parent to test against is that base tip: HEAD^1.
+      #
+      # It is NOT `pull_request.base.sha`, which can lag the base branch. When it
+      # does, everything merged meanwhile looks like files this PR added, and each
+      # one comes back "wrong reason red" because the old parent cannot load an
+      # export that landed after it. That is what reddened #297 at 42223062: the
+      # base sha pointed at a develop commit from before #291 added
+      # `readSnapshotFence`, so two files from #291 were graded against a tree
+      # that never had them. The checkout is the merge ref, so its first parent
+      # is the tip the merge was built on — the same tree the PR will land into.
+      #
+      # Checking head out instead would change what every other step in
       # this job proves (the merge result), so the gate uses the checkout it has.
       # timeout-minutes is under the job's 15: a wedged run (a cold install, a
       # hung test) dies here and the build and audit after it still run — a
@@ -232,7 +242,15 @@ jobs:
       - name: Red-on-parent gate
         if: github.event_name == 'pull_request'
         timeout-minutes: 14
-        run: bun scripts/red-on-parent.ts --base ${{ github.event.pull_request.base.sha }}
+        run: |
+          # A merge ref has two parents; anything else falls back to base.sha.
+          if [ "$(git rev-list --parents -n1 HEAD | wc -w)" -gt 2 ]; then
+            base=$(git rev-parse HEAD^1)
+          else
+            base='${{ github.event.pull_request.base.sha }}'
+          fi
+          echo "red-on-parent: parent ${base}"
+          bun scripts/red-on-parent.ts --base "$base"
 
       # The production bundle adds a PR-time `vite build` alongside the one the
       # `rust` job runs for crate-affecting diffs. It is an additional build,

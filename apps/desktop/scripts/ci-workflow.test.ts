@@ -288,9 +288,22 @@ describe("PR CI workflow", () => {
     ).toBe(true);
     // GitHub expressions contain spaces, so the "value" of a flag is read with a
     // regex over the run text, not by whitespace tokenisation.
-    const base = /--base\s+(\$\{\{[^}]*\}\}|\S+)/u.exec(gate.run);
-    expect(base?.[1], `Red-on-parent gate must pass --base, got: ${gate.run}`).toBe(
+    //
+    // The parent is the merge ref's first parent, not `pull_request.base.sha`.
+    // base.sha can lag the base branch, and on #297 at 42223062 it did: it named
+    // a develop commit from before #291 added `readSnapshotFence`, so two files
+    // #291 had already merged were enumerated as this PR's additions and came
+    // back "wrong reason red" against a tree that never had that export. A merge
+    // ref's HEAD^1 is the tip the merge was built on, which is the tree the PR
+    // lands into. Reverting to base.sha alone, or dropping the fallback, must
+    // turn this red.
+    expect(gate.run, "the gate must resolve the merge ref's first parent").toContain("HEAD^1");
+    expect(gate.run, "off a merge ref the gate must still fall back to base.sha").toContain(
       "${{ github.event.pull_request.base.sha }}",
+    );
+    const base = /--base\s+"?([^"\s]+)"?/u.exec(gate.run);
+    expect(base?.[1], `Red-on-parent gate must pass the resolved base, got: ${gate.run}`).toBe(
+      "$base",
     );
     // If the step passes --head, the checkout must hold it. The `checks`
     // checkout sets no `ref:`, so it is the merge commit; `--head head.sha`

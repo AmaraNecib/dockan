@@ -602,7 +602,12 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // the loss is real, it is just not this process's to retry.
       options.logger?.error?.(
         "SNAPSHOT_PERSIST_DROPPED",
-        "the connection closed before this committed unit reached the snapshot; the unit was not written",
+        // The words come from the policy, not from here: the store logs the same
+        // event for the same fact when a persist returns "dropped", and a second
+        // hand-written sentence would let one fact carry two texts — with the
+        // policy's edit never reaching this row. The connection adds nothing to
+        // the meaning, so it adds nothing to the sentence.
+        snapshotFailurePolicy("dropped").sentence,
       );
       return "dropped";
     }

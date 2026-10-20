@@ -13,6 +13,13 @@ CI/Greptile, the architecture review, the merge decision and wisdom. The lane's
 last act is its **commit**; its completion wakes the parent. It never pushes,
 never opens a PR and never merges.
 
+**A lane never ends its turn with work in flight.** If it cannot finish the item
+it is on, it commits a checkpoint — a WIP commit is fine when the message says so —
+and then reports. A turn that ends with "step 2 of 3 is in flight" is a dead lane:
+no wake comes, the work sits dirty in the worktree, and the next session starts by
+rediscovering the state instead of continuing it. Two lanes on this board died
+exactly that way, and the recovery is to read the dirty diff first, not to restart.
+
 **Wisdom: read it, never write it.** Before step 1, grep `.agents/wisdom/` for your area
 (`grep -rin "<symbol or failure mode>" .agents/wisdom/ | head -40`) and read the hits — not
 all 62 files. Lessons live in per-area folders (`api/`, `data/`, `e2e/`, `money/`, `process/`,

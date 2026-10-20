@@ -19,6 +19,8 @@ export type OpenVaultStoreInput = {
   logger?: StoreLogger;
   /** write-path guard: throws when this process no longer owns the folder */
   writeGuard?: () => void;
+  /** the current holder's lock token, stamped into every snapshot it writes (#280) */
+  writeStamp?: () => string;
 };
 
 /** The two seams one encrypted-store bootstrap produces. */
@@ -34,6 +36,10 @@ export function openVaultStore(input: OpenVaultStoreInput): OpenVaultStore {
   if (input.fresh === true) options.fresh = true;
   if (input.seedBytes !== undefined) options.seedBytes = input.seedBytes;
   if (input.writeGuard !== undefined) options.writeGuard = input.writeGuard;
+  if (input.writeStamp !== undefined) options.writeStamp = input.writeStamp;
+  // the same logger the store gets, so a fence the connection cannot verify at
+  // open reaches the diagnostics log instead of vanishing into a boolean
+  if (input.logger !== undefined) options.logger = input.logger;
   const conn = createEncryptedConnection(options);
   return { conn, store: createDrizzleStore(conn, input.logger) };
 }

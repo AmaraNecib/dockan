@@ -189,17 +189,121 @@ export function formatRecoveryCode(bytes: Uint8Array): string {
 
 /** First bytes of every `dokan.db.enc` file. */
 export const VAULT_SNAPSHOT_MAGIC = Buffer.from("DKNVAULT", "ascii");
-/** One format byte after the magic; bump when the envelope changes. */
-export const VAULT_SNAPSHOT_VERSION = 1;
+/**
+ * The released envelope: `magic ‖ 1 ‖ sealed`. It carries no holder stamp, so
+ * it cannot tell a former holder's bytes from the current one's. Kept readable
+ * (#280); the holder that reads it rewrites it fenced on its next write.
+ */
+export const VAULT_SNAPSHOT_LEGACY_VERSION = 1;
+/**
+ * The fenced envelope (#280): `magic ‖ 2 ‖ stampLen(1) ‖ stamp ‖ sealed`. The
+ * stamp is the writing holder's lock token, bound into the AEAD context, so the
+ * next holder can tell that the bytes are not its own.
+ */
+export const VAULT_SNAPSHOT_VERSION = 2;
+/** Bound on a holder stamp; a lock token is 32 hex characters. */
+export const MAX_SNAPSHOT_STAMP_BYTES = 64;
+/**
+ * Enough bytes to parse the fence of any envelope. A follower reads this many
+ * bytes rather than the whole snapshot.
+ */
+export const SNAPSHOT_FENCE_PREFIX_BYTES = VAULT_SNAPSHOT_MAGIC.length + 1 + 1 + MAX_SNAPSHOT_STAMP_BYTES;
 
-/** AEAD context for the database snapshot of one vault. */
+/**
+ * AEAD context for a legacy (unfenced) snapshot of one vault. FROZEN: editing
+ * the string makes every released snapshot unreadable, so a new envelope must
+ * add a builder rather than change this one.
+ *
+ * The `v1` is a **literal** for the same reason `fencedSnapshotAad`'s `v2` is:
+ * interpolating the header-version constant would move this context the day the
+ * header format moves, and every released snapshot is sealed under it. The
+ * header version is free to bump; this string is not. `format.test.ts` scans
+ * this body for the literal and for the absence of the constant.
+ */
 export function snapshotAad(vaultId: string): string {
-  return `dokan:vault:db:v${VAULT_FORMAT_VERSION}:${vaultId}`;
+  return `dokan:vault:db:v1:${vaultId}`;
 }
 
-/** AEAD context for one wrapped master key. */
+/**
+ * AEAD context for a fenced snapshot (#280): the holder's stamp is bound in, so
+ * swapping the cleartext stamp field fails the GCM tag.
+ *
+ * The `v2` is a **literal**, and that is the whole point of writing it out.
+ * Written as `v${VAULT_SNAPSHOT_VERSION}` this string would move the day the
+ * envelope version moves: a bump to format 3 would change the context that
+ * every existing format-2 snapshot has to be opened with, so a reader that
+ * still accepted version 2 could no longer decrypt one byte of it. Freezing a
+ * format means naming its number rather than referring to the variable that
+ * currently holds it. `format.test.ts` pins both the exact string and the
+ * absence of the constant from this body.
+ *
+ * `sealSnapshot` and `openSnapshot` both derive their context here, so writer
+ * and reader cannot drift apart.
+ */
+export function fencedSnapshotAad(vaultId: string, stamp: string): string {
+  return `dokan:vault:db:v2:${vaultId}:${stamp}`;
+}
+
+/** The readable envelope header: its version, its holder stamp, and where the sealed blob starts. */
+export type SnapshotFence =
+  | { version: typeof VAULT_SNAPSHOT_LEGACY_VERSION; stamp: undefined; bodyOffset: number }
+  | { version: typeof VAULT_SNAPSHOT_VERSION; stamp: string; bodyOffset: number };
+
+/**
+ * Parse an envelope's fence. Returns undefined when the bytes cannot decide —
+ * too short, wrong magic, an unknown version, or an out-of-range stamp length —
+ * so a caller reading a prefix treats "undecidable" as "not mine" instead of
+ * trusting it. The stamp is cleartext, which is safe to read before decrypting.
+ *
+ * What the stamp does and does not prove, stated plainly, because the weaker
+ * reading was written here first and is false. Binding the stamp into the AEAD
+ * context makes the cleartext field tamper-evident: swapping one envelope's
+ * stamp for another fails the GCM tag, which is all the AAD-swap test claims.
+ * It does not bind the stamp to an identity. A process holding the master key
+ * and the folder reads the current holder's token out of `vault.lock` and mints
+ * a validly fenced envelope under that stamp — the post-write re-read then
+ * sees "mine" and records the overwrite as durable, undetected. So the fence
+ * discriminates a *helpless* former holder, one that sealed with the token it
+ * held at acquire time and stays recognisable forever, and NOT a deliberately
+ * malicious one. Nothing in this file holds back a writer that means it.
+ */
+export function readSnapshotFence(envelope: Uint8Array): SnapshotFence | undefined {
+  const afterMagic = VAULT_SNAPSHOT_MAGIC.length;
+  if (envelope.length < afterMagic + 1) return undefined;
+  if (!Buffer.from(envelope.subarray(0, afterMagic)).equals(VAULT_SNAPSHOT_MAGIC)) return undefined;
+  const version = envelope[afterMagic];
+  if (version === VAULT_SNAPSHOT_LEGACY_VERSION) {
+    return { version: VAULT_SNAPSHOT_LEGACY_VERSION, stamp: undefined, bodyOffset: afterMagic + 1 };
+  }
+  if (version !== VAULT_SNAPSHOT_VERSION) return undefined;
+  const stampLengthOffset = afterMagic + 1;
+  if (envelope.length < stampLengthOffset + 1) return undefined;
+  const stampLength = envelope[stampLengthOffset];
+  if (stampLength === undefined || stampLength === 0 || stampLength > MAX_SNAPSHOT_STAMP_BYTES) return undefined;
+  const bodyOffset = stampLengthOffset + 1 + stampLength;
+  if (envelope.length < bodyOffset) return undefined;
+  const stamp = Buffer.from(envelope.subarray(stampLengthOffset + 1, bodyOffset)).toString("utf8");
+  return { version: VAULT_SNAPSHOT_VERSION, stamp, bodyOffset };
+}
+
+/**
+ * The AEAD context of a snapshot envelope. ONE place decides legacy versus
+ * fenced, so the writer and the reader cannot drift apart: the writer knows
+ * the stamp it is about to seal, the reader knows the stamp it read out of
+ * the envelope, and both ask here.
+ */
+export function snapshotAadFor(vaultId: string, stamp: string | undefined): string {
+  return stamp === undefined ? snapshotAad(vaultId) : fencedSnapshotAad(vaultId, stamp);
+}
+
+/**
+ * AEAD context for one wrapped master key. FROZEN, and written as a literal
+ * for the reason `snapshotAad` is: every wrapped key in every `vault.json` is
+ * sealed under `wrap:v1`, so a header-version bump must not move it. Pinned by
+ * a source scan in `format.test.ts`.
+ */
 export function wrapAad(vaultId: string, kind: VaultWrap["kind"]): string {
-  return `dokan:vault:wrap:v${VAULT_FORMAT_VERSION}:${vaultId}:${kind}`;
+  return `dokan:vault:wrap:v1:${vaultId}:${kind}`;
 }
 
 /**

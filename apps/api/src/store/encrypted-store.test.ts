@@ -274,4 +274,91 @@ describe("vault-mode store", () => {
     await inFlight;
     expect(persisted).toBe(true);
   });
+
+  itHeavy("a deferred flush first read in flight when close() lands never serializes the released handle (#291)", async () => {
+    const { vault, conn, store } = await freshVault();
+    await store.createCategory({ name: "before" });
+    // The raw handle's own close() is the instant the database stops being
+    // usable, so that is what the measurement below is anchored to: a serialize
+    // AFTER it ran on a released handle, which is the CI failure this pins.
+    const realSerialize = conn.raw.serialize.bind(conn.raw);
+    const realClose = conn.raw.close.bind(conn.raw);
+    let released = false;
+    let serializedAfterRelease = 0;
+    conn.raw.serialize = () => {
+      if (released) serializedAfterRelease += 1;
+      return realSerialize();
+    };
+    conn.raw.close = () => {
+      released = true;
+      realClose();
+    };
+
+    // The deferral under test: the flush is requested and its opening currency
+    // read is still in flight (no await between the two calls), so close() can
+    // only wait for it if the job was chained onto the queue on request.
+    conn.markDirty();
+    let flushFailure: Error | undefined;
+    // The rejection is captured rather than awaited, so close() below still
+    // lands while this flush is parked
+    const deferred = conn.persistIfDirty().catch((error: Error) => {
+      flushFailure = error;
+    });
+    await conn.close();
+    await deferred;
+
+    // Two halves, asserted together so a failure reports both: the flush must
+    // not throw "Can't do this on a closed database", and it must not serialize
+    // a handle the store already released.
+    expect({ flushFailure, serializedAfterRelease }).toEqual({ flushFailure: undefined, serializedAfterRelease: 0 });
+
+    // and nothing was lost by refusing: close()'s checkpoint is the current image
+    const reopened = createEncryptedConnection({
+      vaultId: vault.metadata().vaultId,
+      masterKey: vault.requireMasterKey(),
+      snapshotPath: vault.snapshotPath,
+    });
+    expect((await createDrizzleStore(reopened).listCategories()).some((category) => category.name === "before")).toBe(true);
+    await reopened.close();
+  });
+
+  itHeavy("a flush requested after close() writes nothing instead of throwing from a closed handle (#291)", async () => {
+    const { conn } = await freshVault();
+    await conn.close();
+    const durable = fs.readFileSync(conn.dbPath);
+    // a store call that lands during shutdown still marks the image dirty, so
+    // the flush below reaches the serializer instead of being skipped as current
+    conn.markDirty();
+    // the flush is refused quietly (an ordinary event while the process goes
+    // down), and the direct persist says what happened: the unit was DROPPED,
+    // not written
+    await expect(conn.flush()).resolves.toBeUndefined();
+    await expect(conn.persistIfDirty()).resolves.toBe("dropped");
+    // nothing was written for the closed connection
+    expect(fs.readFileSync(conn.dbPath).equals(durable)).toBe(true);
+  });
+
+  itHeavy("a dropped snapshot fails stop like a write that could not land (#291)", async () => {
+    const { conn, store } = await freshVault();
+    await store.setup();
+    const fatal: Error[] = [];
+    // The same connection, with a persist that reports the drop a closed
+    // connection reports: the unit committed, the snapshot did not. The
+    // connection's own refusal is not enough — the store is the thing that
+    // reports success to the client, so the store is where the verdict has to
+    // be acted on.
+    const dropping = {
+      ...conn,
+      onFatalError: (error: Error) => fatal.push(error),
+      persistIfDirty: async () => "dropped" as const,
+    };
+    const dropStore = createDrizzleStore(dropping);
+
+    await expect(dropStore.createCategory({ name: "dropped" })).rejects.toThrow(SnapshotPersistenceError);
+    // fail-stop, exactly like a write that could not land: the client must
+    // not be told a committed sale was saved
+    expect(fatal).toHaveLength(1);
+    // and the row is committed: the unit is lost, not undone
+    expect((await dropStore.listCategories()).some((category) => category.name === "dropped")).toBe(true);
+  });
 });

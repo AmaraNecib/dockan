@@ -10,7 +10,7 @@ import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
 import { createAppConfig, type AppConfig } from "./config";
 import { openConnection, type Connection } from "./db/connection";
-import { MissingVaultDatabaseError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
+import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
 import { openVaultStore } from "./db/vault-store";
 import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
@@ -24,7 +24,7 @@ import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypt
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
-import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -245,6 +245,10 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // lock cannot overwrite that copy's data (the heartbeat alone is too slow).
   // Fail loud, never open: a missing lock must not turn the guard into a no-op.
   storeInput.writeGuard = requireHeldLock(vaultLock);
+  // #280: the holder's own lock token is stamped into every snapshot it writes,
+  // so a byte written by a former holder is recognisable and never trusted. The
+  // same fail-loud rule as the guard: no lock, no stamp, no write.
+  storeInput.writeStamp = () => holderToken(vaultLock);
   const { conn, store } = openVaultStore(storeInput);
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed
@@ -263,6 +267,19 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
         "the encrypted snapshot write was refused: another copy owns the folder; this instance is serving the in-use refusal",
       );
       return;
+    }
+    // A fence refusal is not a disk failure either, and the message must not
+    // blame one: the bytes WERE written, and another process replaced them. The
+    // cause is on the error rather than guessed from the text, so the owner
+    // reads which of the two happened instead of "could not be written" for a
+    // file that was written three times.
+    if (error instanceof SnapshotPersistenceError && error.reason !== "write-failed") {
+      logger.error(
+        "SNAPSHOT_PERSIST_FAILED",
+        `FATAL: the encrypted snapshot was not durable (${error.reason}); exiting to avoid divergence`,
+        error,
+      );
+      process.exit(1);
     }
     logger.error("SNAPSHOT_PERSIST_FAILED", "FATAL: encrypted snapshot could not be written; exiting to avoid divergence", error);
     process.exit(1);
@@ -689,8 +706,9 @@ function startServer(): void {
   // listener, so no shutdown path can exit before the reconcile finishes
   server.on("close", async () => {
     await reconcileBeforeExit();
-    await closeStoreThenLock();
-    process.exit(0);
+    // the close's verdict IS the exit code: a shutdown whose snapshot is not
+    // durable must not be reported as a clean stop
+    process.exit(await closeStoreThenLock());
   });
 }
 
@@ -706,18 +724,45 @@ async function forgetPort(): Promise<void> {
 /**
  * Close the store (draining pending snapshot writes and the final checkpoint)
  * and only then release the single-writer lock; the lock and the connection
- * are module-level so every shutdown path shares this order. A close failure
- * is logged, never fatal: the helper already released the lock in `finally`.
+ * are module-level so every shutdown path shares this order. Returns the exit
+ * code the shutdown path must use.
+ *
+ * A close that cannot prove the last committed version durable is a FAILED
+ * shutdown, not a logged one. It cannot retry — the handle is released and the
+ * process is already going down — but "could not retry" is not "did not
+ * fail": a fence refusal here means the newest committed transactions are not
+ * on disk, and exiting 0 would report that as a clean stop. So the same
+ * condition gets the same event code and the same non-zero exit the write path
+ * gives it, and the message names the reason instead of "close failed".
  */
-async function closeStoreThenLock(): Promise<void> {
+async function closeStoreThenLock(): Promise<number> {
   try {
     // A lost lock means another instance owns the folder now. Closing this
     // connection would run a final checkpoint over ITS snapshot, so the
     // abandoned store is left alone: no request can reach it any more, and
     // the replacement instance's data is never overwritten (ADR-0012).
     await closeVaultThenReleaseLock(connectionToCloseAtShutdown(lockLost, activeConnection), vaultLock);
+    return 0;
   } catch (err) {
-    logger.error("SERVER_ERROR", "store close failed during shutdown", err instanceof Error ? err : new Error(String(err)));
+    const error = err instanceof Error ? err : new Error(String(err));
+    // A snapshot refusal carries why: another writer's envelope took the file,
+    // the legacy envelope replaced ours, the file is gone, or the fence would
+    // not read. Naming it is what keeps the shutdown row out of the disk-failure
+    // bucket the write path already distinguishes (main's onFatalError above).
+    if (error instanceof SnapshotPersistenceError) {
+      logger.error(
+        "SNAPSHOT_PERSIST_FAILED",
+        `FATAL: the last committed version is not durable at shutdown (${error.reason}); exiting non-zero so the loss is not read as a clean stop`,
+        error,
+      );
+      return 1;
+    }
+    logger.error(
+      "SERVER_ERROR",
+      "store close failed during shutdown: the last committed version may not be durable; exiting non-zero",
+      error,
+    );
+    return 1;
   }
 }
 
@@ -747,8 +792,9 @@ function beginShutdown(): void {
   // releasing the lock and exiting
   setTimeout(async () => {
     await reconcileBeforeExit();
-    await closeStoreThenLock();
-    process.exit(0);
+    // same verdict as the graceful path: a forced exit is not a clean one when
+    // the snapshot was not proven durable
+    process.exit(await closeStoreThenLock());
   }, 3000).unref();
 }
 

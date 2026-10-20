@@ -69,7 +69,22 @@ export function cleanupStalePartials(directory: string, baseName: string): void 
   }
 }
 
-export function writeFileAtomicSync(filePath: string, data: Uint8Array | string): void {
+/**
+ * Where the caller gets its last word before the rename.
+ *
+ * `beforeRename` runs after the temp file is written and fsynced and
+ * immediately before it is renamed over the destination. A throw aborts the
+ * rename, removes the temp file and propagates unchanged, so the caller sees
+ * its own refusal instead of a wrapped write error. The hook exists because
+ * the gap between "I checked" and "the rename happened" is the whole point: a
+ * check made before a multi-megabyte write leaves that write's duration as the
+ * window a takeover can land in (ADR-0012 clause 3, #280).
+ */
+export type AtomicWriteOptions = {
+  beforeRename?: () => void;
+};
+
+export function writeFileAtomicSync(filePath: string, data: Uint8Array | string, options: AtomicWriteOptions = {}): void {
   const partial = partialPathFor(filePath);
   const fd = fs.openSync(partial, "w");
   try {
@@ -79,6 +94,7 @@ export function writeFileAtomicSync(filePath: string, data: Uint8Array | string)
     fs.closeSync(fd);
   }
   try {
+    options.beforeRename?.();
     fs.renameSync(partial, filePath);
     fsyncDirectoryBestEffort(path.dirname(filePath));
   } catch (error) {
@@ -87,7 +103,7 @@ export function writeFileAtomicSync(filePath: string, data: Uint8Array | string)
   }
 }
 
-export async function writeFileAtomic(filePath: string, data: Uint8Array | string): Promise<void> {
+export async function writeFileAtomic(filePath: string, data: Uint8Array | string, options: AtomicWriteOptions = {}): Promise<void> {
   const partial = partialPathFor(filePath);
   const handle = await fs.promises.open(partial, "w");
   try {
@@ -97,6 +113,7 @@ export async function writeFileAtomic(filePath: string, data: Uint8Array | strin
     await handle.close();
   }
   try {
+    options.beforeRename?.();
     await fs.promises.rename(partial, filePath);
     fsyncDirectoryBestEffort(path.dirname(filePath));
   } catch (error) {

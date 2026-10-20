@@ -144,6 +144,9 @@ export async function extractVaultBackup(
     // into the folder, so it must not run before the check.
     lock.assertHeld();
     fs.mkdirSync(vaultDir, { recursive: true });
+    // Deliberately ungated by the holder fence: restore is an explicit
+    // operator action that replaces the vault wholesale, so the current
+    // holder's stamp is not the authority here. (#280 residual)
     await writeFileAtomic(snapshotPath, decoded.snapshot);
     lock.assertHeld();
     await writeFileAtomic(headerPath, decoded.headerText);

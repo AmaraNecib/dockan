@@ -68,7 +68,14 @@ export interface ProfitSaleLine {
  */
 export type StoreLogger = {
   warn(event: string, message: string): void;
-  error?(event: string, message: string, error: Error): void;
+  /**
+   * An informational line. Optional, because the store only ever needs a
+   * warning; the vault connection uses it for the ROUTINE observations (a
+   * snapshot written by an earlier session is what every restart leaves
+   * behind), which must not be dressed up as incidents.
+   */
+  info?(event: string, message: string): void;
+  error?(event: string, message: string, error?: Error): void;
 };
 
 /**

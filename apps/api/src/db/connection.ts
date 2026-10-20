@@ -8,6 +8,21 @@ import * as schema from "./schema";
 export type Schema = typeof schema;
 export type DrizzleDb = BunSQLiteDatabase<Schema>;
 
+/**
+ * What a flush did to the disk, for the caller that has to decide whether a
+ * committed unit may be reported saved.
+ *
+ * - `on-disk` — the snapshot covers the committed version, whether this call
+ *   wrote it or an earlier one already had.
+ * - `unproven` — the bytes landed but the fence could not be read back, so the
+ *   version is not recorded durable. Not a write failure (an unreadable prefix
+ *   says nothing about who wrote the file); the next write re-seals it.
+ * - `dropped` — the connection had closed: nothing was written, nothing can be,
+ *   and the unit is not in the snapshot. This is the one that must never be
+ *   mistaken for a quiet success.
+ */
+export type PersistOutcome = "on-disk" | "unproven" | "dropped";
+
 export type Connection = {
   db: DrizzleDb;
   /** live database file path — used by the backup store method */
@@ -31,7 +46,7 @@ export type Connection = {
    */
   markDirty(): void;
   /** Vault seam: write the encrypted snapshot when dirty; legacy no-op. */
-  persistIfDirty(): Promise<void>;
+  persistIfDirty(): Promise<PersistOutcome>;
   /** Vault seam: force-write the current image; legacy = WAL checkpoint. */
   flush(): Promise<void>;
   /**
@@ -94,7 +109,8 @@ export function openConnection(config: AppConfig): Connection {
         // the legacy file-backed database is the persistence; nothing to mark
       },
       async persistIfDirty() {
-        // no in-memory image exists in legacy mode
+        // no in-memory image exists in legacy mode: the file IS the persistence
+        return "on-disk";
       },
       async flush() {
         sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");

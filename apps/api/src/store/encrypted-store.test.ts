@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createEncryptedConnection, readLegacyDatabaseImage, SnapshotPersistenceError } from "../db/encrypted-connection";
+import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { openVaultStore } from "../db/vault-store";
 import { CURRENT_SCHEMA_VERSION, readSchemaVersion } from "../lib/schema-version";
 import { VaultManager } from "../lib/vault/manager";
@@ -352,12 +353,25 @@ describe("vault-mode store", () => {
       onFatalError: (error: Error) => fatal.push(error),
       persistIfDirty: async () => "dropped" as const,
     };
-    const dropStore = createDrizzleStore(dropping);
+    // What the store says about the drop comes from the policy, not from a copy
+    // here (#305): the code is the one the reason carries, so a unit that was
+    // never written is not filed as a failed write. Before the policy existed
+    // this row was SNAPSHOT_PERSIST_FAILED with the reason only in the text.
+    const rows: { event: string; message: string }[] = [];
+    const dropStore = createDrizzleStore(dropping, {
+      warn: (event, message) => rows.push({ event, message }),
+      error: (event, message) => rows.push({ event, message }),
+    });
 
     await expect(dropStore.createCategory({ name: "dropped" })).rejects.toThrow(SnapshotPersistenceError);
     // fail-stop, exactly like a write that could not land: the client must
     // not be told a committed sale was saved
     expect(fatal).toHaveLength(1);
+    // the row is filed under the drop code, and its words are the policy's —
+    // the sentence half proves the wiring (a hand-written copy here would drift
+    // from the table that pins the meaning)
+    expect(rows.map((row) => row.event)).toContain("SNAPSHOT_PERSIST_DROPPED");
+    expect(rows.some((row) => row.message.includes(snapshotFailurePolicy("dropped").sentence))).toBe(true);
     // and the row is committed: the unit is lost, not undone
     expect((await dropStore.listCategories()).some((category) => category.name === "dropped")).toBe(true);
   });

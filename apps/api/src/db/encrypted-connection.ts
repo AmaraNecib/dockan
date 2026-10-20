@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 
 import type { DrizzleDb, PersistOutcome } from "./connection";
 import * as schema from "./schema";
+import { snapshotFailurePolicy } from "./snapshot-failure-policy";
 import { cleanupStalePartials, writeFileAtomic, writeFileAtomicSync } from "../lib/atomic-file";
 import { createVaultBackupBundle, readVaultBackupBundle } from "../lib/vault/backup";
 import { open, seal } from "../lib/vault/crypto";
@@ -184,29 +185,33 @@ export class SnapshotPersistenceError extends Error {
   }
 }
 
-/** Why a write was refused, and the sentence that says so. */
-type FenceFailure = { reason: SnapshotFailureReason; message: string };
+/** A verdict that refuses a write: every fence outcome except "mine". */
+type RefusingVerdict = Exclude<FenceVerdict, { outcome: "mine" }>;
 
-/** The reason and the sentence a fence verdict turns into when it refuses a write. */
-function fenceFailure(verdict: FenceVerdict): FenceFailure {
+/**
+ * The reason a fence verdict gives a refused write. This is the one job left
+ * here: a verdict that is not "mine" means a write is refused, and the reason
+ * is which kind of not-mine it was. What the reason then MEANS — the event, the
+ * severity, the words — is `snapshotFailurePolicy`'s answer, not this module's.
+ *
+ * Narrowing the parameter to the refusing verdicts is what removes the dead
+ * `mine` branch: every caller tests `outcome === "mine"` first and returns, so a
+ * verdict that reaches here cannot be one this holder wrote.
+ */
+function fenceFailureReason(verdict: RefusingVerdict): SnapshotFailureReason {
   switch (verdict.outcome) {
     case "foreign":
-      return { reason: "foreign", message: "another writer's envelope replaced the snapshot this holder wrote" };
+      return "foreign";
     case "unstamped":
-      return { reason: "unstamped", message: "a legacy unfenced envelope replaced the snapshot this holder wrote" };
+      return "unstamped";
     case "unfenced-holder":
-      return {
-        reason: "unfenced-holder",
-        message: "the snapshot is fenced and this connection has no stamp to check it against",
-      };
+      return "unfenced-holder";
     case "undecidable":
-      return { reason: "undecidable", message: "the bytes on disk are not a snapshot envelope this build knows" };
+      return "undecidable";
     case "absent":
-      return { reason: "absent", message: "the snapshot file is gone" };
+      return "absent";
     case "unreadable":
-      return { reason: "unreadable", message: "the snapshot fence could not be read" };
-    case "mine":
-      return { reason: "write-failed", message: "the snapshot was written but the fence is not this holder's" };
+      return "unreadable";
   }
 }
 
@@ -670,8 +675,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         // branch's comment exists to avoid.
         return "unproven";
       }
-      const failure = fenceFailure(verdict);
-      lastError = new SnapshotPersistenceError(new Error(failure.message), failure.reason);
+      const reason = fenceFailureReason(verdict);
+      lastError = new SnapshotPersistenceError(new Error(snapshotFailurePolicy(reason).sentence), reason);
       continue;
     }
     throw lastError ?? new SnapshotPersistenceError(new Error("unknown write failure"));
@@ -755,8 +760,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         reportFence({ outcome: "unreadable" }, "warn");
         return;
       }
-      const failure = fenceFailure(verdict);
-      throw new SnapshotPersistenceError(new Error(failure.message), failure.reason);
+      const reason = fenceFailureReason(verdict);
+      throw new SnapshotPersistenceError(new Error(snapshotFailurePolicy(reason).sentence), reason);
     },
     async close() {
       // wait for an in-flight async snapshot write, then checkpoint the current
@@ -831,10 +836,10 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       const snapshot = fs.readFileSync(snapshotPath);
       const verdict = fromEnvelope(snapshot, connectionStamp);
       if (verdict.outcome !== "mine") {
-        const failure = fenceFailure(verdict);
+        const reason = fenceFailureReason(verdict);
         throw new SnapshotPersistenceError(
-          new Error(`refusing to bundle a snapshot that is not this holder's: ${failure.message}`),
-          failure.reason,
+          new Error(`refusing to bundle a snapshot that is not this holder's: ${snapshotFailurePolicy(reason).sentence}`),
+          reason,
         );
       }
       await writeFileAtomic(destPath, createVaultBackupBundle(headerText, snapshot));

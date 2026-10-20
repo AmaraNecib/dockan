@@ -36,6 +36,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import * as gateModule from "./red-on-parent";
 import {
@@ -3323,3 +3324,264 @@ test("importer", () => {
     }
   }, 60_000);
 });
+
+describe("red-on-parent round 17 — the Greptile findings at ef4c42b1", () => {
+  test("a regex literal's quote does not blank the waiver below it", () => {
+    // `outsideLiterals` read every `"` as a string delimiter, so
+    // `const quote = /"/;` opened a string that ran to the next quote in the
+    // file. Everything between — the waiver comment included — became spaces,
+    // `parseWaivers` found no waiver, and a characterization test whose red is
+    // on the parent was refused as GREEN_ON_PARENT. A regex literal is neither
+    // a string nor a comment.
+    const source = String.raw`const quote = /"/;
+const classSlash = /[//]/;
+const escaped = /\/\//;
+const half = total / 2;
+// red-on-parent-waive: "gr keeps the quote" — characterizes behaviour the refactor kept
+test("gr keeps the quote", () => {
+  expect(quote.source).toBe('"');
+});
+`;
+    const parsed = parseWaivers(source);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["gr keeps the quote"]);
+    expect(parsed.waivers[0]?.line).toBe(5);
+  });
+
+  test("a `//` inside a regex character class is not a comment", () => {
+    // The same scan feeds the import check, which keeps literals. A `//` in a
+    // character class is not the start of a comment, and reading it as one
+    // drops the rest of the line — the line a real import can be on.
+    expect(importedTestFiles(String.raw`const slash = /[//]/; import "./real.test.ts";`)).toEqual([
+      "./real.test.ts",
+    ]);
+  });
+
+  test("the second reclaimer cannot delete the live lock the first one took", () => {
+    // The deterministic core of the finding, without a race: both waiters read
+    // the same stale lock, the first reclaims and takes the name with its own
+    // token, and the second now holds an observation of a lock that is no
+    // longer there. Its reclaim may not delete what the name holds.
+    const roundDir = mkdtempSync(join(tmpdir(), "ronp-reclaim-"));
+    const lockPath = join(roundDir, "wt.lock");
+    try {
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 1));
+      const stale = observeLockHolder(lockPath);
+      expect(stale.kind).toBe("holder");
+      // The first waiter reclaims and takes the lock exactly as the gate does.
+      expect(reclaimStaleLock(lockPath, stale)).toBe("reclaimed");
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, "pid"), lockPidFileContent(process.pid, "live-token", 1));
+      expect(reclaimStaleLock(lockPath, stale)).toBe("refused");
+      expect(readFileSync(join(lockPath, "pid"), "utf8")).toContain("live-token");
+    } finally {
+      rmSync(roundDir, { recursive: true, force: true });
+    }
+  });
+
+  test("two processes reclaiming one stale lock cannot both enter", async () => {
+    // The same thing with two real processes, which is the only shape that
+    // settles an argument about an interleaving: both read the stale lock
+    // before either reclaims, the first takes it, and the second reclaims with
+    // its old observation. With a reclaim that renames and deletes by name the
+    // second removed the first's live lock, both took the name, and both judged
+    // one worktree.
+    const script = writeLockRaceChild();
+    for (let round = 0; round < 3; round += 1) {
+      const roundDir = mkdtempSync(join(tmpdir(), "ronp-race-"));
+      const lockPath = join(roundDir, "wt.lock");
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 1));
+      const started = await Promise.all([
+        runLockChild(script, lockPath, "a", roundDir),
+        runLockChild(script, lockPath, "b", roundDir),
+      ]);
+      const read = (name: string): string => readFileSync(join(roundDir, name), "utf8").trim();
+      try {
+        expect(started.map((run) => run.status)).toEqual([0, 0]);
+        // Both acted on the stale lock, or the fixture tested nothing.
+        expect(read("a.observed")).toBe("holder");
+        expect(read("b.observed")).toBe("holder");
+        expect(read("a.outcome")).toBe("reclaimed");
+        expect(["refused", "restored"]).toContain(read("b.outcome"));
+        // The holder kept its own lock for the whole hold, and the second
+        // process never entered beside it.
+        expect(read("a.hold")).toBe("HOLD-OK");
+        expect(existsSync(join(roundDir, "b.entered"))).toBe(false);
+      } finally {
+        rmSync(roundDir, { recursive: true, force: true });
+      }
+    }
+    rmSync(script, { force: true });
+  }, 60_000);
+
+  test("a file that leaves the parent worktree changed cannot redden the next file", () => {
+    // The parent worktree used to be restored once, before the file loop. A
+    // test that writes a tracked fixture and then fails for its own reason
+    // restores nothing, so the next file's parent run saw the mutation. A file
+    // that is green on the parent then failed there with an AssertionError, and
+    // the gate read that red as RIGHT-REASON RED — a false PASS.
+    const shared: File = { path: "packages/core/src/shared.ts", text: 'export const FLAG = "before";\n' };
+    const mutator = `import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { expect, test } from "bun:test";
+
+test("leaves the parent's fixture changed", () => {
+  const cache = process.env.RONP_FIXTURE_CACHE ?? "";
+  // The change side runs in the checkout, and a dirty checkout is refused
+  // before the run for a reason that has nothing to do with this test. The
+  // mutation is the parent worktree's, so it is written there and only there.
+  if (cache.length > 0 && import.meta.dir.startsWith(cache)) {
+    writeFileSync(join(import.meta.dir, "shared.ts"), 'export const FLAG = "after";\\n');
+  }
+  expect(1).toBe(2);
+});
+`;
+    const reads = `import { expect, test } from "bun:test";
+import { FLAG } from "./shared";
+
+test("reads the parent's flag", () => {
+  expect(FLAG).toBe("before");
+});
+`;
+    const fixture = createFixture(
+      [PKG, shared],
+      [
+        { path: "packages/core/src/a-leaves.test.ts", text: mutator },
+        { path: "packages/core/src/b-reads.test.ts", text: reads },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture, { RONP_FIXTURE_CACHE: fixture.cache });
+      expect(stdout).toContain("b-reads.test.ts");
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 90_000);
+
+  test("a change-side run that was killed does not have its report accepted", () => {
+    // `changeSideResults` looked only for a junit file, so a process result of
+    // `null` — killed by the timeout, interrupted — was read as a completed
+    // run whose report enumerated the change's tests. A report bun wrote before
+    // it died is not evidence of what the change registers.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/killed.test.ts",
+          text: `import { expect, test } from "bun:test";\ntest("x", () => {\n  expect(1).toBe(1);\n});\n`,
+        },
+      ],
+    );
+    try {
+      const out = join(mkdtempSync(join(tmpdir(), "ronp-junit-")), "out.xml");
+      const problems: string[] = [];
+      const results = changeSideResults(
+        fixture.repo,
+        "packages/core/src/killed.test.ts",
+        out,
+        problems,
+        (_repo, _file, junitPath) => {
+          // The report bun writes, and then a process that did not finish.
+          writeFileSync(
+            junitPath,
+            `<testsuites><testsuite name="e.test.ts"><testcase name="x" classname="x" /></testsuite></testsuites>`,
+          );
+          return { status: null, stdout: "", error: "killed after 120000ms" };
+        },
+      );
+      expect(results).toEqual([]);
+      expect(problems.join(" ")).toContain("did not finish");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+/**
+ * The two-process lock fixture's child.
+ *
+ * Both children read the stale lock before either reclaims, and the second one
+ * waits until the first has taken the name, so the state the finding describes
+ * is reached every run instead of once in a hundred. The child then takes the
+ * lock the way the gate does and says whether it kept it: `HOLD-LOST` when its
+ * own pid file is gone or replaced, `OVERLAP` when the other process entered
+ * beside it.
+ */
+function writeLockRaceChild(): string {
+  const script = String.raw`
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { observeLockHolder, reclaimStaleLock } from "__GATE__";
+
+const lockPath = process.argv[2];
+const tag = process.argv[3];
+const roundDir = process.argv[4];
+const other = tag === "a" ? "b" : "a";
+
+const wait = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const waitFor = (path) => {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return true;
+    wait(10);
+  }
+  return false;
+};
+
+const observed = observeLockHolder(lockPath);
+writeFileSync(join(roundDir, tag + ".observed"), observed.kind);
+waitFor(join(roundDir, "a.observed"));
+waitFor(join(roundDir, "b.observed"));
+
+if (tag === "b") {
+  waitFor(join(roundDir, "a.entered"));
+  wait(20);
+}
+
+const outcome = reclaimStaleLock(lockPath, observed);
+writeFileSync(join(roundDir, tag + ".outcome"), outcome);
+if (outcome !== "reclaimed") process.exit(0);
+
+mkdirSync(lockPath);
+writeFileSync(join(lockPath, "pid"), process.pid + " " + tag + " 1\n");
+writeFileSync(join(roundDir, tag + ".entered"), "1");
+wait(200);
+let hold = "HOLD-OK";
+if (existsSync(join(roundDir, other + ".entered"))) hold = "OVERLAP";
+try {
+  if (!readFileSync(join(lockPath, "pid"), "utf8").includes(" " + tag + " ")) hold = "HOLD-LOST";
+} catch {
+  hold = "HOLD-LOST";
+}
+writeFileSync(join(roundDir, tag + ".hold"), hold);
+rmSync(lockPath, { recursive: true, force: true });
+`;
+  const dir = mkdtempSync(join(tmpdir(), "ronp-child-"));
+  const path = join(dir, "lock-child.ts");
+  writeFileSync(path, script.replace("__GATE__", pathToFileURL(GATE).href));
+  return path;
+}
+
+function runLockChild(
+  script: string,
+  lockPath: string,
+  tag: string,
+  roundDir: string,
+): Promise<{ status: number | null; output: string }> {
+  return new Promise((settle) => {
+    const child = spawn(process.execPath, [script, lockPath, tag, roundDir]);
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.on("close", (status) => settle({ status, output }));
+  });
+}

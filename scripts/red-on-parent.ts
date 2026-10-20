@@ -302,8 +302,91 @@ const waiverLinePattern = () =>
   /^[ \t]*\/\/[ \t]*red-on-parent-waive[ \t]*:[ \t]*(?:"([^"]*)"|'([^']*)')[ \t]*(?:[—–]{1,2}|-{1,2}|:)?[ \t]*(.*)$/u;
 
 /**
- * The source with every string literal's and block comment's *contents* replaced
- * by spaces, and line comments left exactly as they are.
+ * The last token in the code scanned so far, for telling a regex from a
+ * division.
+ */
+function previousToken(out: string): string {
+  let end = out.length;
+  while (end > 0 && /\s/u.test(out[end - 1]!)) end -= 1;
+  let start = end;
+  while (start > 0 && /[\w$]/u.test(out[start - 1]!)) start -= 1;
+  return out.slice(start, end);
+}
+
+/** Tokens after which a `/` opens a regex literal rather than dividing. */
+const REGEX_KEYWORDS = new Set([
+  "await",
+  "case",
+  "delete",
+  "do",
+  "else",
+  "in",
+  "instanceof",
+  "new",
+  "of",
+  "return",
+  "typeof",
+  "void",
+  "yield",
+]);
+
+/**
+ * Whether the `/` at the end of `out` starts a regex literal.
+ *
+ * A `/` is a regex only where a *value* cannot already stand: after an operator,
+ * an opening bracket, a comma or a keyword like `return`, and never after an
+ * identifier, a number, a closing bracket or a string. That test is what keeps
+ * `const quote = /"/;` from being read as the start of a string: the `"` inside
+ * it is a regex body character, and a scanner that does not know that blanks the
+ * rest of the file from the `"` up to the next quote — including the waiver
+ * comment the file really declared.
+ */
+function slashStartsRegex(out: string): boolean {
+  const token = previousToken(out);
+  // A regex at the very start of a file, after a `(`, `=`, `,` and the rest:
+  // the token is either empty or ends in a character that cannot end a value.
+  if (token.length === 0) return true;
+  if (REGEX_KEYWORDS.has(token)) return true;
+  if (/^[\w$]/u.test(token)) return false;
+  return "(,=:[!&|?{};+-*%<>^~".includes(token[token.length - 1]!);
+}
+
+/**
+ * The index of the `/` that closes the regex literal starting at `start`, or
+ * null when the run does not reach one on the same line.
+ *
+ * A `/` inside a character class does not close the literal, and neither does
+ * an escaped one: `/[//]/` and `/\//` are both one regex.
+ */
+function regexLiteralEnd(source: string, start: number): number | null {
+  let index = start + 1;
+  let inClass = false;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (char === "\n") return null;
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (inClass) {
+      if (char === "]") inClass = false;
+      index += 1;
+      continue;
+    }
+    if (char === "[") {
+      inClass = true;
+      index += 1;
+      continue;
+    }
+    if (char === "/") return index;
+    index += 1;
+  }
+  return null;
+}
+
+/**
+ * The source with every string literal's, regex literal's and block comment's
+ * *contents* replaced by spaces, and line comments left exactly as they are.
  *
  * Waivers are line comments, so a reader of them must not read the same text
  * once it has become data: a test that generates test source carries an embedded
@@ -313,6 +396,13 @@ const waiverLinePattern = () =>
  * and rejects a test whose red was good. Length is preserved character for
  * character, newlines included, so a problem's line number still points into the
  * file the author wrote.
+ *
+ * A regex literal is neither a string nor a comment. `const quote = /"/;` is one
+ * line of ordinary code, and a scanner that takes its `"` for a string delimiter
+ * blanks everything up to the next quote — which is whatever the author wrote
+ * below it, waiver comment included. The file then reads as a test that declared
+ * no waiver at all, and a characterization test whose red is legitimately on the
+ * parent is rejected as GREEN_ON_PARENT.
  */
 function outsideLiterals(source: string): string {
   let out = "";
@@ -339,6 +429,23 @@ function outsideLiterals(source: string): string {
         index += 2;
       }
       continue;
+    }
+    if (char === "/" && slashStartsRegex(out)) {
+      const closing = regexLiteralEnd(source, index);
+      if (closing !== null) {
+        // The delimiters and the flags stay, so the next `/` is still read as a
+        // division; only the body becomes spaces, so no quote or `//` in it can
+        // start a string or a comment.
+        out += "/";
+        for (let inner = index + 1; inner < closing; inner += 1) out += blank(source[inner]!);
+        out += "/";
+        index = closing + 1;
+        while (index < source.length && /[A-Za-z]/u.test(source[index]!)) {
+          out += source[index]!;
+          index += 1;
+        }
+        continue;
+      }
     }
     if (char === '"' || char === "'" || char === "`") {
       const quote = char;
@@ -390,7 +497,8 @@ export function parseWaivers(text: string): WaiverParse {
     // Only a line that *is* a waiver counts. A line that merely mentions the
     // marker — documenting the convention, or a string literal — used to be
     // parsed, fail the anchored pattern, and fail the whole run.
-    if (!startsAsWaiver.test(raw)) continue;    const match = linePattern.exec(raw);
+    if (!startsAsWaiver.test(raw)) continue;
+    const match = linePattern.exec(raw);
     if (match === null) {
       problems.push(
         `line ${line}: a ${WAIVER_MARKER} marker must read \`// ${WAIVER_MARKER}: "<test name>" — <reason>\``,
@@ -954,7 +1062,10 @@ const TEST_LIKE_BASENAME = /\.(test|spec)(\.[cm]?[jt]sx?)?$/u;
  * the two reads `// import "./setup.test.ts"` as a real one — which would name
  * an import that never happens and fail a correct change. String literals are
  * kept: a specifier lives inside one, and a `//` inside a string is not a
- * comment.
+ * comment. A regex literal is kept whole for the same reason: `/[//]/` holds a
+ * `//` that is a character class, not the start of a comment, and a scan that
+ * read it as one would drop the rest of the line — the line a real import could
+ * be on.
  */
 function withoutComments(source: string): string {
   let out = "";
@@ -972,6 +1083,16 @@ function withoutComments(source: string): string {
       }
       index += 2;
       continue;
+    }
+    if (char === "/" && slashStartsRegex(out)) {
+      const closing = regexLiteralEnd(source, index);
+      if (closing !== null) {
+        const start = index;
+        index = closing + 1;
+        while (index < source.length && /[A-Za-z]/u.test(source[index]!)) index += 1;
+        out += source.slice(start, index);
+        continue;
+      }
     }
     if (char === '"' || char === "'" || char === "`") {
       const quote = char;
@@ -1798,6 +1919,15 @@ export function changeSideResults(
   file: string,
   junitPath: string,
   problems: string[],
+  // The runner is a parameter so a test can hand back the one result this
+  // function must refuse and no real `bun test` can be made to produce: a
+  // report on disk and a process that did not finish. The gate passes nothing,
+  // so it always runs the file itself.
+  runFile: (
+    repo: string,
+    file: string,
+    junitPath: string,
+  ) => { status: number | null; stdout: string; error: string } = runFrom,
 ): TestResult[] {
   if (modifiedInWorkingTree(repo, file)) {
     problems.push(
@@ -1821,7 +1951,23 @@ export function changeSideResults(
     return [];
   }
   rmSync(junitPath, { force: true });
-  const result = runFrom(repo, file, junitPath);
+  const result = runFile(repo, file, junitPath);
+  // The report is accepted only from a run that finished. `status === null` is
+  // a child that was killed — the timeout, an interrupt, a debugger stop — and
+  // a killed run's report is not evidence: it can be the report bun wrote
+  // before it died, a half-written file, or one left by a process the caller
+  // replaced. Reading it anyway enumerates whatever tests happened to be in it,
+  // and a test the change registers but the report never reached is invisible
+  // to the gate. This is checked before the report is looked at, so a killed
+  // run is reported as killed whether or not it left a file behind.
+  if (result.status === null) {
+    problems.push(
+      `${file}: the change's own run did not finish (${
+        result.error.length > 0 ? result.error : "the process was killed"
+      }), so any junit report it left behind is not evidence of the tests this change registers`,
+    );
+    return [];
+  }
   if (!existsSync(junitPath)) {
     // bun writes no junit for a file that registers no test at all, and no
     // junit for a file that did not load. The two need different words: the
@@ -2025,6 +2171,17 @@ function gateBaseWorktree(input: {
         );
         continue;
       }
+      // The parent worktree is restored before *each* file's copy, not only
+      // once before the loop. A test run leaves the tree the way it left it:
+      // one that writes a tracked fixture and then fails for its own reason
+      // restores nothing, and the next file would be judged against that
+      // fixture instead of the parent's. A test that is green on the parent
+      // then fails there with an `AssertionError` — the fixture the run left
+      // behind supplies what the parent lacks — and the gate reads that red as
+      // RIGHT-REASON RED. A false PASS is the expensive direction, so the
+      // restore is per file. It costs two `git` calls per file, and `clean`
+      // leaves ignored paths alone, so the installed `node_modules` survives.
+      resetBaseWorktree(worktree);
       copyIntoBaseWorktree(manifest, worktree, file, source, copied);
 
       const junitPath = join(outDir, `${copied.length}.xml`);

@@ -696,6 +696,11 @@ describe("guard", () => {
       "user.email=gate@fixture.invalid",
       "-c",
       "user.name=gate fixture",
+      // Same reason as `commitAll`: a contributor with `tag.gpgsign = true` and no
+      // usable key cannot create these fixtures, and a command-line `-c` outranks
+      // the machine's config and `GIT_CONFIG_*`.
+      "-c",
+      "tag.gpgsign=false",
       "tag",
       "-a",
       name,
@@ -3631,9 +3636,22 @@ describe("red-on-parent round 19 — the Greptile findings at 4c689c95", () => {
     try {
       const observed = observeLockHolder(lockPath);
       expect(observed.kind).toBe("holder");
-      rmSync(lockPath, { recursive: true, force: true });
-      mkdirSync(lockPath);
-      writeFileSync(join(lockPath, "pid"), pidFile);
+      // The replacement is created beside the lock and renamed into place, and
+      // the original is renamed aside rather than deleted. A `mkdir` after an
+      // `rm` can reuse the deleted directory's `dev`, `ino` and `birthtimeMs` —
+      // that happened on Bun 1.4.3 — and then the identity check calls the
+      // replacement the same object and the reclaim succeeds, which is the
+      // failure this test exists to catch. Two directories that both exist
+      // cannot share an identity, so the rename keeps them distinct.
+      const replacement = join(dir, "wt.replacement");
+      mkdirSync(replacement);
+      writeFileSync(join(replacement, "pid"), pidFile);
+      renameSync(lockPath, join(dir, "wt.displaced"));
+      renameSync(replacement, lockPath);
+      // The fixture has to present a different object, or the assertion below
+      // passes for the wrong reason and the test stops proving the binding.
+      const now = statSync(lockPath);
+      expect([now.dev, now.ino]).not.toEqual([observed.identity?.dev, observed.identity?.ino]);
       expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
       expect(readFileSync(join(lockPath, "pid"), "utf8")).toBe(pidFile);
     } finally {

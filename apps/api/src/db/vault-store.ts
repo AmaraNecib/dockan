@@ -11,11 +11,21 @@ import {
  * the StorePort are built together so main.ts, the gate tests, and the backup
  * round-trip all exercise the same bootstrap path (no test-local re-creation).
  *
- * The input IS the connection's options — spread through, never re-listed —
- * with the one field every bootstrap path has made required. A new connection
- * capability therefore costs one field on `EncryptedConnectionOptions` and no
- * statement here; anything that needs TRANSFORMING rather than forwarding
- * belongs in the connection, where the transform can be tested once.
+ * What the module owns is the PAIRING, not the field list: one `logger` reaches
+ * both halves, and the caller gets both seams back. Forwarding is automatic,
+ * because the input IS the connection's options — spread through, never
+ * re-listed — with the one field every bootstrap path has made required. A new
+ * connection capability therefore costs one field on
+ * `EncryptedConnectionOptions` and no statement here; anything that needs
+ * TRANSFORMING rather than forwarding belongs in the connection, where the
+ * transform can be tested once.
+ *
+ * The cost of taking the whole type is drift in one direction: this input can
+ * never be narrower than the connection's options, so an option that only makes
+ * sense outside bootstrap (`readOnly`, `verifyOnly`) would silently become a
+ * legal input here. Narrowing it with a `Pick<>` would recreate the copy list
+ * this module just removed, so the intersection stays and the trade is stated
+ * instead of implied.
  */
 export type OpenVaultStoreInput = EncryptedConnectionOptions & {
   /** required here: every bootstrap path has a header to validate and bundle against */

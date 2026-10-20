@@ -3,25 +3,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { readSnapshotFence } from "../lib/vault/format";
 import { openVaultStore } from "./vault-store";
 
 /**
  * What `openVaultStore` is for: one bootstrap call yields the connection AND
  * the store standing on it, so main.ts, the gate tests and the backup
- * round-trip all share one pair instead of each composing their own.
+ * round-trip all share one pair instead of each composing their own. What it
+ * actually owns is the pairing: the same `logger` reaches both halves, and the
+ * caller gets both seams back.
  *
- * Field forwarding is deliberately NOT tested here. `OpenVaultStoreInput` IS
- * `EncryptedConnectionOptions` and the whole input object is passed unchanged,
- * so there is no per-field copy left to drop. A test per field could only prove
- * the adapter forwards what its own parameter type already carries, and the
- * failure that matters — a capability the connection supports silently not
- * arriving — can no longer be introduced by adding a field, because the object
- * is passed whole.
+ * The connection's fields cannot be dropped here — `OpenVaultStoreInput` IS
+ * `EncryptedConnectionOptions` and the whole object is passed unchanged. That
+ * protection is the spread, not the compiler, and not a per-field test: a
+ * field-by-field copy would still compile while omitting an optional field such
+ * as `writeStamp`, `writeGuard` or `logger`. #280 and #291 both shipped fully
+ * green with exactly that line deleted.
  *
- * That protection is the spread, not the compiler. A field-by-field copy would
- * still compile while omitting an optional field such as `writeStamp`,
- * `writeGuard` or `logger`. #280 and #291 both shipped fully green with exactly
- * that line deleted, which is why there is no copy left to delete.
+ * The store's logger is the one explicit read left (`createDrizzleStore(conn,
+ * input.logger)`), so it is not covered by the spread. The first test below is
+ * what keeps the whole path honest: it asserts a `writeStamp` handed to the
+ * adapter reaches the bytes on disk, which fails if the spread is ever turned
+ * back into a re-listing.
  */
 
 let dir: string;
@@ -41,12 +44,18 @@ const headerPath = (): string => path.join(dir, "vault.json");
 
 describe("openVaultStore composes the connection and the store", () => {
   it("serves a store write back from the encrypted snapshot on the next open", async () => {
+    // The stamp is the assertion that matters: it is the only thing in this
+    // suite tying what the adapter was HANDED to the bytes on disk. Turn the
+    // spread back into a re-listing and this fails, instead of production
+    // writing unfenced snapshots with every test green.
+    const token = "f".repeat(32);
     const first = openVaultStore({
       vaultId,
       masterKey,
       snapshotPath: snapshotPath(),
       headerPath: headerPath(),
       fresh: true,
+      writeStamp: () => token,
     });
     await first.store.setup();
     await first.store.setSetting("composition-probe", "written-through-the-store");
@@ -56,6 +65,7 @@ describe("openVaultStore composes the connection and the store", () => {
 
     // the connection's snapshot is the store's only copy of that row
     expect(fs.existsSync(snapshotPath())).toBe(true);
+    expect(readSnapshotFence(fs.readFileSync(snapshotPath()))?.stamp).toBe(token);
 
     const second = openVaultStore({
       vaultId,

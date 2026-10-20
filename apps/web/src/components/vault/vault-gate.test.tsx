@@ -611,6 +611,10 @@ describe("the invalid-vault branch speaks Arabic (#322)", () => {
     const alert = host.querySelector('[role="alert"]');
 
     expect(alert?.textContent).toBe(i18n.t("vaultInvalid"));
+    // The comparison above is the catalogue against itself, so an emptied value
+    // would satisfy it. One literal substring pins that the sentence is really
+    // there, in Arabic, saying what happened.
+    expect(alert?.textContent).toContain("تعذّر فتح خزنة البيانات");
     expect(alert?.textContent).toMatch(/[\u0600-\u06FF]/);
     expect(alert?.textContent).not.toContain("vaultInvalid");
   });

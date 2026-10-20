@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import type { MessageKey } from "../../lib/i18n";
 import type { CatalogMatch, Item } from "@dokan/contracts";
 
 const item = (id: string, name: string, barcode?: string): Item => ({
@@ -63,7 +64,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {},
 }));
 
-const { ItemPickerDialog } = await import("./item-picker-dialog");
+const { ItemPickerDialog, matchBadgeKey } = await import("./item-picker-dialog");
 
 /** renders the dialog open; inference keeps the host/root pair concrete */
 function renderPicker(handlers: { onClose: () => void; onSelect: (item: Item) => void }) {
@@ -290,5 +291,68 @@ describe("item-picker-dialog keyboard behavior", () => {
     });
     expect(closed).toBe(true);
     expect(selected).toBe(0);
+  });
+});
+
+/**
+ * #322 — the match badge was built by string concatenation:
+ * `matchedBy${kind.charAt(0)}${kind.slice(1).toLowerCase()}` produced
+ * `matchedByBarcode_exact` / `matchedByBarcode_partial`, which are not catalogue
+ * keys, so every barcode match rendered a raw identifier on the search results.
+ * The fix is an exhaustive `satisfies Record<CatalogMatch["matchedBy"], MessageKey>`
+ * table; these two assertions pin it, because a swapped table still compiles and
+ * still passes every other test.
+ */
+describe("match badges name the match reason in Arabic (#322)", () => {
+  const BADGES = [
+    ["BARCODE_EXACT", "matchedByBarcodeExact", "مطابقة تامة بالباركود"],
+    ["BARCODE_PARTIAL", "matchedByBarcodePartial", "باركود جزئي"],
+    ["NAME", "matchedByName", "بالاسم"],
+    ["CATEGORY", "matchedByCategory", "بالتصنيف"],
+  ] as const satisfies ReadonlyArray<readonly [CatalogMatch["matchedBy"], MessageKey, string]>;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    fixture = { exact: null, matches: [] };
+  });
+
+  afterEach(() => {
+    const roots = mountedRoots;
+    mountedRoots = [];
+    previousPickers = [];
+    try {
+      for (const root of roots) act(() => root.unmount());
+    } finally {
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("maps each match kind to its own catalogue key, never a concatenation", () => {
+    for (const [matchedBy, key] of BADGES) {
+      expect(matchBadgeKey(matchedBy), `badge key for ${matchedBy}`).toBe(key);
+      // the pre-fix shape: a key that exists nowhere, so i18next echoes it
+      expect(matchBadgeKey(matchedBy)).not.toBe(`matchedByBarcode_${matchedBy.toLowerCase()}`);
+    }
+    // four distinct keys: a copy-paste that points two kinds at one key is a
+    // duplicate here rather than plausible-looking Arabic on the screen
+    expect(new Set(BADGES.map(([kind]) => matchBadgeKey(kind))).size).toBe(BADGES.length);
+  });
+
+  it("renders the four badge strings the catalogue holds, in the ranked order", async () => {
+    fixture = {
+      exact: null,
+      matches: BADGES.map(([matchedBy], index) =>
+        match(item(`00000000-0000-4000-8000-00000000010${index}`, `صنف ${index}`, `BC${index}`), matchedBy),
+      ),
+    };
+    const { host } = renderPicker({ onClose: () => {}, onSelect: () => {} });
+    await typeQuery(host, "بط");
+
+    const rendered = Array.from(host.querySelectorAll("[role='option'] button span.rounded.bg-accent")).map(
+      (badge) => badge.textContent,
+    );
+    expect(rendered).toEqual(BADGES.map(([, , copy]) => copy));
+    // and not one raw identifier anywhere in the list
+    expect(host.textContent).not.toContain("matchedBy");
   });
 });

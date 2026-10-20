@@ -384,9 +384,70 @@ describe("the translation surface is typed against the catalogue (#322)", () => 
     expect(rendered).toBe("vaultInvald");
   });
 
-  it("the catalogue's key type rejects a non-key even without calling t", () => {
-    type NonKeyIsRejected = "vaultInvald" extends MessageKey ? false : true;
-    const rejected: NonKeyIsRejected = true;
-    expect(rejected).toBe(true);
+  it("the typed catalogue and the loaded bundle hold the same keys", () => {
+    // SAFETY: i18next's getResourceBundle is loosely typed; the value it returns
+    // for (ar, translation) is the same flat map the catalogue literal declares,
+    // which is what makes the check below meaningful rather than circular-by-type
+    const bundle = i18n.getResourceBundle("ar", "translation") as Record<string, string>;
+    const keys = Object.keys(bundle);
+    expect(keys.length).toBeGreaterThan(0);
+    // Every key the `MessageKey` type is derived from must resolve in the instance
+    // i18next actually initialized with. A divergence typechecks and still renders
+    // identifiers on the screen — the #322 symptom from a different cause.
+    for (const key of keys) expect(i18n.exists(key), key).toBe(true);
+    // The misspelling the `@ts-expect-error` above rejects is not merely untyped:
+    // i18next does not know it, which is why the raw identifier reaches the DOM.
+    expect(i18n.exists("vaultInvald")).toBe(false);
+  });
+});
+
+/**
+ * #322 — what the widening gave up, and the runtime check that stands in its place.
+ *
+ * The resource values are `Record<string, string>` rather than literal types, so
+ * `t` returns `string` (which 19 call sites need) at the price of interpolation
+ * checking: with literal values `t("x", { wrong: true })` is a `TS2345`; widened,
+ * it compiles. So a `{{placeholder}}` can come back into a key and nothing notices.
+ * Measured, not assumed: restoring `as const` on the resources breaks 19 call
+ * sites over 8 files (see the #322 commit body), which is the trade this test buys
+ * back for the one class that matters — keys whose name is built at the call site,
+ * where no literal key exists for the compiler to check in the first place.
+ */
+describe("dynamic-key families render copy, never a key or an unfilled template (#322)", () => {
+  const SENTINEL = "قيمة-7f3c";
+
+  /** prefixes the call sites concatenate: reports, expenses, dashboard, invoice,
+   * returns, debts and activity all build their key from an enum member */
+  const FAMILIES = ["activityType_", "pmtMethod_", "returnsStatus_", "invoiceKind_", "supplierEntry_", "rangePreset_"];
+
+  it("renders every member of every dynamic family as Arabic with no leftover template", () => {
+    // SAFETY: the bundle is the catalogue the `MessageKey` union is derived from,
+    // so each of its keys is a `MessageKey` by construction
+    const bundle = i18n.getResourceBundle("ar", "translation") as Record<string, string>;
+    // SAFETY: same bundle, same reason — `Object.keys` widens the keys to `string`
+    const allKeys = Object.keys(bundle) as MessageKey[];
+
+    for (const prefix of FAMILIES) {
+      const keys = allKeys.filter((key) => key.startsWith(prefix));
+      expect(keys.length, `no catalogue keys under ${prefix}`).toBeGreaterThan(0);
+      for (const key of keys) {
+        // the call sites pass no options for these, so a `{{name}}` in the copy
+        // would print its braces on the screen
+        const rendered = i18n.t(key);
+        expect(rendered, `raw key for ${key}`).not.toBe(key);
+        expect(rendered.trim(), `empty copy for ${key}`).not.toBe("");
+        expect(rendered, `unfilled template in ${key}`).not.toContain("{{");
+        expect(rendered, `non-Arabic copy for ${key}`).toMatch(/[\u0600-\u06FF]/);
+      }
+    }
+  });
+
+  it("fills the one dynamic family whose copy interpolates, with the option it names", () => {
+    // `historyReasonReturnRejected` is the exception: its call site in stock.tsx
+    // passes the note. The sentinel proves the placeholder is filled by that
+    // option and not by a same-named i18next option (`context` was the bug).
+    const rendered = i18n.t("historyReasonReturnRejected", { note: SENTINEL });
+    expect(rendered).toContain(SENTINEL);
+    expect(rendered).not.toContain("{{");
   });
 });

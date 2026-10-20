@@ -22,7 +22,15 @@ describe("stock movement reason tokens", () => {
     expect(movementReasonText(t, "opening")).toBe("opening");
   });
 
-  it("keeps the rejection note inside the sentence (#322 renamed the option off `context`)", () => {
+  // CHARACTERIZATION, not a behaviour fix. At ae9e416a the call passed
+  // `{ context: rest }` and the copy's placeholder was literally `{{context}}`
+  // (`git show ae9e416a:apps/web/src/lib/i18n.ts`), so the sentence rendered and
+  // this test would have passed there too. What it pins is the pairing: revert the
+  // call site to `{ context: rest }` while the copy keeps `{{note}}` and the `{{`
+  // assertion below goes red — the ablation was run, not assumed. The rename itself
+  // is invisible to `bun run typecheck` (see the comment in stock.tsx), so this
+  // run-time pairing is the only guard.
+  it("characterizes the copy's `note` placeholder as filled by the option of the same name (#322)", () => {
     const rendered = movementReasonText(t, "RETURN_REJECTED_DAMAGED RTN-7 — scratched");
     expect(rendered).toContain("RTN-7 — scratched");
     // an unfilled template would leak the braces onto the screen

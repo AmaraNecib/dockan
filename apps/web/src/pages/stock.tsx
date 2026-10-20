@@ -217,9 +217,13 @@ export function movementReasonText(t: TFunction, reason: string): string {
   if (reason === "RETURN_RECORDED") return t("historyReasonReturnRecorded");
   if (reason.startsWith("RETURN_REJECTED_DAMAGED")) {
     const rest = reason.slice("RETURN_REJECTED_DAMAGED".length).trim();
-    // `note`, not `context`: `context` is i18next's own option, so passing it made
-    // the call look up a `historyReasonReturnRejected_<note>` variant that does not
-    // exist, and the typed surface now says so (#322)
+    // `note`, not `context`: `context` is one of i18next's own options, so the call
+    // was looking up a `historyReasonReturnRejected_<note>` variant that does not
+    // exist and only rendered correctly because the copy's placeholder happened to
+    // be named `{{context}}` too. The compiler does NOT catch this — `TOptionsBase`
+    // declares `context?: unknown`, so `{ context: rest }` typechecks before and
+    // after #322. It was found by reading the option list, not by the type system;
+    // stock.test.tsx pins the option/copy pairing at run time instead.
     return t("historyReasonReturnRejected", { note: rest });
   }
   if (reason.startsWith("INVOICE_CORRECTION")) {

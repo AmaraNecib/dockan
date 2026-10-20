@@ -24,20 +24,48 @@ describe("diagnostics log copy (#253)", () => {
     }
   });
 
-  it("translates the first-run boot messages the owner named", () => {
-    const boots: [string, string][] = [
-      ["FIRST_TIME_SETUP", "owner account created"],
-      ["VAULT_CREATED", "vault created and unlocked"],
-      ["VAULT_SETUP_DONE", "vault created; recovery key shown once"],
-      ["SERVER_BOOT_DONE", "database and auth ready"],
-      ["SERVER_BOOT_DONE", "vault store and auth ready"],
-      ["SERVER_STARTED", "Dokan API booted"],
+  it("translates every curated startup message, and to the copy its entry names", () => {
+    // The Arabic is pinned literally, not just "different from the English".
+    // A map entry pointed at the wrong key keeps every English string away and
+    // still shows the owner the wrong sentence; `bun run typecheck` cannot see
+    // that (all eight keys exist) and `not.toBe(message)` does not catch it.
+    const boots: Array<[event: string, message: string, copy: string]> = [
+      ["FIRST_TIME_SETUP", "owner account created", "أُنشئ حساب المالك"],
+      ["VAULT_CREATED", "vault created and unlocked", "أُنشئت الخزنة وفُتحت"],
+      ["VAULT_SETUP_DONE", "vault created; recovery key shown once", "أُنشئت الخزنة؛ عُرض مفتاح الاسترداد مرة واحدة"],
+      ["SERVER_BOOT_DONE", "database and auth ready", "قاعدة البيانات والمصادقة جاهزتان"],
+      ["SERVER_BOOT_DONE", "vault store and auth ready", "الخزنة والمصادقة جاهزتان"],
+      ["SERVER_STARTED", "Dokan API booted", "أُقلع خادم دكان"],
+      ["VAULT_PASSPHRASE_CHANGED", "vault passphrase changed", "غُيّرت كلمة مرور الخزنة"],
+      ["VAULT_PASSPHRASE_RESET", "vault passphrase set from a recovery key", "عُيّنت كلمة مرور الخزنة من مفتاح استرداد"],
     ];
-    for (const [event, message] of boots) {
-      const copy = logMessageCopy(t, event, message);
-      expect(copy, `untranslated message for ${event}: ${message}`).not.toBe(message);
-      expect(copy.trim().length).toBeGreaterThan(0);
+    for (const [event, message, copy] of boots) {
+      const rendered = logMessageCopy(t, event, message);
+      expect(rendered, `untranslated message for ${event}: ${message}`).not.toBe(message);
+      expect(rendered, `wrong copy for ${event}: ${message}`).toBe(copy);
+      expect(rendered).toMatch(/[\u0600-\u06FF]/);
     }
+    // eight distinct sentences: a copy-paste that points two entries at one key
+    // renders here as a duplicate instead of as plausible-looking Arabic
+    expect(new Set(boots.map(([, , copy]) => copy)).size).toBe(boots.length);
+  });
+
+  it("keeps the four steps that had no coverage anchored to their own key (#322)", () => {
+    // These four were mapped but never read by a test, so swapping any two of
+    // them used to pass the whole suite. Each is now read through its key, and
+    // the value is checked against the catalogue entry that key names.
+    expect(logMessageCopy(t, "VAULT_SETUP_DONE", "vault created; recovery key shown once")).toBe(
+      i18n.t("logMessage_vaultSetupDone"),
+    );
+    expect(logMessageCopy(t, "SERVER_BOOT_DONE", "database and auth ready")).toBe(
+      i18n.t("logMessage_serverBootPlaintext"),
+    );
+    expect(logMessageCopy(t, "VAULT_PASSPHRASE_CHANGED", "vault passphrase changed")).toBe(
+      i18n.t("logMessage_vaultPassphraseChanged"),
+    );
+    expect(logMessageCopy(t, "VAULT_PASSPHRASE_RESET", "vault passphrase set from a recovery key")).toBe(
+      i18n.t("logMessage_vaultPassphraseReset"),
+    );
   });
 
   it("distinguishes the plaintext and vault boot messages", () => {

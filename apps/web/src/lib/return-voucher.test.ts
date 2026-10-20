@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { ReturnDetail } from "@dokan/contracts";
 
+import i18n from "./i18n"; // side-effect: initializes i18next (ar)
 import { buildReturnVoucher, debtOffsetDisplay, paginateReturnVoucher } from "./return-voucher";
 
 const settings = { storeName: "متجر الكرامة", storePhone: "+213661234567", storeAddress: null };
@@ -74,6 +75,25 @@ describe("buildReturnVoucher", () => {
   it("renders a rejected voucher with its review status", () => {
     const voucher = buildReturnVoucher(makeReturn({ status: "REJECTED_DAMAGED" }), settings);
     expect(voucher.status).toBe("REJECTED_DAMAGED");
+  });
+
+  /**
+   * The unions above are a compile-time claim; these two reads are the run-time
+   * half (#322). `pmtMethod_${payoutMethod}` only collapses to a *checked* literal
+   * key while `payoutMethod` is `ReturnPayoutMethod` rather than `string`, so a
+   * fixture that drifted off the union would have stopped the key from being
+   * checked — and a template key that is not in the catalogue renders as itself.
+   */
+  it("names the payout method the contract union says, in Arabic", () => {
+    const voucher = buildReturnVoucher(makeReturn(), settings);
+    expect(voucher.payoutMethod).toBe("CASH");
+    expect(i18n.t(`pmtMethod_${voucher.payoutMethod}`)).toBe("نقداً");
+    expect(i18n.t(`pmtMethod_${voucher.payoutMethod}`)).not.toBe("pmtMethod_CASH");
+  });
+
+  it("names the review status the contract union says, in Arabic", () => {
+    const voucher = buildReturnVoucher(makeReturn({ status: "REJECTED_DAMAGED" }), settings);
+    expect(i18n.t(`returnsStatus_${voucher.status}`)).toBe("مرفوض (تالف)");
   });
 });
 

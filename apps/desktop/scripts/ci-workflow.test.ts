@@ -32,6 +32,10 @@ import {
   parseSteps,
   stepNamed,
 } from "./workflow-utils";
+// The gate's own budget, read from the script rather than copied here: the
+// step timeout has to cover what the script can spend, and a copy of the two
+// numbers in two files is a pair that drifts.
+import { INSTALL_TIMEOUT_MS, testTimeoutMs } from "../../../scripts/red-on-parent";
 
 const WORKFLOW_PATH = path.resolve(import.meta.dir, "../../../.github/workflows/ci.yml");
 const WORKFLOW_SOURCE = readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n?/gu, "\n");
@@ -262,6 +266,69 @@ describe("PR CI workflow", () => {
     const runTimeout = Number(runE2e.timeoutMinutes);
     expect(runTimeout).toBeGreaterThan(0);
     expect(jobTimeout - runTimeout).toBeGreaterThanOrEqual(E2E_SETUP_AND_UPLOAD_ALLOWANCE_MINUTES);
+  });
+
+  it("wires the red-on-parent gate to the commit the checks job actually checks out", () => {
+    // The gate enumerates the change side's tests from the *checked-out* commit,
+    // so a `--head` the checkout does not hold is refused ("--head ... is not the
+    // checked-out commit"). actions/checkout leaves a pull_request checkout at
+    // refs/pull/N/merge, and this step once passed head.sha against it: the gate
+    // then failed on every PR that adds a gated test file — exactly the
+    // population it exists for — while staying green on its own PR, which adds
+    // none. Deleting the step, dropping `--base`, or passing a `--head` the
+    // checkout cannot hold must all turn this suite red.
+    const checks = parseSteps(WORKFLOW_SOURCE, "checks");
+    const gate = stepNamed(checks, "Red-on-parent gate");
+    expect(gate.condition).toContain("github.event_name == 'pull_request'");
+    expect(
+      commandArgvs(gate.run).some(
+        (argv) => argv[0] === "bun" && argv[1] === "scripts/red-on-parent.ts",
+      ),
+      `Red-on-parent gate must run the script, got: ${gate.run}`,
+    ).toBe(true);
+    // GitHub expressions contain spaces, so the "value" of a flag is read with a
+    // regex over the run text, not by whitespace tokenisation.
+    //
+    // The parent is the merge ref's first parent, not `pull_request.base.sha`.
+    // base.sha can lag the base branch, and on #297 at 42223062 it did: it named
+    // a develop commit from before #291 added `readSnapshotFence`, so two files
+    // #291 had already merged were enumerated as this PR's additions and came
+    // back "wrong reason red" against a tree that never had that export. A merge
+    // ref's HEAD^1 is the tip the merge was built on, which is the tree the PR
+    // lands into. Reverting to base.sha alone, or dropping the fallback, must
+    // turn this red.
+    expect(gate.run, "the gate must resolve the merge ref's first parent").toContain("HEAD^1");
+    expect(gate.run, "off a merge ref the gate must still fall back to base.sha").toContain(
+      "${{ github.event.pull_request.base.sha }}",
+    );
+    const base = /--base\s+"?([^"\s]+)"?/u.exec(gate.run);
+    expect(base?.[1], `Red-on-parent gate must pass the resolved base, got: ${gate.run}`).toBe(
+      "$base",
+    );
+    // If the step passes --head, the checkout must hold it. The `checks`
+    // checkout sets no `ref:`, so it is the merge commit; `--head head.sha`
+    // therefore names a commit the gate cannot enumerate and refuses. Keep the
+    // two in lockstep: no --head (the merge checkout is the change), or a
+    // checkout ref equal to the --head expression.
+    const head = /--head\s+(\$\{\{[^}]*\}\}|\S+)/u.exec(gate.run);
+    if (head !== null) {
+      expect(stepNamed(checks, "Checkout").with.get("ref")).toBe(head[1]);
+    }
+    // A wedged run (a cold install, a hung test) must die inside the step, not
+    // at the job's 15-minute ceiling: a job timeout kills the build and audit
+    // that follow it.
+    const jobTimeout = Number(jobField(WORKFLOW_SOURCE, "checks", "timeout-minutes"));
+    const stepTimeout = Number(gate.timeoutMinutes);
+    expect(stepTimeout).toBeGreaterThan(0);
+    expect(stepTimeout).toBeLessThan(jobTimeout);
+    // The step's budget has to cover what the script can spend on one gated
+    // file: a cold install in the base worktree, then the parent-side run and
+    // the change-side run at the test timeout. A step timeout below that kills
+    // the gate on a cold install, and the numbers come from the script, so the
+    // assertion moves when the script's budget does.
+    expect(stepTimeout * 60_000).toBeGreaterThanOrEqual(
+      INSTALL_TIMEOUT_MS + 2 * testTimeoutMs(),
+    );
   });
 
   it("keeps the production web build in checks", () => {

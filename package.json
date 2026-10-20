@@ -18,7 +18,7 @@
     "desktop:installer": "bun run --filter @dokan/desktop installer",
     "build": "turbo build",
     "lint": "oxlint",
-    "typecheck": "turbo typecheck",
+    "typecheck": "turbo typecheck && tsc -p scripts/tsconfig.json",
     "test": "turbo test --concurrency=2 && bun test ./scripts/",
     "skills:sync": "bun scripts/sync-claude-skills.ts",
     "skills:check": "bun scripts/sync-claude-skills.ts --check",

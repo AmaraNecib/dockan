@@ -70,7 +70,7 @@ export function linksToDoc(content: string, fromFile: string): boolean {
   // matched; none of the three lane files uses them, and a miss reddens loudly
   // rather than passing a broken link.
   for (const match of withoutCode(content).matchAll(/\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)/g)) {
-    const target = (match[1] ?? match[2]).split("#")[0];
+    const target = (match[1] ?? match[2] ?? "").split("#")[0] ?? "";
     // The target must BE the canonical doc, not merely share its basename: a
     // link to another `verification-and-merge-gate.md` kept the old check green.
     if (resolve(ROOT, dirname(fromFile), target) === DOC) return true;

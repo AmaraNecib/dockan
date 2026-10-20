@@ -145,6 +145,8 @@ Run `code-review` skill against `git diff <base-sha>...HEAD`. Save output to
 
 Run `guard` Phase 2. Verifies:
 - All checks pass (typecheck, lint, tests, e2e when UI changed)
+- `bun scripts/red-on-parent.ts` — every test file the change **adds** is red on
+  the parent, or carries a `red-on-parent-waive` line. New files only.
 - Review evidence files exist and are not stale
 - Working tree is clean
 

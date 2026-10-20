@@ -54,6 +54,39 @@ the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR
 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
 lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
+### The red is enforced by `scripts/red-on-parent.ts`, and a waiver is its only exception
+
+"Red before green" is not an honour system here. `bun scripts/red-on-parent.ts` reconstructs the
+**parent of the change** (the merge-base, not the previous commit), copies the test files the diff
+*adds* into that checkout at their own paths, and runs each one there. Every test in an added file
+must fail on the parent, for its own reason — a real assertion, not a load error and not a throw
+from a hook. Playwright specs are out of scope, because their red needs two servers.
+
+There is exactly one exception, and it is written into the test file so a reviewer reads it in the
+diff:
+
+```ts
+// red-on-parent-waive: "<test name pattern>" — <why this is green on the parent>
+```
+
+The reason is required. The pattern is a regex matched against the test's display name. The line must
+be a line comment standing on its own — whitespace or another comment may precede it on the line,
+code may not. The gate accepts a waiver for three verdicts and no others:
+
+- **the test is green on the parent, legitimately** — a characterization test of behaviour the change
+  keeps, so a red for it cannot exist;
+- **the parent could not run the test** — the module, export or fixture it needs is what the change
+  adds, as in a rename or a moved file;
+- **the parent's run never registered the test** — it is registered behind a condition the change
+  newly satisfies, so the parent's run has no case to judge.
+
+A waiver cannot excuse a test that is red or skipped *on the change*, a test the change stopped
+running, or a run that did not finish. A waiver that matches no test in its file is itself a failure,
+and so is a pattern broad enough to cover every test in a multi-test file. The report names every
+waiver with its file and line, and its last line prints `PASS (n waived)` along with how many of
+those the parent never ran — a PR that waived its way past the gate says so where the reviewer reads
+it.
+
 ## 2. The four reasons
 
 A pull request may be merged when **all four** hold. Not three. Any one missing sends it back to

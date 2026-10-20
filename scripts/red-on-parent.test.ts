@@ -3502,6 +3502,49 @@ test("reads the parent's flag", () => {
   });
 });
 
+describe("red-on-parent round 18 — the Greptile findings at 07b7896d", () => {
+  test("a division after a closing paren is a division, not a regex", () => {
+    // `previousToken` scanned back over `[\w$]` only, so after `)` it found no
+    // token at all and `slashStartsRegex` read the empty token as "the start of
+    // the file, so a regex". The division was lexed as a regex that ended at the
+    // block comment's `*` + `/`, which left `import "./fake.test.ts"` standing
+    // as code: the gate then refused a valid test file for importing a test
+    // file it never imported.
+    const source = `const x = value() / total /* import "./fake.test.ts" */ / 2;\n`;
+    expect(importedTestFiles(source)).toEqual([]);
+  });
+
+  test("a division after a closing bracket is a division, not a regex", () => {
+    // The same lie after `]`. Both closers are in the fix's blast radius, and
+    // neither is a word character, so both returned the empty token.
+    const source = `const x = rows[i] / n /* import "./fake.test.ts" */ / 2;\n`;
+    expect(importedTestFiles(source)).toEqual([]);
+  });
+
+  test("the division fix does not stop a real import being found", () => {
+    // The failure mode of an over-correction: a scan that gave up on `/` and
+    // reported nothing would pass the two tests above and silently accept a
+    // mixed report.
+    expect(importedTestFiles(`const x = value() / 2; import "./real.test.ts";\n`)).toEqual([
+      "./real.test.ts",
+    ]);
+  });
+
+  test("a division misread as a regex cannot blank the waiver below it", () => {
+    // The waiver route and the import route are one scanner, so the same mislex
+    // reaches both. Read as a regex, the division ends at the block comment's
+    // opening delimiter; the apostrophe in the comment's text then opens a
+    // "string" that runs to the next quote in the file — which is below the
+    // waiver, and every line of it between became spaces. `parseWaivers` found
+    // no waiver, and a characterization test whose red is on the parent was
+    // refused as GREEN_ON_PARENT.
+    const source = `const x = value() / total /* don't */ / 2;\n// red-on-parent-waive: "gr divides" — characterizes behaviour the refactor kept\ntest("gr divides", () => {\n  expect(x).toBe(1);\n});\n`;
+    const parsed = parseWaivers(source);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["gr divides"]);
+  });
+});
+
 /**
  * The two-process lock fixture's child.
  *

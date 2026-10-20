@@ -304,12 +304,26 @@ const waiverLinePattern = () =>
 /**
  * The last token in the code scanned so far, for telling a regex from a
  * division.
+ *
+ * A word run comes back whole so it can be matched against the keyword set.
+ * With no word run the token is the single character before the spaces — `)`,
+ * `]`, `}`, a quote, an operator — because that character is the whole answer
+ * to the question being asked: can a value end here?
+ *
+ * Returning the empty string there was a lie the caller had to guess about.
+ * In `const x = value() / total` followed on the same line by a block comment
+ * that holds a fake import, the `)` produced no token, `slashStartsRegex` read
+ * an empty token as "the start of the file, so a regex", and the division was
+ * lexed as a regex literal ending at the block comment's opening delimiter.
+ * The comment's text then survived the strip, the import scan found a test file
+ * the source never imported, and the gate refused a valid file.
  */
 function previousToken(out: string): string {
   let end = out.length;
   while (end > 0 && /\s/u.test(out[end - 1]!)) end -= 1;
   let start = end;
   while (start > 0 && /[\w$]/u.test(out[start - 1]!)) start -= 1;
+  if (start === end && end > 0) return out[end - 1]!;
   return out.slice(start, end);
 }
 
@@ -343,8 +357,9 @@ const REGEX_KEYWORDS = new Set([
  */
 function slashStartsRegex(out: string): boolean {
   const token = previousToken(out);
-  // A regex at the very start of a file, after a `(`, `=`, `,` and the rest:
-  // the token is either empty or ends in a character that cannot end a value.
+  // Nothing before it at all: a file — or a scan — that starts with a regex.
+  // With a token in hand the character decides, which is why the empty string
+  // is only ever the start of the input and never a closing bracket.
   if (token.length === 0) return true;
   if (REGEX_KEYWORDS.has(token)) return true;
   if (/^[\w$]/u.test(token)) return false;
@@ -385,11 +400,16 @@ function regexLiteralEnd(source: string, start: number): number | null {
 }
 
 /**
- * The source with every string literal's, regex literal's and block comment's
- * *contents* replaced by spaces, and line comments left exactly as they are.
+ * The one scanner under both readers of a source file: the waiver parse and
+ * the import scan. It is one function because there used to be two, character
+ * for character the same machine with two different opinions about what to
+ * keep, and a fix applied to one of them left the other misreading. One machine,
+ * one place to be wrong.
  *
- * Waivers are line comments, so a reader of them must not read the same text
- * once it has become data: a test that generates test source carries an embedded
+ * `"keep-line-comments"` is the waiver route. Waivers *are* line comments, so
+ * they survive exactly; every other literal's contents become spaces. That is
+ * what stops the parse from reading text that merely looks like a waiver: a
+ * test that generates test source carries an embedded
  * `// red-on-parent-waive:` line inside a template literal, declares no waiver,
  * and a parse that reads the literal as one hands the file an outer waiver it
  * never wrote. `unusedWaiverVerdicts` then reports a waiver that matched nothing
@@ -397,14 +417,25 @@ function regexLiteralEnd(source: string, start: number): number | null {
  * character, newlines included, so a problem's line number still points into the
  * file the author wrote.
  *
- * A regex literal is neither a string nor a comment. `const quote = /"/;` is one
- * line of ordinary code, and a scanner that takes its `"` for a string delimiter
- * blanks everything up to the next quote — which is whatever the author wrote
- * below it, waiver comment included. The file then reads as a test that declared
- * no waiver at all, and a characterization test whose red is legitimately on the
- * parent is rejected as GREEN_ON_PARENT.
+ * `"keep-code"` is the import route. A commented-out import is not an import,
+ * and a text scan that cannot tell the two reads `// import "./setup.test.ts"`
+ * as a real one — which names an import that never happens and fails a correct
+ * change. String literals are kept here because a specifier lives inside one,
+ * and a `//` inside a string is not a comment.
+ *
+ * A regex literal is neither a string nor a comment, and both routes depend on
+ * getting it right. `const quote = /"/;` is one line of ordinary code, and a
+ * scanner that takes its `"` for a string delimiter blanks everything up to the
+ * next quote — which is whatever the author wrote below it, waiver comment
+ * included. The file then reads as a test that declared no waiver at all, and a
+ * characterization test whose red is legitimately on the parent is rejected as
+ * GREEN_ON_PARENT. On the import route the same mistake ends a regex at a `*`,
+ * which leaves a block comment's text standing as code.
  */
-function outsideLiterals(source: string): string {
+type MaskMode = "keep-line-comments" | "keep-code";
+
+function maskSource(source: string, mode: MaskMode): string {
+  const keepLineComments = mode === "keep-line-comments";
   let out = "";
   let index = 0;
   const blank = (char: string): string => (char === "\n" ? "\n" : " ");
@@ -412,7 +443,7 @@ function outsideLiterals(source: string): string {
     const char = source[index]!;
     if (char === "/" && source[index + 1] === "/") {
       while (index < source.length && source[index] !== "\n") {
-        out += source[index]!;
+        out += keepLineComments ? source[index]! : blank(source[index]!);
         index += 1;
       }
       continue;
@@ -433,16 +464,22 @@ function outsideLiterals(source: string): string {
     if (char === "/" && slashStartsRegex(out)) {
       const closing = regexLiteralEnd(source, index);
       if (closing !== null) {
-        // The delimiters and the flags stay, so the next `/` is still read as a
-        // division; only the body becomes spaces, so no quote or `//` in it can
-        // start a string or a comment.
-        out += "/";
-        for (let inner = index + 1; inner < closing; inner += 1) out += blank(source[inner]!);
-        out += "/";
+        const start = index;
         index = closing + 1;
-        while (index < source.length && /[A-Za-z]/u.test(source[index]!)) {
-          out += source[index]!;
-          index += 1;
+        while (index < source.length && /[A-Za-z]/u.test(source[index]!)) index += 1;
+        if (keepLineComments) {
+          // The delimiters and the flags stay, so the next `/` is still read as
+          // a division; only the body becomes spaces, so no quote or `//` in it
+          // can start a string or a comment.
+          out += "/";
+          for (let inner = start + 1; inner < closing; inner += 1) out += blank(source[inner]!);
+          out += "/" + source.slice(closing + 1, index);
+        } else {
+          // Whole, and for the other reason: `/[//]/` holds a `//` that is a
+          // character class, not the start of a comment, and a scan that read
+          // it as one would drop the rest of the line — the line a real import
+          // could be on.
+          out += source.slice(start, index);
         }
         continue;
       }
@@ -454,7 +491,9 @@ function outsideLiterals(source: string): string {
       while (index < source.length) {
         const inner = source[index]!;
         if (inner === "\\") {
-          out += blank(inner) + blank(source[index + 1] ?? " ");
+          out += keepLineComments
+            ? blank(inner) + blank(source[index + 1] ?? " ")
+            : inner + (source[index + 1] ?? "");
           index += 2;
           continue;
         }
@@ -463,7 +502,7 @@ function outsideLiterals(source: string): string {
           index += 1;
           break;
         }
-        out += blank(inner);
+        out += keepLineComments ? blank(inner) : inner;
         index += 1;
       }
       continue;
@@ -492,7 +531,7 @@ export function parseWaivers(text: string): WaiverParse {
   // of every line, and the `$` anchor in the pattern does not match before `\r`.
   // The text under the scan is the file with its literals blanked out, so a
   // marker that is a string's contents is not a waiver the file declared.
-  for (const raw of outsideLiterals(text).split(/\r?\n/u)) {
+  for (const raw of maskSource(text, "keep-line-comments").split(/\r?\n/u)) {
     line += 1;
     // Only a line that *is* a waiver counts. A line that merely mentions the
     // marker — documenting the convention, or a string literal — used to be
@@ -1056,7 +1095,7 @@ export function isGatedTestPath(path: string): boolean {
 const TEST_LIKE_BASENAME = /\.(test|spec)(\.[cm]?[jt]sx?)?$/u;
 
 /**
- * The source with its comments removed.
+ * The source with its comments removed, for the import scan.
  *
  * A commented-out import is not an import, and a text scan that cannot tell
  * the two reads `// import "./setup.test.ts"` as a real one — which would name
@@ -1066,55 +1105,13 @@ const TEST_LIKE_BASENAME = /\.(test|spec)(\.[cm]?[jt]sx?)?$/u;
  * `//` that is a character class, not the start of a comment, and a scan that
  * read it as one would drop the rest of the line — the line a real import could
  * be on.
+ *
+ * This is `maskSource` in its `"keep-code"` mode, not a second scanner: the
+ * two readers of a source file used to carry the same machine twice, and a fix
+ * applied to one of them left the other misreading.
  */
 function withoutComments(source: string): string {
-  let out = "";
-  let index = 0;
-  while (index < source.length) {
-    const char = source[index]!;
-    if (char === "/" && source[index + 1] === "/") {
-      while (index < source.length && source[index] !== "\n") index += 1;
-      continue;
-    }
-    if (char === "/" && source[index + 1] === "*") {
-      index += 2;
-      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
-        index += 1;
-      }
-      index += 2;
-      continue;
-    }
-    if (char === "/" && slashStartsRegex(out)) {
-      const closing = regexLiteralEnd(source, index);
-      if (closing !== null) {
-        const start = index;
-        index = closing + 1;
-        while (index < source.length && /[A-Za-z]/u.test(source[index]!)) index += 1;
-        out += source.slice(start, index);
-        continue;
-      }
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      const quote = char;
-      out += char;
-      index += 1;
-      while (index < source.length) {
-        const inner = source[index]!;
-        if (inner === "\\") {
-          out += inner + (source[index + 1] ?? "");
-          index += 2;
-          continue;
-        }
-        out += inner;
-        index += 1;
-        if (inner === quote) break;
-      }
-      continue;
-    }
-    out += char;
-    index += 1;
-  }
-  return out;
+  return maskSource(source, "keep-code");
 }
 
 /**

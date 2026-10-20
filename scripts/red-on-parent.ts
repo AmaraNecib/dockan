@@ -302,6 +302,72 @@ const waiverLinePattern = () =>
   /^[ \t]*\/\/[ \t]*red-on-parent-waive[ \t]*:[ \t]*(?:"([^"]*)"|'([^']*)')[ \t]*(?:[—–]{1,2}|-{1,2}|:)?[ \t]*(.*)$/u;
 
 /**
+ * The source with every string literal's and block comment's *contents* replaced
+ * by spaces, and line comments left exactly as they are.
+ *
+ * Waivers are line comments, so a reader of them must not read the same text
+ * once it has become data: a test that generates test source carries an embedded
+ * `// red-on-parent-waive:` line inside a template literal, declares no waiver,
+ * and a parse that reads the literal as one hands the file an outer waiver it
+ * never wrote. `unusedWaiverVerdicts` then reports a waiver that matched nothing
+ * and rejects a test whose red was good. Length is preserved character for
+ * character, newlines included, so a problem's line number still points into the
+ * file the author wrote.
+ */
+function outsideLiterals(source: string): string {
+  let out = "";
+  let index = 0;
+  const blank = (char: string): string => (char === "\n" ? "\n" : " ");
+  while (index < source.length) {
+    const char = source[index]!;
+    if (char === "/" && source[index + 1] === "/") {
+      while (index < source.length && source[index] !== "\n") {
+        out += source[index]!;
+        index += 1;
+      }
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "*") {
+      out += "  ";
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
+        out += blank(source[index]!);
+        index += 1;
+      }
+      if (index < source.length) {
+        out += "  ";
+        index += 2;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      out += char;
+      index += 1;
+      while (index < source.length) {
+        const inner = source[index]!;
+        if (inner === "\\") {
+          out += blank(inner) + blank(source[index + 1] ?? " ");
+          index += 2;
+          continue;
+        }
+        if (inner === quote) {
+          out += quote;
+          index += 1;
+          break;
+        }
+        out += blank(inner);
+        index += 1;
+      }
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return out;
+}
+
+/**
  * Waivers live in the added file as a line comment, one per test name pattern:
  *
  *   // red-on-parent-waive: "gr passes" — characterizes behaviour the refactor kept
@@ -317,13 +383,14 @@ export function parseWaivers(text: string): WaiverParse {
   let line = 0;
   // Split on CRLF too: a Windows checkout hands this a file with `\r` at the end
   // of every line, and the `$` anchor in the pattern does not match before `\r`.
-  for (const raw of text.split(/\r?\n/u)) {
+  // The text under the scan is the file with its literals blanked out, so a
+  // marker that is a string's contents is not a waiver the file declared.
+  for (const raw of outsideLiterals(text).split(/\r?\n/u)) {
     line += 1;
     // Only a line that *is* a waiver counts. A line that merely mentions the
     // marker — documenting the convention, or a string literal — used to be
     // parsed, fail the anchored pattern, and fail the whole run.
-    if (!startsAsWaiver.test(raw)) continue;
-    const match = linePattern.exec(raw);
+    if (!startsAsWaiver.test(raw)) continue;    const match = linePattern.exec(raw);
     if (match === null) {
       problems.push(
         `line ${line}: a ${WAIVER_MARKER} marker must read \`// ${WAIVER_MARKER}: "<test name>" — <reason>\``,

@@ -23,7 +23,17 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -1357,6 +1367,27 @@ describe("red-on-parent round 5", () => {
     expect(problems[0]).toContain("must read");
   });
 
+  test("a marker inside a template literal is data, not a waiver", () => {
+    // A test that generates test source carries a waiver line of its own inside
+    // a template literal. Read as a waiver, the file gets an outer waiver it
+    // never declared, that waiver matches nothing, and `unusedWaiverVerdicts`
+    // rejects the file — a real red thrown out because of a string.
+    const { waivers, problems } = parseWaivers(
+      [
+        "const generated = `",
+        '// red-on-parent-waive: "a generated test" — this line belongs to the data',
+        'test("generated", () => {});',
+        "`;",
+        "/*",
+        '// red-on-parent-waive: "commented out" — so is this one',
+        "*/",
+        '// red-on-parent-waive: "a real one" — because',
+      ].join("\n"),
+    );
+    expect(waivers.map((parsed) => parsed.pattern)).toEqual(["a real one"]);
+    expect(problems).toEqual([]);
+  });
+
   test("the gate refuses to run under node", () => {
     // Node strips TS types and starts this file, then spawns `node test` for
     // every parent-side run, so every file reads as a whole-file load failure —
@@ -2459,11 +2490,23 @@ describe("red-on-parent round 12 — the findings at 8a618ed9", () => {
 
   test("a reclaim that cannot rename the lock is waited out, not spun on", async () => {
     // The reclaim renames the stale lock aside before it removes it. A rename
-    // can fail — the directory is another process's working directory, for
-    // instance — and then the lock stays exactly where it was. The waiter saw
-    // the same stale lock again, reclaimed it again, and took a `continue`
-    // that skipped both the deadline check and the sleep: the run spun at full
-    // speed, never read the deadline, and never ended.
+    // can fail, and then the lock stays exactly where it was. The waiter saw the
+    // same stale lock again, reclaimed it again, and took a `continue` that
+    // skipped both the deadline check and the sleep: the run spun at full speed,
+    // never read the deadline, and never ended.
+    //
+    // The rename has to fail for this test to mean anything, and *how* it fails
+    // is the platform's business. The two refusals, measured rather than assumed:
+    //
+    //   parent 0o555, rename the child:  Linux EACCES  ·  Windows renamed it
+    //   child is a process's cwd:        Linux renamed it  ·  Windows EBUSY
+    //
+    // Neither is portable alone, and the cwd one used to be the whole fixture. A
+    // Linux kernel moves a directory out from under the process sitting in it, so
+    // there the reclaim succeeded, the gate went on to run the fixture, and this
+    // test failed on a message the gate had no reason to print. CI is Linux, so
+    // the arm it needed was the one arm it never built. The fixture now asks the
+    // filesystem which refusal it enforces and keeps that one.
     const fixture = createFixture(
       [PKG, HELPER],
       [
@@ -2479,17 +2522,66 @@ test("rejects zero", () => {
         },
       ],
     );
-    // A process sitting in the lock directory is what makes the rename fail:
-    // the operating system will not move a directory that is in use.
     let holder: ReturnType<typeof spawn> | null = null;
+    let parentRelaxed = false;
     try {
       const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
+      const probe = `${lockPath}.probe`;
       mkdirSync(lockPath, { recursive: true });
       writeFileSync(join(lockPath, "pid"), `999999 ${randomUUID()}\n`);
-      holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], {
-        cwd: lockPath,
-        stdio: "ignore",
-      });
+      // Whether this environment lets the reclaim's rename through, asked by
+      // performing it: the lock is renamed aside and back, so a refusal leaves it
+      // exactly as the gate must find it.
+      const renameAllowed = (): boolean => {
+        try {
+          renameSync(lockPath, probe);
+        } catch {
+          return false;
+        }
+        renameSync(probe, lockPath);
+        return true;
+      };
+      let refusedBy: string | null = null;
+      // POSIX: no write bit on the parent, so no entry may be renamed into it.
+      // Windows applies a directory's mode bits to nothing.
+      chmodSync(fixture.cache, 0o555);
+      parentRelaxed = true;
+      if (!renameAllowed()) {
+        refusedBy = "a parent directory with no write bit";
+      } else {
+        chmodSync(fixture.cache, 0o755);
+        parentRelaxed = false;
+      }
+      if (refusedBy === null) {
+        // Windows: a directory a live process is sitting in cannot be moved
+        // until the process leaves. The child writing its own cwd is the signal
+        // that the directory is held, not the spawn returning.
+        holder = spawn(
+          process.execPath,
+          ["-e", "process.stdout.write(process.cwd()); setTimeout(() => {}, 20000)"],
+          { cwd: lockPath, stdio: ["ignore", "pipe", "ignore"] },
+        );
+        await new Promise<void>((held) => {
+          const timer = setTimeout(held, 5_000);
+          holder?.stdout?.once("data", () => {
+            clearTimeout(timer);
+            held();
+          });
+          holder?.once("exit", () => {
+            clearTimeout(timer);
+            held();
+          });
+        });
+        if (!renameAllowed()) refusedBy = "a directory a live process is working in";
+      }
+      if (refusedBy === null) {
+        // A root shell bypasses the parent's mode bit and a non-Windows kernel
+        // moves a directory out from under its cwd. Either way there is no case
+        // to run, and a verdict on the gate would be a verdict on the wrong run.
+        throw new Error(
+          "the fixture could not make the reclaim's rename fail: neither a 0o555 parent nor a live process's working directory refused it",
+        );
+      }
       const { status, stdout } = await runGateAsync(
         fixture,
         { RED_ON_PARENT_LOCK_WAIT_MS: "1500" },
@@ -2503,6 +2595,7 @@ test("rejects zero", () => {
       // failed: 2 is the "could not run" code, 1 is a verdict.
       expect(status).toBe(2);
     } finally {
+      if (parentRelaxed) chmodSync(fixture.cache, 0o755);
       holder?.kill();
       fixture.cleanup();
     }
@@ -2785,6 +2878,13 @@ describe("red-on-parent round 14 — the test-audit findings at 8a618ed9", () =>
       expect(entry.title.length).toBeGreaterThan(0);
       expect(entry.fixes.length).toBeGreaterThan(0);
     }
+    // The WRONG REASON RED advice has already been wrong once: it sent the author
+    // to commit the missing module as the change's first commit, which lands it
+    // after the merge-base, so the next run fails for the same reason. The
+    // instruction a report prints is what an author follows, so it is pinned.
+    const wrongReason = VERDICT_GUIDE.find((entry) => entry.name === "WRONG_REASON_RED");
+    expect(wrongReason?.fixes[0]).toContain("on the base branch");
+    expect(wrongReason?.fixes.join(" ")).not.toContain("first commit");
   });
 
   test("the change side's verdicts are decided on its own results", () => {

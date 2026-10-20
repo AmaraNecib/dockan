@@ -8,7 +8,7 @@
  * Run it from the repo root: `bun .scratch/reviews/297/ablations/run-ablations.ts`
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -19,8 +19,13 @@ import { join, resolve } from "node:path";
 const REPO = resolve(import.meta.dir, "../../../..");
 const GATE = join(REPO, "scripts/red-on-parent.ts");
 // Outside the repo: the file below is a byte-for-byte copy of the gate, and a
-// second copy of it in the tree is only noise for a reader.
-const BASELINE = join(tmpdir(), "red-on-parent-ablations-baseline.ts");
+// second copy of it in the tree is only noise for a reader. One scratch
+// directory per run, because two worktrees running this at once shared a fixed
+// path: the second run's copy of the gate replaced the first run's backup, and
+// the first run's restore then wrote the other worktree's source over its own
+// edits.
+const SCRATCH = mkdtempSync(join(tmpdir(), "red-on-parent-ablations-"));
+const BASELINE = join(SCRATCH, "baseline.ts");
 const OUT = join(REPO, ".scratch/reviews/297/ablations");
 
 type Ablation = {
@@ -480,4 +485,7 @@ try {
   // — a failed write of the result file, say — must not leave it broken on disk
   // for whoever runs next.
   restoreBaseline();
+  // Only this run's own copy: the gate is restored, so nothing here can still
+  // need it.
+  rmSync(SCRATCH, { recursive: true, force: true });
 }

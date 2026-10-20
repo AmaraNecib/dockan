@@ -440,9 +440,16 @@ describe("snapshot fence (#280)", () => {
       writeStamp: () => tokenB,
       writeGuard: () => {
         guardCalls += 1;
-        // the post-write guard runs after our rename and before durability is
-        // recorded: the exact instant a zombie's in-flight rename lands
-        if (guardCalls % 2 === 0 && !zombieRenamed) {
+        // The guard is asked THREE times per attempt — before the temp write,
+        // before the rename, and after it. The zombie must land on the third,
+        // the one that runs after OUR rename and before durability is recorded.
+        // Injecting on the second (before the rename) put the zombie's bytes on
+        // disk first, our rename overwrote them, and the post-write fence read
+        // saw only our stamp: the test passed with detection and repair both
+        // removed. On the third call the zombie's bytes are the last thing
+        // written, so the only way this test can pass is a re-read that rejects
+        // the fence and a retry that rewrites our image (#291 review).
+        if (guardCalls === 3 && !zombieRenamed) {
           zombieRenamed = true;
           renameZombieEnvelope(zombieEnvelope);
         }
@@ -453,6 +460,10 @@ describe("snapshot fence (#280)", () => {
     await conn.persistIfDirty();
 
     expect(zombieRenamed).toBe(true);
+    // the first attempt wrote, then the fence said the resulting file was not
+    // ours; the stamp and the row below are what a second, repaired attempt
+    // leaves. Drop the post-write verdict (treat the write as durable) and both
+    // assertions see the zombie's envelope instead.
     expect(diskFence()?.stamp).toBe(tokenB);
     await conn.close();
 
@@ -892,13 +903,30 @@ describe("snapshot fence (#280)", () => {
       expect(diskFence()?.stamp).toBe(tokenA);
       expect(events).toContain("VAULT_SNAPSHOT_FENCE_UNREADABLE");
 
+      // A version counter that never moves cannot witness this: on an
+      // unchanged reopen both counters are zero, so recording "durable" in the
+      // unreadable branch above is indistinguishable from not recording it. A
+      // mutation before the failing read makes the version real, so the branch
+      // either leaves it unwritten (this test's claim) or the mutation is
+      // believed saved over a file nothing could verify.
+      again.raw.exec("UPDATE t SET a = 'mutated'");
+      again.markDirty();
+      // the fence is unreadable, so this write lands and nothing proves it
+      await again.persistIfDirty();
+
       // and the connection is not left believing a version it never wrote:
-      // with the fence readable again, one more persist has nothing to do and
-      // returns without rewriting.
+      // with the fence readable again, the next persist MUST rewrite, and the
+      // rewrite must carry the mutation it was asked to save.
       spy.mockRestore();
       const settled = fs.readFileSync(snapshotPath());
       await again.persistIfDirty();
-      expect(fs.readFileSync(snapshotPath()).equals(settled)).toBe(true);
+      expect(fs.readFileSync(snapshotPath()).equals(settled)).toBe(false);
+      // and the rewrite carries the mutation: a repair that re-sealed the image
+      // it read at open would satisfy the byte check and lose the change
+      const preserved = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+      // SAFETY: the test created the table with a single TEXT column
+      expect(preserved.raw.query("SELECT a FROM t").all()).toEqual([{ a: "mutated" }]);
+      preserved.close();
     } finally {
       // the connection and the key copy it owns are released even when an
       // assertion above throws

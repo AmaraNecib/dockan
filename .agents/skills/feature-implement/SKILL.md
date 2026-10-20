@@ -260,6 +260,12 @@ gate. The deep pass is only the audit that the habit happened.
 - Fold the findings once. Do not re-run the review after the fold — the lenses check the fold.
 - No seam moved means no report: `architecture: no seam moved` is the whole output.
 
+**A measured run (PR #291).** Five candidates: two re-derivations the code-review lens had already
+written down, three new ones and not one of them a defect. The one thing it predicted was a
+*cause* - the reason → meaning policy re-derived in three consumers, which is what produced a lens
+finding the lens had found as a symptom. Read a candidate that way: a cause of an existing finding
+is worth folding, a candidate that only consolidates is an issue and never a fix on a bug-fix PR.
+
 ### 13. Guard pre-report (Phase 3) — parent-owned
 
 The parent runs `guard` Phase 3. Verifies:

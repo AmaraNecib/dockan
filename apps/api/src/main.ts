@@ -869,7 +869,12 @@ async function publishOwnedPort(port: number): Promise<void> {
  */
 function publishOwnedRegistryEntry(port: number): void {
   try {
-    writeRegistryEntry(registryDir, process.pid, config.host, port);
+    // identity-only: the shell's check reads this file, but the canonical
+    // recompute must never point the dev proxy at a refusal (greptile P1 on
+    // #298). Several data folders can share one port root (dev's workspace
+    // root is the default), so this entry sits beside the real owner's and the
+    // owner's shutdown picks the newest live one.
+    writeRegistryEntry(registryDir, process.pid, config.host, port, { identityOnly: true });
     registryPublished = true;
   } catch (err) {
     // A registry failure costs the shell's identity check, not the folder: keep
@@ -1142,6 +1147,17 @@ async function serveRefusalServer(
   options: { publishPortRecord?: boolean } = {},
 ): Promise<never> {
   const publish = options.publishPortRecord ?? true;
+  /**
+   * Whether this page wrote its own registry entry, kept LOCAL rather than
+   * shared with `registryPublished` (greptile P1 on #298). The unreadable-lock
+   * boot awaits this function from module top level, which suspends module
+   * evaluation for the whole life of the process: every `let` declared AFTER
+   * that await is still in its temporal dead zone, so assigning
+   * `registryPublished` here threw a ReferenceError (logged as a failed
+   * publication, on a write that had succeeded) and the shutdown below threw
+   * reading it — the page then never removed its entry and never exited.
+   */
+  let ownEntryPublished = false;
   const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.probeHost);
   const portRecordDir = config.portRecordDir ?? findWorkspaceRoot();
   if (publish && config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
@@ -1177,8 +1193,11 @@ async function serveRefusalServer(
         // the page the owner needs to read. The canonical `.dokan-port` stays
         // untouched: it belongs to the copy that owns the folder.
         try {
-          writeRegistryEntry(registryDir, process.pid, config.host, info.port);
-          registryPublished = true;
+          // identity-only, for the same reason as the refused start's entry
+          // above: this page owns no folder, so nothing may pick it as the
+          // canonical record (greptile P1 on #298)
+          writeRegistryEntry(registryDir, process.pid, config.host, info.port, { identityOnly: true });
+          ownEntryPublished = true;
         } catch (err) {
           logger.error(
             "SERVER_ERROR",
@@ -1205,9 +1224,9 @@ async function serveRefusalServer(
       // canonical reconciles it, a page that published only its own entry
       // removes only that, and one that published nothing owes nothing (#277)
       const cleanup =
-        portRecordReconcileMode(publish, registryPublished) === "canonical"
+        portRecordReconcileMode(publish, ownEntryPublished) === "canonical"
           ? forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid })
-          : Promise.resolve(registryPublished ? forgetOwnRegistryEntry(registryDir, process.pid) : undefined);
+          : Promise.resolve(ownEntryPublished ? forgetOwnRegistryEntry(registryDir, process.pid) : undefined);
       void cleanup.finally(() => process.exit(0));
     });
   };

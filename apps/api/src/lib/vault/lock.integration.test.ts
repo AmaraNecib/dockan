@@ -138,10 +138,43 @@ async function waitForRefusal(onPort: number, timeoutMs = 20_000): Promise<void>
 
 /** Kill without letting the process run its exit hook (lock stays behind). */
 async function hardKillAndWait(child: ChildProcessWithoutNullStreams | undefined): Promise<void> {
-  if (child === undefined) return;
+  if (child === undefined || hasExited(child)) return;
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   child.kill("SIGKILL");
   await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+}
+
+/**
+ * True once the child has exited. `once("exit")` is a promise about the FUTURE,
+ * and afterEach runs on children a test already killed and awaited: listening on
+ * a dead child never fires.
+ */
+function hasExited(child: ChildProcessWithoutNullStreams): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+/**
+ * Wait for a child's exit, whether or not it has already happened.
+ *
+ * The old shape — `new Promise((resolve) => child.once("exit", ...))` — hangs
+ * forever on a child that is already gone, and `afterEach` paid for it: the
+ * clean-shutdown test leaves an exited child in `second`, so the hook's
+ * `hardKillAndWait(second)` spent its whole 5 s race on a process that was dead
+ * already and Bun's 5 s hook budget expired on it (CI: "a beforeEach/afterEach
+ * hook timed out for this test"). The timeout here THROWS instead of resolving:
+ * a sidecar that will not die is a failure, and a silent pass would hide it.
+ */
+async function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs = 15_000): Promise<number | null> {
+  if (hasExited(child)) return child.exitCode;
+  return await new Promise<number | null>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`the sidecar did not exit within ${timeoutMs} ms; stderr: ${apiStderr}`));
+    }, timeoutMs);
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
+  });
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -304,10 +337,12 @@ describe("vault single-writer lock over a live sidecar", () => {
     for (let attempt = 0; attempt < 100 && !fs.existsSync(entryPath); attempt += 1) await sleep(50);
     const raw = fs.readFileSync(entryPath, "utf8");
     // the exact shape the shell's check requires: the loopback host, and the
-    // assigned port anchored to the closing brace (43189 must not satisfy 4318)
+    // assigned port anchored to the closing brace (43189 must not satisfy 4318).
+    // `identityOnly` marks the entry as no candidate for the canonical record
+    // and is written FIRST so the brace anchor survives (greptile P1 on #298)
     expect(raw).toContain('"host":"127.0.0.1"');
     expect(raw).toContain(`"port":${refusedPort}}`);
-    expect(JSON.parse(raw)).toEqual({ host: "127.0.0.1", port: refusedPort });
+    expect(JSON.parse(raw)).toEqual({ identityOnly: true, host: "127.0.0.1", port: refusedPort });
 
     // and it wrote NO canonical record: the dev proxy must never be pointed at
     // a refusal server
@@ -479,7 +514,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     const child = second;
     second = undefined;
     child.kill("SIGTERM");
-    const exitCode = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    const exitCode = await waitForExit(child);
     expect(exitCode).toBe(0);
     // a record written after the exit would still be visible: wait a beat, so
     // a late write cannot pass unnoticed
@@ -520,7 +555,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     // that waited for it withdraws what it wrote
     const child = second;
     if (child === undefined) throw new Error("the plaintext sidecar is gone");
-    const exitCode = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    const exitCode = await waitForExit(child);
     expect(exitCode).toBe(0);
     // a publication that lands AFTER the exit is the bug this test is about:
     // wait a beat so a late write cannot pass unnoticed
@@ -577,6 +612,52 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(await still.text()).toContain("تعذّر قراءة ملف القفل في مجلد البيانات");
     // and the reclaim never ran: main.ts logs that only when it does
     expect(readLogs()).not.toContain("the refused instance took the data folder");
+  });
+
+  itPosix("an unreadable-lock page exits cleanly and withdraws its own entry (greptile P1 on #298)", async () => {
+    // The unreadable boot AWAITS the refusal page from module top level, which
+    // suspends module evaluation for the life of the process. The page's own
+    // published-flag therefore has to be local: the module-level one is still in
+    // its temporal dead zone there, so the old code threw a ReferenceError on a
+    // registry write that had SUCCEEDED (logged as "registry entry failed"), and
+    // the shutdown threw reading the same variable — the page never removed its
+    // entry and never exited.
+    const lockFile = path.join(dir, "vault.lock");
+    const registryDir = path.join(dir, "run", ".dokan-port.registry");
+    const portFile = path.join(dir, "run", ".dokan-port");
+    fs.mkdirSync(lockFile);
+
+    api = startApi(port);
+    await waitForLog("VAULT_LOCK_UNREADABLE");
+    const pagePid = api.pid;
+    if (pagePid === undefined) throw new Error("the refusal page has no pid");
+    const entryPath = path.join(registryDir, String(pagePid));
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(entryPath); attempt += 1) await sleep(50);
+    expect(fs.existsSync(entryPath)).toBe(true);
+    // the write landed, so no row may claim it failed: that row IS the bug, and
+    // it names the wrong cause (a filesystem failure for a ReferenceError)
+    expect(
+      readLogEntries().some(
+        (entry) => entry.event === "SERVER_ERROR" && (entry.message ?? "").includes("registry entry failed"),
+      ),
+    ).toBe(false);
+
+    // a clean shutdown: SIGTERM runs the page's own close handler, which owes
+    // exactly its registry entry back and then exits 0
+    const child = api;
+    api = undefined;
+    child.kill("SIGTERM");
+    try {
+      expect(await waitForExit(child, 10_000)).toBe(0);
+    } finally {
+      // a shutdown that hangs must not leak into the next test (the bug left the
+      // process alive forever, so this is the difference the fix makes)
+      await hardKillAndWait(child);
+    }
+    await sleep(200);
+    expect(fs.existsSync(entryPath)).toBe(false);
+    // and it never published the canonical record: it owns no folder
+    expect(fs.existsSync(portFile)).toBe(false);
   });
 
   itPosix("a running retry loop STOPS when it meets an unreadable lock file (#298)", async () => {
@@ -812,7 +893,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     const holder = api;
     api = undefined;
     holder.kill("SIGTERM");
-    await new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+    await waitForExit(holder);
 
     // the CLOSE story: the OLD owner's record is gone, not stale (the waiter
     // may already have written its own record here — Greptile issue 3)
@@ -978,7 +1059,7 @@ describe("vault single-writer lock over a live sidecar", () => {
     const running = api;
     api = undefined;
     running.kill("SIGTERM");
-    await new Promise<void>((resolve) => running.once("exit", () => resolve()));
+    await waitForExit(running);
     expect(fs.readFileSync(snapshot)).toEqual(before);
 
     // the skip is visible in the log: without it the abandoned store is closed

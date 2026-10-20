@@ -339,6 +339,18 @@ type OwnerRead = {
   readonly code: string | undefined;
 };
 
+/**
+ * The read errnos that cannot clear by waiting this boot out: the path is not a
+ * readable FILE, and no amount of retrying turns a directory into one. Kept
+ * narrow on purpose — a Windows sharing violation (`EACCES`/`EBUSY`/`EPERM`) is
+ * the case the retry budget exists for, and it stays on the retry path.
+ */
+const PERMANENT_READ_FAILURES: ReadonlySet<string> = new Set(["EISDIR", "ENOTDIR", "ELOOP", "ENAMETOOLONG"]);
+
+function isPermanentReadFailure(code: string | undefined): boolean {
+  return code !== undefined && PERMANENT_READ_FAILURES.has(code);
+}
+
 function readOwner(lockPath: string, options: VaultLockOptions): OwnerRead {
   const retries = retryBudget(options.readRetries, 20, MAX_RETRY_ATTEMPTS);
   const delayMs = retryBudget(options.readRetryDelayMs, 50, MAX_RETRY_DELAY_MS);
@@ -356,6 +368,12 @@ function readOwner(lockPath: string, options: VaultLockOptions): OwnerRead {
     if (read.kind === "unreadable") {
       blocked = true;
       code = read.code;
+      // A permanent errno cannot clear by waiting: the path is not a readable
+      // file at all (a directory where the record belongs), so the remaining
+      // budget can only delay the page that says what to delete. The retries
+      // exist for a TRANSIENT failure — a Windows sharing violation, a record
+      // caught mid-write — and those are exactly the errnos this leaves alone.
+      if (isPermanentReadFailure(read.code)) return { owner: undefined, blocked, code };
     }
     // a creator may still be writing its JSON, or another process holds the
     // file open: retry before calling the lock stale (and reclaimable)
@@ -857,6 +875,13 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
       const verdict = holderVerdict(existing.owner, options);
       if (verdict.live) throw new VaultAlreadyLockedError(existing.owner, lockPath, verdict.staleHeartbeatOverAlivePid);
     }
+    // A permanent read failure ends the boot HERE. Nothing this loop can do
+    // changes it (the reclaim is withheld, and the exclusive create fails while
+    // the path exists), so the remaining attempts could only make the owner
+    // stare at a blank window for the whole read budget before the page that
+    // says which file to delete. The verdict is the same one the last attempt
+    // would reach: unreadable, with the errno.
+    if (isPermanentReadFailure(existing.code)) throw refusalForRead(existing, lockPath);
     // stale (dead same-host PID, quiet foreign heartbeat, or unreadable):
     // settle so a near-simultaneous reclaimer is likely decided, then re-read
     // and re-check IMMEDIATELY before the rename. Without the second check a

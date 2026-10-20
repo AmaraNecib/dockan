@@ -216,6 +216,54 @@ describe("registry", () => {
     expect(probeHostFor("2001:db8::1")).toBe("2001:db8::1");
   });
 
+  it("keeps the shell's port anchor on an identity-only entry", () => {
+    // The desktop shell's identity check B (`registry_owned_by` in desktop.rs)
+    // greps the raw entry for `"host":"127.0.0.1"` and for `"port":<n>}`
+    // anchored to the closing brace — a marker serialised AFTER the port would
+    // break the second one and the shell would kill the child it just spawned.
+    // The exact bytes are pinned, not just the parsed shape.
+    writeRegistryEntry(registryDir, process.pid, "127.0.0.1", 4318, { identityOnly: true });
+    const raw = fs.readFileSync(path.join(registryDir, String(process.pid)), "utf8");
+    expect(raw).toBe('{"identityOnly":true,"host":"127.0.0.1","port":4318}');
+    expect(raw).toContain('"host":"127.0.0.1"');
+    expect(raw).toContain('"port":4318}');
+    // and an owned entry keeps the shape the shell has always read
+    writeRegistryEntry(registryDir, process.pid, "127.0.0.1", 4317);
+    expect(fs.readFileSync(path.join(registryDir, String(process.pid)), "utf8")).toBe(
+      '{"host":"127.0.0.1","port":4317}',
+    );
+  });
+
+  it("never picks an identity-only entry as the canonical record (greptile P1 on #298)", async () => {
+    // Two data folders can share ONE port root — dev's workspace root is the
+    // default — so a refused start's entry sits beside the real owner's. The
+    // refusal is newer and its listener answers, which is exactly the pair that
+    // won the newest-live pick: the owner's shutdown then repointed the dev
+    // proxy at a 503 server while another copy was still serving.
+    const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-port-shared-"));
+    const ownerPort = DEAD_PORT - 1;
+    const refusedPort = DEAD_PORT;
+    writeRegistryEntry(sharedDir, process.ppid, "127.0.0.1", ownerPort);
+    writeRegistryEntry(sharedDir, process.pid, "127.0.0.1", refusedPort, { identityOnly: true });
+    const older = new Date(Date.now() - 5_000);
+    const newer = new Date();
+    fs.utimesSync(path.join(sharedDir, String(process.ppid)), older, older);
+    fs.utimesSync(path.join(sharedDir, String(process.pid)), newer, newer);
+
+    // both listeners answer: the choice cannot be decided by reachability
+    const canonical = await recomputeCanonical(sharedDir, async () => true);
+    expect(canonical).toEqual({ host: "127.0.0.1", port: ownerPort });
+    // the refusal's entry is left on disk: the shell reads it, the process that
+    // wrote it removes it on its own way out
+    expect(fs.existsSync(path.join(sharedDir, String(process.pid)))).toBe(true);
+
+    // with only the refusal left alive there is NO survivor, so the canonical
+    // record is dropped rather than pointed at the refusal page
+    fs.unlinkSync(path.join(sharedDir, String(process.ppid)));
+    expect(await recomputeCanonical(sharedDir, async () => true)).toBeNull();
+    fs.rmSync(sharedDir, { recursive: true, force: true });
+  });
+
   it("parses JSON entries, prunes dead pids, accepts legacy bare-int entries", () => {
     writeRegistryEntry(registryDir, process.pid, "127.0.0.1", 4317);
     // SAFETY: our own registry write shapes the entry file

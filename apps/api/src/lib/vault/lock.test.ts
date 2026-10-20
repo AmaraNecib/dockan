@@ -1194,6 +1194,40 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(fs.readFileSync(lockPath(), "utf8")).toBe("{ not json");
   }, 10_000);
 
+  it("stops at the first PERMANENT read failure instead of burning the read budget", () => {
+    // The record path is a DIRECTORY: every read is EISDIR, and no amount of
+    // retrying turns a directory into a lock file. The budget exists for a
+    // TRANSIENT failure (a Windows sharing violation, a record caught
+    // mid-write), so spending it here only delays the page that says which file
+    // to delete — 21 reads x 50 ms x three acquisitions is ~7.6 s of blank
+    // window before the owner is told anything (CI: the integration test hit its
+    // log budget on exactly that wait).
+    fs.mkdirSync(lockPath());
+    const reads = countingReader(() => {
+      throw errno("EISDIR", "EISDIR: illegal operation on a directory, read 'vault.lock'");
+    });
+    let code: string | undefined;
+    try {
+      acquireVaultLock(dir, {
+        readRetries: 20,
+        readRetryDelayMs: 50,
+        stealSettleMs: 1,
+        readLockFile: reads.readLockFile,
+        logger: reads.logger,
+        onLost: () => undefined,
+      });
+      throw new Error("acquireVaultLock returned over a directory");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VaultLockUnreadableError);
+      // the verdict is unchanged and still carries the errno the page explains
+      // SAFETY: the instance assertion above establishes the error class
+      code = (error as VaultLockUnreadableError).code;
+    }
+    expect(code).toBe("EISDIR");
+    // ONE read, not one per attempt per retry: the failure is permanent
+    expect(reads.state.reads).toBe(1);
+  });
+
   it("bounds the boot-path read delay even when a knob asks for five seconds", () => {
     // every readOwner call folds the knob to the 500 ms ceiling, so the refusal
     // path's handful of calls is a few seconds, not 5 s per call. #287: every

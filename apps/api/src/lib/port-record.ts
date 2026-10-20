@@ -19,11 +19,22 @@ import { pidIsAlive } from "./pid-liveness";
  *   ENOTEMPTY on a repopulated dir)
  */
 
-export type RegistryEntry = { host: string; port: number; pidFile: string; mtime: number };
+export type RegistryEntry = { host: string; port: number; pidFile: string; mtime: number; identityOnly: boolean };
 
 export type LockOpts = { deadlineMs?: number; graceMs?: number };
 
-const registryEntrySchema = z.object({ host: z.string(), port: z.number().int().positive() });
+const registryEntrySchema = z.object({
+  host: z.string(),
+  port: z.number().int().positive(),
+  /**
+   * Written by a start that does not own the data folder (#277, greptile P1 on
+   * #298): the entry exists for the desktop shell's identity check, and for
+   * nothing else. Several data folders can share one port root — dev's
+   * workspace root is the default — so the registry holds refusal entries
+   * beside the real owner's, and `recomputeCanonical` must never pick one.
+   */
+  identityOnly: z.boolean().optional(),
+});
 
 /**
  * True when the host string binds every network interface (issue #52): the
@@ -268,9 +279,24 @@ function removeFileIfPresent(file: string): void {
   }
 }
 
-export function writeRegistryEntry(registryDir: string, pid: number, host: string, port: number): void {
+export function writeRegistryEntry(
+  registryDir: string,
+  pid: number,
+  host: string,
+  port: number,
+  options: { identityOnly?: boolean } = {},
+): void {
   fs.mkdirSync(registryDir, { recursive: true });
-  fs.writeFileSync(ownRegistryEntry(registryDir, pid), JSON.stringify({ host: probeHostFor(host), port }), "utf8");
+  // The `identityOnly` key goes FIRST, and that is load-bearing, not style: the
+  // desktop shell's identity check greps for `"port":<n>}` anchored to the
+  // closing brace (`registry_owned_by` in desktop.rs). Serialising the marker
+  // last would put a `,"identityOnly":true` between the port and the brace and
+  // make the shell kill the child it just spawned. `registry_entry_shape` in
+  // port-record.test.ts pins the byte shape for exactly this reason.
+  const entry = options.identityOnly === true
+    ? { identityOnly: true, host: probeHostFor(host), port }
+    : { host: probeHostFor(host), port };
+  fs.writeFileSync(ownRegistryEntry(registryDir, pid), JSON.stringify(entry), "utf8");
 }
 
 /**
@@ -308,12 +334,14 @@ export function readRegistryEntry(registryDir: string, name: string): RegistryEn
 
   let host = "127.0.0.1";
   let port = NaN;
+  let identityOnly = false;
   try {
     // parse at the I/O boundary, then branch on the domain value
     const parsed = registryEntrySchema.safeParse(JSON.parse(raw));
     if (parsed.success) {
       host = parsed.data.host;
       port = parsed.data.port;
+      identityOnly = parsed.data.identityOnly === true;
     } else if (/^\d+$/.test(raw)) {
       // legacy entries were bare integer ports, written by us
       // SAFETY: the regex already established digits-only
@@ -336,7 +364,7 @@ export function readRegistryEntry(registryDir: string, name: string): RegistryEn
     if (code === "ENOENT") return null;
     throw err;
   }
-  return { host: probeHostFor(host), port, pidFile, mtime };
+  return { host: probeHostFor(host), port, pidFile, mtime, identityOnly };
 }
 
 /**
@@ -344,6 +372,12 @@ export function readRegistryEntry(registryDir: string, name: string): RegistryEn
  * Entries are probed newest-first on their own (normalized) bound host.
  * A single short probe miss is transient evidence, not permission to delete a
  * live process's entry: retry first, then retain it while its PID is alive.
+ *
+ * An `identityOnly` entry is never a candidate (#277, greptile P1 on #298). Its
+ * listener is a refusal page, so naming it canonical points the dev proxy at a
+ * 503 while the instance that owns the folder is still serving. The entry stays
+ * on disk: it exists for the shell's identity check, and the process that wrote
+ * it removes it on its own way out.
  */
 export async function recomputeCanonical(
   registryDir: string,
@@ -364,6 +398,9 @@ export async function recomputeCanonical(
     .sort((a, b) => b.mtime - a.mtime);
 
   for (const entry of entries) {
+    // a refusal entry proves nothing about who owns the folder: skip it before
+    // any probe, so it can never become the canonical record
+    if (entry.identityOnly) continue;
     // Each 150 ms attempt is intentionally short; transient startup or
     // Windows scheduling delays must not delete a still-live API entry.
     let portResponded = false;

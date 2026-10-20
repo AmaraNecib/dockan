@@ -284,6 +284,48 @@ describe("vault folder held by another instance (issue #276)", () => {
     expect(host.querySelector('[data-testid="vault-status-in-use"]')).not.toBeNull();
   });
 
+  it("keeps the refusal on screen while a background check is in flight (#298)", async () => {
+    // The 5 s poll on this screen calls the SAME load() the retry button calls,
+    // and load() used to clear `failure` the moment it STARTED. `RequireSession`
+    // falls back to the loading screen while `failure` is undefined, so the
+    // sentence and the Retry button vanished on every poll, and the keyboard
+    // focus sitting on the button went with them (greptile P2 on #298). A check
+    // that has not answered yet is not news: only a SUCCESSFUL read clears the
+    // refusal.
+    vaultStatusResponse = async () => Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 });
+    const host = await mountAuthGateFor('[data-testid="vault-status-in-use"]');
+    const retry = host.querySelector<HTMLButtonElement>('[data-testid="vault-status-retry"]');
+    if (retry === null) throw new Error("the refusal screen has no retry button");
+    retry.focus();
+
+    // the next status read never settles inside the assertion window
+    let release: (response: Response) => void = () => undefined;
+    vaultStatusResponse = () =>
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    await act(async () => {
+      retry.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    // the read is in flight: the refusal is still the screen the owner is on
+    expect(vaultCalls).toContain("GET /api/vault/status");
+    expect(host.querySelector('[data-testid="vault-status-in-use"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-status-retry"]')).not.toBeNull();
+    expect(host.textContent).toContain("البيانات مفتوحة في نسخة أخرى");
+    // and the button the owner was on still has the keyboard
+    expect(document.activeElement).toBe(retry);
+
+    // the check answers with the same refusal: same screen, no flicker
+    await act(async () => {
+      release(Response.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, { status: 503 }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="vault-status-in-use"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
+  });
+
   it("retries the refusal into the gate once the folder is free", async () => {
     let calls = 0;
     vaultStatusResponse = async () => {

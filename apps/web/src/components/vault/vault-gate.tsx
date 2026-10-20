@@ -80,11 +80,22 @@ export function useVaultStatus(): VaultHook {
   const [failure, setFailure] = useState<VaultFailure | undefined>(undefined);
   const aliveRef = useRef(true);
 
+  /**
+   * Read the status once.
+   *
+   * A failed read is cleared by the NEXT SUCCESSFUL one, never by starting a
+   * read (greptile P2 on #298). Clearing up front made every background check
+   * blank the refusal it was checking: `RequireSession` falls back to the
+   * loading screen while `failure` is undefined, so the sentence and the retry
+   * button disappeared and came back every poll, and the keyboard focus that
+   * was on the button was dropped with them.
+   */
   const load = useCallback(() => {
-    setFailure(undefined);
     fetchVaultStatus()
       .then((result) => {
-        if (aliveRef.current) setStatus(result);
+        if (!aliveRef.current) return;
+        setStatus(result);
+        setFailure(undefined);
       })
       .catch((reason) => {
         if (!aliveRef.current) return;

@@ -18,35 +18,101 @@ export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "
 export type SupplierAdjustmentDirection = "WE_OWE" | "THEY_OWE";
 
 /**
- * The sign one entry kind contributes to the supplier balance (#260).
+ * What ONE entry kind means to the supplier balance (#317): the sign it always
+ * carries, or — for a kind whose sign is the row's own decision — the sign per
+ * direction together with the fact that a direction is REQUIRED.
  *
- * Positive = **the supplier owes us** (we hold a credit); negative = **we owe the
- * supplier**. The sign describes the DIRECTION OF THE BALANCE, not a cash
- * movement: a balance of −1000 means we owe him 1000, which may settle later by
- * offsetting a future invoice with no cash involved at all.
+ * This is the single rule both readers consume: `supplierEntrySign` looks it up
+ * here, and `drizzle-store.ts` generates its SQL from this same table at module
+ * load. Adding a kind, or changing a sign, is one edit that both obey — the two
+ * readers cannot drift by editing one and not the other.
+ */
+export type SupplierEntryRule =
+  | { directionRequired: false; sign: 1 | -1 }
+  | { directionRequired: true; directions: Readonly<Record<SupplierAdjustmentDirection, 1 | -1>> };
+
+/**
+ * The rule table. Sign convention (#260): **positive = the supplier owes us** (we
+ * hold a credit), **negative = we owe the supplier**. The sign describes the
+ * direction of the BALANCE, not a cash movement: a balance of −1000 means we owe
+ * him 1000, which may settle later by offsetting a future invoice with no cash
+ * involved at all. So WE_OWE (money leaves us) is −1 and THEY_OWE (money comes to
+ * us) is +1, and every kind negates with it: a PURCHASE makes us owe (negative), a
+ * PAYMENT reduces that debt (positive).
  *
- * So WE_OWE (money leaves us) is −1 and THEY_OWE (money comes to us) is +1, and
- * every kind negates with it: a PURCHASE makes us owe (negative), a PAYMENT
- * reduces that debt (positive). An ADJUSTMENT's sign comes from its direction,
- * so a missing one is refused rather than guessed (a wrongly-signed money row is
- * worse than an error). */
+ * `satisfies Record<SupplierEntryKind, …>` makes the compiler refuse a kind that
+ * has no rule, and `SUPPLIER_ENTRY_KINDS` is derived from the table rather than
+ * typed a second time.
+ */
+export const SUPPLIER_ENTRY_RULES = {
+  PURCHASE: { directionRequired: false, sign: -1 },
+  PAYMENT: { directionRequired: false, sign: 1 },
+  RETURN: { directionRequired: false, sign: 1 },
+  REFUND: { directionRequired: false, sign: -1 },
+  // a wrongly-signed money row is worse than an error, so a missing direction is
+  // refused rather than defaulted (issue 176, #317)
+  ADJUSTMENT: { directionRequired: true, directions: { WE_OWE: -1, THEY_OWE: 1 } },
+} as const satisfies Record<SupplierEntryKind, SupplierEntryRule>;
+
+/** Every entry kind, read out of the rule table so a new kind cannot be added to
+ * the union and forgotten by a loop or a caller. */
+// SAFETY: the table is declared `satisfies Record<SupplierEntryKind, …>`, so its
+// keys are exactly the union's members; only the readonly view needs asserting.
+const SUPPLIER_ENTRY_KIND_LIST = Object.keys(SUPPLIER_ENTRY_RULES) as readonly SupplierEntryKind[];
+export { SUPPLIER_ENTRY_KIND_LIST as SUPPLIER_ENTRY_KINDS };
+
+/**
+ * The typed refusal for a row the rule table cannot sign — today one thing: an
+ * ADJUSTMENT with no usable direction. It names the kind, the direction it got
+ * (null when none) and the entry when the caller knows it, so the data can be
+ * fixed instead of guessed at. Both readers throw THIS class (#317), so a
+ * direction-less row fails every screen together rather than signing negative on
+ * one and throwing on another.
+ */
+export class UnsignableSupplierEntryError extends Error {
+  readonly kind: SupplierEntryKind;
+  readonly direction: SupplierAdjustmentDirection | null;
+  readonly entryId: string | null;
+
+  constructor(kind: SupplierEntryKind, direction: SupplierAdjustmentDirection | null, entryId: string | null = null) {
+    super(`${kind} supplier account entry ${entryId ?? "(no id)"} needs a direction`);
+    this.name = "UnsignableSupplierEntryError";
+    this.kind = kind;
+    this.direction = direction ?? null;
+    this.entryId = entryId;
+  }
+}
+
+/**
+ * The sign one entry kind contributes to the supplier balance (#260), read from
+ * the one rule table (#317).
+ *
+ * A fixed kind ignores the direction it was handed: only ADJUSTMENT takes its sign
+ * from a direction, and a missing one there is refused rather than defaulted.
+ * `entryId` is optional context for that refusal (the fold passes it so the error
+ * names the row).
+ */
 export function supplierEntrySign(
   kind: SupplierEntryKind,
   direction: SupplierAdjustmentDirection | null = null,
+  entryId: string | null = null,
 ): 1 | -1 {
-  if (kind === "ADJUSTMENT") {
-    if (direction === "WE_OWE") return -1;
-    if (direction === "THEY_OWE") return 1;
-    throw new Error("a supplier adjustment entry needs a direction");
-  }
-  return kind === "PAYMENT" || kind === "RETURN" ? 1 : -1;
+  const rule = SUPPLIER_ENTRY_RULES[kind];
+  if (!rule.directionRequired) return rule.sign;
+  // `in` also refuses a value the type system never saw (a corrupt legacy row): a
+  // direction the table does not define cannot sign anything
+  if (direction !== null && direction in rule.directions) return rule.directions[direction];
+  throw new UnsignableSupplierEntryError(kind, direction, entryId);
 }
 
 /** The signed balance of a supplier account: Σ amount × sign(kind). */
 export function supplierBalance(
-  entries: readonly { kind: SupplierEntryKind; amount: number; direction?: SupplierAdjustmentDirection | null }[],
+  entries: readonly { id?: string; kind: SupplierEntryKind; amount: number; direction?: SupplierAdjustmentDirection | null }[],
 ): number {
-  return entries.reduce((sum, entry) => sum + supplierEntrySign(entry.kind, entry.direction ?? null) * entry.amount, 0);
+  return entries.reduce(
+    (sum, entry) => sum + supplierEntrySign(entry.kind, entry.direction ?? null, entry.id ?? null) * entry.amount,
+    0,
+  );
 }
 
 /** How much of `amount` fits an invoice that still owes `remaining`; the rest

@@ -7,6 +7,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDateTime, localDate } from "../lib/logger";
+import { supplierBalance, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createDrizzleStore, backfillReturnDebtApplications, seedExpenseCategories } from "./drizzle-store";
 import type { StorePort } from "./port";
 
@@ -2574,6 +2575,139 @@ describe("getInvoiceDetail return credit", () => {
     } finally {
       legacy.close();
       removeTempDirRetry(legacyDir);
+    }
+  });
+});
+
+/**
+ * #317 — the balance has two readers (SQL and the TypeScript fold) and before
+ * this the suite could not see them disagree: one test asserted the SQL number,
+ * another the fold's number, and nothing compared them. These tests fold ONE
+ * fixture row set through every reader and compare.
+ */
+describe("#317 one rule decides what a supplier balance means", () => {
+  /** One row per sign the rule table defines, so a kind cannot be left out of
+   * the parity fixture without deleting it here. */
+  const fixture = [
+    { kind: "PURCHASE" as const, amount: 1_000, sign: -1 },
+    { kind: "PAYMENT" as const, amount: 250, method: "CASH" as const, sign: 1 },
+    { kind: "RETURN" as const, amount: 125, sign: 1 },
+    { kind: "REFUND" as const, amount: 75, sign: -1 },
+    { kind: "ADJUSTMENT" as const, amount: 400, direction: "WE_OWE" as const, sign: -1 },
+    { kind: "ADJUSTMENT" as const, amount: 90, direction: "THEY_OWE" as const, sign: 1 },
+  ];
+
+  const newSupplier = async (label: string) => store.createParty("supplier", { name: `مورد-توازن-${label}-${stamp()}` });
+
+  const insertRow = async (supplierId: string, row: (typeof fixture)[number]) => {
+    await store.insertSupplierEntry({
+      supplierId,
+      kind: row.kind,
+      amount: row.amount,
+      direction: "direction" in row ? row.direction : null,
+      method: "method" in row ? row.method : null,
+      invoiceId: null,
+      occurredAt: localDateTime(),
+    });
+  };
+
+  /** Every reader of one supplier's balance: the two SQL aggregates (summary and
+   * list), the detail's fold, and the ledger fold over the very rows the detail
+   * folds. They must agree, which is the whole point of #317. */
+  const readers = async (supplierId: string) => {
+    const summary = (await store.listSupplierAccountSummaries()).find((row) => row.id === supplierId);
+    const listRow = (await store.listParties("supplier")).find((row) => row.id === supplierId);
+    const detail = await store.partyDetail("supplier", supplierId);
+    return {
+      summarySql: summary?.accountBalance,
+      listSql: listRow?.accountBalance,
+      detailFold: detail?.account?.balance,
+      ledgerFold: supplierBalance(await store.listSupplierEntries(supplierId)),
+    };
+  };
+
+  /** The refusal a reader raised, or a failure naming the number it quoted instead. */
+  const refusalOf = async (read: Promise<unknown>): Promise<Error> => {
+    try {
+      const value = await read;
+      throw new Error(`expected the reader to refuse a row it cannot sign, got ${JSON.stringify(value)}`);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("expected the reader to refuse")) throw error;
+      if (!(error instanceof Error)) throw new Error(`expected a refusal, got ${String(error)}`);
+      return error;
+    }
+  };
+
+  it("folds one fixture row set through every reader and agrees per kind", async () => {
+    for (const row of fixture) {
+      const supplier = await newSupplier(row.kind);
+      await insertRow(supplier.id, row);
+      const expected = row.sign * row.amount;
+      // the sign the owner reads, not the SQL string and not the fold's internals
+      expect({ kind: row.kind, direction: row.direction ?? null, ...(await readers(supplier.id)) }).toMatchObject({
+        summarySql: expected,
+        listSql: expected,
+        detailFold: expected,
+        ledgerFold: expected,
+      });
+    }
+  });
+
+  it("agrees on the total, and a payment moves it by exactly its amount", async () => {
+    const supplier = await newSupplier("total");
+    const total = fixture.reduce((sum, row) => sum + row.sign * row.amount, 0);
+    for (const row of fixture) await insertRow(supplier.id, row);
+    const before = await readers(supplier.id);
+    expect(before).toEqual({ summarySql: total, listSql: total, detailFold: total, ledgerFold: total });
+
+    // user story 3: the total after a payment is the total before, less the payment
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PAYMENT", amount: 300, method: "CASH", invoiceId: null, occurredAt: localDateTime() });
+    const after = await readers(supplier.id);
+    expect(after).toEqual({ summarySql: total + 300, listSql: total + 300, detailFold: total + 300, ledgerFold: total + 300 });
+  });
+
+  it("refuses the same row on every reader when a required direction is missing", async () => {
+    const supplier = await newSupplier("بلا-اتجاه");
+    // a migrated database can hold this row: the ALTER path cannot add the CHECK
+    // the fresh DDL carries, which is why the READ has to be the boundary.
+    const badEntryId = crypto.randomUUID();
+    conn.raw.exec("PRAGMA ignore_check_constraints = ON");
+    try {
+      conn.raw
+        .query("INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, dedup_key, occurred_at, created_at) VALUES (?, ?, 'ADJUSTMENT', 700, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)")
+        .run(badEntryId, supplier.id, localDateTime(), localDateTime());
+    } finally {
+      conn.raw.exec("PRAGMA ignore_check_constraints = OFF");
+    }
+
+    try {
+      const entries = await store.listSupplierEntries(supplier.id);
+      // the fold refuses, and names the entry and its kind so the data can be fixed
+      let foldError: unknown;
+      try {
+        supplierBalance(entries);
+      } catch (error) {
+        foldError = error;
+      }
+      expect(foldError).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(foldError).toMatchObject({ kind: "ADJUSTMENT", entryId: badEntryId });
+
+      // …and every SQL reader refuses with the same class instead of quoting the
+      // negative the old CASE silently signed
+      for (const read of [
+        store.listSupplierAccountSummaries(),
+        store.listParties("supplier"),
+        store.partyDetail("supplier", supplier.id),
+        store.debtSummaries(),
+        store.dashboardSummary(localDate()),
+      ]) {
+        const refusal = await refusalOf(read);
+        expect(refusal).toBeInstanceOf(UnsignableSupplierEntryError);
+        expect(refusal).toMatchObject({ kind: "ADJUSTMENT" });
+      }
+    } finally {
+      // never leave a row the readers refuse in the shared test database
+      conn.raw.query("DELETE FROM supplier_account_entries WHERE id = ?").run(badEntryId);
     }
   });
 });

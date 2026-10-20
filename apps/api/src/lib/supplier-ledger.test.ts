@@ -7,10 +7,13 @@ import {
   deriveInvoicePaid,
   hasExplicitIdempotencyKey,
   splitAgainstRemaining,
+  SUPPLIER_ENTRY_KINDS,
+  SUPPLIER_ENTRY_RULES,
   supplierBalance,
   supplierChargeEntryAmount,
   supplierEntrySign,
   supplierReturnSplit,
+  UnsignableSupplierEntryError,
   type AdjustmentDedupInput,
   type AllocatableInvoice,
 } from "./supplier-ledger";
@@ -34,6 +37,76 @@ describe("supplierEntrySign", () => {
   it("refuses to sign an adjustment with no direction rather than guess", () => {
     expect(() => supplierEntrySign("ADJUSTMENT")).toThrow(/direction/);
     expect(() => supplierEntrySign("ADJUSTMENT", null)).toThrow(/direction/);
+  });
+});
+
+/**
+ * #317 — the kind-to-sign rule is DATA (SUPPLIER_ENTRY_RULES) and both readers
+ * consume it. These tests pin the table itself: one case per kind, so a new kind
+ * cannot arrive without a sign, and the direction-required kind fails loudly.
+ */
+describe("SUPPLIER_ENTRY_RULES — one table decides every kind's sign (#317)", () => {
+  it("holds every kind exactly once", () => {
+    expect([...SUPPLIER_ENTRY_KINDS].sort()).toEqual(["ADJUSTMENT", "PAYMENT", "PURCHASE", "REFUND", "RETURN"]);
+    expect(Object.keys(SUPPLIER_ENTRY_RULES).sort()).toEqual([...SUPPLIER_ENTRY_KINDS].sort());
+  });
+
+  // The expected sign is the SPEC (#260), written out here rather than read back
+  // from the table: a test that recomputes the table proves nothing.
+  const fixed: ReadonlyArray<["PURCHASE" | "REFUND" | "PAYMENT" | "RETURN", 1 | -1, string]> = [
+    ["PURCHASE", -1, "a purchase is a charge: the shop owes the supplier"],
+    ["REFUND", -1, "a refund is money leaving the register: it restores the debt"],
+    ["PAYMENT", 1, "a payment reduces what the shop owes"],
+    ["RETURN", 1, "a return reduces what the shop owes"],
+  ];
+
+  for (const [kind, sign, why] of fixed) {
+    it(`${kind} carries ${sign > 0 ? "+1" : "−1"} — ${why}`, () => {
+      expect(SUPPLIER_ENTRY_RULES[kind]).toEqual({ directionRequired: false, sign });
+      expect(supplierEntrySign(kind)).toBe(sign);
+      // a fixed kind ignores a direction: it cannot be flipped by one
+      expect(supplierEntrySign(kind, "WE_OWE")).toBe(sign);
+      expect(supplierEntrySign(kind, "THEY_OWE")).toBe(sign);
+    });
+  }
+
+  it("ADJUSTMENT requires a direction and takes its sign from it", () => {
+    expect(SUPPLIER_ENTRY_RULES.ADJUSTMENT).toEqual({
+      directionRequired: true,
+      directions: { WE_OWE: -1, THEY_OWE: 1 },
+    });
+    expect(supplierEntrySign("ADJUSTMENT", "WE_OWE")).toBe(-1);
+    expect(supplierEntrySign("ADJUSTMENT", "THEY_OWE")).toBe(1);
+  });
+
+  it("fails loudly instead of defaulting when the required direction is missing", () => {
+    for (const missing of [undefined, null]) {
+      let caught: UnsignableSupplierEntryError | undefined;
+      try {
+        supplierEntrySign("ADJUSTMENT", missing);
+      } catch (error) {
+        if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+        caught = error;
+      }
+      // a typed refusal, not a plain Error and never a silent −1
+      expect(caught).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(caught).toMatchObject({ kind: "ADJUSTMENT", direction: null, entryId: null });
+      expect(caught?.message).toMatch(/direction/);
+    }
+  });
+
+  it("names the entry and its kind in the refusal (issue 317, story 9)", () => {
+    let caught: UnsignableSupplierEntryError | undefined;
+    try {
+      // the fold is where an owner-visible read meets a corrupt row
+      supplierBalance([{ id: "entry-7", kind: "ADJUSTMENT", amount: 500 }]);
+    } catch (error) {
+      if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(UnsignableSupplierEntryError);
+    expect(caught).toMatchObject({ kind: "ADJUSTMENT", entryId: "entry-7" });
+    expect(caught?.message).toContain("entry-7");
   });
 });
 

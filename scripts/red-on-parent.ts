@@ -69,6 +69,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1432,16 +1433,30 @@ function sleepSync(ms: number): void {
 }
 
 /**
+ * A directory's identity, which its name does not carry.
+ *
+ * A reclaim deletes a *directory*, and the only thing standing between it and
+ * the wrong directory is a name another run can reuse the instant the name is
+ * freed. `dev`/`ino` name the object rather than the name, and `birthMs` covers
+ * the one case inode numbering hands a fresh directory the number its
+ * predecessor had: the three together are what a successor cannot share with
+ * the directory it replaced.
+ */
+export type LockIdentity = { dev: number; ino: number; birthMs: number };
+
+/**
  * What a lock directory says about its holder, and how strongly.
  *
  * `holder` names a pid whose process is gone (ESRCH). `unclaimed` is a
  * directory with no pid file that is older than the grace: the only evidence a
- * crash between `mkdirSync` and the pid write leaves behind.
+ * crash between `mkdirSync` and the pid write leaves behind. `identity` is the
+ * directory all of that was read from, so a later removal can be bound to the
+ * object and not to the name.
  */
 type LockObservation =
-  | { kind: "alive"; token?: string; fileCount?: number }
-  | { kind: "holder"; pid: number; token?: string; fileCount?: number }
-  | { kind: "unclaimed"; mtimeMs: number };
+  | { kind: "alive"; token?: string; fileCount?: number; identity?: LockIdentity }
+  | { kind: "holder"; pid: number; token?: string; fileCount?: number; identity?: LockIdentity }
+  | { kind: "unclaimed"; mtimeMs: number; identity?: LockIdentity };
 
 /**
  * The pid file's owner: a pid, and a token only the run that wrote it knows.
@@ -1484,9 +1499,30 @@ function readLockOwner(raw: string): LockOwner | null {
   };
 }
 
-/** Whether two observations name the same lock. */
+/**
+ * Whether two observations name the same directory.
+ *
+ * Undefined on either side is false: an observation that carries no identity
+ * cannot bind anything, and a reclaim built on it is refused rather than
+ * trusted.
+ */
+function sameIdentity(a: LockIdentity | undefined, b: LockIdentity | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
+  return a.dev === b.dev && a.ino === b.ino && a.birthMs === b.birthMs;
+}
+
+/**
+ * Whether two observations name the same lock.
+ *
+ * The identity has to match as well as the evidence. The evidence is
+ * re-readable and the object is not: a live lock that took the name after the
+ * caller observed a stale one can hand back a pid file the old code read as
+ * identical — a recycled pid, a token it never looked at — and a comparison on
+ * content alone then called two different directories the same lock.
+ */
 function sameLock(a: LockObservation, b: LockObservation): boolean {
   if (a.kind !== b.kind) return false;
+  if (!sameIdentity(a.identity, b.identity)) return false;
   if (a.kind === "holder" && b.kind === "holder") {
     return a.pid === b.pid && (a.token ?? "") === (b.token ?? "");
   }
@@ -1494,9 +1530,32 @@ function sameLock(a: LockObservation, b: LockObservation): boolean {
   return false;
 }
 
+/** Whether a pid belongs to a running process (EPERM counts as running). */
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // ESRCH: no such process. EPERM: it exists but belongs to another user.
+    // SAFETY: `process.kill` is the only throw source here and rejects with a
+    // NodeJS.ErrnoException, whose string `code` is what this test reads.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/** The directory at `lockPath`, named by object rather than by path. */
+function lockIdentity(lockPath: string): LockIdentity | undefined {
+  try {
+    const stats = statSync(lockPath);
+    return { dev: stats.dev, ino: stats.ino, birthMs: stats.birthtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Observe the lock without deciding, so a reclaimer can bind its rename to the
- * exact state it judged stale.
+ * Observe the lock without deciding, so a reclaimer can bind its removal to
+ * the exact state it judged stale.
  *
  * The pid file's existence is not checked separately from reading it: a release
  * can `rmSync` the directory between the two calls, and an unguarded
@@ -1517,32 +1576,30 @@ export function observeLockHolder(lockPath: string): LockObservation {
     // from the run that holds it. Only a missing pid file is the evidence.
     // SAFETY: `readFileSync` is the only throw source here and rejects with a
     // NodeJS.ErrnoException, whose string `code` is what this test reads.
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { kind: "alive" };
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return { kind: "alive", identity: lockIdentity(lockPath) };
+    }
     // No pid file. If the directory is gone too, or young, there is no evidence
     // of a dead holder: retry rather than reclaim.
     try {
-      const mtimeMs = statSync(lockPath).mtimeMs;
-      return Date.now() - mtimeMs > LOCK_PID_GRACE_MS
-        ? { kind: "unclaimed", mtimeMs }
-        : { kind: "alive" };
+      const stats = statSync(lockPath);
+      const identity = { dev: stats.dev, ino: stats.ino, birthMs: stats.birthtimeMs };
+      return Date.now() - stats.mtimeMs > LOCK_PID_GRACE_MS
+        ? { kind: "unclaimed", mtimeMs: stats.mtimeMs, identity }
+        : { kind: "alive", identity };
     } catch {
       return { kind: "alive" };
     }
   }
   const owner = readLockOwner(raw);
-  if (owner === null) return { kind: "alive" };
-  try {
-    process.kill(owner.pid, 0);
-    return { kind: "alive", token: owner.token, fileCount: owner.fileCount };
-  } catch (error) {
-    // ESRCH: no such process, so the holder died without releasing. EPERM: it
-    // exists but belongs to another user — treat that as alive.
-    // SAFETY: `process.kill` is the only throw source here and rejects with a
-    // NodeJS.ErrnoException, whose string `code` is what this test reads.
-    return (error as NodeJS.ErrnoException).code === "ESRCH"
-      ? { kind: "holder", pid: owner.pid, token: owner.token, fileCount: owner.fileCount }
-      : { kind: "alive" };
-  }
+  // The identity is read beside the pid file, not before it: a reclaim is bound
+  // to the directory the evidence came out of, and here the evidence is the pid
+  // file this call just read.
+  const identity = lockIdentity(lockPath);
+  if (owner === null) return { kind: "alive", identity };
+  return processIsAlive(owner.pid)
+    ? { kind: "alive", token: owner.token, fileCount: owner.fileCount, identity }
+    : { kind: "holder", pid: owner.pid, token: owner.token, fileCount: owner.fileCount, identity };
 }
 
 /** Whether the process that wrote this lock's pid file is gone. */
@@ -1554,63 +1611,161 @@ export function lockHolderIsGone(lockPath: string): boolean {
  * What a reclaim did.
  *
  * `reclaimed` is the stale lock removed. `refused` is the name left exactly
- * where it was because it no longer holds the lock that was observed — another
- * run took it, and moving it would move a live run's directory. `restored` is
- * the rare case where a lock was moved before the check could see it and had
- * to be put back. `not-stale` is an observation that named a live holder, so
- * there was nothing to reclaim.
+ * where it was — another run holds the lock, another run holds the reclaim, or
+ * the name now holds a directory the caller never observed. `not-stale` is an
+ * observation that named a live holder, so there was nothing to reclaim.
  */
-export type ReclaimOutcome = "reclaimed" | "refused" | "restored" | "not-stale";
+export type ReclaimOutcome = "reclaimed" | "refused" | "not-stale";
 
 /**
- * Remove the lock `observed` described, unless the name now holds a different,
- * live lock.
+ * The file a reclaimer creates inside the lock it is removing.
  *
- * `renameSync` is the only step that can race: between observing a dead holder
- * and renaming its directory away, another waiter can reclaim the same lock and
- * take it, so the name about to be renamed can hold a fresh lock by then. The
- * rename is therefore a claim on the directory, verified against `observed`, and
- * undone when it moved something else. Without the check the second waiter
- * renamed and deleted the first waiter's live lock, and both runs then held "the
- * lock" and shared one worktree.
+ * A fixed name, because that is what makes taking it exclusive: `wx` on one
+ * name inside one directory has exactly one winner.
+ */
+export const RECLAIM_CLAIM_FILE = "reclaim";
+
+type ReclaimClaim = { path: string; token: string };
+
+/**
+ * Take the exclusive right to remove this lock, or report that someone else has
+ * it.
+ */
+function takeReclaimClaim(lockPath: string): ReclaimClaim | null {
+  const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
+  const token = randomUUID();
+  const body = lockPidFileContent(process.pid, token, 0);
+  const create = (): boolean => {
+    try {
+      writeFileSync(claimPath, body, { flag: "wx" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (create()) return { path: claimPath, token };
+  // The name is taken. A live owner is another run removing the same lock, and
+  // this one waits. A dead owner is a claim left behind by a reclaimer that was
+  // killed between claiming and removing, and leaving it there would block
+  // every later run on this lock forever. Clearing it is still exclusive: a
+  // rename of one name succeeds once, so of the runs that decide the claim is
+  // dead exactly one moves it — and even that one has to win the name back,
+  // because a third run can create its own claim in the gap.
+  let raw: string;
+  try {
+    raw = readFileSync(claimPath, "utf8");
+  } catch {
+    return null;
+  }
+  const owner = readLockOwner(raw);
+  if (owner === null) {
+    // No readable owner: only age is evidence, exactly as for a lock directory
+    // whose writer died before it wrote its pid.
+    try {
+      if (Date.now() - statSync(claimPath).mtimeMs <= LOCK_PID_GRACE_MS) return null;
+    } catch {
+      return null;
+    }
+  } else if (processIsAlive(owner.pid)) {
+    return null;
+  }
+  const grave = `${claimPath}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    renameSync(claimPath, grave);
+  } catch {
+    return null;
+  }
+  try {
+    unlinkSync(grave);
+  } catch {
+    // The tombstone stays behind inside the lock directory; it goes with it.
+  }
+  return create() ? { path: claimPath, token } : null;
+}
+
+/** Drop this run's claim, and only its own. */
+function releaseReclaimClaim(claim: ReclaimClaim): void {
+  let raw: string;
+  try {
+    raw = readFileSync(claim.path, "utf8");
+  } catch {
+    return;
+  }
+  const owner = readLockOwner(raw);
+  if (owner === null || owner.pid !== process.pid || owner.token !== claim.token) return;
+  try {
+    unlinkSync(claim.path);
+  } catch {
+    // The directory is going, or gone, and takes the claim with it.
+  }
+}
+
+/**
+ * Whether the name still holds the lock that was observed.
  *
- * The check runs *before* the rename as well, and that is the half that is
- * load-bearing now. Renaming a live lock away moves it out from under the run
- * that holds it, and the restore below only puts it back while the name is
- * free: a third run that takes the name in between leaves the live lock
- * orphaned, and the run that owns it then deletes the new holder's lock when it
- * releases. So a lock that is not the one observed is left exactly where it is,
- * and the reclaim says it refused.
+ * An `unclaimed` observation cannot be re-read as one: the claim just created
+ * inside the directory refreshed its mtime, so its age is gone. What is left is
+ * that the directory is still the same object and that no pid file has
+ * appeared in it. A `holder` observation is re-read whole, pid and token
+ * included, because that content is what a replacement cannot reproduce.
+ */
+function stillObservedLock(lockPath: string, observed: LockObservation): boolean {
+  const current = observeLockHolder(lockPath);
+  if (!sameIdentity(current.identity, observed.identity)) return false;
+  if (observed.kind === "holder") return sameLock(current, observed);
+  if (observed.kind === "unclaimed") return !existsSync(join(lockPath, "pid"));
+  return false;
+}
+
+/**
+ * Remove the stale lock `observed` described, and only that lock.
+ *
+ * Two properties have to hold, and neither is enough alone.
+ *
+ * **Recovery is exclusive.** The removal is one `rmSync` of one name, and two
+ * runs that read the same dead pid would both reach it: one replaces the
+ * directory and starts work, the other deletes the live lock it just took. So a
+ * reclaimer takes a claim *inside* the directory with `wx` before it removes
+ * anything. Exactly one caller can win that create, so at most one run is ever
+ * removing a given lock. The claim is released when the lock is left alone and
+ * disappears with the directory when the removal succeeds.
+ *
+ * **The removal is bound to the observed object.** The claim can be taken
+ * inside a *different* directory than the one observed: between the caller's
+ * observation and the claim, another run can remove the stale lock and take the
+ * name with a live one. Removing by name after that deletes a live run's lock,
+ * and that run then writes its pid file into a directory that is no longer at
+ * the name — so the lock is gone but two runs still hold the worktree. The
+ * directory's identity is therefore compared with the identity captured in the
+ * observation, and the evidence re-read, before anything is removed.
+ *
+ * Those two guards together are why the three reported findings are one defect.
+ * With recovery exclusive there is no second reclaimer to race at all, and with
+ * the removal bound to the identity the one window left — the lock replaced
+ * under the claim — can only ever refuse. There is no per-call-site check to
+ * forget, because there is one removal and it is guarded by both.
  */
 export function reclaimStaleLock(lockPath: string, observed: LockObservation): ReclaimOutcome {
   if (observed.kind === "alive") return "not-stale";
-  if (!sameLock(observeLockHolder(lockPath), observed)) return "refused";
-  // The tombstone name carries a random suffix as well as the pid, so a
-  // tombstone left behind by an earlier run cannot block this one's rename.
-  // A fixed name made the rename fail on a name that was already taken, and a
-  // reclaim that could not remove the lock was the one case the waiter loop
-  // could not recover from.
-  const tombstone = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
-  try {
-    renameSync(lockPath, tombstone);
-  } catch {
-    // Another run broke it (or reclaimed it) first; the retry takes the lock.
+  // An observation with no identity binds nothing, so it is refused rather than
+  // trusted: a hand-built observation must not become a licence to delete.
+  if (observed.identity === undefined) return "refused";
+  const claim = takeReclaimClaim(lockPath);
+  if (claim === null) return "refused";
+  if (!stillObservedLock(lockPath, observed)) {
+    releaseReclaimClaim(claim);
     return "refused";
   }
-  const moved = observeLockHolder(tombstone);
-  if (sameLock(moved, observed)) {
-    rmSync(tombstone, { recursive: true, force: true });
-    return "reclaimed";
-  }
-  // We moved a lock that is not the one we judged stale — a live run now holds
-  // it. Put it back; if the name is taken again, leave the directory where it is
-  // rather than delete a live lock.
   try {
-    renameSync(tombstone, lockPath);
+    rmSync(lockPath, { recursive: true, force: true });
   } catch {
-    // The tombstone stays behind, named for a run that is not its holder.
+    // A parent directory that will not let the entry go, or a directory in use.
+    // Leaving the lock is the safe half: the waiter sleeps and its budget runs
+    // out with a message naming the lock, instead of a throw out of the loop.
+    releaseReclaimClaim(claim);
+    return "refused";
   }
-  return "restored";
+  return "reclaimed";
 }
 
 /**
@@ -1620,7 +1775,7 @@ export function reclaimStaleLock(lockPath: string, observed: LockObservation): R
  * files into the same paths, and `--fresh` deletes the directory the other run
  * is testing in. The lock directory is the atomic acquire available on both
  * platforms (`mkdir` fails with EEXIST, unlike a test-then-write). A holder that
- * died is detected by its pid and its lock is renamed away before removal, so
+ * died is detected by its pid and removed under an exclusive claim, so
  * unknown has to cover the whole worst case: wait too little and a legitimate
  * second run is refused with "wait for it to finish", which is advice it cannot
  * follow because the deadline has already fired. The caller therefore derives
@@ -1660,11 +1815,11 @@ function acquireWorktreeLock(lockPath: string, lockWaitMs: number, fileCount = 0
         // The stale lock is gone, so the next `mkdirSync` can take the name.
         continue;
       }
-      // A reclaim that refused or restored leaves the lock exactly where it
-      // was, and the next pass would observe the same stale lock and reclaim
-      // it again. The `continue` this used to take skipped both the deadline
-      // check and the sleep, so a lock that could not be reclaimed spun the
-      // run at full speed until somebody killed it.
+      // A reclaim that refused leaves the lock exactly where it was, and the
+      // next pass would observe the same stale lock and reclaim it again. The
+      // `continue` this used to take skipped both the deadline check and the
+      // sleep, so a lock that could not be reclaimed spun the run at full speed
+      // until somebody killed it.
       sleepSync(LOCK_RETRY_MS);
     }
   }

@@ -29,7 +29,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  renameSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -61,6 +60,7 @@ import {
   observeLockHolder,
   parseJunit,
   parseWaivers,
+  RECLAIM_CLAIM_FILE,
   reclaimStaleLock,
   renderReport,
   runGate,
@@ -1990,14 +1990,23 @@ describe("red-on-parent round 9 — the lock", () => {
 
   test("reclaiming does not delete a live lock another waiter already took", () => {
     // Two waiters read the same dead pid; the first reclaims and takes the lock
-    // (writing its own pid). The second, holding its earlier observation, used
-    // to rename and delete the first waiter's live lock, and both runs then
-    // shared one worktree. The rename is now verified against the observation.
-    const lockPath = join(mkdtempSync(join(tmpdir(), "ronp-lock-")), "wt.lock");
-    mkdirSync(lockPath);
-    writeFileSync(join(lockPath, "pid"), `${process.pid}\n`);
-    expect(reclaimStaleLock(lockPath, { kind: "holder", pid: 999_999 })).toBe("refused");
-    expect(existsSync(join(lockPath, "pid"))).toBe(true);
+    // with its own pid file. The second, holding its earlier observation, may
+    // not delete what the name holds.
+    const lockDir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    const lockPath = join(lockDir, "wt.lock");
+    try {
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "dead-token", 1));
+      const observed = observeLockHolder(lockPath);
+      expect(observed.kind).toBe("holder");
+      expect(reclaimStaleLock(lockPath, observed)).toBe("reclaimed");
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, "pid"), lockPidFileContent(process.pid, "live-token", 1));
+      expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
+      expect(existsSync(join(lockPath, "pid"))).toBe(true);
+    } finally {
+      rmSync(lockDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2489,22 +2498,27 @@ describe("red-on-parent round 12 — the findings at 8a618ed9", () => {
     }
   });
 
-  test("a reclaim that cannot rename the lock is waited out, not spun on", async () => {
-    // The reclaim renames the stale lock aside before it removes it. A rename
-    // can fail, and then the lock stays exactly where it was. The waiter saw the
-    // same stale lock again, reclaimed it again, and took a `continue` that
-    // skipped both the deadline check and the sleep: the run spun at full speed,
-    // never read the deadline, and never ended.
+  test("a reclaim whose removal is refused is waited out, not spun on", async () => {
+    // The reclaim removes the stale lock, and that removal can be refused. Then
+    // the lock stays exactly where it was. The waiter saw the same stale lock
+    // again, reclaimed it again, and took a `continue` that skipped both the
+    // deadline check and the sleep: the run spun at full speed, never read the
+    // deadline, and never ended.
     //
-    // The rename has to fail for this test to mean anything, and *how* it fails
-    // is the platform's business. The two refusals, measured rather than assumed:
+    // The removal has to be refused for this test to mean anything, and *how* it
+    // is refused is the platform's business. Two refusals, and the fixture asks
+    // the filesystem which one it enforces instead of assuming:
     //
-    //   parent 0o555, rename the child:  Linux EACCES  ·  Windows renamed it
-    //   child is a process's cwd:        Linux renamed it  ·  Windows EBUSY
+    //   a parent with no write bit:  POSIX refuses the unlink. Windows applies a
+    //                                directory's mode bits to nothing, so there
+    //                                this arm is a no-op.
+    //   a directory a live process is working in:  refuses on Windows; a Linux
+    //                                kernel removes a directory out from under the
+    //                                process sitting in it, so there this arm is
+    //                                a no-op.
     //
-    // Neither is portable alone, and the cwd one used to be the whole fixture. A
-    // Linux kernel moves a directory out from under the process sitting in it, so
-    // there the reclaim succeeded, the gate went on to run the fixture, and this
+    // Neither is portable alone, and the cwd one used to be the whole fixture. On
+    // Linux the reclaim succeeded, the gate went on to run the fixture, and this
     // test failed on a message the gate had no reason to print. CI is Linux, so
     // the arm it needed was the one arm it never built. The fixture now asks the
     // filesystem which refusal it enforces and keeps that one.
@@ -2527,34 +2541,37 @@ test("rejects zero", () => {
     let parentRelaxed = false;
     try {
       const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
-      const probe = `${lockPath}.probe`;
-      mkdirSync(lockPath, { recursive: true });
-      writeFileSync(join(lockPath, "pid"), `999999 ${randomUUID()}\n`);
-      // Whether this environment lets the reclaim's rename through, asked by
-      // performing it: the lock is renamed aside and back, so a refusal leaves it
+      const lockPid = `999999 ${randomUUID()}\n`;
+      const plantLock = (): void => {
+        mkdirSync(lockPath, { recursive: true });
+        writeFileSync(join(lockPath, "pid"), lockPid);
+      };
+      plantLock();
+      // Whether this environment lets the reclaim's removal through, asked by
+      // performing it: the lock is removed and put back, so a refusal leaves it
       // exactly as the gate must find it.
-      const renameAllowed = (): boolean => {
+      const removalAllowed = (): boolean => {
         try {
-          renameSync(lockPath, probe);
+          rmSync(lockPath, { recursive: true, force: true });
         } catch {
           return false;
         }
-        renameSync(probe, lockPath);
+        plantLock();
         return true;
       };
       let refusedBy: string | null = null;
-      // POSIX: no write bit on the parent, so no entry may be renamed into it.
+      // POSIX: no write bit on the parent, so no entry may be removed from it.
       // Windows applies a directory's mode bits to nothing.
       chmodSync(fixture.cache, 0o555);
       parentRelaxed = true;
-      if (!renameAllowed()) {
+      if (!removalAllowed()) {
         refusedBy = "a parent directory with no write bit";
       } else {
         chmodSync(fixture.cache, 0o755);
         parentRelaxed = false;
       }
       if (refusedBy === null) {
-        // Windows: a directory a live process is sitting in cannot be moved
+        // Windows: a directory a live process is sitting in cannot be removed
         // until the process leaves. The child writing its own cwd is the signal
         // that the directory is held, not the spawn returning.
         holder = spawn(
@@ -2573,14 +2590,15 @@ test("rejects zero", () => {
             held();
           });
         });
-        if (!renameAllowed()) refusedBy = "a directory a live process is working in";
+        if (!removalAllowed()) refusedBy = "a directory a live process is working in";
       }
       if (refusedBy === null) {
         // A root shell bypasses the parent's mode bit and a non-Windows kernel
-        // moves a directory out from under its cwd. Either way there is no case
-        // to run, and a verdict on the gate would be a verdict on the wrong run.
+        // removes a directory out from under its cwd. Either way there is no
+        // case to run, and a verdict on the gate would be a verdict on the
+        // wrong run.
         throw new Error(
-          "the fixture could not make the reclaim's rename fail: neither a 0o555 parent nor a live process's working directory refused it",
+          "the fixture could not make the reclaim's removal fail: neither a 0o555 parent nor a live process's working directory refused it",
         );
       }
       const { status, stdout } = await runGateAsync(
@@ -2645,24 +2663,45 @@ test("rejects zero", () => {
     }
   }, 60_000);
 
-  test("a tombstone left behind does not block the reclaim", () => {
-    // The reclaim renames the stale lock aside to a name derived from the
-    // reclaiming run's pid. A tombstone left behind by an earlier run with the
-    // same pid sat on that name, the rename failed, and the stale lock stayed
-    // where it was — so the reclaim never reclaimed anything and the waiter
-    // could not get in. The name carries a random suffix now.
+  test("a claim left behind by a dead reclaimer does not block the reclaim", () => {
+    // Recovery is exclusive because a reclaimer takes a claim inside the lock
+    // before it removes anything, and a claim whose writer was killed between
+    // claiming and removing would block every later run on this lock forever.
+    // A dead claim is cleared by renaming it — one winner — and the mover has to
+    // win the name back before it may proceed. This pins that recovery: without
+    // it the reclaim refuses and the lock outlives every run that wants it.
     const dir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
     const lockPath = join(dir, "wt.lock");
     mkdirSync(lockPath);
-    writeFileSync(join(lockPath, "pid"), "999999 stale-token\n");
-    const tombstone = `${lockPath}.stale-${process.pid}`;
-    mkdirSync(tombstone, { recursive: true });
-    writeFileSync(join(tombstone, "pid"), "left behind\n");
+    writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "stale-token", 0));
+    writeFileSync(
+      join(lockPath, RECLAIM_CLAIM_FILE),
+      lockPidFileContent(2_147_483_647, "dead-claim-token", 0),
+    );
     try {
       const observed = observeLockHolder(lockPath);
       expect(observed.kind).toBe("holder");
       expect(reclaimStaleLock(lockPath, observed)).toBe("reclaimed");
       expect(existsSync(lockPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a claim with no readable owner is only cleared once it is old", () => {
+    // The other half of the same recovery: a claim file whose writer died before
+    // it wrote its pid. Only age is evidence, exactly as for a lock directory in
+    // that state — clearing a fresh empty claim would let two reclaimers run at
+    // once in the window between a live reclaimer's create and its write.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    const lockPath = join(dir, "wt.lock");
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "stale-token", 0));
+    writeFileSync(join(lockPath, RECLAIM_CLAIM_FILE), "");
+    try {
+      const observed = observeLockHolder(lockPath);
+      expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
+      expect(existsSync(join(lockPath, "pid"))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -3404,7 +3443,7 @@ test("gr keeps the quote", () => {
         expect(read("a.observed")).toBe("holder");
         expect(read("b.observed")).toBe("holder");
         expect(read("a.outcome")).toBe("reclaimed");
-        expect(["refused", "restored"]).toContain(read("b.outcome"));
+        expect(read("b.outcome")).toBe("refused");
         // The holder kept its own lock for the whole hold, and the second
         // process never entered beside it.
         expect(read("a.hold")).toBe("HOLD-OK");
@@ -3542,6 +3581,86 @@ describe("red-on-parent round 18 — the Greptile findings at 07b7896d", () => {
     const parsed = parseWaivers(source);
     expect(parsed.problems).toEqual([]);
     expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["gr divides"]);
+  });
+});
+
+describe("red-on-parent round 19 — the Greptile findings at 4c689c95", () => {
+  test("a second reclaimer cannot remove a stale lock another reclaimer is removing", () => {
+    // Two runs read the same dead pid and both went on to remove it, so one
+    // replaced the directory and started work while the other deleted the live
+    // lock it had just taken. Recovery is exclusive now: a reclaimer takes a
+    // claim inside the lock with `wx`, and exactly one caller can win that
+    // create. Red before the claim existed — the second reclaimer reported
+    // `reclaimed` and the lock was gone.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    const lockPath = join(dir, "wt.lock");
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "pid"), lockPidFileContent(2_147_483_647, "stale-token", 0));
+    try {
+      const observed = observeLockHolder(lockPath);
+      expect(observed.kind).toBe("holder");
+      // The first reclaimer's claim, taken and still held by a live process.
+      writeFileSync(
+        join(lockPath, RECLAIM_CLAIM_FILE),
+        lockPidFileContent(process.pid, "first-reclaimer", 0),
+      );
+      expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
+      expect(existsSync(join(lockPath, "pid"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a replacement that reads exactly like the observed lock is not removed", () => {
+    // The claim can be taken inside a different directory than the one the
+    // caller observed, so the removal is bound to the directory's identity and
+    // not to the name. This replacement carries the observation's own pid file —
+    // the one shape a content check calls identical — so only the identity can
+    // tell the two directories apart. Red before the binding: the reclaim
+    // renamed and deleted the replacement.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    const lockPath = join(dir, "wt.lock");
+    const pidFile = lockPidFileContent(2_147_483_647, "stale-token", 0);
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "pid"), pidFile);
+    try {
+      const observed = observeLockHolder(lockPath);
+      expect(observed.kind).toBe("holder");
+      rmSync(lockPath, { recursive: true, force: true });
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, "pid"), pidFile);
+      expect(reclaimStaleLock(lockPath, observed)).toBe("refused");
+      expect(readFileSync(join(lockPath, "pid"), "utf8")).toBe(pidFile);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a refused reclaim gives its claim back", () => {
+    // The claim is the serialization, so a reclaimer that walks away from a
+    // refusal and leaves its claim behind would block every later run on this
+    // lock. The observation here names another directory holding the same dead
+    // pid file, so the reclaim is refused after the claim is taken; the next
+    // reclaim of the lock it really observed has to succeed.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    const lockPath = join(dir, "wt.lock");
+    const otherDir = mkdtempSync(join(tmpdir(), "ronp-lock-"));
+    const otherPath = join(otherDir, "wt.lock");
+    const pidFile = lockPidFileContent(2_147_483_647, "stale-token", 0);
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "pid"), pidFile);
+    mkdirSync(otherPath);
+    writeFileSync(join(otherPath, "pid"), pidFile);
+    try {
+      const other = observeLockHolder(otherPath);
+      expect(other.kind).toBe("holder");
+      expect(reclaimStaleLock(lockPath, other)).toBe("refused");
+      expect(existsSync(join(lockPath, RECLAIM_CLAIM_FILE))).toBe(false);
+      expect(reclaimStaleLock(lockPath, observeLockHolder(lockPath))).toBe("reclaimed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(otherDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { runE2eReset } from "./reset-helpers";
+import { callRpc } from "./rpc-helpers";
 
 /**
  * #295 — the v1 multi-client measurement (#294): two windows, one api.
@@ -39,46 +41,32 @@ import { signIn } from "./auth-helpers";
  * threshold).
  */
 
-/** The seed RPCs this spec sends over the session's authenticated wire. */
-type SeedRequest =
-  | { procedure: "categoriesList"; input: Record<string, never> }
-  | {
-      procedure: "itemsCreateWithStock";
-      input: {
-        name: string;
-        categoryId: string;
-        costPrice: number;
-        sellingPrice: number;
-        lowStockThreshold: number;
-        barcode: string;
-        stockOnHand: number;
-      };
-    };
+// The item and the sale this spec seeds join the shared e2e database, so it
+// owes the suite a reset AFTER itself — the contract in `reset-helpers.ts`.
+// Without it the next spec inherits a catalog row, a day's sale total and an
+// activity entry, and any spec that reads an exact global count breaks on
+// the order rather than on its own change.
+test.afterAll(() => {
+  runE2eReset("reset-e2e-records.mjs");
+});
 
-/** Call one oRPC procedure from the page and return its declared output. */
-async function rpc<T>(page: Page, request: SeedRequest): Promise<T> {
-  const result = await page.evaluate(async ({ procedure: name, input: body }: SeedRequest) => {
-    const response = await fetch(`/api/rpc/${name}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ json: body }),
-    });
-    if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
-    // SAFETY: the oRPC fetch link answers a successful procedure call with the
-    // `{ json: <declared output> }` envelope; the caller's T names it
-    const answer = (await response.json()) as { json: unknown };
-    return answer.json;
-  }, request);
-  // SAFETY: see above
-  return result as T;
-}
+/** The seed payload for one item created with opening stock. */
+type SeedItem = {
+  name: string;
+  categoryId: string;
+  costPrice: number;
+  sellingPrice: number;
+  lowStockThreshold: number;
+  barcode: string;
+  stockOnHand: number;
+};
 
-/** The sales count on the dashboard card, read from the rendered text. */
+/** The sales count on the dashboard card, read through its own testid. */
 async function readSalesCount(page: Page): Promise<number> {
-  const text = (await page.getByTestId("dashboard-sales-today").textContent()) ?? "";
-  const match = /عدد فواتير البيع: (\d+)/.exec(text);
-  if (match === null) throw new Error(`no sales count on the card: ${text}`);
-  return Number(match[1]);
+  const text = (await page.getByTestId("dashboard-sales-count").textContent()) ?? "";
+  const value = Number(text.trim());
+  if (!Number.isFinite(value)) throw new Error(`no sales count on the card: ${text}`);
+  return value;
 }
 
 test("a sale in one window moves the hot counters in the other, with no reload", async ({ page, context }, testInfo) => {
@@ -93,18 +81,15 @@ test("a sale in one window moves the hot counters in the other, with no reload",
 
   // the item: 6 in stock against a threshold of 5, so one sale leaves 5 and
   // the item enters the dashboard's low-stock list
-  const categories = await rpc<{ items: Array<{ id: string }> }>(page, { procedure: "categoriesList", input: {} });
-  await rpc(page, {
-    procedure: "itemsCreateWithStock",
-    input: {
-      name: itemName,
-      categoryId: categories.items[0]!.id,
-      costPrice: 100,
-      sellingPrice: 200,
-      lowStockThreshold: 5,
-      barcode,
-      stockOnHand: 6,
-    },
+  const categories = await callRpc<{ items: Array<{ id: string }> }, Record<string, never>>(page, "categoriesList", {});
+  await callRpc<{ id: string }, SeedItem>(page, "itemsCreateWithStock", {
+    name: itemName,
+    categoryId: categories.items[0]!.id,
+    costPrice: 100,
+    sellingPrice: 200,
+    lowStockThreshold: 5,
+    barcode,
+    stockOnHand: 6,
   });
 
   // window B: a second tab in the same session, and counters for the events

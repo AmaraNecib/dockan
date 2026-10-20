@@ -42,6 +42,22 @@ export const HOT_COUNTER_REFETCH_MS = 5_000;
 export const LEDGER_REFETCH_MS = 15_000;
 
 /**
+ * The calm cadence: the bound the queries #295 did NOT make hot keep.
+ *
+ * Two call sites, both of them for a query that must not ride the 5 s tick:
+ *
+ *   - the pending-returns badge, whose own bound was 60 s (#118) and which no
+ *     criterion of #295 names;
+ *   - the getting-started checklist's progress read, which is not a counter at
+ *     all and whose SERVER read WRITES (the milestone upsert), so a 5 s
+ *     heartbeat would be a preference write and a vault persist every 5 s.
+ *
+ * Sixty seconds is what both had before #295: the pre-ticket behaviour kept on
+ * purpose, not a new pace.
+ */
+export const SLOW_REFETCH_MS = 60_000;
+
+/**
  * The query options every hot counter carries.
  *
  * `refreshMs` is injectable so a test can run the same wiring on a fast

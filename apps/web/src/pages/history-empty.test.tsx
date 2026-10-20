@@ -23,6 +23,20 @@ let movements: MovementFixture[] = [];
 /** counts the ledger reads, so the tick is observable */
 let historyFetches = 0;
 
+/** One ledger row at the given running balance. */
+function movementRow(stockAfter: number): MovementFixture {
+  return {
+    id: `m-${stockAfter}`,
+    occurredAt: "2026-08-25T10:00:00",
+    kind: "PURCHASE",
+    delta: stockAfter,
+    unitCost: 400,
+    stockAfter,
+    reason: null,
+    createdAt: "2026-08-25T10:00:00",
+  };
+}
+
 // NOTE: mock.module is process-global (see tests/router-mock.tsx); this file
 // owns the whole @/lib/rpc seam for its duration.
 mock.module("@/lib/rpc", () => ({
@@ -118,7 +132,14 @@ describe("the ledger screen's tick (#295)", () => {
   });
 
   it("refetches the ledger on the tick, so the running stock converges", async () => {
+    // a first read of 6 units, then a sale elsewhere leaves 5. What has to
+    // converge is the NUMBER ON SCREEN: a page that ticks and keeps rendering
+    // the first read passes a fetch-count assertion, and the `stock-after`
+    // cell is where the ledger renders `movement.stockAfter`.
+    movements = [movementRow(6)];
     const page = await mountWithProviders(<ItemHistoryPage refreshMs={20} />);
-    await page.poll(() => historyFetches >= 2, "history refetch");
+    await page.poll(() => page.query("stock-after")?.textContent === "6", "first stock");
+    movements = [movementRow(5)];
+    await page.poll(() => page.query("stock-after")?.textContent === "5", "converged stock");
   });
 });

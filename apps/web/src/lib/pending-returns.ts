@@ -9,9 +9,10 @@ import { orpc } from "./rpc";
  *
  * `refreshMs` is REQUIRED, not defaulted: the badge and the notice live in
  * the window the owner is NOT looking at, so the interval is a product
- * decision the call site makes (both hot counters use
- * `HOT_COUNTER_REFETCH_MS`), and a silent default would let a new call site
- * poll at a pace nobody chose.
+ * decision the call site makes, and a silent default would let a new call
+ * site poll at a pace nobody chose. Both call sites pass `SLOW_REFETCH_MS`:
+ * #295 made two counters hot and never named this badge, so it keeps the
+ * bound it had.
  */
 export function usePendingReturnsCount(refreshMs: number) {
   return useQuery({

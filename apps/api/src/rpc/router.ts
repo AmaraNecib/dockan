@@ -564,6 +564,12 @@ export function createRpcRouter(deps: RpcDeps) {
             const item = await tx.createItem({ ...input, barcode });
             // Initial stock is a real ledger fact, not only a cache update;
             // otherwise a subsequent sale would see an empty FIFO history.
+            // `ref: null` here is the duplicate guard's one blind spot (#295):
+            // this row IS the item's creation, so it has no origin document to
+            // carry, and the legacy opening-balance backfill writes the same
+            // ref-less shape. The guard can only match it against an
+            // adjustment otherwise identical in the window that also carries
+            // the literal reason "opening" — a reason the web never sends.
             await postStock(tx, {
               itemId: item.id,
               kind: "MANUAL_ADJUSTMENT",
@@ -691,8 +697,10 @@ export function createRpcRouter(deps: RpcDeps) {
             reason: input.reason ?? null,
             occurredAt: input.occurredAt ?? null,
             // an adjustment the owner typed has no origin document; the rows
-            // the SERVER posted (a purchase correction, a supplier return, a
-            // scrap) carry theirs, and those are never a copy of this request
+            // the SERVER posted carry theirs (a purchase correction its
+            // invoice, a supplier return and a scrap their return), and those
+            // are never a copy of this request — save the opening row, which
+            // has no document and is called out in `itemsCreateWithStock`
             ref: null,
           };
           // EVERY movement recorded inside the window, not only the newest

@@ -44,6 +44,20 @@ import { localDateTime } from "./logger";
  * reason the owner only typed to get past the guard into the ledger. Ten
  * seconds keeps the guard on the threats and lets an owner who means it
  * twice simply do it a moment later.
+ *
+ * The window that SHIPS is (9 s, 10 s], not 10 s. Three facts narrow it, and
+ * none of them is obvious from the constant:
+ *
+ *   - `created_at` is a one-second stamp (`localDateTime`, no sub-second
+ *     field), so a row's recorded instant is truncated down;
+ *   - `listStockMovementsSince` compares STRICTLY (`gt`), so a row stamped
+ *     exactly at the cutoff is already out;
+ *   - `repeatCutoff` truncates `now` to the same second before subtracting.
+ *
+ * So a row inserted at .999 s phase stays inside the window for 9.001 s, and
+ * one inserted at .000 s phase for 10 s. `router.test.ts` pins both sides of
+ * the boundary second on the wire; this comment exists so nobody has to
+ * re-derive the truncation from those three places.
  */
 export const REPEAT_WINDOW_MS = 10_000;
 

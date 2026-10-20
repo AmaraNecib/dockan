@@ -11,7 +11,7 @@ import { GettingStartedPanel } from "@/components/app/getting-started-panel";
 import { useOnboardingCompleted, useOnboardingDismissed } from "@/components/app/onboarding-state";
 import { isOnboardingComplete } from "@/components/app/onboarding-steps";
 import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
-import { HOT_COUNTER_REFETCH_MS, hotCounterRefresh } from "@/lib/freshness";
+import { HOT_COUNTER_REFETCH_MS, SLOW_REFETCH_MS, hotCounterRefresh } from "@/lib/freshness";
 
 import { orpc } from "../lib/rpc";
 import { usePendingReturnsCount } from "../lib/pending-returns";
@@ -24,6 +24,10 @@ import { formatDate } from "../lib/dates";
  * re-read on this tick, so across midnight the displayed day can lag by up
  * to one tick (5s), and the tick itself is what makes a sale in another
  * window show up here without a reload.
+ *
+ * The summary is the ONLY query on this page that gets this tick: the shared
+ * pending-return count and the checklist's progress read ride
+ * `slowRefreshMs` below.
  */
 const REFRESH_MS = HOT_COUNTER_REFETCH_MS;
 
@@ -50,13 +54,17 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
  * The getting-started checklist (issue 97) reads its own one-EXISTS aggregate;
  * its absence or a failed read never hides the figures above.
  */
-export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number } = {}) {
+export function DashboardPage({
+  refreshMs = REFRESH_MS,
+  slowRefreshMs = SLOW_REFETCH_MS,
+}: { refreshMs?: number; slowRefreshMs?: number } = {}) {
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), ...hotCounterRefresh(refreshMs) });
   // issue #118 — a pending return does not move any balance until accepted, so
   // the landing screen must explain the number the owner is about to doubt. The
-  // shared hook keeps it in step with the shell badge (round-2 finding 2).
-  const pendingReturns = usePendingReturnsCount(refreshMs);
+  // shared hook keeps it in step with the shell badge (round-2 finding 2);
+  // #295 never named this badge, so it rides the calm bound, not the hot tick.
+  const pendingReturns = usePendingReturnsCount(slowRefreshMs);
 
   // The checklist's dismissal/completion are server-side preferences (issue 97
   // follow-up): they survive a packaged restart. While they load, the panel
@@ -96,9 +104,13 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
     ...orpc.onboardingProgress.queryOptions(),
     // Once the panel can no longer render, stop paying for the read entirely.
     enabled: !hidden && !preferencesPending,
-    // While it can render, the same cadence as the summary lets a step
-    // completed in another window self-heal (disabled queries never fetch).
-    ...hotCounterRefresh(refreshMs),
+    // While it can render, its OWN calm cadence lets a step completed in
+    // another window self-heal (disabled queries never fetch). It must NOT
+    // ride the hot tick: the server read WRITES the milestone
+    // (`onboardingProgress` -> `upsertPreference` -> vault persist), so a 5 s
+    // heartbeat would be a preference write every 5 s. No background flag
+    // either — a hidden panel has nobody to self-heal for.
+    refetchInterval: slowRefreshMs,
   });
 
   // "Finished means gone": when the four real records are observed, ask the
@@ -238,7 +250,10 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
               value={<Amount value={summary.data.salesTotal} />}
               detail={
                 <>
-                  {t("dashboardSalesCount")}: {summary.data.salesCount}
+                  {t("dashboardSalesCount")}:{" "}
+                  {/* #295 — the count gets its own testid so a spec reads the
+                      number, not the Arabic copy around it */}
+                  <span data-testid="dashboard-sales-count">{summary.data.salesCount}</span>
                 </>
               }
             />

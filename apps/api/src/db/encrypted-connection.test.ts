@@ -1144,6 +1144,67 @@ describe("snapshot fence (#280)", () => {
     // the connection's handle is shut, so its memory image cannot be read again
     expect(() => conn.raw.query("SELECT 1").get()).toThrow();
   });
+
+  it("a checkpoint after close writes nothing and does not throw (#291)", async () => {
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('before')");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    await conn.close();
+    const durable = fs.readFileSync(snapshotPath());
+
+    // A store call that lands during shutdown still marks the image dirty, so
+    // this checkpoint reaches the serializer instead of being skipped as
+    // current — the same shape as the flush-after-close test. Without the
+    // guard it serializes the released handle: the key has been zeroed and
+    // SQLite has been shut, so it throws "Can't do this on a closed database"
+    // from a seam whose caller cannot retry (a second close(), a backup
+    // requested while the process goes down).
+    conn.markDirty();
+    expect(() => conn.checkpoint()).not.toThrow();
+    expect(fs.readFileSync(snapshotPath()).equals(durable)).toBe(true);
+
+    // and the second close() that runs that checkpoint is not an opaque
+    // failure either: it is a no-op, with the bytes from the first one intact
+    await expect(conn.close()).resolves.toBeUndefined();
+    expect(fs.readFileSync(snapshotPath()).equals(durable)).toBe(true);
+  });
+
+  it("reads the fence once per dirty persist and once per clean check", async () => {
+    // The design record's cost line is a counted claim, so it is counted here:
+    // a dirty image short-circuits the currency question before it reads the
+    // fence, so the only read is the post-write one; a clean check reads the
+    // fence once to answer it. A third read per dirty persist would be a
+    // one-third cost regression nobody would notice otherwise.
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenA });
+    conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    conn.markDirty();
+    await conn.persistIfDirty();
+
+    // SAFETY: readDiskFence is the only caller that opens the snapshot path,
+    // and it passes exactly (path, "r"); the narrowed signature names that one
+    // call so the spy can delegate to the real open
+    const realOpenSync = fs.openSync.bind(fs) as (file: fs.PathLike, flags: string | number) => number;
+    let reads = 0;
+    // SAFETY: the spy keeps fs.openSync's own overload type; the narrowed
+    // parameters are the (path, flags) overload production calls
+    const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number) => {
+      if (String(file) === snapshotPath()) reads += 1;
+      return realOpenSync(file, flags);
+    }) as typeof fs.openSync);
+    try {
+      conn.markDirty();
+      await conn.persistIfDirty();
+      expect(reads).toBe(1);
+
+      reads = 0;
+      await conn.persistIfDirty();
+      expect(reads).toBe(1);
+    } finally {
+      spy.mockRestore();
+      await conn.close();
+    }
+  });
 });
 
 describe("legacy database image", () => {

@@ -75,6 +75,20 @@ still alive, so one shared helper decides both.
   theft can still land, so the new owner can briefly believe in a version it does
   not hold on disk (#280), and an unreadable lock file is indistinguishable from
   a stolen one, which fail-stops a healthy holder (#281).
+- **The #280 half is now machine-detectable, not closed.** Every snapshot a
+  fenced holder writes carries the lock token in the clear and bound into its
+  AEAD context (the v2 envelope, `docs/one-build-and-recovery.md`), so the
+  writer's identity survives the rename. A write whose read-back finds another
+  holder's stamp is not recorded durable and is redone, and the next holder
+  reads the stamp before decrypting, so a zombie's bytes are named instead of
+  served silently. What the fence cannot do is prove *currency*: no version
+  travels with the bytes, so detection is activity-gated, and a rename that
+  lands after the holder's last write and before it crashes still loses the
+  transactions in between. The refusal is fatal wherever it is seen — on the
+  write path because the client would otherwise be told a committed unit
+  failed, and at shutdown because the last committed version is not on disk and
+  exiting zero would call that a clean stop. That residue is the accepted limit
+  recorded in the design record, not a claim of closure.
 - A refused instance keeps its decrypted image and its copy of the connection key
   in memory for the rest of the process's life. Closing the abandoned store would
   run the final checkpoint this change exists to prevent, so the trade-off is

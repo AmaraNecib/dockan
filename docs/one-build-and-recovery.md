@@ -213,8 +213,13 @@ magic `"DKNVAULT"` and a one-byte version.
   `dokan:vault:db:v2:<vaultId>:<stamp>`. The stamp is the writing process's
   `vault.lock` token (1..64 bytes), kept in the clear and bound into the AAD:
   swapping it fails the GCM tag, and a reader learns the bytes are not its own
-  before decrypting. A v1 file is rewritten fenced on the holder's first write;
-  a foreign-stamped file is rewritten when it is opened. The one exception is a
+  before decrypting. A v1 file is rewritten fenced on the holder's first write.
+  A foreign-stamped file is not rewritten *by being opened* — opening only reads
+  the fence and reports it — it is rewritten by the first write after that open,
+  which in production is the boot's `store.setup()`: `drizzle-store.ts` marks
+  the image dirty and persists there, so every boot repairs the fence. A caller
+  that opens a connection and never writes leaves the foreign bytes in place.
+  The one exception is a
   RESTORE: `extractVaultBackup()` writes the live snapshot from the bundle
   verbatim. The restore DOES hold the single-writer lock — it calls
   `acquireVaultLock(dataDir)` and `lock.assertHeld()` around the write — so it
@@ -245,7 +250,7 @@ context that released bytes are sealed under. The v2 envelope makes the
 machine-detectable half of the #280 window ADR-0012 leaves open — "the new
 owner can briefly believe in a version it does not hold on disk" — by making
 the writer's stamp testable after the rename; the lock's `assertHeld()` and the
-write guard are the other half. ADR-0008 §4.6 owns the format canon, so the
+write guard are the other half. ADR-0008 §4.5 owns the format canon, so the
 second envelope is recorded here rather than in an ADR of its own.
 
 **What is encrypted.** The database is the only shop-data file: the runtime is

@@ -11,10 +11,12 @@ import { logEvents } from "@dokan/contracts";
  *
  * The scan reads the real source (like `cell-ltr.test.ts` and
  * `activity-tags.test.ts`). It covers the common shapes: the logger call itself
- * and the two event-carrying helpers `recordFailure(event)` /
- * `rotateSession(event)`. Events passed through a variable (e.g.
- * `finishUnlock(…, "VAULT_UNLOCKED")`) are not scanned; direction 1 below — the
- * one that catches a raw leak — still holds for every literal call site.
+ * and the three event-carrying helpers `recordFailure(event)`,
+ * `rotateSession(event)` and the encrypted connection's local `emit(level,
+ * event, message)`, whose level is chosen at runtime so the call site the
+ * logger itself sees is a variable (#280's six fence codes all travel this
+ * way). A new helper that takes the code as a parameter stays invisible until
+ * it is added here, so the pin below names the codes it must see.
  */
 
 const srcRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -37,12 +39,16 @@ function walkTs(dir: string): string[] {
  * is included because it takes the code as a parameter
  * (`finishUnlock(core, masterKey, "VAULT_RECOVERY_UNLOCKED")`) and the
  * logger call inside it uses the parameter, so the scan cannot see the
- * literal without matching the caller (#253 round 2).
+ * literal without matching the caller (#253 round 2). `emit` is the same case
+ * in `db/encrypted-connection.ts`: `reportFence` decides info-or-warn at
+ * runtime and passes the code through, so without this pattern the six
+ * `VAULT_SNAPSHOT_FENCE_*` codes are unscanned (#280 review).
  */
 const EMIT_SITES = [
   /logger\??\.(?:info|warn|error)\(\s*"([A-Z][A-Z0-9_]*)"/g,
   /(?:rotateSession|recordFailure)\("([A-Z][A-Z0-9_]*)"\)/g,
   /finishUnlock\([^)]*?"([A-Z][A-Z0-9_]*)"\)/g,
+  /\bemit\(\s*(?:\w+|"(?:info|warn)")\s*,\s*"([A-Z][A-Z0-9_]*)"/g,
 ];
 
 function emittedEvents(): Map<string, string> {
@@ -70,6 +76,24 @@ describe("api log events match the shared vocabulary (#253)", () => {
       .filter(([event]) => !vocabulary.includes(event))
       .map(([event, file]) => `${event} (${file})`);
     expect(offenders).toEqual([]);
+  });
+
+  it("sees every event code the fence emits through its shared helper (#280)", () => {
+    // The codes are listed by hand on purpose: if the `emit(` pattern stops
+    // matching, or one of these is renamed without the vocabulary following,
+    // this fails instead of the scanned set quietly shrinking while the
+    // vocabulary test above stays green. Rarely the point of a scan test is
+    // the scan's own reach, and that is the case here.
+    const seen = emittedEvents();
+    const fenceCodes = [
+      "VAULT_SNAPSHOT_FENCE_FOREIGN",
+      "VAULT_SNAPSHOT_FENCE_UNSTAMPED",
+      "VAULT_SNAPSHOT_FENCE_MISSING",
+      "VAULT_SNAPSHOT_FENCE_UNKNOWN",
+      "VAULT_SNAPSHOT_FENCE_UNREADABLE",
+      "VAULT_SNAPSHOT_FENCE_DOWNGRADE",
+    ];
+    expect(fenceCodes.filter((code) => !seen.has(code))).toEqual([]);
   });
 
   /**

@@ -4,11 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createEncryptedConnection } from "../../db/encrypted-connection";
+import { buildEncryptedSnapshot, createEncryptedConnection } from "../../db/encrypted-connection";
 import type { KdfParams } from "./crypto";
 import { createVaultBackupBundle, extractVaultBackup, type ExtractVaultBackupOptions, readVaultBackupBundle } from "./backup";
 import { VaultCore } from "./core";
-import { VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION } from "./format";
+import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, parseVaultHeader, readSnapshotFence } from "./format";
 import { acquireVaultLock, VaultAlreadyLockedError, VaultLockLostError } from "./lock";
 import { VaultManager } from "./manager";
 import { AppLogger } from "../logger";
@@ -37,8 +37,18 @@ afterEach(() => {
   }
 });
 
+/**
+ * An envelope-shaped payload for the bundle plumbing: the LEGACY (v1) layout —
+ * `magic ‖ 1 ‖ nonce ‖ ciphertext+tag` — with filler where the sealed bytes go.
+ * This used to take its version byte from `VAULT_SNAPSHOT_VERSION`, which
+ * turned 2 in #280: the same bytes then parsed as a **v2** envelope carrying a
+ * 9-byte stamp of tabs and a body at offset 19, so the fixture silently stopped
+ * meaning "a v1 envelope" while every test around it stayed green. Nothing here
+ * decrypts it, so either shape passes; the v1 literal is what it always meant.
+ * The test below reads the fence back to keep that meaning pinned.
+ */
 function fakeSnapshot(): Buffer {
-  return Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION]), Buffer.alloc(40, 9)]);
+  return Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_LEGACY_VERSION]), Buffer.alloc(40, 9)]);
 }
 
 async function headerText(): Promise<string> {
@@ -57,6 +67,16 @@ async function headerText(): Promise<string> {
 }
 
 describe("vault backup bundle", () => {
+  it("keeps the bundle fixture the legacy v1 envelope it is named for", () => {
+    // S10: the fixture changed meaning when the envelope version moved to 2.
+    // Reading its own fence back is the cheap way to notice the next time.
+    expect(readSnapshotFence(fakeSnapshot())).toEqual({
+      version: VAULT_SNAPSHOT_LEGACY_VERSION,
+      stamp: undefined,
+      bodyOffset: VAULT_SNAPSHOT_MAGIC.length + 1,
+    });
+  });
+
   it("round-trips the header and the snapshot", async () => {
     const header = await headerText();
     const snapshot = fakeSnapshot();
@@ -221,6 +241,24 @@ async function restoreWhileLockIsStolen(
  * fail if that guard is removed (the refusal test then restores successfully).
  */
 describe("vault backup restore takes the data folder's lock", () => {
+  it("writes the bundle's snapshot verbatim, and never re-stamps it with the restore's own lock token (#280)", async () => {
+    // The restore is the one live-snapshot write site that is deliberately
+    // UNGATED: it holds the folder's lock, so it has a token, but the bundle
+    // was sealed under whatever master key produced it and the restore has no
+    // master key to re-seal under. Stamping its token would produce an
+    // envelope whose AAD no reader can reproduce. Byte equality against the
+    // bundle is the gate a later "fence every writer" change has to break.
+    const header = await headerText();
+    const carriedStamp = "c".repeat(32);
+    // the header's own vault id, so the carried envelope is one a real reader
+    // would derive an AAD for; any key will do because the restore copies it
+    const carried = buildEncryptedSnapshot(Buffer.alloc(32, 7), parseVaultHeader(header).vaultId, Buffer.alloc(64, 3), carriedStamp);
+    const target = tempDir("dokan-backup-verbatim-");
+    const paths = await extractVaultBackup(createVaultBackupBundle(header, carried), target);
+    expect(fs.readFileSync(paths.snapshotPath).equals(carried)).toBe(true);
+    expect(readSnapshotFence(fs.readFileSync(paths.snapshotPath))?.stamp).toBe(carriedStamp);
+  });
+
   it("refuses while another instance holds the folder, and writes nothing", async () => {
     const header = await headerText();
     const bundle = createVaultBackupBundle(header, fakeSnapshot());

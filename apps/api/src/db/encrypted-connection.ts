@@ -236,12 +236,6 @@ function sleepSync(ms: number): void {
 }
 
 /**
- * Build the envelope. With a holder stamp it is the fenced format (#280):
- * `magic ‖ 2 ‖ stampLen ‖ stamp ‖ sealed`, and the stamp is bound into the AAD
- * so a reader can trust whose bytes it holds. Without one it is the legacy
- * format, exactly what every released build wrote.
- */
-/**
  * A holder stamp that cannot be sealed is refused at OPEN, not at each write:
  * it is a property of the holder, not of one snapshot, and a connection that
  * can never write is a broken start, not a failed transaction.
@@ -429,10 +423,10 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   let persistedVersion = 0;
   let persistQueue: Promise<void> = Promise.resolve();
   /**
-   * True once `close()` has checkpointed and released the handle. Every async
-   * persist reads it AFTER its awaits: the job is parked there, and a close
-   * (a shutdown, a lock loss, a test teardown) can land in that window and
-   * release the handle underneath it (#291).
+   * True once `close()` has checkpointed and released the handle. The async
+   * persist reads it after its opening await: the job is parked there, and a
+   * close (a shutdown, a lock loss, a test teardown) can land in that window
+   * and release the handle underneath it (#291).
    */
   let closed = false;
 
@@ -543,39 +537,69 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   }
 
   /**
-   * The fence on disk, read with the retry a transient EBUSY needs.
+   * Record a verdict for the change detector, then hand it back. One report per
+   * CHANGE, not one per read: a fence that stays foreign says nothing new on
+   * the second look.
+   */
+  function noteFence(verdict: FenceVerdict): FenceVerdict {
+    if (!sameVerdict(verdict, lastSeenFence)) {
+      reportFence(verdict, "warn");
+      lastSeenFence = verdict;
+    }
+    return verdict;
+  }
+
+  /**
+   * The fence on disk, read with the retry a transient EBUSY needs — written
+   * once and driven twice.
    *
    * An unreadable prefix is asked twice, with the same spacing the write path
    * uses between its attempts, so one retry can absorb a transient refusal: no
    * retry is spent on a decidable answer, which cannot change by asking again.
    * An unfenced connection has no stamp to compare, so its fence is trivially
    * its own — exactly the pre-#280 behaviour.
+   *
+   * This is a generator because the async persist path and the synchronous
+   * checkpoint path must share the attempt bound and the report bookkeeping.
+   * Two copies drifted apart once already (the sync copy slept with no pause)
+   * and keeping two bookkeeping paths in step is what #291 cost. The generator
+   * yields the pause it wants; the driver decides how to take it — `sleepSync`
+   * on the synchronous path, `await` on the async one.
    */
-  function readFence(): FenceVerdict {
+  function* fenceSteps(): Generator<number, FenceVerdict, void> {
     if (connectionStamp === undefined) return { outcome: "mine" };
     for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
       const verdict = readDiskFence();
-      if (verdict.outcome !== "unreadable") {
-        if (!sameVerdict(verdict, lastSeenFence)) {
-          reportFence(verdict, "warn");
-          lastSeenFence = verdict;
-        }
-        return verdict;
-      }
+      if (verdict.outcome !== "unreadable") return noteFence(verdict);
       // the file may be busy for a moment; ask again after a pause, exactly
       // as the write path does before it gives up on a rename
-      if (attempt < FENCE_READ_ATTEMPTS) sleepSync(FENCE_READ_RETRY_DELAY_MS);
+      if (attempt < FENCE_READ_ATTEMPTS) yield FENCE_READ_RETRY_DELAY_MS;
     }
     // Still unreadable: our own bytes cannot be shown to be ours, so the
     // version is not durable and a write is owed. That is the safe direction —
     // a redundant rewrite costs time, a version reported durable over an
     // unreadable file costs the committed transaction it claimed to save.
-    const unreadable: FenceVerdict = { outcome: "unreadable" };
-    if (!sameVerdict(unreadable, lastSeenFence)) {
-      reportFence(unreadable, "warn");
-      lastSeenFence = unreadable;
+    return noteFence({ outcome: "unreadable" });
+  }
+
+  function readFence(): FenceVerdict {
+    const steps = fenceSteps();
+    let step = steps.next();
+    while (!step.done) {
+      sleepSync(step.value);
+      step = steps.next();
     }
-    return unreadable;
+    return step.value;
+  }
+
+  async function readFenceAsync(): Promise<FenceVerdict> {
+    const steps = fenceSteps();
+    let step = steps.next();
+    while (!step.done) {
+      await delay(step.value);
+      step = steps.next();
+    }
+    return step.value;
   }
 
   /**
@@ -584,27 +608,6 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * zombie's rename may have replaced our bytes since the last verified write
    * (#280), and a write is then still owed.
    */
-  async function readFenceAsync(): Promise<FenceVerdict> {
-    if (connectionStamp === undefined) return { outcome: "mine" };
-    for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
-      const verdict = readDiskFence();
-      if (verdict.outcome !== "unreadable") {
-        if (!sameVerdict(verdict, lastSeenFence)) {
-          reportFence(verdict, "warn");
-          lastSeenFence = verdict;
-        }
-        return verdict;
-      }
-      if (attempt < FENCE_READ_ATTEMPTS) await delay(FENCE_READ_RETRY_DELAY_MS);
-    }
-    const unreadable: FenceVerdict = { outcome: "unreadable" };
-    if (!sameVerdict(unreadable, lastSeenFence)) {
-      reportFence(unreadable, "warn");
-      lastSeenFence = unreadable;
-    }
-    return unreadable;
-  }
-
   async function snapshotIsCurrentAsync(): Promise<boolean> {
     return mutationVersion === persistedVersion && (await readFenceAsync()).outcome === "mine";
   }
@@ -617,10 +620,17 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     if (await snapshotIsCurrentAsync()) return;
     // The await above parks this job, and the store is not frozen while it is
     // parked: `close()` can release the database handle and a unit can BEGIN.
-    // So the guards are read HERE, on the near side of the serializer, and not
+    // So the guard is read HERE, on the near side of the serializer, and not
     // before the await: a stale answer reached `raw.serialize()` on a handle
     // that close() had already closed, which throws
     // "Can't do this on a closed database" (#291).
+    //
+    // It is also the ONLY place the flag can be read on this path. `close()`
+    // awaits this queue's tail before it checkpoints, and the flip and the
+    // handle release that follow it contain no await, so no attempt inside the
+    // loop below can observe `closed` become true. Guards there were
+    // unreachable by construction and unkillable by any test; the invariant
+    // they stood for is this one, and it is pinned by the store's #291 tests.
     if (closed) return;
     // never serialize an open unit: a later ROLLBACK would be undone by the
     // stored image, so the flush waits for COMMIT (which calls back here)
@@ -629,10 +639,6 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     const envelope = sealSnapshot(connectionKey, vaultId, raw.serialize(), connectionStamp);
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
-      // Each attempt is another chance for a close to land in the gap: a retry
-      // that starts after the handle is released must write nothing at all, not
-      // re-rename the envelope it sealed while the store was still open.
-      if (closed) return;
       // ADR-0012: a persist queued before the lock was stolen must refuse
       // rather than overwrite the new owner's snapshot, so the guard is asked
       // at the instant of the write and its throw is never retried
@@ -655,11 +661,6 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // version just written is NOT on disk, so it is not durable and the
       // write is redone.
       const verdict = await readFenceAsync();
-      // Closed while the fence was being read back: the bytes are on disk, so
-      // nothing is lost, but a version recorded durable for a released handle
-      // is bookkeeping nobody can act on and a retry would write over a folder
-      // this connection no longer owns.
-      if (closed) return;
       if (verdict.outcome === "mine") {
         // only now is the version durable; a mutation during the write set
         // mutationVersion beyond `version` and schedules the next flush
@@ -716,6 +717,13 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       await connection.persistIfDirty();
     },
     checkpoint() {
+      // A checkpoint after close() has nothing left to serialize: the key is
+      // zeroed and the database is shut, so `raw.serialize()` throws "Can't do
+      // this on a closed database" — an opaque failure on the shutdown path
+      // where the caller asked for a flush it cannot get. A second close(), or
+      // a backup requested while the process is going down, is an ordinary
+      // event: refuse it the same way the async persist refuses, silently.
+      if (closed) return;
       // Shutdown/backup seam. An open transaction means the last COMMITTED
       // image is already on disk; serializing now would capture uncommitted
       // pages that a ROLLBACK could undo, so skip and leave the dirty version

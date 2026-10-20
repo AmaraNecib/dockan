@@ -706,8 +706,9 @@ function startServer(): void {
   // listener, so no shutdown path can exit before the reconcile finishes
   server.on("close", async () => {
     await reconcileBeforeExit();
-    await closeStoreThenLock();
-    process.exit(0);
+    // the close's verdict IS the exit code: a shutdown whose snapshot is not
+    // durable must not be reported as a clean stop
+    process.exit(await closeStoreThenLock());
   });
 }
 
@@ -723,18 +724,45 @@ async function forgetPort(): Promise<void> {
 /**
  * Close the store (draining pending snapshot writes and the final checkpoint)
  * and only then release the single-writer lock; the lock and the connection
- * are module-level so every shutdown path shares this order. A close failure
- * is logged, never fatal: the helper already released the lock in `finally`.
+ * are module-level so every shutdown path shares this order. Returns the exit
+ * code the shutdown path must use.
+ *
+ * A close that cannot prove the last committed version durable is a FAILED
+ * shutdown, not a logged one. It cannot retry — the handle is released and the
+ * process is already going down — but "could not retry" is not "did not
+ * fail": a fence refusal here means the newest committed transactions are not
+ * on disk, and exiting 0 would report that as a clean stop. So the same
+ * condition gets the same event code and the same non-zero exit the write path
+ * gives it, and the message names the reason instead of "close failed".
  */
-async function closeStoreThenLock(): Promise<void> {
+async function closeStoreThenLock(): Promise<number> {
   try {
     // A lost lock means another instance owns the folder now. Closing this
     // connection would run a final checkpoint over ITS snapshot, so the
     // abandoned store is left alone: no request can reach it any more, and
     // the replacement instance's data is never overwritten (ADR-0012).
     await closeVaultThenReleaseLock(connectionToCloseAtShutdown(lockLost, activeConnection), vaultLock);
+    return 0;
   } catch (err) {
-    logger.error("SERVER_ERROR", "store close failed during shutdown", err instanceof Error ? err : new Error(String(err)));
+    const error = err instanceof Error ? err : new Error(String(err));
+    // A snapshot refusal carries why: another writer's envelope took the file,
+    // the legacy envelope replaced ours, the file is gone, or the fence would
+    // not read. Naming it is what keeps the shutdown row out of the disk-failure
+    // bucket the write path already distinguishes (main's onFatalError above).
+    if (error instanceof SnapshotPersistenceError) {
+      logger.error(
+        "SNAPSHOT_PERSIST_FAILED",
+        `FATAL: the last committed version is not durable at shutdown (${error.reason}); exiting non-zero so the loss is not read as a clean stop`,
+        error,
+      );
+      return 1;
+    }
+    logger.error(
+      "SERVER_ERROR",
+      "store close failed during shutdown: the last committed version may not be durable; exiting non-zero",
+      error,
+    );
+    return 1;
   }
 }
 
@@ -764,8 +792,9 @@ function beginShutdown(): void {
   // releasing the lock and exiting
   setTimeout(async () => {
     await reconcileBeforeExit();
-    await closeStoreThenLock();
-    process.exit(0);
+    // same verdict as the graceful path: a forced exit is not a clean one when
+    // the snapshot was not proven durable
+    process.exit(await closeStoreThenLock());
   }, 3000).unref();
 }
 

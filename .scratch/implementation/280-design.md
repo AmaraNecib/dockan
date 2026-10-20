@@ -92,6 +92,12 @@ badges: `VAULT_SNAPSHOT_FENCE_FOREIGN`, `VAULT_SNAPSHOT_FENCE_UNSTAMPED`,
 `VAULT_SNAPSHOT_FENCE_MISSING`, `VAULT_SNAPSHOT_FENCE_UNKNOWN`,
 `VAULT_SNAPSHOT_FENCE_UNREADABLE`, `VAULT_SNAPSHOT_FENCE_DOWNGRADE`.
 
+The api cannot see these codes with a literal-only scan: `reportFence` picks
+info-or-warn at runtime and passes the code to one local `emit`. The #253
+vocabulary scan therefore matches `emit(level, "CODE"` as well, and
+`lib/log-events.test.ts` lists the six codes so the scan's own reach is pinned —
+a pattern that stops matching now fails instead of quietly shrinking the set.
+
 ## Detection points
 
 1. **Open.** A read envelope whose stamp is not the connection's own (or is
@@ -157,18 +163,73 @@ Unit (`apps/api/src/db/encrypted-connection.test.ts`, `apps/api/src/lib/vault/fo
     the 64-byte bound are refused at open; 64 bytes is written and read back.
 16. `writeBackupTo` refuses to bundle bytes whose fence is not the holder's,
     checked on the buffer actually bundled.
+17. A dirty persist reads the fence exactly once, and a clean check exactly
+    once — the cost line below is a counted claim and this counts it.
+18. The restore write site (deliberately ungated): `extractVaultBackup` writes
+    the bundle's snapshot byte-for-byte, with the stamp the bundle carried, and
+    not the restoring process's own lock token. The exception is a documented
+    one, so a later "fence every writer" change has to break a test to make it
+    disappear (`lib/vault/backup.test.ts`).
+19. `checkpoint()` after `close()` writes nothing and does not throw: the
+    synchronous seam refuses a released handle silently instead of surfacing
+    "Can't do this on a closed database" from a caller that cannot retry.
+20. The bundle fixture reads back as the legacy v1 envelope it is named for,
+    so the fixture's meaning cannot drift silently with the version constant.
 
 No Playwright E2E: the change is not reachable from a user flow (no UI, no
 route); the seam is the file format, exercised by unit tests.
 
+## Carried along: the close() race (#291, outside this issue's scope)
+
+The fence work rewrote `persistIfDirty`, and that rework exposed a pre-existing
+race the issue does not ask about. Recording it here because the design record
+is what the tier was decided from, and this diff ships the fix.
+
+`persistIfDirty` used to `await` its opening currency read **before** it chained
+the job onto `persistQueue`. A `close()` that read the queue inside that window
+saw it drained, checkpointed, zeroed the key and released the SQLite handle;
+the flush then resumed inside `persistNow` and called `raw.serialize()` on the
+released handle, which throws `Can't do this on a closed database`. In CI that
+was an intermittent shutdown failure.
+
+Evidence, and the ordering that is the point:
+
+- red on the parent commit: `056ca18a`'s source with the head's store tests runs
+  **6 pass / 3 fail**, one failure naming exactly that error with
+  `serializedAfterRelease = 1`;
+- the fix is ordering, not a flag: the job is chained **synchronously**
+  (`const run = persistQueue.then(...); persistQueue = run.catch(...)`), so a
+  `close()` that reads `persistQueue` after the call is waiting for *this*
+  persist, and it flips `closed` with no await between that resumption and the
+  handle release;
+- because of that ordering the flag has exactly one readable site on the async
+  path — the near side of the serializer — and the store's `#291` tests kill an
+  ablation of it. Guards at the top of each write attempt and after the
+  post-write fence read were removed: `close()` cannot run inside an attempt it
+  is awaiting, so nothing could ever observe them, which makes them comments
+  that look like code;
+- `checkpoint()` carries the same refusal for the synchronous seam, because a
+  second `close()`, or a backup checkpoint requested while the process is going
+  down, is an ordinary event and must not throw an opaque SQLite error.
+
+The shutdown path is part of the same story. A close whose final checkpoint
+cannot prove the last version durable now logs `SNAPSHOT_PERSIST_FAILED` with
+the reason and exits **non-zero**, which is the verdict the write path already
+gave the same condition. It cannot retry (the handle is gone), but "could not
+retry" is not "did not fail". The next boot still reports a foreign or legacy
+fence at `info`, because at boot that is the routine "an earlier session's bytes
+are on disk" case and no loss is known yet; the shutdown row is where the loss
+becomes known. The three sites therefore agree on the verdict and differ only in
+the level the case deserves.
+
 ## Risks and costs the PR owns
 
 - A read-back per write adds a 74-byte read. Cheap next to serialise+encrypt.
-- **A dirty persist reads the fence once** (measured: one `fs.openSync` on the
-  snapshot path per dirty persist, not three). `persistIfDirty` asks whether
-  anything is owed and `persistNow` asks again only when the queue waited;
-  in the common case the first read is the only read, and the post-write
-  re-read is the feature itself. Each read is a 74-byte prefix read.
+- **A dirty persist reads the fence once**, and a clean check reads it once —
+  **measured**, and pinned by the counting test above: one `fs.openSync` on the
+  snapshot path either way. A dirty image short-circuits the currency question
+  before any pre-write read, so the post-write re-read is the only one; a clean
+  one pays for the currency answer. Each read is a 74-byte prefix read.
 - A read per `persistIfDirty` when clean. Bounded and small.
 - Unfenced (no `writeStamp`) callers keep exactly today's behaviour. That is
   NOT the regression guard for the fenced path: the fenced path has its own

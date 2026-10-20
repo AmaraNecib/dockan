@@ -103,15 +103,15 @@ const ablations: Ablation[] = [
     name: "A9-R1-file-level-waiver",
     test: "a shared waiver over the parent's tests is not a file-level skip",
     claim: "R1: the file-level waiver rule judges the change's test list, not the parent's",
-    from: `    changeResults.length > 0 ? changeResults : results,`,
-    to: `    results,`,
+    from: `  const waiverProblems = fileLevelWaiverProblems(run.file, waivers, changeSideList);`,
+    to: `  const waiverProblems = fileLevelWaiverProblems(run.file, waivers, results);`,
   },
   {
     name: "A10-R2-exact-file",
     test: "a sibling whose name extends the added file's is never run",
     claim: "R2: the run imports exactly the added file, so a same-prefix sibling never runs",
     from: `["test", entry, `,
-    to: `["test", here.path, `,
+    to: `["test", file, `,
   },
   {
     name: "A11-R3-lock-budget",
@@ -140,6 +140,13 @@ const ablations: Ablation[] = [
     claim: "R4c: a file a test deleted is restored, not left missing for the next run",
     from: `  gitText(worktree, ["reset", "--hard", "HEAD"]);\n`,
     to: ``,
+  },
+  {
+    name: "A15-F1-imported-test-file",
+    test: "a file that imports another test file is named, not judged",
+    claim: "F1: a file that imports another test file is named, not judged on a mixed report",
+    from: `      const imports = importedTestFiles(source);`,
+    to: `      const imports: string[] = [];`,
   },
 ];
 

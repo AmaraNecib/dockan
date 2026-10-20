@@ -574,12 +574,12 @@ export function classifyFileRun(
   // condition the change newly satisfies is absent from the parent's report, so
   // judging against that list calls a waiver that covers two of the change's
   // three tests a file-level skip — and fails a correct change. The change-side
-  // run is the only list of every test the file declares.
-  const waiverProblems = fileLevelWaiverProblems(
-    run.file,
-    waivers,
-    changeResults.length > 0 ? changeResults : results,
-  );
+  // run is the only list of every test the file declares. When it enumerated
+  // nothing, that run has already produced a problem of its own and this verdict
+  // is added to an already-failing file, so falling back to the parent's list
+  // costs nothing but keeps the message readable.
+  const changeSideList = changeResults.length > 0 ? changeResults : results;
+  const waiverProblems = fileLevelWaiverProblems(run.file, waivers, changeSideList);
   // A waiver is used when it matches a test, not when it is the one this run
   // happened to pick. A broad pattern ("case") matches "case one" as well as a
   // narrower "case one" does, and attaching only the first made the second look
@@ -705,6 +705,42 @@ export function isGatedTestPath(path: string): boolean {
   return /\.test\.[cm]?[jt]sx?$/u.test(normalized);
 }
 
+/** A file whose name says it holds tests. */
+const TEST_LIKE_BASENAME = /\.(test|spec)(\.[cm]?[jt]sx?)?$/u;
+
+/**
+ * The test files a source file imports, directly.
+ *
+ * Bun names every testcase of a run after the entry file, so a file that
+ * imports another test file brings that file's cases into its own report and
+ * the report cannot say whose test failed — the two files are one report with
+ * one name. The import is found in the source instead, because the report
+ * cannot be asked.
+ */
+export function importedTestFiles(source: string): string[] {
+  const specifiers = new Set<string>();
+  const patterns = [
+    /\bfrom\s*["']([^"']+)["']/gu,
+    /\bimport\s*["']([^"']+)["']/gu,
+    /\bimport\(\s*["']([^"']+)["']\s*\)/gu,
+    /\brequire\(\s*["']([^"']+)["']\s*\)/gu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const specifier = match[1];
+      if (specifier === undefined) continue;
+      if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
+      const name = specifier.split("/").pop() ?? "";
+      if (!TEST_LIKE_BASENAME.test(name)) continue;
+      // `import type` is erased before the file runs, so it imports nothing.
+      const before = source.slice(Math.max(0, match.index - 64), match.index);
+      if (/\bimport\s+type\b/u.test(before)) continue;
+      specifiers.add(specifier);
+    }
+  }
+  return [...specifiers];
+}
+
 /** A test file of any kind, gated or not. */
 export function isTestLikePath(path: string): boolean {
   return /\.(test|spec)\.[cm]?[jt]sx?$/u.test(path.replaceAll("\\", "/"));
@@ -794,6 +830,9 @@ function modifiedInWorkingTree(repo: string, path: string): boolean {
  * sibling changed. Importing the one file is the only exact selection bun has,
  * and it also means the report holds one file's testcases and needs no filter by
  * suite name — bun names the report's suite after the entry, not the file.
+ *
+ * Only the working directory survives from that: the path is inside the entry,
+ * so nothing here passes it to bun a second time.
  */
 function runFrom(root: string, file: string, junitPath: string): CommandResult {
   const here = relativeToWorkspace(root, file);
@@ -808,18 +847,18 @@ function runFrom(root: string, file: string, junitPath: string): CommandResult {
   );
 }
 
-/** Where bun must run a test file, and the path to pass it. */
-type WorkspaceRun = { cwd: string; path: string };
+/** The directory bun must run a test file from. */
+type WorkspaceRun = { cwd: string };
 
 function relativeToWorkspace(root: string, file: string): WorkspaceRun {
   const parts = file.split("/");
   for (let depth = parts.length - 1; depth > 0; depth -= 1) {
     const dir = parts.slice(0, depth).join("/");
     if (existsSync(join(root, dir, "bunfig.toml"))) {
-      return { cwd: join(root, dir), path: parts.slice(depth).join("/") };
+      return { cwd: join(root, dir) };
     }
   }
-  return { cwd: root, path: file };
+  return { cwd: root };
 }
 
 function cacheRoot(repo: string): string {
@@ -1443,6 +1482,18 @@ function gateBaseWorktree(input: {
   try {
     for (const file of files) {
       const source = readAtRevision(repo, head, file);
+      // A file that imports another test file pulls that file's cases into its
+      // own report, and bun names every case after the entry, so the report
+      // cannot say whose test failed. Judging it would put the other file's
+      // green case against this file — and demand a waiver for a test this
+      // file does not contain. The gate names the import instead of guessing.
+      const imports = importedTestFiles(source);
+      if (imports.length > 0) {
+        problems.push(
+          `${file}: imports another test file (${imports.join(", ")}), so one run reports that file's cases as well and the gate cannot tell whose test failed — keep each file's cases in its own file`,
+        );
+        continue;
+      }
       copyIntoBaseWorktree(manifest, worktree, file, source, copied);
 
       const junitPath = join(outDir, `${copied.length}.xml`);

@@ -1,38 +1,38 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-1567 |         },
-1568 |       ],
-1569 |     );
-1570 |     try {
-1571 |       const { status, stdout } = runGateFixture(fixture);
-1572 |       expect(stdout).toContain("WAIVER-MISFILED");
+1568 |         },
+1569 |       ],
+1570 |     );
+1571 |     try {
+1572 |       const { status, stdout } = runGateFixture(fixture);
+1573 |       expect(stdout).toContain("WAIVER-MISFILED");
                             ^
 error: expect(received).toContain(expected)
 
 Expected to contain: "WAIVER-MISFILED"
-Received: "red-on-parent: base e9219c73d423 (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-TyitFC\\wt-e9219c73d423a24891d659693035f2aef8e13047, created) · bun 1.4.2\n\nFILE                             TEST                VERDICT             WAIVED\npackages/core/src/stale.test.ts  stale rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
+Received: "red-on-parent: base 5ca9e7ce92dc (worktree C:\\Users\\sensei57\\AppData\\Local\\Temp\\ronp-cache-R6lO0a\\wt-5ca9e7ce92dc4633fba38b0dcea3b179f19f6893, created) · bun 1.4.2\n\nFILE                             TEST                VERDICT             WAIVED\npackages/core/src/stale.test.ts  stale rejects zero  RIGHT-REASON-RED    -\n\nVERDICT GUIDE\n  RIGHT REASON RED — the test fails on the parent for its own reason, and passes on the change\n    1. nothing — keep the test as it is\n    2. do not waive it: a waiver on a right-reason red is misfiled and the gate will say so\n\nadded test files: 1 · 1 right reason red · 0 red on change · 0 wrong reason red · 0 not on parent · 0 green on parent · 0 waiver misfiled · 0 run incomplete\nred-on-parent: PASS\n"
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1572:22)
-(fail) red-on-parent round 8 > a waiver that matches no test fails the gate [2076.93ms]
-1578 |   }, 60_000);
-1579 | 
-1580 |   test("a waiver that matched nothing is WAIVER MISFILED", () => {
-1581 |     const waiver: Waiver = { pattern: "no such test", reason: "stale", line: 9 };
-1582 |     const verdicts = unusedWaiverVerdicts("packages/core/src/x.test.ts", [waiver], new Set());
-1583 |     expect(verdicts).toHaveLength(1);
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1573:22)
+(fail) red-on-parent round 8 > a waiver that matches no test fails the gate [1267.60ms]
+1579 |   }, 60_000);
+1580 | 
+1581 |   test("a waiver that matched nothing is WAIVER MISFILED", () => {
+1582 |     const waiver: Waiver = { pattern: "no such test", reason: "stale", line: 9 };
+1583 |     const verdicts = unusedWaiverVerdicts("packages/core/src/x.test.ts", [waiver], new Set());
+1584 |     expect(verdicts).toHaveLength(1);
                             ^
 error: expect(received).toHaveLength(expected)
 
 Expected length: 1
 Received length: 0
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1583:22)
-(fail) red-on-parent round 8 > a waiver that matched nothing is WAIVER MISFILED [0.60ms]
-(pass) red-on-parent round 9 — the file-level waiver > a waiver that matches every test in the file is a file-level skip [1853.38ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1584:22)
+(fail) red-on-parent round 8 > a waiver that matched nothing is WAIVER MISFILED [0.35ms]
+(pass) red-on-parent round 9 — the file-level waiver > a waiver that matches every test in the file is a file-level skip [1233.98ms]
 
  1 pass
- 91 filtered out
+ 93 filtered out
  2 fail
  5 expect() calls
-Ran 3 tests across 1 file. [3.96s]
+Ran 3 tests across 1 file. [2.52s]

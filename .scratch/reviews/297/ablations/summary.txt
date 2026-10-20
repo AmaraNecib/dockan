@@ -13,3 +13,4 @@ RED  A11-R3-lock-budget: 0 pass, 1 fail — R3: the lock wait budget covers the 
 RED  A12-R4-cache-reset: 0 pass, 1 fail — R4: a reused worktree is reset to its commit before the next run judges it
 RED  A13-R4-index-reset: 0 pass, 1 fail — R4b: the reset discards the index too, so a staged write is not restored from it
 RED  A14-R4-deleted-file: 0 pass, 1 fail — R4c: a file a test deleted is restored, not left missing for the next run
+RED  A15-F1-imported-test-file: 0 pass, 1 fail — F1: a file that imports another test file is named, not judged on a mixed report

@@ -34,6 +34,7 @@ import {
   decodeXml,
   displayName,
   INSTALL_TIMEOUT_MS,
+  importedTestFiles,
   isGatedTestPath,
   lockHolderIsGone,
   LOCK_WAIT_SLACK_MS,
@@ -2249,4 +2250,63 @@ test("rejects zero with ZERO", () => {
       }
     }
   }, 60_000);
+});
+
+describe("red-on-parent round 11 — the findings at 45f42fd7", () => {
+  test("a file that imports another test file is named, not judged", () => {
+    // Bun names every testcase of a run after the entry file, so a file that
+    // imports another test file brings that file's cases into its own report.
+    // The gate cannot tell whose test failed, so it says so: the file is named
+    // and no verdict is built on a report that mixes two files.
+    const fixture = createFixture(
+      [
+        PKG,
+        {
+          path: "packages/core/src/helper.test.ts",
+          text: `import { expect, test } from "bun:test";
+test("the helper's own case", () => {
+  expect(1).toBe(1);
+});
+`,
+        },
+      ],
+      [
+        {
+          path: "packages/core/src/cart.test.ts",
+          text: `import { expect, test } from "bun:test";
+import "./helper.test.ts";
+test("rejects zero with ZERO", () => {
+  expect(0).toBe(1);
+});
+`,
+        },
+      ],
+    );
+    try {
+      const out = runGateFixture(fixture);
+      expect(out.status).toBe(1);
+      expect(out.stdout).toContain("imports another test file");
+      // The imported file's case must not be judged against the importing
+      // file: that would ask for a waiver for a test the file does not hold.
+      expect(out.stdout).not.toContain("the helper's own case");
+    } finally {
+      fixture.cleanup();
+    }
+  }, 120_000);
+
+  test("the import that names another test file is found in the source", () => {
+    // The report cannot say whose case it holds, so the source is asked.
+    expect(importedTestFiles(`import "./helper.test.ts";\n`)).toEqual(["./helper.test.ts"]);
+    expect(importedTestFiles(`import { x } from "../shared/other.test";\n`)).toEqual([
+      "../shared/other.test",
+    ]);
+    expect(importedTestFiles(`const m = await import("./late.test.ts");\n`)).toEqual([
+      "./late.test.ts",
+    ]);
+    // A type-only import is erased before the file runs: it imports nothing.
+    expect(importedTestFiles(`import type { Case } from "./cases.test.ts";\n`)).toEqual([]);
+    // A helper that is not a test file, and a package that is not local.
+    expect(importedTestFiles(`import { guard } from "./helper";\n`)).toEqual([]);
+    expect(importedTestFiles(`import { expect } from "bun:test";\n`)).toEqual([]);
+  });
 });

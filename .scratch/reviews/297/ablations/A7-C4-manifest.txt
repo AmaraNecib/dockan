@@ -1,12 +1,12 @@
 bun test v1.4.2 (744846f84)
 
 scripts\red-on-parent.test.ts:
-1679 |         worktree,
-1680 |         "packages/core/src/x.test.ts",
-1681 |         "content",
-1682 |         copied,
-1683 |       );
-1684 |       expect(gateModule.readManifest(manifest)).toEqual(["packages/core/src/x.test.ts"]);
+1680 |         worktree,
+1681 |         "packages/core/src/x.test.ts",
+1682 |         "content",
+1683 |         copied,
+1684 |       );
+1685 |       expect(gateModule.readManifest(manifest)).toEqual(["packages/core/src/x.test.ts"]);
                                                        ^
 error: expect(received).toEqual(expected)
 
@@ -18,11 +18,11 @@ error: expect(received).toEqual(expected)
 - Expected  - 3
 + Received  + 1
 
-      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1684:49)
-(fail) red-on-parent round 8 > the manifest names a copied file as soon as it is copied [2.91ms]
+      at <anonymous> (D:\worktrees\mani-project\t3-297-gate-r3\scripts\red-on-parent.test.ts:1685:49)
+(fail) red-on-parent round 8 > the manifest names a copied file as soon as it is copied [2.75ms]
 
  0 pass
- 93 filtered out
+ 95 filtered out
  1 fail
  1 expect() calls
-Ran 1 test across 1 file. [35.00ms]
+Ran 1 test across 1 file. [22.00ms]

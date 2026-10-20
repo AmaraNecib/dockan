@@ -3417,3 +3417,91 @@ describe("red-on-parent round 20 — the Greptile findings at e1ea567c", () => {
     }
   });
 });
+describe("red-on-parent round 21 — the Greptile findings at 25d60eb9", () => {
+  test("a quote in JSX text does not blank the waiver below it", () => {
+    // The mask read every `'` as the start of a string. In `.tsx` a quote
+    // between an element's `>` and its close is prose, so `<div>Don't delete</div>`
+    // opened a literal that ran to EOF and blanked the waiver below it:
+    // `parseWaivers` returned no waivers and no problems, and a test whose red
+    // was legitimately on the parent was refused as GREEN_ON_PARENT.
+    const source = String.raw`test("renders the note", () => {
+  render(<div>Don't delete</div>);
+});
+// red-on-parent-waive: "renders the note" — characterizes behaviour the refactor kept
+`;
+    const parsed = parseWaivers(source);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["renders the note"]);
+    expect(parsed.waivers[0]?.line).toBe(4);
+  });
+
+  test("an unterminated string does not blank the rest of the file", () => {
+    // The failure mode every masking bug shares, and the one that matters more
+    // than any single cause: a mask that eats the file turns a declared waiver
+    // into a file that declared none, which is GREEN_ON_PARENT. A literal the
+    // scan never sees the end of is not a literal — the quote is text, and the
+    // scan carries on after it.
+    const source = String.raw`const note = 'unterminated
+// red-on-parent-waive: "still judged" — the waiver survives the broken literal
+test("still judged", () => {
+  expect(note).toContain("unterminated");
+});
+`;
+    const parsed = parseWaivers(source);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.waivers.map((waiver) => waiver.pattern)).toEqual(["still judged"]);
+    expect(parsed.waivers[0]?.line).toBe(2);
+  });
+
+  test("the SKIPPED ON CHANGE advice does not offer a fix that cannot work", () => {
+    // Skipping the test on the parent as well does not clear the row: the
+    // change's own run decides it, and no waiver reaches it. The guide used to
+    // send the author there, and a round spent on it came back with the same
+    // row. What the guide says has to match what the gate does.
+    const skipped = VERDICT_GUIDE.find((entry) => entry.name === "SKIPPED_ON_CHANGE");
+    expect(skipped?.fixes.join(" ")).not.toContain("make the parent skip it too");
+    const waiver: Waiver = { pattern: "a", reason: "r", line: 1 };
+    const parentWaived: Verdict = {
+      file: "f",
+      test: "a",
+      name: "NOT_ON_PARENT",
+      detail: "d",
+      waiver,
+      waivers: [waiver],
+    };
+    const changeResult: TestResult = {
+      name: "a",
+      classname: "",
+      status: "skipped",
+      failureType: null,
+      assertions: null,
+    };
+    // The parent's row passes with its waiver, and the change's row still fails
+    // — with both sides skipped. That is the shape the removed advice claimed
+    // to fix.
+    expect(verdictPasses(parentWaived)).toBe(true);
+    const row = changeSideVerdicts("f", [parentWaived], [changeResult])[0];
+    expect(row?.name).toBe("SKIPPED_ON_CHANGE");
+    expect(row === undefined ? true : verdictPasses(row)).toBe(false);
+  });
+
+  test("a `<Foo>` type assertion is not a JSX element", () => {
+    // The `<` of an assertion sits where an expression starts, exactly like the
+    // `<` of an element. Read as an element, the assertion opens a text region
+    // that never closes, and prose keeps a commented-out import that the code
+    // scan is supposed to blank — so the file is reported as importing a test
+    // file it never imported.
+    const source = `const x = <Foo>value;
+// import "./fake.test.ts"
+const y = x as unknown as number;
+`;
+    expect(importedTestFiles(source)).toEqual([]);
+    // An element with a close is text, and the same scan still finds a real
+    // import beside it.
+    expect(
+      importedTestFiles(`const view = <div>it's fine</div>;
+import "./real.test.ts";
+`),
+    ).toEqual(["./real.test.ts"]);
+  });
+});

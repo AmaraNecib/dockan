@@ -39,7 +39,6 @@ import { pathToFileURL } from "node:url";
 
 import { INSTALL_TIMEOUT_MS, LOCK_WAIT_SLACK_MS, testTimeoutMs } from "./gate-limits";
 import {
-  clearDeadClaim,
   effectiveWaitDeadline,
   lockContentionMessage,
   lockHolderIsGone,
@@ -49,6 +48,7 @@ import {
   RECLAIM_CLAIM_FILE,
   reclaimStaleLock,
   releaseWorktreeLock,
+  replaceDeadClaim,
   type LockIdentity,
 } from "./worktree-lock";
 
@@ -343,7 +343,7 @@ describe("red-on-parent round 12 — the findings at 8a618ed9", () => {
     writeFileSync(claimPath, liveRaw);
     try {
       // this run read the DEAD bytes a moment ago and now tries to clear them
-      expect(clearDeadClaim(claimPath, deadRaw)).toBe(false);
+      expect(replaceDeadClaim(claimPath, deadRaw, "this-run-token")).toBe(false);
       // the live claim is back where its owner expects it, not deleted
       expect(readFileSync(claimPath, "utf8")).toBe(liveRaw);
     } finally {
@@ -351,7 +351,10 @@ describe("red-on-parent round 12 — the findings at 8a618ed9", () => {
     }
   });
 
-  test("a claim that still reads as the observed dead one is cleared", () => {
+  test("a claim that still reads as the observed dead one is replaced, not just removed", () => {
+    // Clearing the dead claim and leaving the name empty is what let a third
+    // run create its claim in the gap. What takes a dead claim over installs
+    // its own in the same step, so the name never reads as free.
     const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
     const lockPath = join(dir, "wt.lock");
     mkdirSync(lockPath);
@@ -359,8 +362,10 @@ describe("red-on-parent round 12 — the findings at 8a618ed9", () => {
     const deadRaw = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
     writeFileSync(claimPath, deadRaw);
     try {
-      expect(clearDeadClaim(claimPath, deadRaw)).toBe(true);
-      expect(existsSync(claimPath)).toBe(false);
+      expect(replaceDeadClaim(claimPath, deadRaw, "this-run-token")).toBe(true);
+      expect(readFileSync(claimPath, "utf8")).toBe(
+        lockPidFileContent(process.pid, "this-run-token", 0),
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -542,6 +547,49 @@ describe("red-on-parent round 20 — the Greptile findings at e1ea567c", () => {
       // guard that refused everything would pin the removal shut instead.
       expect(releaseWorktreeLock(lockPath, token, identityOf(lockPath))).toBe(true);
       expect(existsSync(lockPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("red-on-parent round 21 — the Greptile finding at 25d60eb9", () => {
+  test("a third runner cannot take a claim another run is holding", () => {
+    // Three runs read the same dead claim. Clearing it used to be a rename of
+    // the name to a tombstone, a comparison, and a rename back — so between
+    // those two renames the claim's NAME WAS FREE. A cleared the dead claim and
+    // took a live one, B moved A's live claim into its tombstone to compare it,
+    // and C created its own claim in the gap the restore needed. A and C then
+    // both believed they held the claim: A removed the stale lock, C took the
+    // name with a live one, and A's removal deleted C's lock out from under it.
+    // Taking a dead claim over now moves it to a tombstone that only this run
+    // holds, compares the bytes there, and wins the name back with one `wx`
+    // create — so a runner whose token is not at the name refuses instead of
+    // removing anything.
+    const dir = mkdtempSync(join(tmpdir(), "ronp-claim-"));
+    const lockPath = join(dir, "wt.lock");
+    mkdirSync(lockPath);
+    const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
+    const deadRaw = lockPidFileContent(2_147_483_647, "dead-claim-token", 0);
+    writeFileSync(claimPath, deadRaw);
+    try {
+      // A read the dead claim, so it holds the bytes it judged.
+      const a = replaceDeadClaim(claimPath, deadRaw, "run-a");
+      expect(a).toBe(true);
+      // A holds a claim of its own, and the name was never left empty.
+      expect(readFileSync(claimPath, "utf8")).toBe(
+        lockPidFileContent(process.pid, "run-a", 0),
+      );
+      // B read the same dead bytes before A took the claim: it may not take the
+      // claim A is holding away from it, and it may not claim beside it.
+      const b = replaceDeadClaim(claimPath, deadRaw, "run-b");
+      expect(b).toBe(false);
+      // C arrives late with the same stale reading, on a name A still holds.
+      const c = replaceDeadClaim(claimPath, deadRaw, "run-c");
+      expect(c).toBe(false);
+      // Exactly one of the three ended up holding the claim, and it is A's.
+      expect([a, b, c].filter(Boolean)).toHaveLength(1);
+      expect(readFileSync(claimPath, "utf8")).toContain("run-a");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

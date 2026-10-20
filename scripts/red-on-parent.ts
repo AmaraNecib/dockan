@@ -83,7 +83,7 @@ import { acquireWorktreeLock, lockWaitBudget } from "./lib/worktree-lock";
 // removed". Its names stay exported from here so a caller of the gate keeps one
 // import, and so the module's seam can move again without touching them.
 export {
-  clearDeadClaim,
+  replaceDeadClaim,
   effectiveWaitDeadline,
   lockContentionMessage,
   lockHolderIsGone,
@@ -455,13 +455,148 @@ function regexLiteralEnd(source: string, start: number): number | null {
  */
 type MaskMode = "keep-line-comments" | "keep-code";
 
+/**
+ * The index of the quote that closes the literal opened at `start`, or null when
+ * the scan finds no end for it.
+ *
+ * A `'` or `"` literal cannot span a line, so an unescaped newline ends the
+ * search: an apostrophe in prose is not the start of a literal, and a scan that
+ * runs one to the next quote in the file blanks everything in between — the
+ * waiver a file really declared included.
+ */
+function stringEnd(source: string, start: number): number | null {
+  const quote = source[start]!;
+  let index = start + 1;
+  while (index < source.length) {
+    const char = source[index]!;
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (char === quote) return index;
+    if (char === "\n" && quote !== "`") return null;
+    index += 1;
+  }
+  return null;
+}
+
+/** A JSX tag, as far as the mask needs it: where it ends, and what it does to the nesting. */
+type JsxTag = { closing: boolean; selfClosing: boolean; end: number };
+
+const JSX_NAME_PART = /[A-Za-z0-9_$.:-]/u;
+
+/**
+ * Whether a closing tag follows `from` in this source.
+ *
+ * It is what tells `return <div>text</div>` from a `<Foo>` type assertion, whose
+ * `<` also sits where an expression starts. Reading the assertion as an element
+ * makes the rest of the file prose, and prose keeps the comments a `keep-code`
+ * scan is supposed to blank.
+ */
+function hasClosingTagAfter(source: string, from: number): boolean {
+  return source.indexOf("</", from) !== -1;
+}
+
+/**
+ * The JSX tag that starts at `index`, or null when what is there is not one.
+ *
+ * A masking heuristic rather than a parser. It needs the element's `>` so the
+ * text after it is read as prose and not as code, and it gives up on anything
+ * that does not look like a tag instead of guessing. Attribute values and `{...}`
+ * expressions are skipped whole, so a `>` inside one does not end the tag.
+ */
+function jsxTagAt(source: string, index: number): JsxTag | null {
+  let at = index + 1;
+  const closing = source[at] === "/";
+  if (closing) at += 1;
+  // `<>` and `</>`: a fragment has no name and moves the nesting the same way.
+  if (source[at] === ">") return { closing, selfClosing: false, end: at };
+  const nameStart = at;
+  while (at < source.length && JSX_NAME_PART.test(source[at]!)) at += 1;
+  const name = source.slice(nameStart, at);
+  // A tag's name starts at the `<` and starts like an identifier, which is what
+  // keeps `< div>` and a type argument's `<string>` out.
+  if (name.length === 0 || !/[A-Za-z_$]/u.test(name[0]!)) return null;
+  let braces = 0;
+  let quote: string | null = null;
+  while (at < source.length) {
+    const char = source[at]!;
+    if (quote !== null) {
+      if (char === "\\") {
+        at += 2;
+        continue;
+      }
+      if (char === quote) quote = null;
+      at += 1;
+      continue;
+    }
+    if (braces > 0) {
+      if (char === "{") braces += 1;
+      else if (char === "}") braces -= 1;
+      else if (char === '"' || char === "'" || char === "`") quote = char;
+      at += 1;
+      continue;
+    }
+    if (char === "{") {
+      braces = 1;
+      at += 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      at += 1;
+      continue;
+    }
+    if (char === ">") {
+      let last = at - 1;
+      while (last > index && /\s/u.test(source[last]!)) last -= 1;
+      return { closing, selfClosing: source[last] === "/", end: at };
+    }
+    if (char === "<") return null;
+    at += 1;
+  }
+  return null;
+}
+
 function maskSource(source: string, mode: MaskMode): string {
   const keepLineComments = mode === "keep-line-comments";
   let out = "";
   let index = 0;
+  // The JSX elements still open, and how deep inside a `{...}` of their text the
+  // scan is. A quote is a literal's delimiter only in code: between an element's
+  // tags it is an apostrophe in prose, and reading it as one blanks every line
+  // after it.
+  let jsxDepth = 0;
+  let jsxExpressionDepth = 0;
   const blank = (char: string): string => (char === "\n" ? "\n" : " ");
+  const emitTag = (tag: JsxTag): void => {
+    out += source.slice(index, tag.end + 1);
+    index = tag.end + 1;
+    if (tag.closing) jsxDepth = Math.max(0, jsxDepth - 1);
+    else if (!tag.selfClosing) jsxDepth += 1;
+  };
   while (index < source.length) {
     const char = source[index]!;
+    if (jsxDepth > 0 && jsxExpressionDepth === 0) {
+      // JSX text: prose, kept whole. A tag in it still moves the nesting, and a
+      // `{` starts an expression that is code again.
+      if (char === "<") {
+        const tag = jsxTagAt(source, index);
+        if (tag !== null) {
+          emitTag(tag);
+          continue;
+        }
+      }
+      if (char === "{") {
+        jsxExpressionDepth = 1;
+        out += char;
+        index += 1;
+        continue;
+      }
+      out += char;
+      index += 1;
+      continue;
+    }
     if (char === "/" && source[index + 1] === "/") {
       while (index < source.length && source[index] !== "\n") {
         out += keepLineComments ? source[index]! : blank(source[index]!);
@@ -506,27 +641,50 @@ function maskSource(source: string, mode: MaskMode): string {
       }
     }
     if (char === '"' || char === "'" || char === "`") {
-      const quote = char;
+      const closing = stringEnd(source, index);
+      if (closing === null) {
+        // A literal whose end the scan never sees is not a literal. Blanking
+        // from here to EOF is how a mask eats a file, and a file that declared a
+        // waiver then reads as one that declared none — GREEN_ON_PARENT. So the
+        // quote is text, and the scan carries on after it.
+        out += char;
+        index += 1;
+        continue;
+      }
       out += char;
-      index += 1;
-      while (index < source.length) {
-        const inner = source[index]!;
-        if (inner === "\\") {
+      for (let inner = index + 1; inner < closing; inner += 1) {
+        const literal = source[inner]!;
+        if (literal === "\\" && inner + 1 < closing) {
           out += keepLineComments
-            ? blank(inner) + blank(source[index + 1] ?? " ")
-            : inner + (source[index + 1] ?? "");
-          index += 2;
+            ? blank(literal) + blank(source[inner + 1]!)
+            : literal + source[inner + 1]!;
+          inner += 1;
           continue;
         }
-        if (inner === quote) {
-          out += quote;
-          index += 1;
-          break;
-        }
-        out += keepLineComments ? blank(inner) : inner;
-        index += 1;
+        out += keepLineComments ? blank(literal) : literal;
       }
+      out += source[closing]!;
+      index = closing + 1;
       continue;
+    }
+    if (char === "<" && slashStartsRegex(out)) {
+      // A `<` where an expression could start opens a JSX element or fragment;
+      // where an operand would sit it is a comparison (`a < b`) or a type
+      // argument (`Array<string>`). `slashStartsRegex` is the same "what came
+      // before it" test, because both are only ever expressions. An opening tag
+      // also has to have a close somewhere, which is what keeps a `<Foo>` type
+      // assertion from turning the rest of the file into prose.
+      const tag = jsxTagAt(source, index);
+      if (tag !== null && (tag.closing || tag.selfClosing || hasClosingTagAfter(source, tag.end))) {
+        emitTag(tag);
+        continue;
+      }
+    }
+    // `{` and `}` are depth only inside a JSX expression container, which is
+    // where the text around them is prose and the expression is code.
+    if (jsxDepth > 0 && (char === "{" || char === "}")) {
+      jsxExpressionDepth =
+        char === "{" ? jsxExpressionDepth + 1 : Math.max(0, jsxExpressionDepth - 1);
     }
     out += char;
     index += 1;
@@ -2007,7 +2165,7 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
     title: "the test is skipped on the change, so it never runs there and pins nothing",
     fixes: [
       "run the test on the change — a skipped test proves nothing about the change",
-      "if the skip is deliberate, make the parent skip it too, so the two sides agree about what ran",
+      "no waiver covers this: the change's own run decides it, whatever the parent's run did",
     ],
   },
   {

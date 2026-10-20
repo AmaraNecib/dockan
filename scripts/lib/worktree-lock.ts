@@ -44,11 +44,16 @@
  * comparing content alone then deletes the live lock of the run that holds the
  * name now. One rule for both removals, and no per-call-site check to forget.
  *
- * The file a reclaimer takes inside the lock is the claim, and it is the only
- * thing here that is ever renamed. A claim whose writer died is cleared by a
- * rename that has to still read as the bytes that were observed, because a
- * rename proves only that one run moved a name — not that the name still held
- * the dead claim that run read.
+ * The file a reclaimer takes inside the lock is the claim, and it is what makes
+ * recovery exclusive: one `wx` create has exactly one winner, so at most one run
+ * is removing a given lock. A claim whose writer died is taken over in two steps
+ * — the dead claim is moved to a unique tombstone and the bytes are compared
+ * *there*, then the name is created again with `wx` — so a live claim is never
+ * moved out of the name without being put back: whatever a reclaimer displaced
+ * and did not observe goes straight back, and the exclusive create lets exactly
+ * one run through the gap. Clearing a dead claim by moving it aside and putting
+ * it back is what this replaced: the restore loses to whatever took the name in
+ * between, and then two runs both hold the claim.
  */
 
 import { randomUUID } from "node:crypto";
@@ -274,6 +279,18 @@ export const RECLAIM_CLAIM_FILE = "reclaim";
 
 type ReclaimClaim = { path: string; token: string };
 
+/** Whether the claim at `claimPath` still carries this run's pid and token. */
+function claimHolds(claimPath: string, token: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(claimPath, "utf8");
+  } catch {
+    return false;
+  }
+  const owner = readLockOwner(raw);
+  return owner !== null && owner.pid === process.pid && owner.token === token;
+}
+
 /**
  * Take the exclusive right to remove this lock, or report that someone else has
  * it.
@@ -281,29 +298,16 @@ type ReclaimClaim = { path: string; token: string };
 function takeReclaimClaim(lockPath: string): ReclaimClaim | null {
   const claimPath = join(lockPath, RECLAIM_CLAIM_FILE);
   const token = randomUUID();
-  const body = lockPidFileContent(process.pid, token, 0);
-  const create = (): boolean => {
-    try {
-      writeFileSync(claimPath, body, { flag: "wx" });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (create()) return { path: claimPath, token };
-  // The name is taken. A live owner is another run removing the same lock, and
-  // this one waits. A dead owner is a claim left behind by a reclaimer that was
-  // killed between claiming and removing, and leaving it there would block
-  // every later run on this lock forever. Clearing it is still exclusive: a
-  // rename of one name succeeds once, so of the runs that decide the claim is
-  // dead exactly one moves it — and even that one has to win the name back,
-  // because a third run can create its own claim in the gap.
-  //
-  // What moves below is the CLAIM FILE inside the lock, never the lock
-  // directory. A lock directory is removed only by `reclaimStaleLock` or
-  // `releaseWorktreeLock`, and both of those compare the `dev`/`ino`/`birthtimeMs`
-  // they observed; neither renames it, and neither decides on the pid file's
-  // content alone, which a replacement directory can reproduce byte for byte.
+  // `wx` is the whole exclusivity of the ordinary path: one create attempt has
+  // exactly one winner, and the name is never free while a live claim sits at
+  // it. The read-back is ownership rather than ceremony — a claim displaced
+  // between the create and here is not this run's to release.
+  try {
+    writeFileSync(claimPath, lockPidFileContent(process.pid, token, 0), { flag: "wx" });
+    return claimHolds(claimPath, token) ? { path: claimPath, token } : null;
+  } catch {
+    // The name is taken. That is the question the rest of this function asks.
+  }
   let raw: string;
   try {
     raw = readFileSync(claimPath, "utf8");
@@ -320,55 +324,71 @@ function takeReclaimClaim(lockPath: string): ReclaimClaim | null {
       return null;
     }
   } else if (processIsAlive(owner.pid)) {
+    // A live reclaimer is already removing this lock, and this run waits.
     return null;
   }
-  if (!clearDeadClaim(claimPath, raw)) return null;
-  return create() ? { path: claimPath, token } : null;
+  return replaceDeadClaim(claimPath, raw, token) ? { path: claimPath, token } : null;
 }
 
 /**
- * Remove a claim whose owner is gone, binding the removal to the bytes that were
- * observed.
+ * Take the claim the observed dead one occupies, and say whether this run now
+ * holds it.
  *
- * The `wx` create is what makes claiming exclusive, but a rename proves only
- * that ONE run moved a name — not that the name still held the dead claim that
- * run read. Between the read and the rename, a reclaimer that already cleared
- * the dead claim can create its own LIVE one at the same path; a blind rename
- * then carries that away and unlinks it, so the run that owns it believes it
- * still holds the claim, a second run takes the name, and both enter the
- * worktree. So the moved file must still read as the bytes that were observed.
+ * The `wx` create is what makes claiming exclusive, so the dead claim has to be
+ * out of the name before this run's claim can be created there — and the name
+ * must not read as free while any run holds it, or a third run creates its claim
+ * in that gap and two runs remove one lock.
  *
- * Anything else is put back where its owner expects it. If the name has been
- * taken again in the meantime the tombstone stays inside the lock and goes with
- * it — far better than a claim deleted under a live owner.
+ * So the dead claim is displaced by one rename to a unique tombstone, and the
+ * bytes are compared **from the tombstone**: that is the object the rename
+ * actually moved, so the comparison decides what was displaced instead of what
+ * the name held a moment earlier. Anything that is not the observed dead claim —
+ * a live claim that took the name between the read and the rename — is put
+ * straight back, because moving a claim out from under the run that holds it ends
+ * with two runs judging one worktree. The name is then free for one `wx` create:
+ * exactly one run wins it, and a run that loses refuses rather than removing
+ * anything.
  */
-export function clearDeadClaim(claimPath: string, observed: string): boolean {
-  const claimTombstone = `${claimPath}.stale-${process.pid}-${randomUUID()}`;
+export function replaceDeadClaim(claimPath: string, observed: string, token: string): boolean {
+  const body = lockPidFileContent(process.pid, token, 0);
+  const tombstone = `${claimPath}.stale-${process.pid}-${randomUUID()}`;
   try {
-    renameSync(claimPath, claimTombstone);
+    renameSync(claimPath, tombstone);
   } catch {
+    // The dead claim went before this call: another reclaimer took it over, and
+    // this run has nothing to replace.
     return false;
   }
-  let moved: string;
+  let moved: string | null;
   try {
-    moved = readFileSync(claimTombstone, "utf8");
+    moved = readFileSync(tombstone, "utf8");
   } catch {
-    return false;
+    // Unreadable is not the claim that was judged, and a comparison cannot clear
+    // what it could not read.
+    moved = null;
   }
   if (moved !== observed) {
     try {
-      if (!existsSync(claimPath)) renameSync(claimTombstone, claimPath);
+      if (!existsSync(claimPath)) renameSync(tombstone, claimPath);
     } catch {
-      // The name is taken again; the tombstone goes with the lock.
+      // The name is taken again, so the tombstone stays inside the lock and goes
+      // with it. Refusing is the safe half: the alternative is a second claim
+      // beside the one that holds the lock.
     }
     return false;
   }
   try {
-    unlinkSync(claimTombstone);
+    unlinkSync(tombstone);
   } catch {
-    // The tombstone stays behind inside the lock directory; it goes with it.
+    // The dead claim is out of the name either way, and a stray tombstone goes
+    // with the lock directory.
   }
-  return true;
+  try {
+    writeFileSync(claimPath, body, { flag: "wx" });
+  } catch {
+    return false;
+  }
+  return claimHolds(claimPath, token);
 }
 
 /** Drop this run's claim, and only its own. */

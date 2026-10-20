@@ -21,6 +21,7 @@ import { normalizeBarcode } from "@dokan/contracts";
 import { draftBlank, parseLooseNumber } from "@/lib/amount-parse";
 import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
+import { hotCounterRefresh } from "../lib/freshness";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { StockForm } from "./stock";
@@ -45,6 +46,20 @@ type ItemEditDraft = {
   threshold: string;
   /** the row as loaded, so save can send only the fields that changed */
   baseline: { name: string; categoryId: string; costPrice: number; sellingPrice: number; lowStockThreshold: number };
+  /**
+   * THE LAST RESORT, not the display source. The editor is rendered from the
+   * page's rows, so a draft whose row leaves the page (a page boundary, or an
+   * earlier-sorting item arriving from another window) would otherwise take
+   * its Save and Cancel buttons with it and leave the operator blocked by a
+   * dirty draft they cannot finish or discard.
+   *
+   * The row shown while it is away is the LIVE one (`liveDraftRow`), read from
+   * the catalog; this snapshot only stands in when that read has nothing — a
+   * deleted row, or a failed catalog read. A snapshot used as the display
+   * source freezes every non-editing cell (stock, the low-stock badge) for as
+   * long as the edit stays open.
+   */
+  row: ItemListItem;
 };
 
 /** The two jobs on the items page: browse the table, or add item/stock. */
@@ -63,7 +78,7 @@ function invalidateItems(queryClient: QueryClient) {
   void queryClient.invalidateQueries();
 }
 
-export function ItemsPage() {
+export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
@@ -202,6 +217,7 @@ export function ItemsPage() {
       <div role="tabpanel" id="items-panel-products" aria-labelledby="items-tab-products" hidden={tab !== "products"}>
         <CatalogSearch />
         <ItemList
+          refreshMs={refreshMs}
           scanNonce={scanNonce}
           onAddItem={() => {
             selectTab("add");
@@ -584,11 +600,14 @@ function ItemForm({
   );
 }
 
-function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () => void }) {
+function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAddItem: () => void; refreshMs?: number }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const pager = usePagination();
-  const items = useQuery(orpc.itemsList.queryOptions({ input: { ...pager.pagination } }));
+  // #295 — the stock on hand is a hot counter: it moves with every sale in
+  // every window, so the table re-reads it on the bounded tick instead of
+  // waiting for a focus event that a second window never sends.
+  const items = useQuery({ ...orpc.itemsList.queryOptions({ input: { ...pager.pagination } }), ...hotCounterRefresh(refreshMs) });
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [draft, setDraft] = useState<ItemEditDraft | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
@@ -629,16 +648,49 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
     nameInputRef.current?.focus();
   }, [editingId]);
 
+  // #295 round 4 — WHERE THE OPEN DRAFT'S ROW IS READ FROM.
+  //
+  // The paged read is one window of a name-ordered list, so a poll can take the
+  // edited row off it. The editor has to survive that (draftDirty keeps every
+  // other Edit control disabled until it is saved or cancelled) AND has to keep
+  // telling the truth: a row rendered from the values it had when the edit
+  // began would freeze its stock number and its low-stock badge across every
+  // following poll, because the poll never touches a row the page no longer
+  // holds.
+  //
+  // So the row is read like any other row, from one place. While the page
+  // window holds it, that read IS the page. While it does not, the catalog read
+  // carries it: the same `itemsAll` the stock form on this page already mounts,
+  // put on the hot tick only for that case (`enabled`), so nothing extra is
+  // read while no row is away. `draft.row` is then the last resort (a deleted
+  // row, or a catalog read that failed), never the source of a number that is
+  // supposed to move.
+  const pageItems = items.data?.items ?? [];
+  const draftRowOnPage = draft !== null && pageItems.some((item) => item.id === draft.id);
+  const awayRow = useQuery({
+    ...orpc.itemsAll.queryOptions(),
+    ...hotCounterRefresh(refreshMs),
+    enabled: draft !== null && !draftRowOnPage,
+  });
+  const liveDraftRow =
+    draft === null
+      ? null
+      : (pageItems.find((item) => item.id === draft.id) ??
+        awayRow.data?.items.find((item) => item.id === draft.id) ??
+        draft.row);
+
   // a background refetch can move a row's prices under an open draft; keep the
-  // untouched fields (and the diff baseline) in step with what the row shows
+  // untouched fields (and the diff baseline) in step with what the row shows —
+  // including a row the page no longer holds, which is why this reads
+  // `liveDraftRow` and not the page alone
   useEffect(() => {
-    if (editingId === null) return;
-    const row = items.data?.items.find((item) => item.id === editingId);
-    if (row === undefined) return;
+    if (editingId === null || liveDraftRow === null) return;
+    const row = liveDraftRow;
     setDraft((current) => {
       if (current === null || current.id !== row.id) return current;
       return {
         ...current,
+        row,
         baseline: {
           name: row.name,
           categoryId: row.categoryId,
@@ -653,7 +705,7 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
         threshold: current.threshold.trim() === String(current.baseline.lowStockThreshold) ? String(row.lowStockThreshold) : current.threshold,
       };
     });
-  }, [items.data, editingId]);
+  }, [liveDraftRow, editingId]);
 
   // a scan types its digits into whatever field has focus, so a draft that was
   // open in an edit field holds barcode characters — close it rather than let
@@ -687,6 +739,7 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
       cost: String(item.costPrice),
       sell: String(item.sellingPrice),
       threshold: String(item.lowStockThreshold),
+      row: item,
       baseline: {
         name: item.name,
         categoryId: item.categoryId,
@@ -828,6 +881,17 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
     );
   }
 
+  // #295 — a poll can take the edited row OFF the page. The tick re-reads the
+  // list every five seconds, the page is one window of a name-ordered list, and
+  // an item created in the other window can sort ahead of the last row. The
+  // editor is rendered from these rows, so the draft's row is shown even while
+  // the page does not hold it: Save and Cancel stay reachable while
+  // `draftDirty` keeps every other Edit control disabled. The row shown is the
+  // LIVE one (`liveDraftRow`, read above) — its stock number and low-stock
+  // badge move on every poll instead of freezing at the value the edit began
+  // with.
+  const renderedRows = liveDraftRow !== null && !draftRowOnPage ? [...pageItems, liveDraftRow] : pageItems;
+
   return (
     <>
       {editError && (
@@ -856,11 +920,13 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
           </tr>
         </thead>
         <tbody>
-          {items.data?.items.map((item: ItemListItem) => {
+          {renderedRows.map((item: ItemListItem) => {
             const editing = draft !== null && draft.id === item.id;
+            // the draft's own row, shown even when the page no longer holds it
+            const offPage = editing && !pageItems.some((row) => row.id === item.id);
             const draftProfit = editing ? profitPreview(draft.cost, draft.sell) : null;
             return (
-              <tr key={item.id} className="border-b last:border-0" data-editing={editing ? "true" : undefined}>
+              <tr key={item.id} className="border-b last:border-0" data-editing={editing ? "true" : undefined} data-off-page={offPage ? "true" : undefined}>
                 <td className="p-3">
                   {editing ? (
                     <input

@@ -21,6 +21,7 @@ import { pickOpeningSupplier } from "./opening-balance-resolver";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
 import { weightedAverageCost } from "../lib/stock-ledger";
+import { repeatCutoff } from "../lib/stock-adjustment";
 
 // Every test drives the real SQLite database through the wire, so the whole
 // file takes the shared heavy budget.
@@ -38,6 +39,8 @@ let conn: Connection;
 let store: StorePort;
 let client: DokanClient;
 let unauthed: DokanClient;
+/** a second window on the same session — the v1 multi-client shape (#294) */
+let secondClient: DokanClient;
 // hoisted so tests can rebuild an app+router against a modified store (the
 // settings-atomicity test) and so the ticket-14 describe can seed DIRECT log
 // rows, with the same config/auth/cookie as beforeAll
@@ -93,6 +96,8 @@ beforeAll(async () => {
   cookie = login.headers.get("set-cookie") ?? "";
 
   client = createORPCClient(linkWith(cookie));
+  // the same session cookie on a second link: two browser windows, one API
+  secondClient = createORPCClient(linkWith(cookie));
   unauthed = createORPCClient(linkWith(""));
 }, HEAVY_TEST_TIMEOUT_MS);
 
@@ -109,13 +114,14 @@ afterAll(() => {
 });
 
 /** Build a client over an alternate StorePort with the shared config, auth and
- * owner cookie — for tests that must observe or fail one store call. */
-const clientForStore = (storeFor: StorePort): DokanClient => {
+ * owner cookie — for tests that must observe or fail one store call, or that
+ * must drive the server's clock. */
+const clientForStore = (storeFor: StorePort, routerDeps: { now?: () => Date } = {}): DokanClient => {
   const app = createApp({
     config,
     logger,
     auth,
-    rpcRouter: createRpcRouter({ db: conn.db, config, logger, store: storeFor, auth }),
+    rpcRouter: createRpcRouter({ db: conn.db, config, logger, store: storeFor, auth, ...routerDeps }),
   });
   const link = new RPCLink({
     url: () => `http://127.0.0.1:${config.port}/api/rpc`,
@@ -127,6 +133,21 @@ const clientForStore = (storeFor: StorePort): DokanClient => {
     },
   });
   return createORPCClient(link);
+};
+
+/**
+ * The instant whose Algeria-local stamp is exactly this one.
+ *
+ * Algeria is a fixed UTC+01:00 zone with no DST (see `lib/logger.ts`), so a
+ * wall stamp maps back by subtracting the offset. The caller proves the
+ * mapping with the cutoff it produces, so a zone change fails the premise
+ * instead of silently moving the second.
+ */
+const instantOfAlgeriaStamp = (stamp: string): Date => {
+  const [date = "", time = ""] = stamp.split("T");
+  const [year = 0, month = 1, day = 1] = date.split("-").map(Number);
+  const [hour = 0, minute = 0, second = 0] = time.split(":").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hour - 1, minute, second));
 };
 
 describe("health", () => {
@@ -428,6 +449,422 @@ describe("stock ledger (ticket 27)", () => {
       total: 0,
       stockOnHand: 0,
     });
+  });
+});
+
+/**
+ * #295 — one stock adjustment, one movement.
+ *
+ * Two windows on one API (the v1 multi-client shape, #294) can post the SAME
+ * action: a double-clicked save, a lost response re-sent as the same action
+ * (the #115 rule), or the same form open in both windows. The ledger is
+ * append-only, so the second post does not overwrite the first — it appends a
+ * SECOND movement, and the stock moves twice for one intention. The first
+ * write stands; the second is refused with a code the owner can act on.
+ */
+describe("stock adjustment — the same action is applied once (#295)", () => {
+  const makeItem = async (name: string) => {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice: 100,
+      sellingPrice: 200,
+      lowStockThreshold: 0,
+    });
+  };
+
+  it("refuses the same adjustment from a second client, and the first write survives", async () => {
+    const item = await makeItem("تسوية-تكرار");
+
+    // window A records the adjustment
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+
+    // window B posts the SAME action
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+    expect(refused!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
+
+    // the first write survived: ONE movement, and the stock moved once
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(1);
+    expect(history.stockOnHand).toBe(5);
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(5);
+  });
+
+  it("still records a different adjustment right after the first one", async () => {
+    const item = await makeItem("تسوية-مختلفة");
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // a different quantity: a second action, not a repeat
+    await secondClient.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, reason: "count" });
+    // and a different reason on the same quantity
+    await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "delivery" });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(3);
+    expect(history.stockOnHand).toBe(13);
+  });
+
+  it("refuses the repeat even when another movement landed in between", async () => {
+    // the guard compares against EVERY movement recorded inside the window,
+    // not only the newest one: a sale or a correction posted between the two
+    // copies would otherwise push the row the guard looks for out of sight,
+    // and the stock would move twice for one intention
+    const item = await makeItem("تسوية-بينها");
+
+    // window A records the adjustment
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // the other window sells or corrects the item in between
+    await secondClient.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, reason: "delivery" });
+
+    // window B posts the SAME action as window A
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+    expect(refused!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
+
+    // two movements, not three: the repeat was not applied
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(7);
+  });
+
+  it("refuses a no-cost repeat after the item's average moved", async () => {
+    // an inflow that carried no cost means "at the item's cost", and the
+    // server derives that cost at posting time — the first posting moves the
+    // average, so a derived cost inside the identity would let the retry
+    // through and the stock would move twice for one intention
+    const item = await makeItem("تسوية-بلا-تكلفة");
+
+    // window A records the adjustment, with no cost of its own
+    await client.stockAddManual({ itemId: item.id, delta: 5, reason: "count" });
+    // the other window moves the average with a cost of its own
+    await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 300, reason: "delivery" });
+
+    // window B re-sends the SAME action
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(10);
+    // the premise of this test: the first post was recorded with the cost the
+    // server derived, and the second post moved the average
+    expect(history.movements[0]!.unitCost).toBe(100);
+    expect(history.movements[1]!.unitCost).toBe(300);
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.costPrice).toBe(200);
+  });
+
+  it("refuses a repeat that carries the re-derived cost", async () => {
+    // the web pre-fills the cost field with the item's current cost, and a
+    // focus refetch refreshes that pre-fill: the retry then carries the
+    // average the FIRST posting moved it to. The cost says the same thing
+    // the server would have derived, so it is not part of the identity
+    const item = await makeItem("تسوية-بتكلفة-محدّثة");
+
+    // window A records the adjustment at the item's cost (100)
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // the other window moves the average with a cost of its own (300)
+    await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 300, reason: "delivery" });
+    // the average moved to 200, so window B's pre-filled cost is 200
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.costPrice).toBe(200);
+
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: row.costPrice, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(10);
+  });
+
+  it("refuses a repeat removal, and accepts two dated adjustments", async () => {
+    // the removal path is the one the web form easiest double-clicks (the
+    // cost field is hidden for removals)
+    const item = await makeItem("تسوية-سحب");
+    // stock to remove: the item starts empty
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "delivery" });
+    await client.stockAddManual({ itemId: item.id, delta: -5, reason: "count" });
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: item.id, delta: -5, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+
+    // a blank reason is what the web sends, and it is an identity of its own
+    const blank = await makeItem("تسوية-بلا-سبب");
+    await client.stockAddManual({ itemId: blank.id, delta: 5, unitCost: 100 });
+    let refusedBlank: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: blank.id, delta: 5, unitCost: 100 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refusedBlank = err as { code?: string; message: string };
+    }
+    expect(refusedBlank).not.toBeNull();
+
+    // two adjustments dated differently are two actions
+    const dated = await makeItem("تسوية-مؤرخة");
+    await client.stockAddManual({ itemId: dated.id, delta: 5, unitCost: 100, occurredAt: "2999-01-01T00:00:00" });
+    await secondClient.stockAddManual({ itemId: dated.id, delta: 5, unitCost: 100, occurredAt: "2999-01-02T00:00:00" });
+    const datedHistory = await client.itemsHistory({ itemId: dated.id });
+    expect(datedHistory.movements).toHaveLength(2);
+  });
+
+  it("refuses one of two posts that arrive at the same time", async () => {
+    // the v1 multi-client shape: two windows save at once. The store
+    // serializes the two calls, so the first write stands and the second is
+    // refused — the same outcome as posting them one after the other
+    const item = await makeItem("تسوية-متزامنة");
+
+    const results = await Promise.allSettled([
+      client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" }),
+      secondClient.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected");
+    expect(rejected).toBeDefined();
+    // SAFETY: a rejected oRPC call carries the server error with `code` and `message`
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      code: "CONFLICT",
+      message: "STOCK_ADJUSTMENT_DUPLICATE",
+    });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(1);
+    expect(history.stockOnHand).toBe(5);
+  });
+
+  it("treats a blank reason as no reason, so the pair cannot move stock twice", async () => {
+    // Greptile round 3 (P1). The contract TRIMS the field, so a reason made of
+    // spaces arrives as "" while an untouched one arrives as undefined. `??`
+    // mapped those to "" and null, the identity compared them as different, and
+    // the same adjustment was admitted TWICE inside the repeat window.
+    //
+    // Both orders, because each one kills a different half of the fix: a blank
+    // reason stored in the ledger breaks the pair when the blank goes first,
+    // and an unnormalized CHECK breaks it when the blank goes second.
+    const blankFirst = await makeItem("تسوية-سبب-فارغ-أولا");
+    await client.stockAddManual({ itemId: blankFirst.id, delta: 5, unitCost: 100, reason: "   " });
+    let refusedBlankFirst: { code?: string; message: string } | null = null;
+    try {
+      // the same adjustment with the field left alone
+      await secondClient.stockAddManual({ itemId: blankFirst.id, delta: 5, unitCost: 100 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refusedBlankFirst = err as { code?: string; message: string };
+    }
+    expect(refusedBlankFirst).not.toBeNull();
+    expect(refusedBlankFirst!.code).toBe("CONFLICT");
+    expect(refusedBlankFirst!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
+
+    const blankSecond = await makeItem("تسوية-سبب-فارغ-ثانيا");
+    await client.stockAddManual({ itemId: blankSecond.id, delta: 5, unitCost: 100 });
+    let refusedBlankSecond: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: blankSecond.id, delta: 5, unitCost: 100, reason: "\t " });
+    } catch (err) {
+      // SAFETY: as above
+      refusedBlankSecond = err as { code?: string; message: string };
+    }
+    expect(refusedBlankSecond).not.toBeNull();
+    expect(refusedBlankSecond!.code).toBe("CONFLICT");
+
+    // one movement each, and the ledger holds ONE value for "no reason"
+    for (const item of [blankFirst, blankSecond]) {
+      const history = await client.itemsHistory({ itemId: item.id });
+      expect(history.movements).toHaveLength(1);
+      expect(history.movements[0]!.reason).toBeNull();
+    }
+  });
+
+  it("opens the guard's read under the write lock, not a deferred unit", async () => {
+    // #295 — the guard READS the window and then WRITES, so the handler takes
+    // the write lock first, like every other money path in this file. That
+    // choice is a convention, not an observable outcome: the store serializes
+    // every call on one connection (`drizzle-store.ts` `runSerialized`), so a
+    // deferred `BEGIN` and a `BEGIN IMMEDIATE` cannot interleave here and no
+    // behavioural test can tell them apart. Pinning the CALL is the only way
+    // the choice cannot be swapped for its weaker sibling without a red test.
+    const used: string[] = [];
+    const recordingStore: StorePort = {
+      ...store,
+      withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+        used.push("deferred");
+        return store.withTransaction(fn);
+      },
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+        used.push("immediate");
+        return store.withTransactionImmediate(fn);
+      },
+    };
+    const item = await makeItem("تسوية-قفل-الكتابة");
+
+    // only the adjustment may be counted: session reads and any setup work run
+    // through the same store, so the record starts here
+    used.length = 0;
+    await clientForStore(recordingStore).stockAddManual({ itemId: item.id, delta: 2 });
+
+    expect(used).toEqual(["immediate"]);
+  });
+
+  it("applies the repeat window to the injected clock, not to the wall clock", async () => {
+    // the window is the promise that an owner who means it twice can do it a
+    // moment later. It is applied by the ROUTER, so the router has to ask
+    // the clock the question — `deps.now` is that seam. The store stamps
+    // `created_at` from the wall clock, so the fake clock starts at the real
+    // one and then advances.
+    const item = await makeItem("تسوية-نافذة");
+    const clock = { at: new Date() };
+    const clocked = clientForStore(store, { now: () => clock.at });
+
+    // window A records the adjustment
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    // eleven seconds later — outside the ten-second window
+    clock.at = new Date(clock.at.getTime() + 11_000);
+    // window B posts the SAME action
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+
+    // two movements: the owner meant it twice, and the ledger says so
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(2);
+    expect(history.stockOnHand).toBe(10);
+  });
+
+  it("does not refuse the owner's adjustment because a system row looks like it", async () => {
+    // a purchase correction posts its own MANUAL_ADJUSTMENT row, carrying the
+    // invoice it came from. That row is the SERVER's action, not a copy of
+    // anything the owner typed: it must not refuse the owner's own
+    // adjustment as a duplicate
+    const item = await makeItem("تسوية-تصحيح");
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    await client.purchasesCorrectLine({ lineId: invoice.lines[0]!.id, quantity: 16, unitCost: 200 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    const correction = history.movements.find((m) => m.kind === "MANUAL_ADJUSTMENT" && m.ref === invoice.id);
+    expect(correction).toBeDefined();
+
+    // the owner posts the SAME quantity with the SAME reason: a different
+    // action, not a copy of the correction
+    await client.stockAddManual({ itemId: item.id, delta: correction!.delta, reason: correction!.reason ?? undefined });
+
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements).toHaveLength(history.movements.length + 1);
+  });
+
+  it("does not refuse the owner's adjustment because the opening row looks like it", async () => {
+    // the opening row (itemsCreateWithStock) is the guard's one blind spot
+    // (#295): it has no origin document to carry, and the owner's typed
+    // request carries none either, so the ONLY field that separates the two is
+    // the literal reason "opening" the web never sends. Set that reason to null
+    // and the guard refuses the owner's next identical adjustment as a
+    // duplicate while every other test in the branch stays green.
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreateWithStock({
+      name: "افتتاحي-تسوية",
+      categoryId: categories.items[0]!.id,
+      costPrice: 100,
+      sellingPrice: 200,
+      stockOnHand: 12,
+    });
+    const opening = await client.itemsHistory({ itemId: item.id });
+    expect(opening.movements).toHaveLength(1);
+
+    // the owner posts the same quantity with no reason: a real second action.
+    // THIS is the line the mutation breaks — with the opening row's reason
+    // nulled, matchesAdjustment sees a copy and the call is refused.
+    await client.stockAddManual({ itemId: item.id, delta: 12 });
+
+    // the premise, asserted after the guard ran so a nulled reason fails on the
+    // refusal above (the claim) rather than on this line (the setup)
+    expect(opening.movements[0]).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 12, reason: "opening", ref: null });
+
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements).toHaveLength(2);
+    // the owner's own action landed: the same quantity, and no reason — the
+    // opening row did not swallow it
+    expect(after.movements.at(-1)).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 12, reason: null });
+    expect(after.stockOnHand).toBe(24);
+  });
+
+  it("pins the window's boundary second on the wire", async () => {
+    // `created_at` is a one-second stamp and the store's comparison is
+    // STRICT (`gt`), so a row recorded IN the cutoff second is already
+    // outside the window: the effective window is (9s, 10s], not 10s. The
+    // owner feels that edge — a repeat a hair late is accepted — so it is
+    // pinned where the owner feels it, not only in the store's own read.
+    const item = await makeItem("تسوية-حد");
+    const clock = { at: new Date() };
+    const clocked = clientForStore(store, { now: () => clock.at });
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    const recordedAt = history.movements[0]!.createdAt;
+
+    // the instant whose Algeria-local stamp is the row's own stamp
+    const recorded = instantOfAlgeriaStamp(recordedAt);
+    // the premise: at that instant the router's cutoff IS the row's stamp,
+    // to the second
+    expect(repeatCutoff(new Date(recorded.getTime() + 10_000))).toBe(recordedAt);
+
+    // the cutoff lands ON the row, and the comparison is strict: the row is
+    // outside the window, so the same action is a second action
+    clock.at = new Date(recorded.getTime() + 10_000);
+    await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements).toHaveLength(2);
+    expect(after.stockOnHand).toBe(10);
+
+    // one second earlier the cutoff is one second BEFORE the row: the row is
+    // inside the window, so the same action is a repeat and is refused
+    clock.at = new Date(recorded.getTime() + 9_000);
+    let refused: { code?: string; message: string } | null = null;
+    try {
+      await clocked.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, reason: "count" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refused = err as { code?: string; message: string };
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("CONFLICT");
+    expect(refused!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
+    const final = await client.itemsHistory({ itemId: item.id });
+    expect(final.movements).toHaveLength(2);
+    expect(final.stockOnHand).toBe(10);
   });
 });
 

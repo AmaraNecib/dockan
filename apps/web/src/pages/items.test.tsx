@@ -100,6 +100,13 @@ let createWithStockDeferred = false;
 let resolveCreateWithStock: (() => void) | null = null;
 /** holds the itemsList refetch open so the stale-cache window is observable */
 let itemsGate: Promise<void> | null = null;
+/** counts the items-list reads, so the hot-counter tick is observable */
+let itemsListFetches = 0;
+/** ids the paged read leaves out: what a row moving off the page looks like to
+ * the table, while the catalog read still holds the row (#295 round 4) */
+let pageOmitsIds: string[] = [];
+/** the error code the api refuses a repeated adjustment with (#295) */
+let stockRefuses: string | null = null;
 let releaseItemsGate: (() => void) | null = null;
 
 // The page reads/writes everything through orpc.*; the mock keeps the fixture
@@ -123,7 +130,11 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => {
           // the stale-cache test holds this open to make the window observable
           if (itemsGate !== null) await itemsGate;
-          return { items: items.map((item) => ({ ...item })), total: items.length };
+          itemsListFetches += 1;
+          // the page is ONE window of the list: `pageOmitsIds` is a row the
+          // page no longer holds (it still exists, it sorted away)
+          const page = items.filter((item) => !pageOmitsIds.includes(item.id));
+          return { items: page.map((item) => ({ ...item })), total: items.length };
         },
       }),
       queryKey: () => ["items"],
@@ -202,6 +213,11 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: MutationOptions) => ({
         mutationFn: async (input: CapturedStockInput) => {
           stockInputs.push(input);
+          if (stockRefuses !== null) {
+            // the api refuses a repeated adjustment with a CONFLICT whose
+            // message is the code the web translates (#295)
+            throw new Error(stockRefuses);
+          }
           return { id: "movement-1" };
         },
         ...opts,
@@ -314,7 +330,20 @@ async function waitFor(check: () => boolean, attempts = 120): Promise<void> {
   throw new Error("condition not met within timeout");
 }
 
-async function mount(): Promise<MountedPage> {
+/** The off-page editor row's stock cell: the number and its low-stock badge. */
+interface AwayStock {
+  text: string;
+  low: boolean;
+}
+
+function awayStock(): AwayStock {
+  const row = document.querySelector<HTMLTableRowElement>('[data-off-page="true"]');
+  if (row === null) throw new Error("no off-page row");
+  const text = row.querySelector<HTMLElement>('[data-testid="stock-after-cell"]')?.textContent ?? "";
+  return { text, low: text.includes(i18n.t("itemsLowBadge")) };
+}
+
+async function mount(options?: { refreshMs?: number }): Promise<MountedPage> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -323,7 +352,7 @@ async function mount(): Promise<MountedPage> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <ItemsPage />
+        <ItemsPage refreshMs={options?.refreshMs} />
       </QueryClientProvider>,
     );
   });
@@ -391,6 +420,9 @@ beforeEach(() => {
   createWithStockDeferred = false;
   resolveCreateWithStock = null;
   itemsGate = null;
+  itemsListFetches = 0;
+  pageOmitsIds = [];
+  stockRefuses = null;
   releaseItemsGate = null;
   document.body.innerHTML = "";
 });
@@ -403,6 +435,103 @@ afterEach(() => {
     entry.container.remove();
   }
   document.body.innerHTML = "";
+});
+
+/**
+ * #295 — the stock on hand is a hot counter. A second window posts a sale or
+ * an adjustment, and this window has to show the new number without anybody
+ * clicking into it: no focus event fires on a window that is visible but
+ * unfocused, so the tick is what carries the change.
+ */
+describe("items list hot counter (#295)", () => {
+  it("polls the items list so the stock column converges without an invalidation", async () => {
+    await mount({ refreshMs: 20 }); // 20ms refresh keeps the test fast
+    await waitFor(() => itemsListFetches >= 1);
+    // another window posts a sale: the fixture's number moves
+    items[0]!.stockOnHand = 7;
+    // the COLUMN converges, not merely the read: a page that polls and then
+    // renders the stale number would satisfy "the list was read twice"
+    await waitFor(() => {
+      const row = rowByCell("بطارية");
+      const cell = row.querySelector<HTMLElement>('[data-testid="stock-after-cell"]');
+      return cell?.textContent?.includes("7") === true;
+    });
+  });
+
+  it("keeps an open draft's Save and Cancel reachable when a poll pushes its row off the page", async () => {
+    // #295 round 3 (Greptile P1). The tick re-reads a name-ordered page, so an
+    // item created in ANOTHER window can sort ahead of the last row and push it
+    // to the next page. The editor used to be rendered from the page's rows
+    // alone: the buttons went with the row, while `draftDirty` kept every other
+    // Edit control disabled — a dirty draft with no way to save or discard it.
+    await mount({ refreshMs: 20 });
+    await waitFor(() => itemsListFetches >= 1);
+    const editedId = items[items.length - 1]!.id; // the last row on the page
+    click(`edit-item-${editedId}`);
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "قيد الكتابة"); // the draft is now dirty
+
+    // the next poll answers a page that no longer holds this row: the fixture
+    // IS the page the mock returns, so dropping the row is what a page boundary
+    // moving looks like to the table
+    items = items.filter((item) => item.id !== editedId);
+    await waitFor(() => document.querySelector('[data-off-page="true"]') !== null);
+
+    // the way out is still on screen, and the poll did not need an invalidation
+    // to put it there
+    const save = document.querySelector('[data-testid="edit-save"]');
+    const cancel = document.querySelector('[data-testid="edit-cancel"]');
+    expect(save).not.toBeNull();
+    expect(cancel).not.toBeNull();
+
+    // and it WORKS: cancelling lifts the block the dirty draft put on the
+    // remaining rows
+    click("edit-cancel");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
+    expect(el<HTMLButtonElement>('[data-testid="edit-item-item-1"]').disabled).toBe(false);
+  });
+
+  it("keeps the away row's stock live instead of freezing its snapshot (#295 round 4)", async () => {
+    // The same page-boundary move as the test above, with the row still IN the
+    // catalog. The draft carries a row snapshot so that its editor survives the
+    // move; rendered FROM that snapshot, the row's non-editing cells freeze:
+    // the poll never touches a row the page no longer holds, so the stock
+    // number and the low-stock badge keep the values the edit began with while
+    // every other row converges.
+    const edited = items[items.length - 1]!;
+    edited.stockOnHand = 7; // above the threshold of 5, so no badge yet
+    await mount({ refreshMs: 20 });
+    await waitFor(() => itemsListFetches >= 1);
+    click(`edit-item-${edited.id}`);
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "قيد الكتابة"); // an open, dirty draft
+
+    // an item created in the other window sorts ahead of this one: the page
+    // drops the row while the catalog read still holds it
+    pageOmitsIds = [edited.id];
+    await waitFor(() => document.querySelector('[data-off-page="true"]') !== null);
+    expect(awayStock().text).toContain("7");
+
+    // the other window sells four: the number must move, and the badge must
+    // appear with it — both live off the row, not off the snapshot
+    items = items.map((item) => (item.id === edited.id ? { ...item, stockOnHand: 3 } : item));
+    await waitFor(() => awayStock().text.includes("3") && awayStock().low);
+
+    // and the editor is still the way out of the draft
+    expect(document.querySelector('[data-testid="edit-save"]')).not.toBeNull();
+  });
+
+  it("carries the background polling flag on the query", async () => {
+    const { queryClient } = await mount({ refreshMs: 20 });
+    await waitFor(() => itemsListFetches >= 1);
+    // the options the page handed the query carry the background flag: a
+    // window that is visible but unfocused never sends a focus event. This
+    // pins the wiring, not the runtime effect — happy-dom has no hidden tab,
+    // so the behaviour is measured in the e2e (#295).
+    const observer = queryClient.getQueryCache().find({ queryKey: ["items"] })?.observers[0];
+    expect(observer?.options.refetchInterval).toBe(20);
+    expect(observer?.options.refetchIntervalInBackground).toBe(true);
+  });
 });
 
 describe("items page tabs", () => {
@@ -1004,6 +1133,25 @@ describe("stock form prefill", () => {
     // the label already says this; an error has to say what is wrong
     expect(message).not.toContain("موجب إدخال");
     expect(stockInputs.length).toBe(0);
+  });
+
+  it("shows the actionable refusal when the same adjustment is posted twice (#295)", async () => {
+    stockRefuses = "STOCK_ADJUSTMENT_DUPLICATE";
+    await mount();
+    await openAddTab();
+    setInput("stock-delta", "5");
+    click("stock-save");
+    await waitFor(() => document.querySelector('[data-testid="stock-error"]') !== null);
+    const message = el<HTMLElement>('[data-testid="stock-error"]').textContent ?? "";
+    // the raw code must not reach the owner: the message says what happened
+    expect(message).not.toContain("STOCK_ADJUSTMENT_DUPLICATE");
+    expect(message).toContain("لم يُطبَّق مرتين");
+    // the escape the copy offers is WAIT. "Change the reason" was removed: a
+    // reason typed only to get past the guard lands in the permanent ledger
+    // (apps/api/src/lib/stock-adjustment.ts, why the window is short), so pin
+    // both the clause that must stay and the one that must not come back.
+    expect(message).toContain("أعد المحاولة بعد قليل");
+    expect(message).not.toContain("غيّر سبب");
   });
 
   it("refreshes a prefilled cost when the item's known cost changes, without clobbering a typed value", async () => {

@@ -6,6 +6,7 @@ import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 import { useSession, authClient } from "@/lib/auth-client";
 import { logoutAndReload } from "@/lib/logout";
 import { usePendingReturnsCount } from "@/lib/pending-returns";
+import { SLOW_REFETCH_MS } from "@/lib/freshness";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { Button } from "@/components/ui/button";
 import {
@@ -137,7 +138,9 @@ export function AppShell() {
   const activeTitleKey = pageTitleFor(activeKey);
   // issue #118 — one shared, polled aggregate keeps the «المرتجعات» badge in
   // step with the dashboard and a second window (round-2 findings 1 + 2).
-  const pendingReturns = usePendingReturnsCount();
+  // #295 made the two stock counters hot and never named this badge, so it
+  // keeps the bound it had: the calm one, not the counter tick.
+  const pendingReturns = usePendingReturnsCount(SLOW_REFETCH_MS);
 
   function toggleSidebar() {
     updateCollapsed((current) => !current);

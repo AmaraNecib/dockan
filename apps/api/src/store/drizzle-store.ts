@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type {
   Activity,
   Category,
@@ -1640,6 +1640,18 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .from(stockMovements)
         .where(eq(stockMovements.itemId, itemId))
         .orderBy(stockMovements.occurredAt, sql`rowid`);
+      return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
+    },
+    async listStockMovementsSince(itemId, recordedAfter) {
+      // the #295 repeat window: only the movements RECORDED after the cutoff
+      // (created_at), in insertion order. created_at is the server's local
+      // "YYYY-MM-DDTHH:mm:ss", the same format the cutoff uses, so the
+      // comparison is chronological without any date parsing.
+      const rows = await db
+        .select({ ...movementCols, seq: sql<number>`rowid` })
+        .from(stockMovements)
+        .where(and(eq(stockMovements.itemId, itemId), gt(stockMovements.createdAt, recordedAfter)))
+        .orderBy(sql`rowid`);
       return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
     },
     async countStockMovements(itemId) {

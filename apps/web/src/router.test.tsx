@@ -72,6 +72,9 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     itemsList: { queryKey: () => ["items"] },
+    // the items page reads the catalog while an edited row is off its page
+    // (#295 round 4); a mock that omits it fails at the first render
+    itemsAll: { queryKey: () => ["itemsAll"] },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
     // PartyPicker (issue 120) mounts on the sale form and needs both lists
     customersList: {

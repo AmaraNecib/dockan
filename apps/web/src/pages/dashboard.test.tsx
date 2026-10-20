@@ -178,14 +178,14 @@ async function waitFor(check: () => boolean): Promise<boolean> {
   return false;
 }
 
-async function mount(queryClient: QueryClient, opts: { refreshMs?: number } = {}) {
+async function mount(queryClient: QueryClient, opts: { refreshMs?: number; slowRefreshMs?: number } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <DashboardPage refreshMs={opts.refreshMs} />
+        <DashboardPage refreshMs={opts.refreshMs} slowRefreshMs={opts.slowRefreshMs} />
       </QueryClientProvider>,
     );
   });
@@ -313,6 +313,18 @@ describe("DashboardPage summary (issue 84)", () => {
     await page.unmount();
   });
 
+  it("renders the day's sales count under its own testid", async () => {
+    // #295 — the e2e reads the count through this testid, so the number the
+    // spec reads and the number the owner sees are the same number. Without
+    // the pin, the testid could be renamed or dropped and only the e2e would
+    // notice.
+    summary.salesCount = 3;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-sales-count") !== null)).toBe(true);
+    expect(page.card("dashboard-sales-count")?.textContent).toBe("3");
+    await page.unmount();
+  });
+
   it("hides the pending-returns notice when no return awaits review", async () => {
     const page = await mount(queryClient);
     expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
@@ -332,10 +344,36 @@ describe("DashboardPage summary (issue 84)", () => {
   });
 
   // round-2 finding 2 — the shell badge and this notice read one shared hook,
-  // so convergence is proven here and the sidebar gets the same behaviour
+  // so convergence is proven here and the sidebar gets the same behaviour.
+  // The assertion is the NUMBER ON SCREEN, not the fetch count: a page that
+  // rendered the first read forever while the query kept polling would pass a
+  // `pendingFetchCount >= 2` check and still show a stale badge.
   it("polls the pending-return count so the badge converges without an invalidation", async () => {
-    const page = await mount(queryClient, { refreshMs: 20 }); // 20ms refresh keeps the test fast
-    expect(await waitFor(() => pendingFetchCount >= 2)).toBe(true);
+    const page = await mount(queryClient, { slowRefreshMs: 20 }); // 20ms calm interval keeps the test fast
+    // the first read answers zero, so there is no notice yet
+    expect(await waitFor(() => pendingFetchCount >= 1)).toBe(true);
+    expect(page.pendingNotice()).toBeNull();
+
+    // a return arrives on the server. NOTHING invalidates locally: the only
+    // thing that can carry this number to the screen is the tick.
+    pendingReturnsCount = 2;
+    expect(await waitFor(() => page.pendingNotice() !== null)).toBe(true);
+    expect(page.pendingNotice()?.textContent).toContain("2");
+    await page.unmount();
+  });
+
+  it("carries the caller's interval and the background flag on the shared count", async () => {
+    // the wiring, not the runtime effect: happy-dom has no hidden tab, so the
+    // behaviour itself is measured in the e2e (#295). Deleting the interval
+    // fails here, and so does dropping the background flag.
+    const page = await mount(queryClient, { slowRefreshMs: 20 });
+    expect(await waitFor(() => pendingFetchCount >= 1)).toBe(true);
+    const observer = queryClient.getQueryCache().find({ queryKey: ["returnsPendingCount"] })?.observers[0];
+    expect(observer?.options.refetchInterval).toBe(20);
+    // the flag only matters while the document is HIDDEN: for a visible
+    // window TanStack's `isFocused()` is already true, because it answers from
+    // `document.visibilityState` and not from OS focus (`focusManager.js:55-60`)
+    expect(observer?.options.refetchIntervalInBackground).toBe(true);
     await page.unmount();
   });
 
@@ -619,7 +657,7 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
   it("retries the milestone on a later observation after a failure", async () => {
     failAcknowledge = true;
     progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
-    const page = await mount(queryClient, { refreshMs: 20 });
+    const page = await mount(queryClient, { slowRefreshMs: 20 });
     // each progress refetch is a new observation, so the failed record retries
     expect(await waitFor(() => acknowledgeCount >= 3)).toBe(true);
 
@@ -784,9 +822,35 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     await page.unmount();
   });
 
-  it("refetches progress on the refresh interval", async () => {
-    const page = await mount(queryClient, { refreshMs: 20 });
+  it("refetches progress on its own calm interval", async () => {
+    const page = await mount(queryClient, { slowRefreshMs: 20 });
     expect(await waitFor(() => progressFetchCount >= 2)).toBe(true);
+    await page.unmount();
+  });
+
+  it("does not let the hot tick drive the progress read that writes", async () => {
+    // #295 — onboardingProgress is a READ that WRITES server-side (it records
+    // the milestone), so it must not ride the hot counter tick. The summary
+    // ticks here; the checklist read must stay at its single mount fetch.
+    const page = await mount(queryClient, { refreshMs: 20 });
+    expect(await waitFor(() => fetchCount >= 3)).toBe(true);
+    expect(progressFetchCount).toBe(1);
+    await page.unmount();
+  });
+
+  it("does not let the progress read tick in the background either", async () => {
+    // the same read, the other half of the wiring: it must not run on a
+    // background tab either. A hidden checklist has nobody to self-heal for,
+    // and its server read writes — a background heartbeat would be a
+    // preference write per tick.
+    //
+    // The flag is spelled out as `false` on the query (dashboard.tsx), so the
+    // assertion is exact: `refetchIntervalInBackground: true` put back on the
+    // onboardingProgress query fails HERE.
+    const page = await mount(queryClient, { slowRefreshMs: 20 });
+    expect(await waitFor(() => progressFetchCount >= 1)).toBe(true);
+    const observer = queryClient.getQueryCache().find({ queryKey: ["onboardingProgress"] })?.observers[0];
+    expect(observer?.options.refetchIntervalInBackground).toBe(false);
     await page.unmount();
   });
 });

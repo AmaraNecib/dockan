@@ -1,5 +1,12 @@
 import { expect, type Locator, type Page, type Response } from "@playwright/test";
 
+import {
+  postRpcInPage,
+  rpcRequestInit,
+  type RpcEnvelope,
+  VAULT_SESSION_STORAGE_KEY,
+} from "../../packages/e2e-support/src/rpc-request";
+
 /**
  * Server-acknowledged RPCs (issue 179).
  *
@@ -138,6 +145,42 @@ export async function rpcOutput<T>(response: Response, procedure = "rpc"): Promi
 }
 
 /**
+ * POST one procedure from the page and unwrap the `{ json }` envelope.
+ *
+ * The request itself is built by `@dokan/e2e-support` (packages/e2e-support),
+ * which owns the app's link headers (`x-vault-session`) and the
+ * `credentials: "include"` mode — and a unit test over that module pins what
+ * the request carries. This helper only has to supply the page's vault token
+ * and the payload.
+ */
+async function postRpc<T>(page: Page, procedure: string, payload: string): Promise<T> {
+  // the token lives in the PAGE's sessionStorage (the key the app's vault
+  // client writes), so it is read there. A blocked storage throws there too
+  // and must not fail the read.
+  const vaultToken = await page.evaluate((key) => {
+    try {
+      return sessionStorage.getItem(key);
+    } catch {
+      /* storage can be blocked by the webview; proceed without a vault session */
+      return null;
+    }
+  }, VAULT_SESSION_STORAGE_KEY);
+  const body = await page.evaluate(postRpcInPage, {
+    name: procedure,
+    payload,
+    init: rpcRequestInit(vaultToken),
+  });
+  if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
+    throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
+  }
+  // SAFETY: page.evaluate cannot carry a generic across the browser boundary;
+  // the oRPC StandardRPCSerializer answers a successful call with
+  // `{ json: <declared output> }` (the browser-side `ok()` rejected a refusal),
+  // so the caller's T names the value at `json`.
+  return (body as RpcEnvelope<T>).json;
+}
+
+/**
  * Read a no-input procedure's output directly, with no response for a
  * navigation to discard.
  *
@@ -152,37 +195,42 @@ export async function rpcOutput<T>(response: Response, procedure = "rpc"): Promi
  *
  * `/api/rpc/<procedure>` accepts an empty JSON body for a no-input procedure
  * and answers the same `{ json }` envelope the page's client reads, so this is
- * the server value the UI renders. It mirrors the app's RPC link headers
- * (`x-vault-session`), so it stays faithful if a vault-mode spec ever adopts it.
+ * the server value the UI renders.
  */
 export async function readRpc<T>(page: Page, procedure: string): Promise<T> {
-  const body = await page.evaluate(async (name) => {
-    const headers = new Headers({ "content-type": "application/json" });
-    // the same unlocked-owner header apps/web/src/lib/rpc.ts attaches; read the
-    // one storage key vault-client.ts writes (empty/null means no session). A
-    // blocked storage throws there too and must not fail the read.
-    let vaultToken: string | null = null;
-    try {
-      vaultToken = sessionStorage.getItem("dokan.vault.session");
-    } catch {
-      /* storage can be blocked by the webview; proceed without a vault session */
-    }
-    if (vaultToken !== null && vaultToken !== "") headers.set("x-vault-session", vaultToken);
-    const response = await fetch(`/api/rpc/${name}`, {
-      method: "POST",
-      headers,
-      body: "{}",
-      credentials: "include",
-    });
-    if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
-    return response.json();
-  }, procedure);
-  if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
-    throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
-  }
-  // SAFETY: page.evaluate cannot carry a generic across the browser boundary;
-  // the oRPC StandardRPCSerializer answers a successful call with
-  // `{ json: <declared output> }` (the browser-side `ok()` rejected a refusal),
-  // so the caller's T names the value at `json`.
-  return (body as { json: T }).json;
+  return postRpc<T>(page, procedure, "{}");
+}
+
+/**
+ * Call a procedure that TAKES an input from the page and return its output.
+ *
+ * The input-taking sibling of `readRpc`, and the shape a spec that seeds a
+ * fixture through the app's own wire needs (`itemsCreateWithStock`). A spec
+ * that hand-rolls this fetch is how the app's link headers get dropped: the
+ * fourth private copy omitted `x-vault-session` and would have been refused on
+ * a vault-mode server (#295). Both `postRpc` callers share the header now.
+ */
+export async function callRpc<T, I>(page: Page, procedure: string, input: I): Promise<T> {
+  return postRpc<T>(page, procedure, JSON.stringify({ json: input }));
+}
+
+/**
+ * A category to hang seeded items on, creating one when the shop has none.
+ *
+ * A spec cannot borrow a category from whatever ran before it. The api seeds the
+ * default category once, at boot, and `scripts/reset-e2e-records.mjs` clears the
+ * categories again — so a spec that runs after a reset (including the SAME spec
+ * under `--repeat-each`, whose own afterAll reset fires between runs) reads
+ * `categories.items[0]` as undefined and dies with a TypeError about the order
+ * of the suite rather than about its own change. Both callers live here so the
+ * two copies cannot drift.
+ */
+export async function seedCategoryId(page: Page, name: string): Promise<string> {
+  // SAFETY: categoriesList answers { items: Array<{ id: string }> }
+  const categories = await callRpc<{ items: Array<{ id: string }> }, Record<string, never>>(page, "categoriesList", {});
+  const existing = categories.items[0];
+  if (existing !== undefined) return existing.id;
+  // SAFETY: categoriesCreate answers the created category, whose id is a string
+  const created = await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", { name });
+  return created.id;
 }

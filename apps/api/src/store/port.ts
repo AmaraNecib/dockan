@@ -283,6 +283,14 @@ export interface StorePort {
   insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "returnMark">>): Promise<StockMovement>;
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
   listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
+  /**
+   * The movements recorded AFTER a local stamp, in insertion order — the
+   * #295 repeat window. The stamp is the server's local
+   * "YYYY-MM-DDTHH:mm:ss", the same format `createdAt` stores, so the
+   * comparison is chronological without any date parsing. A backdated
+   * adjustment is still recorded now, so it lands in the window too.
+   */
+  listStockMovementsSince(itemId: string, recordedAfter: string): Promise<Array<StockMovement & { seq: number }>>;
   countStockMovements(itemId: string): Promise<number>;
 
   // --- purchase linkage (ticket 29) ----------------------------------------

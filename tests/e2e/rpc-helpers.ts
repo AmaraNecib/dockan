@@ -213,3 +213,24 @@ export async function readRpc<T>(page: Page, procedure: string): Promise<T> {
 export async function callRpc<T, I>(page: Page, procedure: string, input: I): Promise<T> {
   return postRpc<T>(page, procedure, JSON.stringify({ json: input }));
 }
+
+/**
+ * A category to hang seeded items on, creating one when the shop has none.
+ *
+ * A spec cannot borrow a category from whatever ran before it. The api seeds the
+ * default category once, at boot, and `scripts/reset-e2e-records.mjs` clears the
+ * categories again — so a spec that runs after a reset (including the SAME spec
+ * under `--repeat-each`, whose own afterAll reset fires between runs) reads
+ * `categories.items[0]` as undefined and dies with a TypeError about the order
+ * of the suite rather than about its own change. Both callers live here so the
+ * two copies cannot drift.
+ */
+export async function seedCategoryId(page: Page, name: string): Promise<string> {
+  // SAFETY: categoriesList answers { items: Array<{ id: string }> }
+  const categories = await callRpc<{ items: Array<{ id: string }> }, Record<string, never>>(page, "categoriesList", {});
+  const existing = categories.items[0];
+  if (existing !== undefined) return existing.id;
+  // SAFETY: categoriesCreate answers the created category, whose id is a string
+  const created = await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", { name });
+  return created.id;
+}

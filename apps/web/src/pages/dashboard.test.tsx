@@ -344,10 +344,21 @@ describe("DashboardPage summary (issue 84)", () => {
   });
 
   // round-2 finding 2 — the shell badge and this notice read one shared hook,
-  // so convergence is proven here and the sidebar gets the same behaviour
+  // so convergence is proven here and the sidebar gets the same behaviour.
+  // The assertion is the NUMBER ON SCREEN, not the fetch count: a page that
+  // rendered the first read forever while the query kept polling would pass a
+  // `pendingFetchCount >= 2` check and still show a stale badge.
   it("polls the pending-return count so the badge converges without an invalidation", async () => {
     const page = await mount(queryClient, { slowRefreshMs: 20 }); // 20ms calm interval keeps the test fast
-    expect(await waitFor(() => pendingFetchCount >= 2)).toBe(true);
+    // the first read answers zero, so there is no notice yet
+    expect(await waitFor(() => pendingFetchCount >= 1)).toBe(true);
+    expect(page.pendingNotice()).toBeNull();
+
+    // a return arrives on the server. NOTHING invalidates locally: the only
+    // thing that can carry this number to the screen is the tick.
+    pendingReturnsCount = 2;
+    expect(await waitFor(() => page.pendingNotice() !== null)).toBe(true);
+    expect(page.pendingNotice()?.textContent).toContain("2");
     await page.unmount();
   });
 
@@ -359,8 +370,9 @@ describe("DashboardPage summary (issue 84)", () => {
     expect(await waitFor(() => pendingFetchCount >= 1)).toBe(true);
     const observer = queryClient.getQueryCache().find({ queryKey: ["returnsPendingCount"] })?.observers[0];
     expect(observer?.options.refetchInterval).toBe(20);
-    // the badge lives in the shell, in the window the owner is NOT looking
-    // at: the tick only runs there because the flag says so
+    // the flag only matters while the document is HIDDEN: for a visible
+    // window TanStack's `isFocused()` is already true, because it answers from
+    // `document.visibilityState` and not from OS focus (`focusManager.js:55-60`)
     expect(observer?.options.refetchIntervalInBackground).toBe(true);
     await page.unmount();
   });

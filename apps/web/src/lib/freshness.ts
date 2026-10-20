@@ -24,9 +24,23 @@
  *
  * The binding bound is the human one: a stock number that is at most five
  * seconds behind is a number the owner can act on, and the same number at
- * sixty seconds is a number they have to re-check by hand. The tick is
- * backgrounded as well, because a window the owner is not looking at is
- * exactly the window that has to catch up on its own.
+ * sixty seconds is a number they have to re-check by hand.
+ *
+ * WHICH LEVER CARRIES WHICH CASE, because the two are easy to swap. In
+ * `@tanstack/query-core@5.101.4`
+ * (`node_modules/@tanstack/query-core/build/modern/focusManager.js:55-60`)
+ * `isFocused()` falls back to `document.visibilityState !== "hidden"`; its
+ * only listener is `visibilitychange` (`:12-15`), and nothing the browser
+ * emits ever assigns `#focused`, so a VISIBLE window reads as focused whether
+ * or not the OS gave it the keyboard. Two cases follow:
+ *
+ *   - visible but unfocused — two windows side by side, the case this ticket
+ *     is about. `isFocused()` is already true, so the interval runs with or
+ *     without `refetchIntervalInBackground`. The TICK is the only thing that
+ *     converges this window: no `visibilitychange` ever arrives, so
+ *     `refetchOnWindowFocus` never fires either.
+ *   - hidden or minimized. `isFocused()` is false and the interval survives
+ *     only because the flag is set. That is all the flag does.
  */
 export const HOT_COUNTER_REFETCH_MS = 5_000;
 
@@ -66,8 +80,12 @@ export const SLOW_REFETCH_MS = 60_000;
 export function hotCounterRefresh(refreshMs: number = HOT_COUNTER_REFETCH_MS) {
   return {
     refetchInterval: refreshMs,
-    // a background tab still polls: the unfocused window is the case the
-    // tick exists for
+    // load-bearing only while the document is HIDDEN: for a visible window
+    // `isFocused()` is already true, because it answers from
+    // `document.visibilityState` and not from OS focus (focusManager.js:55-60)
+    // — see the header. A hidden tab's timers are throttled by the browser
+    // (about 1/s, and about 1/min under Chromium's intensive throttling), so a
+    // minimized window converges on that degraded pace, not on this bound.
     refetchIntervalInBackground: true,
   } as const;
 }

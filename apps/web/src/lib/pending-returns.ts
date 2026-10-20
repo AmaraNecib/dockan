@@ -12,15 +12,19 @@ import { orpc } from "./rpc";
  * decision the call site makes, and a silent default would let a new call
  * site poll at a pace nobody chose. Both call sites pass `SLOW_REFETCH_MS`:
  * #295 made two counters hot and never named this badge, so it keeps the
- * bound it had.
+ * CADENCE it had. The background flag is new on this branch and is the one
+ * thing #295 gave this hook: a hidden window's interval would otherwise stop.
+ * For a visible window the flag changes nothing — see `freshness.ts`'s header
+ * for which lever carries which case.
  */
 export function usePendingReturnsCount(refreshMs: number) {
   return useQuery({
     ...orpc.returnsPendingCount.queryOptions(),
     refetchInterval: refreshMs,
-    // the badge lives in the shell, which is on screen in the window the owner
-    // is NOT looking at — the same reason the hot counters tick in the
-    // background (#295)
+    // a hidden window keeps its badge current; a visible one already ticks,
+    // flag or no flag (freshness.ts: the focus manager answers from
+    // document.visibilityState, so `isFocused()` is true for a visible window
+    // even when the OS never gave it the keyboard)
     refetchIntervalInBackground: true,
   });
 }

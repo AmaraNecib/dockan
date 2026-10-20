@@ -1,7 +1,7 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
-import { callRpc } from "./rpc-helpers";
+import { callRpc, seedCategoryId } from "./rpc-helpers";
 
 /** The item a spec seeds. */
 type ItemSeed = {
@@ -29,27 +29,6 @@ type InvoiceSeed = {
   initialPaid?: number;
   lines: Array<{ itemId: string; quantity: number; unitPrice?: number }>;
 };
-
-/**
- * The category the specs below seed their item under.
- *
- * The list is empty on a fresh database: the API seeds the default category
- * once, at boot, and a reset (scripts/reset-e2e-records.mjs) clears the
- * categories again. So this spec cannot borrow a category from whatever ran
- * before it — it takes the first one there is and creates one when the list is
- * empty. Before this, the spec read `categories.items[0]` and died with a
- * TypeError on a database that had no category yet: a failure about the order
- * of the suite, not about pagination.
- */
-async function seedCategoryId(page: Page, name: string): Promise<string> {
-  // SAFETY: categoriesList answers { items: Array<{ id: string }> }
-  const categories = await callRpc<{ items: Array<{ id: string }> }, Record<string, never>>(page, "categoriesList", {});
-  const existing = categories.items[0];
-  if (existing !== undefined) return existing.id;
-  // SAFETY: categoriesCreate answers the created category, whose id is a string
-  const created = await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", { name });
-  return created.id;
-}
 
 /**
  * Issue 163 — server-side pagination on the invoices list (the prototype

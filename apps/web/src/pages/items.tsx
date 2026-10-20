@@ -46,6 +46,14 @@ type ItemEditDraft = {
   threshold: string;
   /** the row as loaded, so save can send only the fields that changed */
   baseline: { name: string; categoryId: string; costPrice: number; sellingPrice: number; lowStockThreshold: number };
+  /**
+   * The row's last read, alive for as long as the draft is. The editor is
+   * rendered FROM the page's rows, so a draft whose row leaves the page (a page
+   * boundary, or an earlier-sorting item arriving from another window) would
+   * otherwise take its Save and Cancel buttons with it and leave the operator
+   * blocked by a dirty draft they cannot finish or discard.
+   */
+  row: ItemListItem;
 };
 
 /** The two jobs on the items page: browse the table, or add item/stock. */
@@ -644,6 +652,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
       if (current === null || current.id !== row.id) return current;
       return {
         ...current,
+        row,
         baseline: {
           name: row.name,
           categoryId: row.categoryId,
@@ -692,6 +701,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
       cost: String(item.costPrice),
       sell: String(item.sellingPrice),
       threshold: String(item.lowStockThreshold),
+      row: item,
       baseline: {
         name: item.name,
         categoryId: item.categoryId,
@@ -833,6 +843,19 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
     );
   }
 
+  // #295 — a poll can take the edited row OFF the page. The tick re-reads the
+  // list every five seconds, the page is one window of a name-ordered list, and
+  // an item created in the other window can sort ahead of the last row. The
+  // editor is rendered from these rows, so without the draft's own row snapshot
+  // the Save and Cancel buttons would disappear while `draftDirty` keeps every
+  // other Edit control disabled: a dirty draft with no way to finish or discard
+  // it. The snapshot carries the row as it was last READ, so its non-editing
+  // cells (barcode, stock) can lag by one poll — the editable ones do not, they
+  // come from the draft and its baseline.
+  const pageItems = items.data.items;
+  const draftRowOnPage = draft !== null && pageItems.some((item) => item.id === draft.id);
+  const renderedRows = draft !== null && !draftRowOnPage ? [...pageItems, draft.row] : pageItems;
+
   return (
     <>
       {editError && (
@@ -861,11 +884,13 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
           </tr>
         </thead>
         <tbody>
-          {items.data?.items.map((item: ItemListItem) => {
+          {renderedRows.map((item: ItemListItem) => {
             const editing = draft !== null && draft.id === item.id;
+            // the draft's own row, shown even when the page no longer holds it
+            const offPage = editing && !pageItems.some((row) => row.id === item.id);
             const draftProfit = editing ? profitPreview(draft.cost, draft.sell) : null;
             return (
-              <tr key={item.id} className="border-b last:border-0" data-editing={editing ? "true" : undefined}>
+              <tr key={item.id} className="border-b last:border-0" data-editing={editing ? "true" : undefined} data-off-page={offPage ? "true" : undefined}>
                 <td className="p-3">
                   {editing ? (
                     <input

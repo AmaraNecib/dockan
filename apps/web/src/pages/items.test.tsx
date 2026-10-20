@@ -438,6 +438,39 @@ describe("items list hot counter (#295)", () => {
     });
   });
 
+  it("keeps an open draft's Save and Cancel reachable when a poll pushes its row off the page", async () => {
+    // #295 round 3 (Greptile P1). The tick re-reads a name-ordered page, so an
+    // item created in ANOTHER window can sort ahead of the last row and push it
+    // to the next page. The editor used to be rendered from the page's rows
+    // alone: the buttons went with the row, while `draftDirty` kept every other
+    // Edit control disabled — a dirty draft with no way to save or discard it.
+    await mount({ refreshMs: 20 });
+    await waitFor(() => itemsListFetches >= 1);
+    const editedId = items[items.length - 1]!.id; // the last row on the page
+    click(`edit-item-${editedId}`);
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "قيد الكتابة"); // the draft is now dirty
+
+    // the next poll answers a page that no longer holds this row: the fixture
+    // IS the page the mock returns, so dropping the row is what a page boundary
+    // moving looks like to the table
+    items = items.filter((item) => item.id !== editedId);
+    await waitFor(() => document.querySelector('[data-off-page="true"]') !== null);
+
+    // the way out is still on screen, and the poll did not need an invalidation
+    // to put it there
+    const save = document.querySelector('[data-testid="edit-save"]');
+    const cancel = document.querySelector('[data-testid="edit-cancel"]');
+    expect(save).not.toBeNull();
+    expect(cancel).not.toBeNull();
+
+    // and it WORKS: cancelling lifts the block the dirty draft put on the
+    // remaining rows
+    click("edit-cancel");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
+    expect(el<HTMLButtonElement>('[data-testid="edit-item-item-1"]').disabled).toBe(false);
+  });
+
   it("carries the background polling flag on the query", async () => {
     const { queryClient } = await mount({ refreshMs: 20 });
     await waitFor(() => itemsListFetches >= 1);

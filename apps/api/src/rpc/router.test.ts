@@ -668,6 +668,79 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     expect(history.stockOnHand).toBe(5);
   });
 
+  it("treats a blank reason as no reason, so the pair cannot move stock twice", async () => {
+    // Greptile round 3 (P1). The contract TRIMS the field, so a reason made of
+    // spaces arrives as "" while an untouched one arrives as undefined. `??`
+    // mapped those to "" and null, the identity compared them as different, and
+    // the same adjustment was admitted TWICE inside the repeat window.
+    //
+    // Both orders, because each one kills a different half of the fix: a blank
+    // reason stored in the ledger breaks the pair when the blank goes first,
+    // and an unnormalized CHECK breaks it when the blank goes second.
+    const blankFirst = await makeItem("تسوية-سبب-فارغ-أولا");
+    await client.stockAddManual({ itemId: blankFirst.id, delta: 5, unitCost: 100, reason: "   " });
+    let refusedBlankFirst: { code?: string; message: string } | null = null;
+    try {
+      // the same adjustment with the field left alone
+      await secondClient.stockAddManual({ itemId: blankFirst.id, delta: 5, unitCost: 100 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code` and `message`
+      refusedBlankFirst = err as { code?: string; message: string };
+    }
+    expect(refusedBlankFirst).not.toBeNull();
+    expect(refusedBlankFirst!.code).toBe("CONFLICT");
+    expect(refusedBlankFirst!.message).toBe("STOCK_ADJUSTMENT_DUPLICATE");
+
+    const blankSecond = await makeItem("تسوية-سبب-فارغ-ثانيا");
+    await client.stockAddManual({ itemId: blankSecond.id, delta: 5, unitCost: 100 });
+    let refusedBlankSecond: { code?: string; message: string } | null = null;
+    try {
+      await secondClient.stockAddManual({ itemId: blankSecond.id, delta: 5, unitCost: 100, reason: "\t " });
+    } catch (err) {
+      // SAFETY: as above
+      refusedBlankSecond = err as { code?: string; message: string };
+    }
+    expect(refusedBlankSecond).not.toBeNull();
+    expect(refusedBlankSecond!.code).toBe("CONFLICT");
+
+    // one movement each, and the ledger holds ONE value for "no reason"
+    for (const item of [blankFirst, blankSecond]) {
+      const history = await client.itemsHistory({ itemId: item.id });
+      expect(history.movements).toHaveLength(1);
+      expect(history.movements[0]!.reason).toBeNull();
+    }
+  });
+
+  it("opens the guard's read under the write lock, not a deferred unit", async () => {
+    // #295 — the guard READS the window and then WRITES, so the handler takes
+    // the write lock first, like every other money path in this file. That
+    // choice is a convention, not an observable outcome: the store serializes
+    // every call on one connection (`drizzle-store.ts` `runSerialized`), so a
+    // deferred `BEGIN` and a `BEGIN IMMEDIATE` cannot interleave here and no
+    // behavioural test can tell them apart. Pinning the CALL is the only way
+    // the choice cannot be swapped for its weaker sibling without a red test.
+    const used: string[] = [];
+    const recordingStore: StorePort = {
+      ...store,
+      withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+        used.push("deferred");
+        return store.withTransaction(fn);
+      },
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+        used.push("immediate");
+        return store.withTransactionImmediate(fn);
+      },
+    };
+    const item = await makeItem("تسوية-قفل-الكتابة");
+
+    // only the adjustment may be counted: session reads and any setup work run
+    // through the same store, so the record starts here
+    used.length = 0;
+    await clientForStore(recordingStore).stockAddManual({ itemId: item.id, delta: 2 });
+
+    expect(used).toEqual(["immediate"]);
+  });
+
   it("applies the repeat window to the injected clock, not to the wall clock", async () => {
     // the window is the promise that an owner who means it twice can do it a
     // moment later. It is applied by the ROUTER, so the router has to ask

@@ -1,64 +1,106 @@
 # #295 — Client freshness: a sale in one window must show in the other
 
-**Branch:** `t3/295-client-freshness-1` · **Base:** `bff7a1a`
+**Branch:** `t3/295-client-freshness-1` · **Base:** `bff7a1a`, merged with
+`origin/develop` (`223d54a1`, #308) before the final commit
 **Commits:** `f4856e0` (the change) → `6f39a41` (the debate fixes) → `97c9612`
 (the evidence) → `f16890d` (the test-audit and code-review fixes) → `5a87f93`
 (the refreshed report) → `61ba809` (the round-2 lens fixes: the 10s window, its
-real edge, the checklist's background flag, the tick-bound test)
+real edge, the checklist's background flag, the tick-bound test) → `99c7b7c7`
+(the reader's real visibility flips) → `80d5084c` (the nine test-audit findings
+and the schema index) → `ac797411` (the develop merge) → the round-3 commit
+(Greptile's four findings, the lens round-3 findings, the mechanism correction)
 **Tier:** Standard. **Status:** lane done — committed, not pushed, no PR, no merge.
 
 ## The two questions, answered first
 
 ### 1. Does TanStack Query's focus refetch already satisfy criterion 1?
 
-**No.** `apps/web/src/main.tsx` builds `new QueryClient()` with no defaults, so
-`refetchOnWindowFocus: true` and `staleTime: 0` apply. A window the owner
-*clicks into* refetches its stale queries — that path needs nothing from this
-ticket. The case it cannot cover is a window that is on screen but never
-focused: two windows side by side, the one behind the other still visible. No
-focus event fires there, so the number on screen stays exactly as old as the
-last read made it.
+**No — and the reason is narrower than "it listens to the wrong event".** In
+`@tanstack/query-core@5.101.4`
+(`node_modules/@tanstack/query-core/build/modern/focusManager.js:55-60`)
+`isFocused()` falls back to `document.visibilityState !== "hidden"`; the manager
+registers `visibilitychange` and nothing else (`:12-15`), and nothing the
+browser emits ever sets `#focused`. So:
 
-Measured in `tests/e2e/client-freshness.spec.ts` (the spec's own output):
+- **Visible but unfocused** — two windows side by side, the ticket's case.
+  `isFocused()` is already `true`, the interval fires with or without
+  `refetchIntervalInBackground`, and no `visibilitychange` ever arrives, so
+  `refetchOnWindowFocus` has nothing to fire on. The bounded tick is the only
+  refetch trigger left.
+- **Hidden or minimized.** `isFocused()` is `false` and only
+  `refetchIntervalInBackground: true` keeps the interval running. Chromium
+  throttles a hidden tab's timers (about 1/s, about 1/min under intensive
+  throttling), so a minimized window converges on that pace, not on 5 s.
+
+Measured in `tests/e2e/client-freshness.spec.ts` at the head, two tests, run
+with `--repeat-each=2` (4 passed):
 
 ```
-#295 measurement: converged in 4963ms; reader visibility=visible, focus events=0, visibility flips=0
+#295 measurement [visible-unfocused]: converged in 4004ms; reader visible and unfocused (browser says visible), focus events=0, visibility events=0, visible flips=0
+#295 measurement [hidden]: converged in 3971ms; reader hidden to the app (browser says visible), focus events=0, visibility events=0, visible flips=0
 ```
 
-The reader tab never flipped to visible (the event TanStack v5's focus
-manager actually listens to is `visibilitychange`, not `focus`), was never
-reloaded, was never clicked, and issued no mutation — so the bounded tick
-was the only refetch trigger left that could have carried the change. The
-elapsed time is reported as a measurement, not asserted as a bound: the
-tick's phase against the sale is arbitrary, so a fast convergence would not
-mean a focus refetch happened.
+The visible-unfocused test patches nothing: the reader really is an on-screen
+window that never took the keyboard, which is the ticket. The hidden test is the
+same pair with the reader's document pretending to be hidden, and it is the only
+test where `refetchIntervalInBackground` is load-bearing. Both specs assert that
+no `focus` and no `visibilitychange` event reached the reader, and both read the
+browser's own visibility from `Document.prototype` so the counters can
+contradict the page. The elapsed time is reported as a measurement, not asserted
+as a bound: the tick's phase against the sale is arbitrary.
+
+Ablations, each run at the head:
+
+| Change | Result |
+|---|---|
+| `hotCounterRefresh`'s `refetchInterval` set to `false` | **both** e2e tests red (the count stayed at 0, no focus refetch) |
+| `refetchIntervalInBackground` deleted | the visible-unfocused test stays **green**, the hidden one goes **red** |
+
+The second row is the mechanism stated as a fact: the flag covers the hidden
+window and nothing else.
 
 ### 2. What is the smallest honest change for criterion 3?
 
-**A repeat-window guard on the existing append-only ledger.** The ledger
-never overwrites a movement, so two windows posting the same adjustment do
-not overwrite each other — they append twice, and the stock moves twice for
-one intention. `stockAddManual` now refuses the second post inside a
-10-second window with `ORPCError("CONFLICT", { message:
-"STOCK_ADJUSTMENT_DUPLICATE" })`; the first write stands.
+**A repeat-window guard on the existing append-only ledger.** The ledger never
+overwrites a movement, so two windows posting the same adjustment do not
+overwrite each other — they append twice, and the stock moves twice for one
+intention. `stockAddManual` now refuses the second post inside a 10-second
+window with `ORPCError("CONFLICT", { message: "STOCK_ADJUSTMENT_DUPLICATE" })`;
+the first write stands.
 
 The guard compares the incoming request against every movement **recorded**
-inside the window, using the identity the request **expressed**: the item,
-the kind, the signed quantity, the reason, plus a caller-supplied business
-date and a caller-supplied cost when there is one. Two fields stay out on
-purpose:
+inside the window, using the identity the request **expressed**: the item, the
+kind, the signed quantity, the reason, the row's origin `ref`, plus a
+caller-supplied business date and a caller-supplied cost when there is one.
+Three fields stay out on purpose or join conditionally:
 
-- a **server-stamped** date — two identical requests carry different stamps,
-  so a stamp in the identity would make the guard dead on arrival (the trap
-  #177 closed for supplier adjustments with its `serverStamped` rule);
-- a **derived** cost — an inflow that said no cost means "at the item's
-  cost", and the server derives that at posting time. The first posting
-  moves the average, so a derived cost in the identity would let the retry
-  of a no-cost adjustment slip past.
+- a **server-stamped** date — two identical requests carry different stamps, so
+  a stamp in the identity would make the guard dead on arrival (the trap #177
+  closed for supplier adjustments with its `serverStamped` rule);
+- a **derived** cost — an inflow that said no cost means "at the item's cost",
+  and the server derives that at posting time. The first posting moves the
+  average, so a derived cost in the identity would let the retry of a no-cost
+  adjustment slip past;
+- `ref` is in the identity unconditionally: an owner's typed adjustment has
+  none, and the rows the SERVER posts carry theirs, so a purchase correction,
+  supplier return or scrap can never be mistaken for the owner's own repeat.
+
+A blank reason is `null` before the check and before the write: the contract
+trims, so a field holding spaces arrives as `""` while an untouched field
+arrives as `undefined`, and the two used to be different identities — which
+moved the stock twice for one intention (Greptile round 3, P1).
 
 **No schema column, no `packages/contracts` change, no new procedure, no
 package, no port beyond loopback.** The `#181`-style `idempotencyKey` on the
 input schema is exactly the contracts change criterion 4 forbids.
+
+**One index is added**, `idx_stock_movements_item` on
+`stock_movements(item_id, created_at)` (`apps/api/src/db/schema.ts:478`). The
+guard's window read runs while the adjustment holds the write lock, and without
+the index every adjustment full-scans the ledger. It is additive and idempotent
+like every line in `SCHEMA_DDL`: no column, no `CURRENT_SCHEMA_VERSION` bump
+(stays 6), no backfill, no row rewrite — it is built on the next boot from the
+same array.
 
 ## What changed
 
@@ -73,113 +115,135 @@ input schema is exactly the contracts change criterion 4 forbids.
 - `apps/api/src/store/port.ts` + `drizzle-store.ts` — one new read,
   `listStockMovementsSince(itemId, recordedAfter)`: the movements recorded
   after a local stamp, in insertion order, with the window applied in sql.
+- `apps/api/src/db/schema.ts` — the index above.
 
 **Web**
 
 - `apps/web/src/lib/freshness.ts` (new) — `HOT_COUNTER_REFETCH_MS = 5_000` and
-  `hotCounterRefresh(refreshMs)`: the tick plus
-  `refetchIntervalInBackground`, because the unfocused window is the case
-  the tick exists for.
+  `hotCounterRefresh(refreshMs)`: the tick plus `refetchIntervalInBackground`,
+  which is what keeps a hidden window's interval alive. The module's header
+  states which lever carries which case.
 - `apps/web/src/pages/items.tsx` — the items table (stock on hand) polls on
-  that tick. It had no interval at all before.
+  that tick. It had no interval at all before. An open edit draft keeps its own
+  row snapshot, so a poll that pushes the row off the page does not take Save
+  and Cancel with it (Greptile round 3, P1).
 - `apps/web/src/pages/dashboard.tsx` — the landing summary polls on the same
   tick, shortened from 60s.
 - `apps/web/src/pages/stock.tsx` — an item's history (the running stock
   column) polls too.
-- `apps/web/src/lib/pending-returns.ts` — the shared count ticks in the
-  background, so the shell badge converges in an unfocused window.
+- `apps/web/src/lib/pending-returns.ts` — the shared count keeps its 60s
+  cadence and gains the background flag, so a hidden window's badge converges.
 - `apps/web/src/lib/i18n.ts` — the refusal reads
-  "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين. غيّر سبب التعديل أو أعد
-  المحاولة بعد قليل." — the raw code never reaches the owner.
+  "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين. أعد المحاولة بعد قليل." — the
+  raw code never reaches the owner, and the message does not tell them to type a
+  different reason to get past the guard (that advice was removed on purpose:
+  the way past is time, not a reason written into the ledger).
 
 **Tests**
 
-- `apps/api/src/lib/stock-adjustment.test.ts` — 8 tests: the identity
-  separates the actions that move the stock differently; a cost the request
-  did not express is not compared; a server-stamped date is not compared and
-  a caller-supplied one is; the cutoff lands on the window's edge in the
-  server's own format.
-- `apps/api/src/store/stock-ledger-store.test.ts` — the window in sql.
-- `apps/api/src/rpc/router.test.ts` — 7 tests: two clients, one refusal,
-  the first write survives; a different adjustment right after still records;
-  an intervening movement does not hide the repeat; a no-cost repeat after
-  the average moved is still refused; a repeat carrying the re-derived cost
-  is refused; a repeat removal, a blank reason and two dated adjustments
-  each get their own identity; two posts at the same time leave one movement.
+- `apps/api/src/lib/stock-adjustment.test.ts` — 9 tests: the identity
+  separates the actions that move the stock differently; a cost the request did
+  not express is not compared; a server-stamped date is not compared and a
+  caller-supplied one is; the cutoff lands on the window's edge in the server's
+  own format.
+- `apps/api/src/store/stock-ledger-store.test.ts` — the window in sql, and the
+  index by name in `EXPLAIN QUERY PLAN`.
+- `apps/api/src/rpc/router.test.ts` — 13 tests: two clients, one refusal, the
+  first write survives; a different adjustment right after still records; an
+  intervening movement does not hide the repeat; a no-cost repeat after the
+  average moved is still refused; a repeat carrying the re-derived cost is
+  refused; a repeat removal and two dated adjustments each get their own
+  identity; two posts at the same time leave one movement; the window on the
+  injected clock; a server row and the opening row must not refuse the owner;
+  the window's boundary second; a blank reason and no reason are one identity;
+  the guard opens the write lock rather than a deferred unit.
 - `apps/web/src/pages/items.test.tsx` — the list polls, the query carries the
-  background flag, and the refusal is actionable.
-- `tests/e2e/client-freshness.spec.ts` — two windows, one sale, no reload.
-- `tests/e2e-selection.map.json` — the new spec is reachable from the
-  feature rules (the selection test failed without it).
+  background flag, an open draft survives its row leaving the page, and the
+  refusal is actionable.
+- `apps/web/src/pages/dashboard.test.tsx` — the pending-return notice's NUMBER
+  moves on the tick, not merely the fetch count.
+- `apps/web/src/components/app/app-shell.test.tsx` (new) — the shell badge
+  passes `SLOW_REFETCH_MS`, observed on the query observer that builds the
+  browser's timer.
+- `tests/e2e/client-freshness.spec.ts` — two windows, one sale, no reload: the
+  visible-unfocused case and the hidden case, and a category seeded when the
+  reset left the shop with none (so `--repeat-each` cannot fail on suite order).
+- `tests/e2e-selection.map.json` — the new spec is reachable from the feature
+  rules (the selection test failed without it).
 
 ## The commands, and what they said
 
 | Command | Result |
 |---|---|
-| `bun test apps/api/src/lib/stock-adjustment.test.ts` | 8 pass, 0 fail |
-| `bun test apps/api/src/rpc/router.test.ts` | 263 pass, 0 fail |
-| `bun test apps/api/src/store/stock-ledger-store.test.ts` | 7 pass, 0 fail |
-| `bun test` (in `apps/web`) — `src/pages/items.test.tsx` | 58 pass, 0 fail |
-| `bun test` (in `apps/web`) — `items.test.tsx` + `dashboard.test.tsx` | 95 pass, 0 fail |
-| `bun run test` (full unit suite, heavy queue) | api 1080, web 1434, scripts 97 — **0 fail** |
-| `bun run test:e2e` (heavy queue) | **104 passed (6.7m)** |
+| `bun run test` (full unit suite, heavy queue) | api **1088**, web **1442**, scripts **97** — **0 fail** |
+| `bun run test:e2e -- client-freshness --repeat-each=2` (heavy queue) | **4 passed (52.5s)** |
+| `bun run test:e2e` (full suite, heavy queue, lane ports 4481/5281) | **98 passed, 1 failed, 6 did not run (9.2m)** — the failure is `vault.spec.ts` timing out on the DEFAULT vault port 4399, which a sibling lane held; it passes on this lane's own pair |
+| `bun run test:e2e -- vault` with `DOKAN_VAULT_PORT=4499 DOKAN_VAULT_WEB_PORT=5294` | **7 passed (25.3s)** |
 | `bun run lint` | 0 errors |
 | `bun run typecheck` | 4 tasks successful |
 | `bun run skills:check` | 32 skills in sync |
 
-**Ablations — the new tests are red without the fix:**
+**Ablations — each new test is red without its fix:**
 
-- the API guard disabled → the router test fails (exit 1);
-- the web tick removed → the two hot-counter tests fail (exit 1);
+- the API guard disabled → `router.test.ts:477` fails (exit 1);
+- the web tick removed (`refetchInterval: false`) → both e2e tests fail;
+- `refetchIntervalInBackground` deleted → the hidden-reader e2e test fails
+  while the visible-unfocused one passes;
 - the guard narrowed back to "the newest movement only" → the two new router
-  tests fail (exit 1);
-- dropping the derived-cost rule → the re-derived-cost test fails (exit 1).
+  tests fail;
+- dropping the derived-cost rule → the re-derived-cost test fails;
+- `withTransactionImmediate` → `withTransaction` → the write-lock pin fails;
+- the shell badge handed `HOT_COUNTER_REFETCH_MS` → `app-shell.test.tsx` fails;
+- the pending-return count frozen at its first read → the dashboard
+  convergence test fails;
+- the reason normalized in only one of the two places → the blank-reason test
+  fails (either order kills its own half);
+- the editor rendered from the page's rows alone → the off-page draft test
+  fails;
+- `seedItem` reading `categories.items[0]` without the fallback → the second
+  `--repeat-each` run fails on `undefined.id`.
 
 ## Deliberately left alone
 
 - **No push, no PR, no merge** — parent-only work.
-- **No schema, no migration, no `packages/contracts` change** — criterion 4.
+- **No schema column, no migration, no `packages/contracts` change** — criterion
+  4. The one index is additive DDL: no version bump, no backfill.
 - **No package added, no `bun add` / `bunx` / `npx`** — only
   `bun install --frozen-lockfile`.
 - **No push channel, no outbox, no offline queue** — out of scope by the
   ticket; the tick is the honest v1 answer.
 - **The 60s midnight day-lag** on the dashboard is now ≤5s. It was documented
-  as deliberate; the read is cheap enough that the shorter tick is the
-  point.
+  as deliberate; the read is cheap enough that the shorter tick is the point.
 - **The item's ledger is not hashed** — the guard is a repeat-window, not a
   content hash over the whole history.
-- **The `refreshMs` prop on the two pages** is test surface area. The
-  dashboard shipped it before this change; the alternative (a context or an
-  env knob) is worse.
+- **The `refreshMs` prop on the two pages** is test surface area. The dashboard
+  shipped it before this change; the alternative (a context or an env knob) is
+  worse.
 - **A second identical adjustment inside 10s is refused.** The window covers
-  the two threats and nothing more: a double-clicked save and a lost
-  response re-sent as the same action. A typed second batch takes a few
-  seconds too, so it is refused as well; the way past that is a moment later,
-  not a different reason typed into the ledger.
+  the two threats and nothing more: a double-clicked save and a lost response
+  re-sent as the same action. A typed second batch takes a few seconds too, so
+  it is refused as well; the way past that is a moment later, not a different
+  reason typed into the ledger.
 - **The read-cost numbers are one measurement, not a promise** — 0.65 ms per
-  `dashboardSummary` and 0.27 ms per `itemsList` (50 rows), sql only, on a
-  shop of 20 items and 500 movements. There is no committed benchmark.
+  `dashboardSummary` and 0.27 ms per `itemsList` (50 rows), sql only, on a shop
+  of 20 items and 500 movements. There is no committed benchmark.
 
 ## The lenses
 
-- **Debate** — critic + defender on `zen-proxy/glm-5.3-flash-free`
-  (never the author's model). Two blockers and five majors came out of it;
-  all are fixed in `6f39a41`. Evidence:
-  `.scratch/reviews/295/6f39a41-debate.md`.
-- **Test-audit** — round 1 found 5 things to fix and 9 gaps; the five fixes
-  are in `f16890d` (the exact refusal message, the premise of the no-cost
-  test, a concurrent-post test, the e2e's focus isolation, the cost rule).
-  Round-1 output: `.scratch/reviews/295/round1-test-audit.md`.
-- **Code-review** — round 1: standards *met with gaps*, spec *met with gaps*;
-  the gaps are fixed in `f16890d`. Round-1 output:
-  `.scratch/reviews/295/round1-code-review.md`.
-- Round 2 ran against `f16890d`: the code-review found the 30s window too
-  wide for its own justification (a typed second batch takes seconds, and
-  the way past the refusal wrote a fake reason into the ledger) and the
-  window's edge unpinned; both are fixed in `61ba809`. Outputs:
-  `.scratch/reviews/295/round1-*.md`, `round2-*.md`.
+- **Debate** — round 1 on `zen-proxy/glm-5.3-flash-free`; its blockers are in
+  `6f39a41`. Round 3 at `80d5084c` corrected this report: the background flag
+  was described as covering the visible-unfocused case, which the dependency
+  source contradicts (see question 1).
+- **Test-audit** — round 1's five fixes are in `f16890d`; round 3's P2s are in
+  the round-3 commit (the write-lock pin, the shell badge's calm bound, the
+  pending-return number instead of a fetch count).
+- **Code-review** — round 1's gaps are in `f16890d`; round 3 found the branch
+  carried review evidence develop had deleted (#308) and that this report
+  described a superseded head — both fixed in the round-3 commit.
+- **Greptile** — round 3 at `80d5084c` returned 3/5 with four findings. Three
+  were code (the off-page editor, the blank reason, the e2e's category seed)
+  and are fixed with a mutant each; the fourth (stale review evidence) was the
+  report itself.
 - **The gate still needs the three lenses at the FINAL head.** `guard`
   compares each `<sha>-<lens>.md` with HEAD and calls the evidence stale when
-  reviewable files changed since — and every lens fix moved the head. The
-  parent's re-run at the final head is what closes the Standard tier; the
-  debate evidence at `6f39a41-debate.md` is stale for the same reason.
+  reviewable files changed since — and every lens fix moved the head.

@@ -670,12 +670,19 @@ export function createRpcRouter(deps: RpcDeps) {
         if (input.kind === "PURCHASE" && input.delta <= 0) {
           throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_REQUIRES_INFLOW" });
         }
-        // #295 — a money path that READS before it WRITES takes the write lock
-        // first (the same reason the sale, payment and return paths use
+        // #295 — a money path that READS before it WRITES takes the write
+        // lock first (the same reason the sale, payment and return paths use
         // `withTransactionImmediate`): the guard below compares the request
         // with every movement recorded inside the repeat window, and a
-        // deferred transaction would let a second writer's read land on a
-        // stale snapshot.
+        // read-to-write upgrade inside a deferred unit is the shape that can
+        // lose a snapshot.
+        //
+        // What this buys TODAY is defence in depth, not a live guarantee: the
+        // store funnels every transaction through one connection
+        // (`drizzle-store.ts` `runSerialized`), so nothing can interleave with
+        // this unit either way. The convention is the thing worth keeping, so
+        // it is pinned as the CALL — `router.test.ts` "opens the guard's read
+        // under the write lock" fails if this becomes `withTransaction`.
         return deps.store.withTransactionImmediate(async (tx) => {
           const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);
           if (item === undefined) {
@@ -689,12 +696,22 @@ export function createRpcRouter(deps: RpcDeps) {
           // overwrite — it is a SECOND MOVEMENT, and the stock moves twice
           // for one intention. The first write stands; the second is refused
           // with a code the owner can act on.
+          // #295 — the reason is normalized ONCE, for the check and for the
+          // write. The contract TRIMS (`reason: z.string().trim().optional()`),
+          // so a field holding only spaces arrives as "" while an untouched
+          // field arrives as undefined;
+          // `??` alone maps those to "" and null, and `matchesAdjustment`
+          // compares them as different — so the same adjustment, posted once
+          // with spaces and once by leaving the field alone, moved the stock
+          // twice. Every other money path in this file normalizes the same way
+          // (see `resolveOpeningNames`), and the ledger stores one value: null.
+          const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
           const incoming: StockAdjustment = {
             itemId: item.id,
             kind: input.kind,
             delta: input.delta,
             unitCost: expressUnitCost(input.delta, input.unitCost, item.costPrice),
-            reason: input.reason ?? null,
+            reason,
             occurredAt: input.occurredAt ?? null,
             // an adjustment the owner typed has no origin document; the rows
             // the SERVER posted carry theirs (a purchase correction its
@@ -726,7 +743,7 @@ export function createRpcRouter(deps: RpcDeps) {
             kind: input.kind,
             delta: input.delta,
             unitCost: input.unitCost,
-            reason: input.reason ?? null,
+            reason,
             ref: null,
             occurredAt: input.occurredAt,
           });

@@ -11,7 +11,6 @@ import { createVaultBackupBundle, readVaultBackupBundle } from "../lib/vault/bac
 import { open, seal } from "../lib/vault/crypto";
 import {
   MAX_SNAPSHOT_STAMP_BYTES,
-  SNAPSHOT_FENCE_PREFIX_BYTES,
   VAULT_SNAPSHOT_LEGACY_VERSION,
   VAULT_SNAPSHOT_MAGIC,
   VAULT_SNAPSHOT_VERSION,
@@ -21,6 +20,7 @@ import {
   snapshotAadFor,
   type VaultWrap,
 } from "../lib/vault/format";
+import { type FenceVerdict, fromEnvelope, fromPath } from "../lib/vault/fence";
 import { assertSchemaVersionSupported, readSchemaVersion } from "../lib/schema-version";
 import type { StoreLogger } from "../store/port";
 
@@ -156,6 +156,8 @@ export type SnapshotFailureReason =
   | "foreign"
   /** the legacy unfenced envelope landed on the one this holder wrote */
   | "unstamped"
+  /** the snapshot is fenced and this connection has no stamp to check it against */
+  | "unfenced-holder"
   /** the bytes on disk are not an envelope this build knows */
   | "undecidable"
   /** the snapshot file is gone */
@@ -182,27 +184,6 @@ export class SnapshotPersistenceError extends Error {
   }
 }
 
-/**
- * What the fence on disk says. The outcomes are deliberately distinct,
- * because they decide three different things: whether a write is owed,
- * whether the version may be recorded durable, and what the owner is told.
- * Collapsing them is how a busy file ended up reported as "another writer
- * replaced your snapshot" and how a readable failure ended in a fatal exit.
- */
-export type FenceVerdict =
-  /** the bytes on disk carry this holder's stamp */
-  | { outcome: "mine" }
-  /** the bytes on disk carry another holder's stamp */
-  | { outcome: "foreign"; stamp: string }
-  /** the bytes on disk are the legacy envelope: no stamp at all */
-  | { outcome: "unstamped" }
-  /** the bytes on disk are not an envelope this build knows */
-  | { outcome: "undecidable" }
-  /** there is no file */
-  | { outcome: "absent" }
-  /** the file is there and could not be read */
-  | { outcome: "unreadable" };
-
 /** Why a write was refused, and the sentence that says so. */
 type FenceFailure = { reason: SnapshotFailureReason; message: string };
 
@@ -213,6 +194,11 @@ function fenceFailure(verdict: FenceVerdict): FenceFailure {
       return { reason: "foreign", message: "another writer's envelope replaced the snapshot this holder wrote" };
     case "unstamped":
       return { reason: "unstamped", message: "a legacy unfenced envelope replaced the snapshot this holder wrote" };
+    case "unfenced-holder":
+      return {
+        reason: "unfenced-holder",
+        message: "the snapshot is fenced and this connection has no stamp to check it against",
+      };
     case "undecidable":
       return { reason: "undecidable", message: "the bytes on disk are not a snapshot envelope this build knows" };
     case "absent":
@@ -342,19 +328,6 @@ function quickCheckIsOk(db: Database): boolean {
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * The verdict on one envelope's fence, with no connection state involved. An
- * unfenced connection has no stamp to compare, so its fence is trivially its
- * own — the same rule `readFence` applies, kept in one place.
- */
-function fenceOfBytes(envelope: Uint8Array, expectedStamp: string | undefined): FenceVerdict {
-  if (expectedStamp === undefined) return { outcome: "mine" };
-  const fence = readSnapshotFence(envelope);
-  if (fence === undefined) return { outcome: "undecidable" };
-  if (fence.stamp === undefined) return { outcome: "unstamped" };
-  return fence.stamp === expectedStamp ? { outcome: "mine" } : { outcome: "foreign", stamp: fence.stamp };
-}
-
 /** True when two verdicts describe the same state of the disk. */
 function sameVerdict(left: FenceVerdict, right: FenceVerdict): boolean {
   if (left.outcome === "foreign" && right.outcome === "foreign") return left.stamp === right.stamp;
@@ -383,8 +356,6 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * it is a change under a live connection, which is an incident.
    */
   let lastSeenFence: FenceVerdict = { outcome: "mine" };
-  /** the fence the opened envelope carried; undefined when the disk was not read */
-  let openedFence: FenceVerdict | undefined;
   if (options.seedBytes !== undefined) {
     raw = Database.deserialize(options.seedBytes);
   } else if (options.fresh !== true) {
@@ -399,32 +370,37 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     // the master key already authenticated against the header, so ANY failure
     // to open the committed snapshot is corruption, never a wrong passphrase
     let opened: OpenedSnapshot;
+    let openedVerdict: FenceVerdict;
     try {
-      opened = openSnapshot(connectionKey, vaultId, fs.readFileSync(snapshotPath));
+      const envelope = fs.readFileSync(snapshotPath);
+      opened = openSnapshot(connectionKey, vaultId, envelope);
+      openedVerdict = fromEnvelope(envelope, connectionStamp);
     } catch (error) {
       connectionKey.fill(0);
       throw new VaultCorruptionError(error instanceof Error ? error.message : String(error));
     }
     // A legacy envelope, or one stamped by a former holder, is not this
-    // holder's: the first write repairs the fence (#280). The verdict is
-    // computed whether or not this connection carries a stamp, because an
-    // UNFENCED connection over a fenced envelope is a downgrade and has to be
-    // said out loud.
-    openedFence =
-      opened.stamp === undefined
-        ? { outcome: "unstamped" }
-        : opened.stamp === connectionStamp
-          ? { outcome: "mine" }
-          : { outcome: "foreign", stamp: opened.stamp };
+    // holder's: the first write repairs the fence (#280). The verdict is asked
+    // for whether or not this connection carries a stamp, because an UNFENCED
+    // connection over a fenced envelope is a downgrade and has to be said out
+    // loud — and it is the fence reader (#307), not a comparison here, that
+    // decides which case this is.
     if (connectionStamp !== undefined) {
-      lastSeenFence = openedFence;
+      lastSeenFence = openedVerdict;
       // Surfaced, never silent. These bytes were writable by a holder that is
       // no longer the holder, so the newest acknowledged transactions may be
       // missing from them — and nothing here can distinguish that from an
       // honest handover, because the stamp carries no version to compare. It
       // is also the ROUTINE case: every restart leaves the previous session's
       // bytes on disk, so it is information, not an incident.
-      reportFence(openedFence, "info");
+      reportFence(openedVerdict, "info");
+    } else if (openedVerdict.outcome === "unfenced-holder") {
+      // An unfenced caller keeps the pre-#280 write behaviour by design, so the
+      // downgrade is allowed — but it is not silent. Left unsaid, the next
+      // fenced holder reads a v1 envelope and blames a former holder for a file
+      // that this build wrote, and the tamper-evidence the fence bought is gone
+      // with no trace of who removed it.
+      reportFence(openedVerdict, "warn");
     }
     raw = Database.deserialize(opened.image);
   } else {
@@ -447,52 +423,6 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * and release the handle underneath it (#291).
    */
   let closed = false;
-
-  /**
-   * What the snapshot on disk says right now, read as the header prefix so it
-   * stays cheap enough to ask before every write.
-   *
-   * The three no-fence answers are deliberately distinct. `"absent"` (no file)
-   * and `"undecidable"` (bytes that are not a fence this build knows) are both
-   * decidable statements about a path that read fine, so asking again cannot
-   * change them. `"unreadable"` is an I/O failure — EBUSY, EACCES, a torn
-   * prefix — and the file may be perfectly healthy and correctly stamped: to
-   * report a foreign writer from it would force a full serialize+encrypt+rename
-   * of a multi-megabyte snapshot over a momentary busy handle.
-   */
-  function readDiskFence(): FenceVerdict {
-    let fd: number | undefined;
-    try {
-      fd = fs.openSync(snapshotPath, "r");
-      const head = Buffer.alloc(SNAPSHOT_FENCE_PREFIX_BYTES);
-      const read = fs.readSync(fd, head, 0, head.length, 0);
-      const fence = readSnapshotFence(head.subarray(0, read));
-      if (fence === undefined) return { outcome: "undecidable" };
-      if (fence.stamp === undefined) return { outcome: "unstamped" };
-      return fence.stamp === connectionStamp ? { outcome: "mine" } : { outcome: "foreign", stamp: fence.stamp };
-    } catch (error) {
-      // SAFETY: the errno `code` probe is how Node reports ENOENT from open;
-      // the cast only exposes the field this branch reads
-      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-      // ENOENT is not the only "no snapshot file at this path". A path that is a
-      // directory, or whose parent is a file, answers EISDIR or ENOTDIR on open
-      // or read. Those are decidable statements about the path, not a transient
-      // I/O failure: calling them "unreadable" sent the post-write branch down
-      // its benign "written, fence unproven" exit over a snapshot that was
-      // gone. Treated as absent, a write is owed, and the write itself then
-      // fails loudly because nothing can be renamed over a directory.
-      if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { outcome: "absent" };
-      return { outcome: "unreadable" };
-    } finally {
-      if (fd !== undefined) {
-        try {
-          fs.closeSync(fd);
-        } catch {
-          /* already closed */
-        }
-      }
-    }
-  }
 
   /**
    * Report a fence that is not this holder's. The severity follows the case:
@@ -523,6 +453,17 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
           "the snapshot on disk is the legacy unfenced format: it carries no holder stamp, so its currency is unverifiable and this holder rewrites it",
         );
         return;
+      case "unfenced-holder":
+        // Only collectable from the open path of an unfenced connection: the
+        // write path never asks the reader without a stamp. Warn whatever the
+        // caller's severity, because the downgrade this names is about to
+        // happen — this holder rewrites the fenced envelope as legacy.
+        emit(
+          "warn",
+          "VAULT_SNAPSHOT_FENCE_DOWNGRADE",
+          "this connection has no holder stamp and will overwrite a fenced snapshot with the legacy unfenced format",
+        );
+        return;
       case "absent":
         emit(
           "warn",
@@ -548,21 +489,6 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   }
 
   /**
-   * Warn when an UNFENCED connection is about to downgrade a fenced envelope.
-   * An unfenced caller keeps the pre-#280 write behaviour by design, so the
-   * downgrade is allowed — but it is not silent. Left unsaid, the next fenced
-   * holder reads a v1 envelope and blames a former holder for a file that this
-   * build wrote, and the tamper-evidence the fence bought is gone with no trace
-   * of who removed it.
-   */
-  if (connectionStamp === undefined && openedFence?.outcome === "foreign") {
-    options.logger?.warn(
-      "VAULT_SNAPSHOT_FENCE_DOWNGRADE",
-      "this connection has no holder stamp and will overwrite a fenced snapshot with the legacy unfenced format",
-    );
-  }
-
-  /**
    * Record a verdict for the change detector, then hand it back. One report per
    * CHANGE, not one per read: a fence that stays foreign says nothing new on
    * the second look.
@@ -582,8 +508,6 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * An unreadable prefix is asked twice, with the same spacing the write path
    * uses between its attempts, so one retry can absorb a transient refusal: no
    * retry is spent on a decidable answer, which cannot change by asking again.
-   * An unfenced connection has no stamp to compare, so its fence is trivially
-   * its own — exactly the pre-#280 behaviour.
    *
    * This is a generator because the async persist path and the synchronous
    * checkpoint path must share the attempt bound and the report bookkeeping.
@@ -593,9 +517,17 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
    * on the synchronous path, `await` on the async one.
    */
   function* fenceSteps(): Generator<number, FenceVerdict, void> {
-    if (connectionStamp === undefined) return { outcome: "mine" };
+    if (connectionStamp === undefined) {
+      // An unfenced holder writes the legacy envelope unconditionally (the
+      // pre-#280 rule): it has no stamp, so the disk cannot answer for it and
+      // there is nothing for the reader to compare. Asking anyway would turn a
+      // clean check into a rewrite of bytes this holder is about to overwrite,
+      // and the one state worth hearing about — an unfenced holder over a
+      // fenced snapshot — was already warned as a downgrade at open.
+      return { outcome: "mine" };
+    }
     for (let attempt = 1; attempt <= FENCE_READ_ATTEMPTS; attempt += 1) {
-      const verdict = readDiskFence();
+      const verdict = fromPath(snapshotPath, connectionStamp);
       if (verdict.outcome !== "unreadable") return noteFence(verdict);
       // the file may be busy for a moment; ask again after a pause, exactly
       // as the write path does before it gives up on a rename
@@ -897,7 +829,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // on a coherent but stale image. The fence is the only observer that can
       // tell, and it sees the buffer, not the file.
       const snapshot = fs.readFileSync(snapshotPath);
-      const verdict = fenceOfBytes(snapshot, connectionStamp);
+      const verdict = fromEnvelope(snapshot, connectionStamp);
       if (verdict.outcome !== "mine") {
         const failure = fenceFailure(verdict);
         throw new SnapshotPersistenceError(

@@ -8,7 +8,7 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 **Start here.** This is the mandatory entry point for all feature work.
 Read `docs/engineering-workflow.md` first.
 
-**A lane stops at step 9 (Guard Phase 2).** Steps 10-14 are parent-owned: push, PR,
+**A lane stops at step 10 (Guard Phase 2).** Steps 11-15 are parent-owned: push, PR,
 CI/Greptile, the architecture review, the merge decision and wisdom. The lane's
 last act is its **commit**; its completion wakes the parent. It never pushes,
 never opens a PR and never merges.
@@ -120,7 +120,7 @@ Load relevant skills from the workflow's quality check table:
 
 | If the change touches... | Load these skills |
 |---|---|
-| New module, interface, or architecture | `codebase-design` while writing; `improve-codebase-architecture` is the parent's step 12, after the 5/5 |
+| New module, interface, or architecture | `codebase-design` while writing; `improve-codebase-architecture` is the parent's step 13, after the 5/5 |
 | Complex logic, state, or edge cases | `diagnosing-bugs` |
 | Domain entities, terms, or data models | `domain-modeling` |
 | Any production code | `code-review` |
@@ -136,7 +136,14 @@ Load relevant skills from the workflow's quality check table:
 | React Query / TanStack Query data fetching, cache keys, invalidation | `tanstack-query` |
 | TanStack Router routes, search params, loaders | `tanstack-router`, `tanstack-router-best-practices` |
 
-### 6. Debate — every reviewed change (Standard and High-assurance)
+### 6. Author review — every reviewed change
+
+Before the lenses: a fresh session on the **author's** model reads the diff and writes the
+author review — the intent, the load-bearing part, what the author knows is weak, what was
+deliberately left out, and where a reviewer should look hardest. It is a brief to the
+reviewer, not a verdict, and it goes in the PR body. The independent lenses read it first.
+
+### 7. Debate — every reviewed change (Standard and High-assurance)
 
 Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
@@ -147,7 +154,7 @@ never on the model that wrote the diff (`opencode-go/deepseek-v4.1-flash`). When
 reviewer is never the author. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.
 
-### 7. Test audit — Standard and High-assurance
+### 8. Test audit — Standard and High-assurance
 
 Load `test-audit` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-test-audit.md`.
@@ -158,12 +165,12 @@ Load `test-audit` with resolved base SHA. Saves evidence to
 - E2E coverage (critical user path is tested via Playwright)
 - No shallow/missing tests
 
-### 8. Pre-push self-review (code-review)
+### 9. Pre-push self-review (code-review)
 
 Run `code-review` skill against `git diff <base-sha>...HEAD`. Save output to
 `.scratch/reviews/<issue-id>/<head-sha>-code-review.md`.
 
-### 9. Guard pre-push (Phase 2)
+### 10. Guard pre-push (Phase 2)
 
 Run `guard` Phase 2. Verifies:
 - All checks pass (typecheck, lint, tests, e2e when UI changed)
@@ -177,9 +184,9 @@ Run `guard` Phase 2. Verifies:
   - If any reviewable file changed → evidence is **STALE**, must regenerate
   - If only non-reviewable files (.gitignore, LICENSE, .scratch/) → valid
 
-### 10. Report to the parent — the parent owns push and PR
+### 11. Report to the parent — the parent owns push and PR
 
-**A lane stops at step 9.** Its last act is its **commit**. It does not push, does
+**A lane stops at step 10.** Its last act is its **commit**. It does not push, does
 not open a PR and does not merge — running any command below is a breach of its
 authority boundary, not help. The parent session pushes the lane's branch, opens
 the PR and drives the review rounds.
@@ -202,13 +209,13 @@ The reports themselves stay local — `.scratch/reviews/` is gitignored, and a
 committed report makes the reviewer judge our notes instead of our code, burns
 credits, and makes the previous report stale.
 
-### 11. CI + Greptile — parent-owned
+### 12. CI + Greptile — parent-owned
 
 `.github/workflows/ci.yml` runs three jobs on every PR to
 `develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
 (cargo test + clippy). Poll them in-session with `sleep`, never by polling a lane.
 A lane cannot trigger CI or a Greptile review at all, because it cannot push
-(step 10). This wait belongs to the parent, never the lane.
+(step 11). This wait belongs to the parent, never the lane.
 
 Then the parent triggers Greptile:
 - CLI path (preferred): the parent runs the `cli-review` skill (`greptile review --json`) against the pinned base
@@ -222,7 +229,7 @@ line evidence instead of re-implementing the fix.
 
 Repeat until Greptile passes with no actionable findings.
 
-### 12. Architecture review — parent-owned, only after a 5/5
+### 13. Architecture review — parent-owned, only after a 5/5
 
 Load `improve-codebase-architecture`. Run it **after Greptile returns 5/5**, never before: the
 order is lenses → push and PR → Greptile to 5/5 → this review → fold → merge. Running it earlier
@@ -286,7 +293,7 @@ written down, three new ones and not one of them a defect. The one thing it pred
 finding the lens had found as a symptom. Read a candidate that way: a cause of an existing finding
 is worth folding, a candidate that only consolidates is an issue and never a fix on a bug-fix PR.
 
-### 13. Guard pre-report (Phase 3) — parent-owned
+### 14. Guard pre-report (Phase 3) — parent-owned
 
 The parent runs `guard` Phase 3. Verifies:
 - Checks — local gates green, plus CI when the branch has it
@@ -298,7 +305,7 @@ applied and carries any candidate lesson there; the parent writes
 a `.agents/wisdom/` entry (via `capture-wisdom`) only when the same failure has
 occurred more than once.
 
-### 14. Report to the owner — parent-owned
+### 15. Report to the owner — parent-owned
 
 The parent reports: PR link, check status (local + CI), Greptile verdict, any deferred items.
 

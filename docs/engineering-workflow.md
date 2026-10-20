@@ -83,6 +83,12 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   re-lists findings a later commit already fixed. Read the cited lines first; if
   the finding is stale, close it on the PR with the line evidence rather than
   re-implementing a fix that exists.
+- **Two reviews per change: the author's, then an independent one** (owner decision,
+  2026-10-20). The author review is written by the author's model in a fresh session that
+  reads the diff: the intent, the load-bearing part, the known weak spots, what was
+  deliberately left out, and where a reviewer should look hardest. It approves nothing. The
+  independent review is the lens round, and the lenses read the author review first, so
+  the known-weak list is their checklist and the author's claims are claims to test.
 - **Reviewers are independent.** `debate`, `test-audit` and `code-review` run as
   separate sub-agents. A child that reports "I ran the gates in-lane" has not run
   them — re-run the lenses where the tool exists, and record the disclosure.

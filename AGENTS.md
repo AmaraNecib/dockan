@@ -6,7 +6,7 @@
   `test-*`, `chore-*`, `docs-*`, …) works in its own worktree and commits its diff. Its
   completion wakes the parent; there is no report tool to call. It **never** runs
   `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
-  `feature-implement` step 10 is parent-only.
+  `feature-implement` step 11 is parent-only.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
   lane's branch, opens the PR, requests Greptile review, drives the rounds, and
   merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
@@ -154,6 +154,17 @@ before the lane reports.
   one. `zen-proxy/beam-free` is the next free reviewer to reach for when MiniMax is down or a round
   wants a third opinion. Free lenses have no parallelism cap, so a review round can go as wide as
   the work needs; DeepSeek is the fallback when a free route fails.
+- **Every reviewed change gets two reviews: the author's own, and an
+  independent one** (owner decision, 2026-10-20). The **author review** is a short
+  account written by the author's model in a fresh session that reads the diff: what
+  the change is for, which part is load-bearing, what the author knows is weak, what
+  was deliberately left out, and where the reviewer should look hardest. It is a brief
+  to the reviewer, not a verdict — it approves nothing, and it lives in the PR body so
+  the reviewer and the owner both read it.
+  The **independent review** is the three lenses below, on a different model. The
+  lenses read the author review FIRST, so the known-weak list becomes their checklist
+  and the author's claims arrive as claims to test rather than facts to agree with.
+  Order is author review → lenses → fix → both again at the new head.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.

@@ -424,6 +424,17 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // same fail-loud rule as the guard: no lock, no stamp, no write.
   storeInput.writeStamp = () => holderToken(vaultLock);
   const { conn, store } = openVaultStore(storeInput);
+  // #292: the snapshot fence is re-read on the holder's heartbeat tick, so a
+  // rename that lands while this instance is idle is named within one beat
+  // instead of at the next persist, checkpoint or close — the three points #280
+  // fences, none of which runs while the holder is quiet. The lock is the tick
+  // and the connection is the reader; this is the one place that owns both, and
+  // the probe writes nothing, so no client-visible behaviour moves.
+  // Fail loud on the same rule as the guard and the stamp above: an unpolled
+  // fence would go back to being invisible, so a missing lock is an error here
+  // rather than a skipped registration.
+  if (vaultLock === undefined) throw new Error("the vault snapshot fence probe started without a held lock");
+  vaultLock.onHeartbeat(() => conn.recheckFence());
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed
   // (a retry would duplicate a sale/payment). Exiting here means the client

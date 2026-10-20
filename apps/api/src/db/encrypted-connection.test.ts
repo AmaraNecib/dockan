@@ -1161,6 +1161,53 @@ describe("snapshot fence (#280)", () => {
     await current.close();
   });
 
+  it("names a foreign fence on a re-read, without writing and once per change (#292)", async () => {
+    const events: string[] = [];
+    const conn = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      fresh: true,
+      writeStamp: () => tokenB,
+      logger: {
+        warn: (event) => events.push(`warn:${event}`),
+        info: (event) => events.push(`info:${event}`),
+      },
+    });
+    try {
+      conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+      conn.markDirty();
+      await conn.persistIfDirty();
+      expect(diskFence()?.stamp).toBe(tokenB);
+      expect(conn.snapshotIsDurable()).toBe(true);
+      expect(events).toEqual([]);
+
+      // Holder A goes IDLE: no mutation, no persist, no checkpoint. A zombie
+      // renames its own envelope over the verified write — the window no
+      // write-path fence can see, because there is no write.
+      renameZombieEnvelope(buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["zombie"]), tokenA));
+
+      expect(conn.recheckFence()).toEqual({ outcome: "foreign", stamp: tokenA });
+      // NAMED, at warn: the connection read the bytes and says they are not
+      // its own. Without this the holder goes on believing its version is
+      // saved and says nothing at all until the next persist.
+      expect(events).toEqual(["warn:VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+      // and it stops claiming durability, which is the whole point of re-reading
+      // on a tick: the version is no longer the one on disk
+      expect(conn.snapshotIsDurable()).toBe(false);
+      // the probe DETECTS; it does not fight for the file (that is a persist's
+      // job, and a write on a heartbeat tick could land inside a unit)
+      expect(diskFence()?.stamp).toBe(tokenA);
+
+      // one line per CHANGE: a fence that stays foreign says nothing new on the
+      // next beat, so ten seconds of idle does not fill the log
+      conn.recheckFence();
+      expect(events).toEqual(["warn:VAULT_SNAPSHOT_FENCE_FOREIGN"]);
+    } finally {
+      await conn.close();
+    }
+  });
+
   it("repairs a foreign snapshot at checkpoint even when nothing changed", async () => {
     const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), fresh: true, writeStamp: () => tokenB });
     conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");

@@ -525,6 +525,8 @@ export class VaultLock {
   private timer: ReturnType<typeof setInterval> | undefined;
   private owedReleaseTimer: ReturnType<typeof setTimeout> | undefined;
   private released = false;
+  /** work that rides the heartbeat tick, in registration order (#292) */
+  private readonly heartbeatListeners = new Set<() => void>();
 
   constructor(
     lockPath: string,
@@ -541,6 +543,27 @@ export class VaultLock {
   /** The recorded holder (for tests and diagnostics). */
   currentOwner(): VaultLockOwner {
     return this.owner;
+  }
+
+  /**
+   * Ride work on the holder's heartbeat tick (#292): called once per beat,
+   * AFTER this holder's record has been rewritten, and never once the lock is
+   * lost or released. This is the only continuous timer the vault already
+   * runs, so a reader that must not go blind between the write-path fence
+   * points — the snapshot fence — attaches here instead of arming a second
+   * interval that would have to be stopped in its own way.
+   *
+   * The lock stays ignorant of what the listener does: it knows a tick, not a
+   * snapshot. A listener that throws is caught and logged, because a throw out
+   * of a `setInterval` callback aborts the process, and the one thing the tick
+   * must never do is take the heartbeat — the record that keeps this folder
+   * ours — down with it. Returns an unsubscribe.
+   */
+  onHeartbeat(listener: () => void): () => void {
+    this.heartbeatListeners.add(listener);
+    return () => {
+      this.heartbeatListeners.delete(listener);
+    };
   }
 
   /**
@@ -593,6 +616,26 @@ export class VaultLock {
       this.owner = next;
     } catch (error) {
       this.lost(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    // AFTER the record is durable: a probe that ran on a beat this holder had
+    // already lost would report the next owner's fence as news about ours
+    this.rideHeartbeatListeners();
+  }
+
+  private rideHeartbeatListeners(): void {
+    for (const listener of this.heartbeatListeners) {
+      try {
+        listener();
+      } catch (error) {
+        // named, not swallowed: the probe's own failures are verdicts, so a
+        // throw here is a defect in the listener, and the process must not die
+        // of one on a quiet tick
+        this.options.logger?.warn(
+          "SERVER_ERROR",
+          `a heartbeat listener threw (the next beat still runs): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 

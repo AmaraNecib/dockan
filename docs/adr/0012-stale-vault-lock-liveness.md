@@ -82,9 +82,13 @@ still alive, so one shared helper decides both.
   holder's stamp is not recorded durable and is redone, and the next holder
   reads the stamp before decrypting, so a zombie's bytes are named instead of
   served silently. What the fence cannot do is prove *currency*: no version
-  travels with the bytes, so detection is activity-gated, and a rename that
-  lands after the holder's last write and before it crashes still loses the
-  transactions in between. The refusal is fatal wherever it is seen — on the
+  travels with the bytes, so detection is only as continuous as the reader.
+  Since #292 the holder re-reads the fence on its heartbeat tick, so a rename
+  that lands while it is idle is named and its version stops counting as
+  durable within one cadence instead of at the next write — but a holder that
+  crashes before that tick still loses the transactions in between, and the next
+  holder can only say the bytes are someone else's, not how old they are. The
+  refusal is fatal wherever it is seen — on the
   write path because the client would otherwise be told a committed unit
   failed, and at shutdown because the last committed version is not on disk and
   exiting zero would call that a clean stop. That residue is the accepted limit

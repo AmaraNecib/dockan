@@ -598,3 +598,31 @@ describe("VaultGate", () => {
     expect(host.querySelector('[data-testid="vault-recovery-key"]')).not.toBeNull();
   });
 });
+
+/**
+ * #322 — the invalid-vault branch rendered the literal `vaultInvalid`, because the
+ * catalogue never had that key and nothing checked `t`. This is the screen an owner
+ * sees at the moment the vault refuses to open, so an identifier here is the worst
+ * possible place to look broken.
+ */
+describe("the invalid-vault branch speaks Arabic (#322)", () => {
+  it("renders the catalogue's sentence, never the key, when the store cannot be read", async () => {
+    const host = await mount(statusFor("invalid"), () => undefined);
+    const alert = host.querySelector('[role="alert"]');
+
+    expect(alert?.textContent).toBe(i18n.t("vaultInvalid"));
+    // The comparison above is the catalogue against itself, so an emptied value
+    // would satisfy it. One literal substring pins that the sentence is really
+    // there, in Arabic, saying what happened.
+    expect(alert?.textContent).toContain("تعذّر فتح خزنة البيانات");
+    expect(alert?.textContent).toMatch(/[\u0600-\u06FF]/);
+    expect(alert?.textContent).not.toContain("vaultInvalid");
+  });
+
+  it("the key this branch reads is in the catalogue, so removing it fails here", () => {
+    // the compile error is the primary guard (the key is not a string); this pins
+    // the runtime half, because a resource bundle can also be emptied by hand
+    expect(i18n.exists("vaultInvalid")).toBe(true);
+    expect(i18n.t("vaultInvalid")).not.toBe("vaultInvalid");
+  });
+});

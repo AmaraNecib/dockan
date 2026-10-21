@@ -3,6 +3,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -200,7 +201,7 @@ export function StockForm() {
   );
 }
 
-function kindLabel(t: (key: string) => string, kind: string): string {
+function kindLabel(t: TFunction, kind: string): string {
   if (kind === "PURCHASE") return t("historyKind_PURCHASE");
   if (kind === "SALE") return t("historyKind_SALE");
   return t("historyKind_MANUAL_ADJUSTMENT");
@@ -211,12 +212,19 @@ function kindLabel(t: (key: string) => string, kind: string): string {
  * the correction token (`INVOICE_CORRECTION <invoiceNumber> #<lineId>`).
  * Unknown/legacy reasons (opening, pre-token Arabic corrections) render raw.
  * The api stores keys; this view owns the copy. */
-export function movementReasonText(t: (key: string, vars?: Record<string, string>) => string, reason: string): string {
+export function movementReasonText(t: TFunction, reason: string): string {
   if (reason === "COST_CORRECTION") return t("historyReasonCostCorrection");
   if (reason === "RETURN_RECORDED") return t("historyReasonReturnRecorded");
   if (reason.startsWith("RETURN_REJECTED_DAMAGED")) {
     const rest = reason.slice("RETURN_REJECTED_DAMAGED".length).trim();
-    return t("historyReasonReturnRejected", { context: rest });
+    // `note`, not `context`: `context` is one of i18next's own options, so the call
+    // was looking up a `historyReasonReturnRejected_<note>` variant that does not
+    // exist and only rendered correctly because the copy's placeholder happened to
+    // be named `{{context}}` too. The compiler does NOT catch this — `TOptionsBase`
+    // declares `context?: unknown`, so `{ context: rest }` typechecks before and
+    // after #322. It was found by reading the option list, not by the type system;
+    // stock.test.tsx pins the option/copy pairing at run time instead.
+    return t("historyReasonReturnRejected", { note: rest });
   }
   if (reason.startsWith("INVOICE_CORRECTION")) {
     // the stored reason is "<token> <invoice> #<lineId>"; the line id is what

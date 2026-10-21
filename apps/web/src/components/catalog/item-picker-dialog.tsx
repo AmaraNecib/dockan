@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import type { CatalogMatch, Item } from "@dokan/contracts";
 
+import type { MessageKey } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
 import { orpc } from "@/lib/rpc";
@@ -18,8 +19,20 @@ function Barcode({ code }: { code: string }) {
   );
 }
 
-export function matchBadgeKey(matchedBy: CatalogMatch["matchedBy"]): string {
-  return `matchedBy${matchedBy.charAt(0)}${matchedBy.slice(1).toLowerCase()}`;
+/**
+ * The badge copy for one match reason. Typed against the catalogue (#322): the
+ * record is exhaustive over the contract's match kinds, so a new kind fails the
+ * build here instead of rendering a raw key on the search results.
+ */
+const MATCH_BADGE_KEYS = {
+  BARCODE_EXACT: "matchedByBarcodeExact",
+  BARCODE_PARTIAL: "matchedByBarcodePartial",
+  NAME: "matchedByName",
+  CATEGORY: "matchedByCategory",
+} satisfies Record<CatalogMatch["matchedBy"], MessageKey>;
+
+export function matchBadgeKey(matchedBy: CatalogMatch["matchedBy"]): MessageKey {
+  return MATCH_BADGE_KEYS[matchedBy];
 }
 
 /**

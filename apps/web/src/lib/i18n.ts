@@ -423,6 +423,10 @@ const resources = {
       vaultRecoveryConfirm: "نعم، حفظت مفتاح الاسترداد في مكان آمن.",
       vaultContinue: "متابعة",
       vaultLostBothWarning: "إذا فقدت كلمة المرور ومفتاح الاسترداد معاً فلا يمكن استعادة بيانات المتجر إطلاقاً. احفظ المفتاح الآن.",
+      // state "invalid": the store's header could not be read as a vault at all
+      // (VaultFormatError), so the gate has no form to offer and the sentence has
+      // to carry the next step itself
+      vaultInvalid: "تعذّر فتح خزنة البيانات: ملفّها تالف أو غير مكتمل. استعد أحدث نسخة احتياطية ثم أعد المحاولة.",
       vaultUnexpected: "تعذّر إكمال العملية. أعد المحاولة.",
       vaultSettingsTitle: "خزنة البيانات",
       vaultSettingsHint: "كلمة المرور ومفاتيح الاسترداد الخاصة ببيانات المتجر المشفّرة.",
@@ -563,6 +567,10 @@ const resources = {
       debtsInvDate: "التاريخ",
       debtsInvTotal: "الإجمالي",
       debtsInvRemaining: "المتبقي",
+      // the account statement the debts screen opens from a row (#322: these two
+      // sat 470 lines away, inside the supplier-returns block)
+      debtsNetBalance: "الرصيد الصافي",
+      debtsAccountMovements: "حركات الحساب",
       saleInvalidPaid: "أدخل مبلغاً صحيحاً غير سالب",
       saleInvalidDiscount: "أدخل خصماً صحيحاً (المبلغ عدد صحيح أو النسبة بين 0 و100)",
       saleInvalidOverride: "أدخل تعديلاً صحيحاً للسعر (المبلغ عدد صحيح أو النسبة بين 0 و100)",
@@ -749,7 +757,7 @@ const resources = {
       activityReturnRecordedDebt: "تسجيل مرجوع {{number}} بمبلغ <money/> على {{invoice}} (منه <debt/> خصم من الدين)",
       activityReturnReviewed: "مراجعة مرجوع {{number}}: {{action}} (<money/>)",
       historyReasonReturnRecorded: "مرجوع",
-      historyReasonReturnRejected: "مرجوع تالف {{context}}",
+      historyReasonReturnRejected: "مرجوع تالف {{note}}",
       historyReasonCostCorrection: "تصحيح تكلفة يدوي",
       historyReasonInvoiceCorrection: "تصحيح فاتورة {{number}} {{line}}",
       /** issue 151 — a row drawn below a cost correction recorded after it: its
@@ -1036,8 +1044,6 @@ const resources = {
       supplierReturnInvoiceLink: "الفاتورة",
       supplierReturnSupplier: "المورّد",
       supplierReturnVoucher: "سند المرتجع",
-      debtsNetBalance: "الرصيد الصافي",
-      debtsAccountMovements: "حركات الحساب",
       dashboardSupplierCredit: "رصيد لنا عند الموردين",
       REFUND_EXCEEDS_CREDIT: "المبلغ يتجاوز الرصيد المتاح عند المورّد",
       // #176 — supplier adjustments (تسوية) and the bulk opening balance
@@ -1122,9 +1128,23 @@ const resources = {
       supplierOpeningRemovedDismiss: "فهمت، تابع الحفظ",
     },
   },
-} as const;
+} satisfies { ar: { translation: Record<string, string> } };
 
 export type MessageKey = keyof (typeof resources)["ar"]["translation"];
+
+/**
+ * The translation surface is the catalogue (issue #322). Augmenting i18next's
+ * `CustomTypeOptions` ties every `t("…")` — through `useTranslation`, through
+ * `i18n.t`, through `TFunction` — to the keys defined above, so a key that is
+ * not in `resources` is a compile error instead of the literal identifier on
+ * the owner's screen.
+ */
+declare module "i18next" {
+  interface CustomTypeOptions {
+    defaultNS: "translation";
+    resources: { translation: (typeof resources)["ar"]["translation"] };
+  }
+}
 
 /** A better-auth error object, as the client surfaces it. */
 export type AuthErrorInput = {

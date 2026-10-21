@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 
+import type { MessageKey } from "@/lib/i18n";
 import {
   Dialog,
   DialogDescription,
@@ -18,7 +19,7 @@ interface ShortcutsHelpProps {
 export function ShortcutsHelp({ open, onOpenChange }: ShortcutsHelpProps) {
   const { t } = useTranslation();
 
-  const rows: { keys: string; labelKey: string }[] = [
+  const rows: { keys: string; labelKey: MessageKey }[] = [
     { keys: "Ctrl/⌘ + K", labelKey: "shortcutSearch" },
     { keys: "Ctrl/⌘+Shift+B", labelKey: "shortcutToggleSidebar" },
     { keys: "?", labelKey: "shortcutHelp" },

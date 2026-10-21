@@ -386,6 +386,32 @@ describe("purchase cart guard (issue #321)", () => {
     expect(app.container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(1);
   });
 
+  it("lets a dialog opened ABOVE the question take its own Escape", async () => {
+    // Review round 5 — the question answers Escape, but it must not answer one
+    // aimed at a dialog opened on top of it. `?` opens the shortcuts help above;
+    // Escape must close the HELP and leave the question standing.
+    const app = await mountPurchaseRouteOnBrowserHistory();
+    await addQuickLine(app.container, "2", "500");
+    await waitFor(() => document.querySelector('[data-testid="purchase-lines"]') !== null);
+    window.history.back();
+    await waitFor(() => document.querySelector('[data-testid="purchase-discard-confirm"]') !== null);
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }));
+    });
+    await waitFor(() => document.querySelectorAll('[role="dialog"]').length === 2);
+
+    const focused = document.activeElement ?? document.body;
+    await act(async () => {
+      focused.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    // the help closed, the question did not
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(document.querySelector('[data-testid="purchase-discard-confirm"]')).not.toBeNull();
+    expect(app.router.state.location.pathname).toBe("/purchase");
+  });
+
   it("asks the browser's own question on a reload, because a reload cannot be blocked", async () => {
     // #321 review round 2 — the hook's docstring claimed a reload asks the same
     // question, and nothing covered it. A reload cannot be intercepted, so the

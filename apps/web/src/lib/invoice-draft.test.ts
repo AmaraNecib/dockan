@@ -19,6 +19,7 @@ import {
   nonNegativeOr,
   parseQuantityDraft,
   paymentPairUnchanged,
+  purchaseCartDirty,
   purchaseUnitPrice,
   quantityDraftInvalid,
   removeDraftLine,
@@ -793,5 +794,58 @@ describe("resolvedInitialPaid (the commit-ready payload value)", () => {
   it("throws on a rejected resolution, which firstCommitError would have refused", () => {
     // the guard lives beside the helper whose contract it protects
     expect(() => resolvedInitialPaid({ ok: false })).toThrow("firstCommitError did not refuse an invalid initial payment");
+  });
+});
+
+describe("purchaseCartDirty (#321 review round 2)", () => {
+  // every field the owner can type or pick, one at a time. The inline `||` chain
+  // this replaced missed three of them and the suite stayed green.
+  const emptyQuick = { name: "", barcode: "", categoryId: "", sellPrice: "", threshold: "", qty: "1", unitCost: "" };
+  const clean = {
+    savedInvoice: false,
+    lineCount: 0,
+    supplierName: "",
+    notes: "",
+    paymentAmount: "",
+    quick: emptyQuick,
+    lineCreate: null,
+  };
+  const quickFields = ["name", "barcode", "categoryId", "sellPrice", "threshold", "unitCost"] as const;
+
+  it("is clean when nothing was typed on an untouched form", () => {
+    expect(purchaseCartDirty(clean)).toBe(false);
+  });
+
+  it("counts a line", () => {
+    expect(purchaseCartDirty({ ...clean, lineCount: 1 })).toBe(true);
+  });
+
+  it("counts a typed supplier, note or payment amount", () => {
+    expect(purchaseCartDirty({ ...clean, supplierName: "زبون" })).toBe(true);
+    expect(purchaseCartDirty({ ...clean, notes: "ملاحظة" })).toBe(true);
+    expect(purchaseCartDirty({ ...clean, paymentAmount: "100" })).toBe(true);
+  });
+
+  for (const field of quickFields) {
+    it(`counts a typed or picked quick-add ${field}`, () => {
+      expect(purchaseCartDirty({ ...clean, quick: { ...emptyQuick, [field]: "x" } })).toBe(true);
+    });
+  }
+
+  it("does not count the quick form's default quantity, which is never blank", () => {
+    expect(purchaseCartDirty({ ...clean, quick: { ...emptyQuick, qty: "3" } })).toBe(false);
+  });
+
+  it("counts a half-typed line-create form, including its picked category", () => {
+    expect(purchaseCartDirty({ ...clean, lineCreate: { name: "منتج", categoryId: "", sellPrice: "" } })).toBe(true);
+    expect(purchaseCartDirty({ ...clean, lineCreate: { name: "", categoryId: "cat-1", sellPrice: "" } })).toBe(true);
+    expect(purchaseCartDirty({ ...clean, lineCreate: { name: "", categoryId: "", sellPrice: "5" } })).toBe(true);
+    expect(purchaseCartDirty({ ...clean, lineCreate: { name: "", categoryId: "", sellPrice: "" } })).toBe(false);
+  });
+
+  it("is clean once the invoice saved, even with the quick bag still filled", () => {
+    // `keepOnCreate` keeps the bag after a save, so without this bound the success
+    // card would prompt about text the owner can no longer see
+    expect(purchaseCartDirty({ ...clean, savedInvoice: true, quick: { ...emptyQuick, name: "منتج" } })).toBe(false);
   });
 });

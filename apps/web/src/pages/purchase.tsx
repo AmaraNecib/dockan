@@ -17,7 +17,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { draftBlank, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
-import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseCartDirty, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { cn } from "@/lib/utils";
@@ -422,20 +422,19 @@ export function PurchasePage() {
    * survives a save (`keepOnCreate`), so counting it once the invoice landed
    * would ask about text the owner can no longer see.
    */
-  const quickDraft =
-    quick.fields.name.trim() !== "" ||
-    quick.fields.barcode.trim() !== "" ||
-    quick.fields.sellPrice.trim() !== "" ||
-    quick.fields.unitCost.trim() !== "";
-  const lineCreateDraft = lineDraft !== null && (lineDraft.name.trim() !== "" || lineDraft.sellPrice.trim() !== "");
-  const cartDirty =
-    savedInvoice === null &&
-    (lines.length > 0 ||
-      supplier.name.trim() !== "" ||
-      notes.trim() !== "" ||
-      payment.amount.trim() !== "" ||
-      quickDraft ||
-      lineCreateDraft);
+  // #321 review round 2 — the whole dirty rule lives in `purchaseCartDirty`, so
+  // every field can be enumerated in one test: the inline `||` chain this replaced
+  // missed a picked category, a typed threshold and a typed quantity, and no test
+  // could see the miss.
+  const cartDirty = purchaseCartDirty({
+    savedInvoice: savedInvoice !== null,
+    lineCount: lines.length,
+    supplierName: supplier.name,
+    notes,
+    paymentAmount: payment.amount,
+    quick: quick.fields,
+    lineCreate: lineDraft,
+  });
   /**
    * The guard sits at the router, not at each link, so every way out of the
    * screen asks the same question: a sidebar link, the header action, the

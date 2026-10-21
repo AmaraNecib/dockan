@@ -8,7 +8,6 @@ import { createBrowserHistory, createMemoryHistory, createRouter, RouterProvider
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import i18n from "../lib/i18n";
 import { ThemeProvider } from "../lib/theme";
 import { chooseOption } from "../tests/select-driver";
 
@@ -261,7 +260,9 @@ describe("purchase cart guard (issue #321)", () => {
     // the question is on screen, and it names the lines that would go
     await waitFor(() => document.querySelector('[data-testid="purchase-discard-confirm"]') !== null);
     const dialog = document.querySelector('[role="dialog"]');
-    expect(dialog?.textContent).toContain(i18n.t("purchasesDiscardDesc", { count: 1 }));
+    // the count is interpolated by the component; assert the shape AND the digit,
+    // never the same `t()` call the component makes (that cannot fail)
+    expect(dialog?.textContent).toContain("عدد أسطر الفاتورة التي ستُفقد: 1");
     // the screen is still the purchase screen: the navigation is held
     expect(app.router.state.location.pathname).toBe("/purchase");
 
@@ -336,6 +337,49 @@ describe("purchase cart guard (issue #321)", () => {
     expect(app.container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(1);
   });
 
+  it("asks the browser's own question on a reload, because a reload cannot be blocked", async () => {
+    // #321 review round 2 — the hook's docstring claimed a reload asks the same
+    // question, and nothing covered it. A reload cannot be intercepted, so the
+    // honest guarantee is `beforeunload`: the browser's generic prompt instead of
+    // the app's dialog, and only once the cart is dirty.
+    // the listener lives on the BROWSER history (`@tanstack/history` registers it
+    // there only); a memory-history mount has none, which is what made the first
+    // version of this test pass a false negative
+    const app = await mountPurchaseRouteOnBrowserHistory();
+    const cleanEvent = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(cleanEvent);
+    expect(cleanEvent.defaultPrevented).toBe(false);
+
+    await addQuickLine(app.container, "2", "500");
+    await waitFor(() => document.querySelector('[data-testid="purchase-lines"]') !== null);
+
+    const dirtyEvent = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(dirtyEvent);
+    expect(dirtyEvent.defaultPrevented).toBe(true);
+  });
+
+  it("holds the navigation for a quick-add field that is not a line, a name or a price", async () => {
+    // #321 review round 2 — the inline `||` chain missed `threshold` and `qty`, and
+    // no test could see the miss: `supplier.name` alone kept all five green. This
+    // types into a field the old chain ignored, so the widened rule is wired, not
+    // merely unit-tested.
+    const app = await mountPurchaseRoute();
+    await act(async () => {
+      app.container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const threshold = mustFind<HTMLInputElement>(app.container, 'input[name="quickThreshold"]');
+    await act(async () => typeInto(threshold, "5"));
+
+    await act(async () => navLink("/customers").click());
+
+    await waitFor(() => document.querySelector('[data-testid="purchase-discard-confirm"]') !== null);
+    expect(app.router.state.location.pathname).toBe("/purchase");
+
+    await act(async () => byTestId<HTMLButtonElement>("purchase-discard-stay").click());
+    await waitFor(() => document.querySelector('[data-testid="purchase-discard-confirm"]') === null);
+  });
+
   it("treats a pasted bidi mark as work, the way the sale screen does", async () => {
     // #244's rule, ported: the dirty gate is raw `.trim()`, so a mark that is
     // NOT whitespace (U+200F is Cf) is still work the prompt must keep. With no
@@ -352,8 +396,10 @@ describe("purchase cart guard (issue #321)", () => {
 
     await waitFor(() => document.querySelector('[data-testid="purchase-discard-confirm"]') !== null);
     const dialog = document.querySelector('[role="dialog"]');
-    // no line yet, so the prompt must not claim «0 lines would be lost»
-    expect(dialog?.textContent).toContain(i18n.t("purchasesDiscardDescNoCart"));
+    // no line yet, so the prompt must not claim «0 lines would be lost». The
+    // literal is deliberate: asserting `i18n.t(...)` compares the component's call
+    // with the same call, so a broken catalogue entry would pass.
+    expect(dialog?.textContent).toContain("على هذه الفاتورة عمل لم يُحفظ بعد");
     expect(app.router.state.location.pathname).toBe("/purchase");
 
     await act(async () => byTestId<HTMLButtonElement>("purchase-discard-stay").click());

@@ -48,12 +48,16 @@ export function DiscardDraftDialog({
   cancelTestId,
   finalFocus,
 }: DiscardDraftDialogProps) {
-  // #345 review round 4 (Greptile P2) — this question can open on top of another
-  // dialog (the purchase screen's item picker), and that one owns focus, so an
-  // Escape delivered to the focused element never reaches here and the owner has
-  // to reach for the mouse. Answering Escape in the CAPTURE phase makes the
-  // topmost question the one that answers it, whichever dialog holds the focus,
-  // and leaves the dialog underneath open with its work intact.
+  // Escape is Base UI's job, and the layer stack already knows which dialog is on
+  // top — that is the whole reason this component owns no key handler.
+  //
+  // It had one for a round: the purchase screen's item picker held focus when the
+  // question opened, so Escape never reached the question. Adding a document-level
+  // capture listener fixed that and broke the opposite case — a dialog opened ON
+  // TOP (`?` opens the shortcuts help) lost its own Escape, because the listener
+  // answered without asking who was on top. The picker now closes when the
+  // question opens, which removes the original cause, so the listener is gone and
+  // there is one mechanism instead of two racing.
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

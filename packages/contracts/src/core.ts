@@ -946,6 +946,7 @@ export const VAULT_ERROR_CODES = [
   "VAULT_LOCKED_BY_OTHER_INSTANCE",
   "VAULT_LOOPBACK_REQUIRED",
   "VAULT_NOT_UNLOCKED",
+  "VAULT_ORIGIN_FORBIDDEN",
   "VAULT_PASSPHRASE_TOO_SHORT",
   "VAULT_RECOVERY_LIMIT",
   "VAULT_RECOVERY_NOT_FOUND",
@@ -963,6 +964,18 @@ export const VAULT_ERROR_CODES = [
   "VAULT_UNSUPPORTED",
 ] as const;
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number];
+
+/**
+ * The identity of the API's "this session is gone" refusal (#319), as the RPC
+ * seam emits it and the web recognises it. It lives here, next to the vault
+ * codes, because it is a wire contract: a change to either half has to reach
+ * both sides, and the pair used to exist as two hand-copied literals — the API
+ * threw `AUTH_REQUIRED` and the web compared against its own copy, so renaming
+ * one left every test green while the unlock screen silently stopped taking
+ * over. `AUTH_REQUIRED` is also the message `i18n.ts` carries, so the refusal
+ * still renders its own sentence if it ever reaches an error alert.
+ */
+export const AUTH_REFUSAL = { code: "UNAUTHORIZED", message: "AUTH_REQUIRED" } as const;
 
 export const needsSetupOutputSchema = z.object({
   needsSetup: z.boolean(),

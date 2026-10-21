@@ -224,6 +224,18 @@ async function postJson(url: string, body: JsonBody, headers: Record<string, str
   });
 }
 
+/**
+ * The vault session token, read from the cookie the browser path hands it in
+ * (#319). The response body carries no token in browser mode.
+ */
+function sessionTokenFrom(response: Response): string {
+  const setCookie = response.headers.get("set-cookie");
+  if (setCookie === null) throw new Error("the response carries no session cookie");
+  const match = /(?:^|;\s*)dokan\.vault\.session=([^;]+)/u.exec(setCookie);
+  if (match === null || match[1] === undefined) throw new Error(`no session cookie in ${setCookie}`);
+  return match[1];
+}
+
 /** Wait for the lock file to show a NEW heartbeat, so a theft has a full cadence before the next tick. */
 async function waitForFreshHeartbeat(lockFile: string, seen: string | undefined): Promise<void> {
   const deadline = Date.now() + 15_000;
@@ -1100,8 +1112,9 @@ describe("vault single-writer lock over a live sidecar", () => {
     const passphrase = "correct horse battery staple";
     const setup = await postJson(`http://127.0.0.1:${port}/api/vault/setup`, { passphrase });
     expect(setup.status).toBe(200);
-    // SAFETY: the setup route returns this shape by contract
-    const { sessionToken } = (await setup.json()) as { sessionToken: string };
+    // the browser path's credential rides the HttpOnly cookie (#319), never
+    // the response body
+    const sessionToken = sessionTokenFrom(setup);
     // unlock signs the owner in, but the RPC guard also needs the provisioned
     // owner row: firstTimeSetup writes it (vault mode needs no password)
     const provision = await postJson(`http://127.0.0.1:${port}/api/rpc/firstTimeSetup`, {

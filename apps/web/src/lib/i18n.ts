@@ -389,6 +389,9 @@ const resources = {
       // copy closes, so the screen says so instead of asking for a restart
       VAULT_LOCKED_BY_OTHER_INSTANCE: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
       VAULT_LOOPBACK_REQUIRED: "لحماية بياناتك، لا يمكن إدخال كلمة المرور أو مفتاح الاسترداد عبر الشبكة. افتح دكان على الجهاز نفسه.",
+      // #319: the vault session is ambient (a cookie), so a page this app is not
+      // served from is refused outright — not answered as if the vault were shut
+      VAULT_ORIGIN_FORBIDDEN: "لحماية بياناتك، لا تُقبل طلبات الخزنة إلا من نافذة دكان على هذا الجهاز. افتح دكان من الجهاز نفسه.",
       VAULT_MALFORMED_RESPONSE: "تعذّر تنفيذ العملية: رد غير متوقع من الخادم. أعد المحاولة.",
       VAULT_RESET_FAILED: "تعذّر تعيين كلمة المرور الجديدة. أعد المحاولة.",
       VAULT_SETUP_IN_PROGRESS: "هناك تهيئة جارية بالفعل. انتظر قليلاً ثم أعد المحاولة.",

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
   changeVaultPassphrase,
+  clearVaultSessionToken,
   fetchVaultStatus,
   isVaultPassphraseLongEnough,
   readVaultSessionToken,
@@ -11,6 +12,9 @@ import {
   storeVaultSessionToken,
   VaultRequestError,
   vaultErrorCopy,
+  vaultSetup,
+  vaultUnlock,
+  vaultUnlockWithRecovery,
 } from "./vault-client";
 
 let routes = new Map<string, (init: RequestInit | undefined) => Response>();
@@ -30,11 +34,17 @@ beforeEach(() => {
   routes = new Map();
   globalThis.fetch = mockFetch;
   window.sessionStorage.clear();
+  // the page's memory is the only place a token can live now (#319), so a
+  // test starts from a page that has never held one
+  clearVaultSessionToken();
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   window.sessionStorage.clear();
+  clearVaultSessionToken();
+  // SAFETY: the broker test installs this exact optional global
+  delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 });
 
 describe("vault passphrase validation", () => {
@@ -47,18 +57,20 @@ describe("vault passphrase validation", () => {
   });
 });
 
-describe("vault credential calls return and adopt the rotated session token", () => {
-  it("changeVaultPassphrase returns the fresh token", async () => {
+describe("vault credential calls adopt the rotated session token the broker path returns", () => {
+  it("changeVaultPassphrase adopts the fresh token", async () => {
     routes.set("/api/vault/change-passphrase", () => Response.json({ ok: true, sessionToken: "rotated-1" }));
-    expect(await changeVaultPassphrase("old passphrase", "new passphrase")).toBe("rotated-1");
+    await changeVaultPassphrase("old passphrase", "new passphrase");
+    expect(readVaultSessionToken()).toBe("rotated-1");
   });
 
-  it("removeRecoveryKey returns the fresh token", async () => {
+  it("removeRecoveryKey adopts the fresh token", async () => {
     routes.set("/api/vault/recovery-keys/abc", () => Response.json({ ok: true, sessionToken: "rotated-2" }));
-    expect(await removeRecoveryKey("abc")).toBe("rotated-2");
+    await removeRecoveryKey("abc");
+    expect(readVaultSessionToken()).toBe("rotated-2");
   });
 
-  it("resetVaultPassphrase sends the recovery key unauthenticated and returns the token", async () => {
+  it("resetVaultPassphrase sends the recovery key unauthenticated and adopts the token", async () => {
     type ResetBody = { recoveryKey?: string; newPassphrase?: string };
     let body: ResetBody = {};
     let headers: Headers | undefined;
@@ -68,8 +80,8 @@ describe("vault credential calls return and adopt the rotated session token", ()
       headers = new Headers(init?.headers);
       return Response.json({ ok: true, sessionToken: "reset-token" });
     });
-    const token = await resetVaultPassphrase("ABCD-EFGH", "a brand new passphrase");
-    expect(token).toBe("reset-token");
+    await resetVaultPassphrase("ABCD-EFGH", "a brand new passphrase");
+    expect(readVaultSessionToken()).toBe("reset-token");
     expect(body.recoveryKey).toBe("ABCD-EFGH");
     expect(headers?.get("x-vault-session")).toBeNull();
   });
@@ -137,6 +149,77 @@ describe("vault credential calls return and adopt the rotated session token", ()
     // a slower response from an earlier rotation cannot clobber it
     storeVaultSessionToken("rotated-2", 2);
     expect(readVaultSessionToken()).toBe("rotated-5");
+  });
+});
+
+describe("the browser path keeps the session out of JavaScript (#319)", () => {
+  it("holds nothing from an unlock reply that carried no token", async () => {
+    routes.set("/api/vault/unlock", () => Response.json({ ok: true, sessionGeneration: 3 }));
+    await vaultUnlock("correct horse battery");
+    // the credential is the HttpOnly cookie the reply set: nothing to hold
+    expect(readVaultSessionToken()).toBeUndefined();
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBeNull();
+  });
+
+  it("holds no setup or unlock token in web storage at all", async () => {
+    routes.set("/api/vault/setup", () =>
+      Response.json({ ok: true, recoveryKey: "ABCD-EFGH", plaintextStatus: "clean", plaintextRemaining: [] }),
+    );
+    const setup = await vaultSetup("correct horse battery");
+    expect(setup.recoveryKey).toBe("ABCD-EFGH");
+    routes.set("/api/vault/unlock-recovery", () => Response.json({ ok: true, sessionGeneration: 4 }));
+    await vaultUnlockWithRecovery("ABCD-EFGH-IJKL");
+    // a token in storage is a token a page can steal: there is none on any
+    // path, including the generation the client used to track (round-7)
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBeNull();
+    expect(readVaultSessionToken()).toBeUndefined();
+  });
+
+  it("still adopts the token a broker-mode HTTP reply carries, in memory only", async () => {
+    // the post-unlock credential routes stay HTTP in broker mode, so their
+    // reply is the one place a browser-path build can see a body token
+    routes.set("/api/vault/change-passphrase", () => Response.json({ ok: true, sessionToken: "rotated-9" }));
+    await changeVaultPassphrase("old passphrase", "new passphrase");
+    expect(readVaultSessionToken()).toBe("rotated-9");
+    // memory, never storage
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
+  });
+});
+
+describe("the broker path keeps its token across a webview reload (#319 review P2)", () => {
+  /** Install the bridge the packaged desktop's webview injects. */
+  function installBroker(): void {
+    // SAFETY: the global Tauri injects; the test stands in for it
+    (window as { __TAURI_INTERNALS__?: { invoke: () => Promise<null> } }).__TAURI_INTERNALS__ = {
+      invoke: async () => null,
+    };
+  }
+
+  it("persists the token and its generation, so a reload does not demand the passphrase again", () => {
+    installBroker();
+    storeVaultSessionToken("broker-token", 4);
+    expect(readVaultSessionToken()).toBe("broker-token");
+    // the reload's guarantee: the secret that signs the RPC calls survives
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBe("broker-token");
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBe("4");
+    // and the generation moved with it, so an older reply still cannot revive
+    storeVaultSessionToken("older-token", 3);
+    expect(readVaultSessionToken()).toBe("broker-token");
+    clearVaultSessionToken();
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBeNull();
+  });
+
+  it("still holds nothing on the browser path, where the cookie is the credential", () => {
+    // no bridge: this is a plain browser, and a token in storage would be a
+    // token any script on the page could steal
+    storeVaultSessionToken("should-not-persist", 1);
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBeNull();
+    // the in-memory copy still signs this page's calls (the header fallback)
+    expect(readVaultSessionToken()).toBe("should-not-persist");
   });
 });
 

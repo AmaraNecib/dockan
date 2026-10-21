@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { logoutAndReload } from "./logout";
+import { authLossReason, clearAuthLost, recoverAuthLost } from "./auth-refusal";
 import { clearVaultSessionToken, readVaultSessionToken, storeVaultSessionToken } from "./vault-client";
 
 let reloads = 0;
@@ -39,6 +40,7 @@ afterEach(() => {
   Object.defineProperty(window.location, "reload", { configurable: true, value: originalReload });
   globalThis.fetch = originalFetch;
   clearVaultSessionToken();
+  clearAuthLost();
   // SAFETY: the broker test installed this exact optional global above
   delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 });
@@ -62,7 +64,7 @@ describe("logoutAndReload", () => {
     expect(reloads).toBe(1);
   });
 
-  it("still clears and reloads when the revoke and sign-out fail", async () => {
+  it("does NOT reload when the revoke failed: the cookie would walk back in (#319 review)", async () => {
     globalThis.fetch = Object.assign(
       async (): Promise<Response> => {
         throw new Error("network down");
@@ -73,8 +75,19 @@ describe("logoutAndReload", () => {
     await logoutAndReload(async () => {
       throw new Error("network down");
     });
+    // the local copy is gone, but the page cannot disable an HttpOnly cookie,
+    // and the server never confirmed the revoke: a reload here lands back in
+    // the app without a passphrase on a shared machine
     expect(readVaultSessionToken()).toBeUndefined();
-    expect(reloads).toBe(1);
+    expect(reloads).toBe(0);
+    // the unlock screen is the answer instead, and it is its own reason: a
+    // live cookie must not undo it
+    expect(authLossReason()).toBe("signed-out");
+    recoverAuthLost();
+    expect(authLossReason()).toBe("signed-out");
+    // an unlock is the owner's own action and DOES clear it
+    clearAuthLost();
+    expect(authLossReason()).toBeUndefined();
   });
 
   it("restarts the broker sidecar before the reload so the gate can unlock again (round-2 finding 1)", async () => {

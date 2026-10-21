@@ -7,8 +7,14 @@ import { brokerAvailable, brokerCommands, invokeBroker, invokeBrokerVoid, type B
 /**
  * The vault gate's browser client (ADR-0008 §4.6). All vault routes are plain
  * JSON under /api/vault/* because the gate must work before the RPC router
- * exists; the unlocked owner session rides the `x-vault-session` header, never
- * a cookie, so a cross-origin page cannot act as the owner.
+ * exists.
+ *
+ * The unlocked owner session rides ONE of two transports (issue #319), and the
+ * API's mode picks which: the browser path hands it over in an `HttpOnly`
+ * cookie, which every window of the browser shares — one unlock serves them
+ * all, and this page's JavaScript never holds the secret. The broker path
+ * (the packaged desktop) carries it in the `x-vault-session` header, because
+ * there the secret crosses the native bridge by design.
  */
 
 export type VaultState = "unconfigured" | "locked" | "unlocked" | "invalid";
@@ -20,6 +26,8 @@ export type VaultStatus = {
   recoveryKeyCount: number;
   lockedForMs: number;
   unlocked: boolean;
+  /** whether THIS request's credential is the live session (#319) */
+  session: boolean;
   /** the shell owns the pre-boot credential prompt over its stdin pipe */
   broker: boolean;
 };
@@ -39,12 +47,18 @@ const statusSchema = z.object({
   recoveryKeyCount: z.number(),
   lockedForMs: z.number(),
   unlocked: z.boolean(),
+  // whether this request's credential is the live session. Absent on a build
+  // older than #319: those fall back to "the server will tell us at the first
+  // refused call", which is the behaviour that build has.
+  session: z.boolean().default(false),
   // absent on a build older than issue #141: those keep the HTTP transport
   broker: z.boolean().default(false),
 });
 const setupResponseSchema = z.object({
   recoveryKey: z.string().min(1),
-  sessionToken: z.string().min(1),
+  // the browser path carries no token in the body: the cookie is the
+  // credential (#319). A broker-mode build still returns one.
+  sessionToken: z.string().min(1).optional(),
   // absent only when talking to a build older than round-7
   sessionGeneration: z.number().int().nonnegative().optional(),
   // the sweep outcome: absent on older builds, which must read as unknown
@@ -62,7 +76,8 @@ export type VaultCleanupOutcome =
   | { status: "remaining"; paths: string[] }
   | { status: "unknown" };
 const sessionResponseSchema = z.object({
-  sessionToken: z.string().min(1),
+  // absent in browser mode: the cookie carries the credential (#319)
+  sessionToken: z.string().min(1).optional(),
   sessionGeneration: z.number().int().nonnegative().optional(),
 });
 const recoveryKeysSchema = z.object({
@@ -113,65 +128,102 @@ export function vaultErrorCopy(error: Error | undefined): string {
   return tError(undefined);
 }
 
-const SESSION_STORAGE_KEY = "dokan.vault.session";
-const SESSION_GENERATION_KEY = "dokan.vault.session-generation";
+/**
+ * The vault session token: in memory, and on the broker path only, in
+ * `sessionStorage` (issue #319).
+ *
+ * The browser path's credential is an `HttpOnly` cookie this page cannot read,
+ * so there is nothing to hold: the browser sends it with every same-origin
+ * request, and every window of the browser shares it. Storage there is exactly
+ * what must not exist — a token in storage is a token any script on the page
+ * can steal, and the cookie is the whole reason none is needed.
+ *
+ * The broker path is the other case, and it is NOT a loosening: the packaged
+ * desktop's page already holds this token in memory to sign its RPC calls
+ * (`rpc.ts` puts it in `x-vault-session`), so a script in that shell can read
+ * it either way and storage adds no exposure it did not have. What storage
+ * buys there is survival of a webview reload — which mattered, because the
+ * broker refuses further commands once it has been served, so a reload that
+ * forgot the token could not be recovered even with the right passphrase. The
+ * ADR's "the desktop broker transport is unchanged" is true again.
+ */
+let memorySessionToken: string | undefined;
+let memorySessionGeneration: number | undefined;
 
-function readStoredGeneration(): number | undefined {
+/** Where the broker path's token persists across a webview reload. */
+const BROKER_TOKEN_KEY = "dokan.vault.session";
+const BROKER_GENERATION_KEY = "dokan.vault.session-generation";
+
+/**
+ * The storage the broker path may use, or undefined on the browser path.
+ *
+ * `brokerAvailable()` is the Tauri bridge probe: outside the desktop shell
+ * there is no broker, so there is no path that may persist a token and the
+ * browser path keeps every byte of the credential out of JavaScript.
+ */
+function brokerStorage(): Storage | undefined {
+  if (!brokerAvailable()) return undefined;
   try {
-    const raw = sessionStorage.getItem(SESSION_GENERATION_KEY);
-    if (raw === null || raw === "") return undefined;
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return window.sessionStorage;
   } catch {
+    // a locked-down profile that refuses storage is not a reason to fail: the
+    // token still lives in memory for this page's lifetime
     return undefined;
   }
 }
 
-/** The in-process session token minted at unlock; sessionStorage dies with the tab. */
+function readStoredGeneration(): number | undefined {
+  const raw = brokerStorage()?.getItem(BROKER_GENERATION_KEY);
+  if (raw === null || raw === undefined || raw === "") return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+/** The newest generation this page knows, from memory or from the broker path's storage. */
+function knownGeneration(): number | undefined {
+  return memorySessionGeneration ?? readStoredGeneration();
+}
+
+/** The session token this page holds; undefined in the browser path. */
 export function readVaultSessionToken(): string | undefined {
-  try {
-    const value = sessionStorage.getItem(SESSION_STORAGE_KEY);
-    return value === null || value === "" ? undefined : value;
-  } catch {
-    // storage can be blocked by the webview (private modes); the owner simply
-    // has to unlock again on the next request
-    return undefined;
-  }
+  if (memorySessionToken !== undefined) return memorySessionToken;
+  const stored = brokerStorage()?.getItem(BROKER_TOKEN_KEY);
+  if (stored === null || stored === undefined || stored === "") return undefined;
+  // a reload only keeps the token, never the error state around it
+  memorySessionToken = stored;
+  return stored;
 }
 
 /**
- * Persist a session token. Rotating endpoints return a monotonic generation;
- * a response that arrives out of order carries an older generation and must
+ * Keep a session token. Rotating endpoints return a monotonic generation; a
+ * response that arrives out of order carries an older generation and must
  * never revive an already-revoked token (round-7 finding 5). A call without a
  * generation (the fragment handoff, or an older server) stores the token but
  * leaves the recorded generation untouched.
  */
 export function storeVaultSessionToken(token: string, generation?: number): void {
-  try {
-    if (generation !== undefined) {
-      const stored = readStoredGeneration();
-      if (stored !== undefined && generation < stored) return;
-      sessionStorage.setItem(SESSION_GENERATION_KEY, String(generation));
-    }
-    sessionStorage.setItem(SESSION_STORAGE_KEY, token);
-  } catch {
-    /* non-fatal: the session lives in memory for this page only */
+  if (generation !== undefined) {
+    const known = knownGeneration();
+    if (known !== undefined && generation < known) return;
+    memorySessionGeneration = generation;
+    brokerStorage()?.setItem(BROKER_GENERATION_KEY, String(generation));
   }
+  memorySessionToken = token;
+  brokerStorage()?.setItem(BROKER_TOKEN_KEY, token);
 }
 
-/** Adopt the session carried by a minting response through the generation guard. */
-function adoptSession(response: { sessionToken: string; sessionGeneration?: number }): string {
+/** Adopt the session a minting response carried, when it carried one. */
+function adoptSession(response: { sessionToken?: string; sessionGeneration?: number }): void {
+  if (response.sessionToken === undefined) return;
   storeVaultSessionToken(response.sessionToken, response.sessionGeneration);
-  return response.sessionToken;
 }
 
 export function clearVaultSessionToken(): void {
-  try {
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
-    sessionStorage.removeItem(SESSION_GENERATION_KEY);
-  } catch {
-    /* nothing to clear */
-  }
+  memorySessionToken = undefined;
+  memorySessionGeneration = undefined;
+  // a cleared session must not survive a reload on the broker path either
+  brokerStorage()?.removeItem(BROKER_TOKEN_KEY);
+  brokerStorage()?.removeItem(BROKER_GENERATION_KEY);
 }
 
 /** Read the Arabic setup token the desktop shell put in the URL fragment. */
@@ -337,7 +389,7 @@ export async function vaultSetup(
   passphrase: string,
   setupToken?: string,
   broker = false,
-): Promise<{ recoveryKey: string; sessionToken: string; plaintextRemaining: string[]; plaintextStatus: PlaintextCleanupStatus }> {
+): Promise<{ recoveryKey: string; plaintextRemaining: string[]; plaintextStatus: PlaintextCleanupStatus }> {
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.setup, { passphrase });
     if (!reply.ok || reply.sessionToken == null || reply.recoveryKey == null) throw brokerRefusal(reply);
@@ -346,7 +398,6 @@ export async function vaultSetup(
     // vault_setup_warning, so until then the outcome is UNKNOWN (round-4)
     return {
       recoveryKey: reply.recoveryKey,
-      sessionToken: reply.sessionToken,
       plaintextRemaining: reply.plaintextRemaining ?? [],
       plaintextStatus: "unknown",
     };
@@ -357,10 +408,11 @@ export async function vaultSetup(
     false,
     setupResponseSchema,
   );
+  // the browser path's credential is the cookie the response set; nothing to
+  // keep here (#319)
   adoptSession(result);
   return {
     recoveryKey: result.recoveryKey,
-    sessionToken: result.sessionToken,
     plaintextRemaining: result.plaintextRemaining ?? [],
     // an older build that omits the status cannot confirm clean
     plaintextStatus: result.plaintextStatus ?? (result.plaintextRemaining !== undefined && result.plaintextRemaining.length > 0 ? "remaining" : "unknown"),
@@ -415,23 +467,30 @@ export async function revokeVaultSession(): Promise<void> {
   await request("/api/vault/logout", { method: "POST" }, true, z.object({ ok: z.literal(true) }));
 }
 
-export async function vaultUnlock(passphrase: string, broker = false): Promise<string> {
+/**
+ * Unlock the vault.
+ *
+ * The browser path's credential is the cookie the response set, so this call
+ * hands the page nothing to keep; the broker path's token crosses the native
+ * bridge and is kept in memory (#319).
+ */
+export async function vaultUnlock(passphrase: string, broker = false): Promise<void> {
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.unlock, { passphrase });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
-    return reply.sessionToken;
+    return;
   }
   const result = await request("/api/vault/unlock", { method: "POST", body: JSON.stringify({ passphrase }) }, false, sessionResponseSchema);
-  return adoptSession(result);
+  adoptSession(result);
 }
 
-export async function vaultUnlockWithRecovery(recoveryKey: string, broker = false): Promise<string> {
+export async function vaultUnlockWithRecovery(recoveryKey: string, broker = false): Promise<void> {
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.recovery, { recoveryKey });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
-    return reply.sessionToken;
+    return;
   }
   const result = await request(
     "/api/vault/unlock-recovery",
@@ -439,7 +498,7 @@ export async function vaultUnlockWithRecovery(recoveryKey: string, broker = fals
     false,
     sessionResponseSchema,
   );
-  return adoptSession(result);
+  adoptSession(result);
 }
 
 export async function listRecoveryKeys(): Promise<VaultRecoveryKey[]> {
@@ -453,7 +512,8 @@ export async function addRecoveryKey(): Promise<{ id: string; code: string }> {
 
 const removedOrChangedSchema = z.object({
   ok: z.literal(true),
-  sessionToken: z.string().min(1),
+  // absent in browser mode: the response set the cookie instead (#319)
+  sessionToken: z.string().min(1).optional(),
   sessionGeneration: z.number().int().nonnegative().optional(),
 });
 
@@ -465,22 +525,23 @@ export function isVaultPassphraseLongEnough(value: string): boolean {
   return value.normalize("NFC").trim().length >= MIN_VAULT_PASSPHRASE_LENGTH;
 }
 
-export async function removeRecoveryKey(id: string): Promise<string> {
-  // deleting a credential rotates the session: keep the fresh token
+export async function removeRecoveryKey(id: string): Promise<void> {
+  // deleting a credential rotates the session: the fresh one rides the cookie
   const result = await request(`/api/vault/recovery-keys/${encodeURIComponent(id)}`, { method: "DELETE" }, true, removedOrChangedSchema);
-  return adoptSession(result);
+  adoptSession(result);
 }
 
-export async function changeVaultPassphrase(currentPassphrase: string, newPassphrase: string): Promise<string> {
+export async function changeVaultPassphrase(currentPassphrase: string, newPassphrase: string): Promise<void> {
   // the old passphrase is refused from now on, so the server rotates the
-  // in-process token and returns the one this client must keep using
+  // in-process token: the browser path's cookie is replaced, the broker
+  // path's token is kept in memory
   const result = await request(
     "/api/vault/change-passphrase",
     { method: "POST", body: JSON.stringify({ currentPassphrase, newPassphrase }) },
     true,
     removedOrChangedSchema,
   );
-  return adoptSession(result);
+  adoptSession(result);
 }
 
 /**
@@ -489,12 +550,12 @@ export async function changeVaultPassphrase(currentPassphrase: string, newPassph
  * settings UI routes this through the shell's pipe (round-2 finding 2), since
  * the HTTP route is refused there.
  */
-export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string, broker = false): Promise<string> {
+export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string, broker = false): Promise<void> {
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.reset, { recoveryKey, newPassphrase });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
-    return reply.sessionToken;
+    return;
   }
   const result = await request(
     "/api/vault/reset-passphrase",
@@ -502,5 +563,5 @@ export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: s
     false,
     removedOrChangedSchema,
   );
-  return adoptSession(result);
+  adoptSession(result);
 }

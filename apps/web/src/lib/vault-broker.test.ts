@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
   acknowledgeVaultSetup,
+  clearVaultSessionToken,
   fetchVaultStatus,
   fetchVaultSetupWarning,
   readVaultSessionToken,
@@ -80,26 +81,30 @@ beforeEach(() => {
     httpCalls += 1;
     const raw = input instanceof Request ? input.url : String(input);
     const path = new URL(raw, "http://localhost").pathname;
-    if (path === "/api/vault/unlock") return Response.json({ sessionToken: "http-token" });
-    if (path === "/api/vault/setup") return Response.json({ recoveryKey: "HTTP-KEY", sessionToken: "http-setup" });
-    if (path === "/api/vault/unlock-recovery") return Response.json({ sessionToken: "http-recovery" });
+    if (path === "/api/vault/unlock") return Response.json({ sessionGeneration: 1 });
+    if (path === "/api/vault/setup") return Response.json({ recoveryKey: "HTTP-KEY", sessionGeneration: 1 });
+    if (path === "/api/vault/unlock-recovery") return Response.json({ sessionGeneration: 1 });
     return Response.json(statusJson(false));
   }) as typeof fetch;
   window.sessionStorage.clear();
+  // the page's memory is where a token lives now (#319), so a test starts from
+  // a page that has never held one
+  clearVaultSessionToken();
 });
 
 afterEach(() => {
   // SAFETY: the test installed this exact optional global above
   delete (window as { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
   globalThis.fetch = originalFetch;
+  clearVaultSessionToken();
 });
 
 describe("desktop stdin broker transport (issue #141)", () => {
   it("unlocks over the shell's pipe and never calls fetch", async () => {
     installTauri();
     responder = () => ({ ok: true, sessionToken: "broker-token", sessionGeneration: 4 });
-    const token = await vaultUnlock("correct horse battery", true);
-    expect(token).toBe("broker-token");
+    await vaultUnlock("correct horse battery", true);
+    expect(readVaultSessionToken()).toBe("broker-token");
     expect(calls).toEqual([{ command: "vault_unlock", args: { passphrase: "correct horse battery" } }]);
     expect(readVaultSessionToken()).toBe("broker-token");
     expect(httpCalls).toBe(0);
@@ -163,7 +168,9 @@ describe("desktop stdin broker transport (issue #141)", () => {
     await vaultUnlock("correct horse battery");
     expect(calls).toEqual([]);
     expect(httpCalls).toBe(1);
-    expect(readVaultSessionToken()).toBe("http-token");
+    // the browser path's credential is the HttpOnly cookie the reply set, so
+    // there is no token for the page to hold (#319)
+    expect(readVaultSessionToken()).toBeUndefined();
   });
 
   it("keeps HTTP when the Tauri dev window has a bridge but the API is not in broker mode", async () => {
@@ -172,10 +179,10 @@ describe("desktop stdin broker transport (issue #141)", () => {
     // reverse: otherwise dev unlock would try a nonexistent sidecar and fail.
     installTauri();
     responder = () => ({ ok: true, sessionToken: "broker-token" });
-    const token = await vaultUnlock("correct horse battery", false);
-    expect(token).toBe("http-token");
+    await vaultUnlock("correct horse battery", false);
     expect(calls).toEqual([]);
     expect(httpCalls).toBe(1);
+    expect(readVaultSessionToken()).toBeUndefined();
   });
 
   it("sets up over the broker and acknowledges the recovery key over the same pipe", async () => {
@@ -197,8 +204,8 @@ describe("desktop stdin broker transport (issue #141)", () => {
   it("unlocks with a recovery key over the broker", async () => {
     installTauri();
     responder = () => ({ ok: true, sessionToken: "recovery-token" });
-    const token = await vaultUnlockWithRecovery("ABCD-EFGH-IJKL", true);
-    expect(token).toBe("recovery-token");
+    await vaultUnlockWithRecovery("ABCD-EFGH-IJKL", true);
+    expect(readVaultSessionToken()).toBe("recovery-token");
     expect(calls[0]).toEqual({ command: "vault_unlock_recovery", args: { recoveryKey: "ABCD-EFGH-IJKL" } });
     expect(httpCalls).toBe(0);
   });
@@ -206,8 +213,8 @@ describe("desktop stdin broker transport (issue #141)", () => {
   it("resets the passphrase from a recovery key over the broker for settings (round-2 finding 2)", async () => {
     installTauri();
     responder = () => ({ ok: true, sessionToken: "reset-token", sessionGeneration: 6 });
-    const token = await resetVaultPassphrase("ABCD-EFGH-IJKL", "a brand new passphrase", true);
-    expect(token).toBe("reset-token");
+    await resetVaultPassphrase("ABCD-EFGH-IJKL", "a brand new passphrase", true);
+    expect(readVaultSessionToken()).toBe("reset-token");
     expect(calls[0]).toEqual({
       command: "vault_reset_passphrase",
       args: { recoveryKey: "ABCD-EFGH-IJKL", newPassphrase: "a brand new passphrase" },

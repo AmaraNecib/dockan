@@ -11,6 +11,7 @@ import { PasswordInput } from "./components/ui/password-input";
 import { readVaultSessionToken, requestVaultReclaim } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
+import { clearAuthLost, recoverAuthLost, useAuthLost } from "./lib/auth-refusal";
 import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY, onPreferenceWriteSettled } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
@@ -33,6 +34,12 @@ function setupNameKey(ownerName: string, storeName: string): MessageKey | null {
 export function RequireSession({ children }: { children: ReactNode }) {
   const vault = useVaultStatus();
   /**
+   * The session can die under a live window — another window replaced it, the
+   * owner logged out, the vault was locked. The refusal that says so must
+   * land on the unlock screen, not on a page of failed queries (#319).
+   */
+  const authLost = useAuthLost();
+  /**
    * The in-use screen's retry asks the refused instance to re-check the folder
    * before it re-reads the status (#277). Only the button does this: a poll is
    * not a retry, or the client's rate becomes the reclaim rate (greptile P2 on
@@ -41,19 +48,60 @@ export function RequireSession({ children }: { children: ReactNode }) {
   const retryRefusedFolder = useCallback(() => {
     void requestVaultReclaim().then(() => vault.refresh());
   }, [vault.refresh]);
+  /**
+   * A refusal can be TRANSIENT, and the unlock screen must not be the only way
+   * out of it (#319 review P1). A query in flight across another window's
+   * `changeVaultPassphrase` rotation is refused with a perfectly live cookie
+   * behind it; the only other exit was re-entering the passphrase, which
+   * rotates the token and refuses the window that was working — two windows
+   * taking turns locking each other out. So while the refusal is up, ask the
+   * server ONCE whether this request's credential is live again, and drop the
+   * refusal only on that fresh answer. Recovery is a status read, not a
+   * rotation.
+   *
+   * The answer has to be the one the probe read, not the status already on
+   * screen: that one was read before the refusal, and deciding on it recovers a
+   * refusal that is real. The ref bounds it to one probe per episode, because a
+   * real loss would otherwise probe on every re-render. Broker mode is not
+   * recoverable by asking — its token lives in this page, and a token the server
+   * refused cannot become live again — so recovery there stays a reload or a
+   * passphrase.
+   */
+  const reprobedRef = useRef(false);
+  useEffect(() => {
+    if (!authLost) {
+      reprobedRef.current = false;
+      return;
+    }
+    if (reprobedRef.current) return;
+    reprobedRef.current = true;
+    void vault.refresh().then((fresh) => {
+      // `recoverAuthLost`, not `clearAuthLost`: a sign-out the server never
+      // confirmed is not undone by a live cookie (see auth-refusal.ts).
+      if (fresh !== undefined && fresh.mode === "vault" && !fresh.broker && fresh.session) recoverAuthLost();
+    });
+  }, [authLost, vault.refresh]);
   // The vault gate owns the first paint: no app route exists until the
   // encrypted store is open (ADR-0008 §4.6).
   if (vault.status !== undefined && vault.status.mode === "vault") {
     const vaultStatus = vault.status;
-    // A client without the in-process session token is treated as locked even
-    // when the server stays unlocked: a new window must re-enter the passphrase
-    // rather than inherit access it was never given.
-    const hasSession = readVaultSessionToken() !== undefined;
-    if (vaultStatus.state !== "unlocked" || !hasSession) {
+    // The browser path's credential is a cookie this page cannot read, so
+    // whether this window holds one is the server's business — and the status
+    // route answers it for THIS request (#319), so a window with no valid
+    // cookie lands on the unlock screen instead of mounting the app and being
+    // sent back there by its first refused query. The broker path's token
+    // lives in this page, so a window without it has no session at all.
+    const hasSession = vaultStatus.broker ? readVaultSessionToken() !== undefined : vaultStatus.session;
+    if (vaultStatus.state !== "unlocked" || !hasSession || authLost) {
       return (
         <VaultGate
           status={vaultStatus}
-          onUnlocked={() => vault.setStatus({ ...vaultStatus, state: "unlocked", unlocked: true })}
+          onUnlocked={() => {
+            clearAuthLost();
+            // the unlock minted a fresh credential, which is exactly what the
+            // status route would now report: this window holds the live session
+            vault.setStatus({ ...vaultStatus, state: "unlocked", unlocked: true, session: true });
+          }}
         />
       );
     }

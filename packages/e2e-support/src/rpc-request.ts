@@ -13,15 +13,20 @@
  * a function that takes that request as an argument. A unit test can then
  * call the very function the helper calls and look at what it would send.
  *
- * The vault token itself is still read in the page (it lives in the page's
- * `sessionStorage`), so the helper reads it and passes it in. Nothing about
- * the token's origin changes: it still comes from the page that posts.
+ * The vault token is no longer the only credential a seeded call can present.
+ * Since #319 the browser path carries the vault session in an `HttpOnly`
+ * cookie this page cannot read, and `credentials: "include"` below is what
+ * sends it; the storage key the helper still reads is the pre-#319 location
+ * and now reads as absent. A token passed in is still attached as the header,
+ * which is the transport a non-browser client uses.
  */
 
 /**
- * The storage key the app's vault client writes the session token to
- * (`apps/web/src/lib/vault-client.ts`). The helper reads the same key, so
- * the helper and the app cannot drift apart on where the token lives.
+ * The storage key the app's vault client USED to write the session token to
+ * (`apps/web/src/lib/vault-client.ts`). Since #319 nothing writes it: the
+ * browser path's credential is an `HttpOnly` cookie, and the cookie is what
+ * authenticates a seeded call. Kept so the helper's read and this constant
+ * cannot drift; removing the read is a follow-up.
  */
 export const VAULT_SESSION_STORAGE_KEY = "dokan.vault.session";
 

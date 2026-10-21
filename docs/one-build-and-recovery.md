@@ -345,7 +345,10 @@ transports provably identical.
 
 **Owner identity seam.** Unlocking mints an in-process session token returned to
 the client; the router accepts it over the `x-vault-session` header as the
-owner. The auth layer itself is unchanged for the legacy build, and employee logins can later sign in after
+owner. The browser path carries that same single token in an HttpOnly cookie
+instead, because a cookie jar is shared by every window of the browser — the
+transport, and why, is ADR-0013. The auth layer itself is unchanged for the
+legacy build, and employee logins can later sign in after
 the vault is open without touching the vault.
 
 **Dev/e2e escape hatch.** `DOKAN_VAULT=disabled` keeps the phase-1 plaintext

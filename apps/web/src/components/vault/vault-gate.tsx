@@ -19,7 +19,6 @@ import {
   type VaultCleanupOutcome,
   type VaultStatus,
 } from "@/lib/vault-client";
-
 /**
  * The pre-boot vault gate (ADR-0008 §4.6). Every app screen stays unmounted
  * until the passphrase (or a recovery key) opens the encrypted store; the
@@ -64,7 +63,12 @@ type VaultHook = {
    *  pid stopped beating and may be recycled (#283) */
   failure: VaultFailure | undefined;
   setStatus: (status: VaultStatus) => void;
-  refresh: () => void;
+  /**
+   * Re-read the status. Resolves with the answer it read, so a caller that has
+   * to DECIDE on the fresh answer (the refusal re-probe in `App.tsx`) does not
+   * have to guess from the render that triggered it.
+   */
+  refresh: () => Promise<VaultStatus | undefined>;
 };
 
 /** The input a gate refusal points at; null means the form-level alert. */
@@ -90,22 +94,24 @@ export function useVaultStatus(): VaultHook {
    * button disappeared and came back every poll, and the keyboard focus that
    * was on the button was dropped with them.
    */
-  const load = useCallback(() => {
-    fetchVaultStatus()
-      .then((result) => {
-        if (!aliveRef.current) return;
-        setStatus(result);
-        setFailure(undefined);
-      })
-      .catch((reason) => {
-        if (!aliveRef.current) return;
+  const load = useCallback(async (): Promise<VaultStatus | undefined> => {
+    try {
+      const result = await fetchVaultStatus();
+      if (!aliveRef.current) return result;
+      setStatus(result);
+      setFailure(undefined);
+      return result;
+    } catch (reason) {
+      if (aliveRef.current) {
         const code = reason instanceof VaultRequestError ? reason.code : "VAULT_UNREACHABLE";
         const mapped = VAULT_STATUS_FAILURES.get(code) ?? "unreachable";
         // the recycled-pid flag only ever refines the lock refusal: it must not
         // repaint an unrelated failure that happened to carry the field
         const staleLock = reason instanceof VaultRequestError && reason.staleHeartbeat && mapped === "in-use";
         setFailure(staleLock ? "stale-lock" : mapped);
-      });
+      }
+      return undefined;
+    }
   }, []);
 
   useEffect(() => {
@@ -323,8 +329,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               return;
             }
             void run(async () => {
-              const token = await vaultUnlockWithRecovery(recoveryInput, status.broker);
-              storeVaultSessionToken(token);
+              await vaultUnlockWithRecovery(recoveryInput, status.broker);
               onUnlocked();
             });
           }}
@@ -382,7 +387,6 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
             }
             void run(async () => {
               const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
-              storeVaultSessionToken(result.sessionToken);
               setRecoveryKey(result.recoveryKey);
               setScreen("recovery-show");
               if (status.broker) {
@@ -464,8 +468,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
             return;
           }
           void run(async () => {
-            const token = await vaultUnlock(passphrase, status.broker);
-            storeVaultSessionToken(token);
+            await vaultUnlock(passphrase, status.broker);
             onUnlocked();
           });
         }}

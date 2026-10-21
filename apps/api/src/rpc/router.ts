@@ -1,5 +1,5 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract, normalizeBarcode, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { AUTH_REFUSAL, dokanContract, normalizeBarcode, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -20,6 +20,7 @@ import { resolveOpeningDestination, type NamedSupplierCandidate } from "./openin
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
+import { resolveVaultCredential } from "../lib/vault/session";
 import { tokenMatches } from "../lib/boot-token";
 import { localDate, localDateTime } from "../lib/logger";
 import type { ReportRangePreset } from "@dokan/contracts";
@@ -65,9 +66,12 @@ type RpcDeps = {
   now?: () => Date;
   /**
    * Unified-vault seam (ADR-0008 §4.6). Present only when the encrypted store
-   * is active. An unlocked vault authenticates the owner over the
-   * `x-vault-session` header; the auth layer itself is untouched, so employee
-   * logins can be added later without changing the vault.
+   * is active. An unlocked vault authenticates the owner over the credential
+   * transport this server's mode picks — the `HttpOnly` cookie on the browser
+   * path, the `x-vault-session` header on the broker path (ADR-0013, and
+   * `lib/vault/session.ts` is the one place that decides); the auth layer
+   * itself is untouched, so employee logins can be added later without
+   * changing the vault.
    */
   vault?: {
     sessionMatches(token: string | null | undefined): boolean;
@@ -333,21 +337,33 @@ export function createRpcRouter(deps: RpcDeps) {
 
   const requireSession = async (context: RpcContext): Promise<SessionIdentity> => {
     // Unified vault: unlocking the vault signs the owner in for this process.
-    // The token is a custom header, never a cookie, so a cross-origin page
-    // cannot ride the unlocked session (CSRF is refused at the preflight).
+    // The token is ONE credential with two transports (#319), and the server's
+    // own mode picks which one it reads: a browser-mode server reads the
+    // HttpOnly cookie the web app can never see, and a broker-mode server
+    // reads the header, because there the secret crosses the native bridge by
+    // design. A cookie is never a credential on a broker-mode server, so a
+    // page that happens to hold one cannot act as the native transport.
     // Vault mode accepts ONLY this credential: a legacy password account that
     // survived a migration must not act as a second, weaker credential.
     if (deps.vault !== undefined) {
-      if (deps.vault.sessionMatches(context.request.headers.get("x-vault-session"))) {
+      const resolution = resolveVaultCredential(context.request, { broker: deps.config.vaultBroker });
+      if (resolution.kind === "credential" && deps.vault.sessionMatches(resolution.token)) {
         const ownerId = deps.vault.ownerId();
         if (ownerId !== undefined) return { user: { id: ownerId } };
       }
-      throw new ORPCError("UNAUTHORIZED", { message: "AUTH_REQUIRED" });
+      // a request that carries the vault cookie from an origin this server
+      // refuses is not a missing session; it is a refused one, and it says so.
+      // The code is a stable vault code with its own sentence in the web, so it
+      // is enumerated in `VAULT_ERROR_CODES`, not invented here.
+      if (resolution.kind === "refused") {
+        throw new ORPCError("FORBIDDEN", { message: "VAULT_ORIGIN_FORBIDDEN" });
+      }
+      throw new ORPCError(AUTH_REFUSAL.code, { message: AUTH_REFUSAL.message });
     }
     // SAFETY: getSession validates the cookie against the session store and
     // returns null for anything missing or expired
     const session = await deps.auth.api.getSession({ headers: context.request.headers });
-    if (session === null) throw new ORPCError("UNAUTHORIZED", { message: "AUTH_REQUIRED" });
+    if (session === null) throw new ORPCError(AUTH_REFUSAL.code, { message: AUTH_REFUSAL.message });
     // single-admin boundary: only the provisioned identity may call the store.
     // Sign-up is blocked at the http layer; this check makes the guard immune
     // to any other path that could mint a session.

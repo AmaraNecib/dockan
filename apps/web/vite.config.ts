@@ -58,7 +58,14 @@ export default defineConfig({
       // widens to vite's ProxyOptions type
       "/api": {
         target: `http://127.0.0.1:${apiTargetPort()}`, // SAFETY: router overrides it per request
-        changeOrigin: true,
+        // The API's origin gate compares a request's `Origin` with the host the
+        // request was addressed to (#319), so the proxy must forward the
+        // browser's own `Host` instead of rewriting it to the api's port. With
+        // `changeOrigin: true` a page on :5173 looked like a foreign origin to
+        // a request the api then saw as `127.0.0.1:4317`, and every browser
+        // write was refused. http-proxy's default is to pass the header
+        // through, which is what the gate needs.
+        changeOrigin: false,
         // http-proxy re-resolves the destination on every request, so the proxy
         // follows the api's actual port even when vite booted before the api
         // selected and recorded its fallback port (greptile P1)

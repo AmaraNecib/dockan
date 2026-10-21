@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
 import { storeVaultSessionToken } from "./lib/vault-client";
+import { clearAuthLost, markAuthLost } from "./lib/auth-refusal";
 import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
@@ -123,6 +124,11 @@ beforeEach(() => {
         vaultCalls.push(`POST ${pathname}`);
         return Response.json({ ok: true, taken: false });
       }
+      if (pathname === "/api/vault/unlock") {
+        vaultCalls.push(`POST ${pathname}`);
+        // the browser path's credential is the cookie this reply sets (#319)
+        return Response.json({ ok: true, sessionGeneration: 2 });
+      }
       return originalFetch(input, init);
     },
     { preconnect: originalFetch.preconnect },
@@ -155,13 +161,15 @@ afterEach(() => {
   preferenceWriteGate = null;
   window.localStorage.clear();
   window.sessionStorage.clear();
+  // the refusal is module state, so it outlives a mount: reset it like the page
+  clearAuthLost();
 });
 
 function renderWithClient(root: ReturnType<typeof createRoot>, ui: React.ReactElement, client: QueryClient): void {
   root.render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
-async function mountAuthGateFor(selector: string): Promise<HTMLElement> {
+async function mountAuthGateFor(selector: string, children: React.ReactNode = null): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -169,7 +177,7 @@ async function mountAuthGateFor(selector: string): Promise<HTMLElement> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <RequireSession>{null}</RequireSession>
+        <RequireSession>{children}</RequireSession>
       </QueryClientProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -189,8 +197,19 @@ async function mountAuthGate(): Promise<HTMLElement> {
 
 /** Mount past the vault gate: unlocked status + an in-process session token. */
 async function mountVaultOwnerGateFor(selector: string, children: React.ReactNode = null): Promise<HTMLElement> {
+  // `session: true` is the server saying THIS request's credential is the live
+  // one (#319): the gate renders the app on that answer, so a fixture that
+  // omitted it would leave every owner test on the unlock screen.
   vaultStatusResponse = async () =>
-    Response.json({ mode: "vault", state: "unlocked", legacyDatabase: false, recoveryKeyCount: 1, lockedForMs: 0, unlocked: true });
+    Response.json({
+      mode: "vault",
+      state: "unlocked",
+      legacyDatabase: false,
+      recoveryKeyCount: 1,
+      lockedForMs: 0,
+      unlocked: true,
+      session: true,
+    });
   storeVaultSessionToken("session-token");
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -418,6 +437,91 @@ describe("vault folder locked by a recycled pid (issue #283)", () => {
     });
     expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="vault-status-stale-lock"]')).toBeNull();
+  });
+});
+
+describe("a session that died under a live window (#319)", () => {
+  /** A status answer from a server that does NOT hold this request's credential. */
+  const deadSession = async (): Promise<Response> =>
+    Response.json({
+      mode: "vault",
+      state: "unlocked",
+      legacyDatabase: false,
+      recoveryKeyCount: 1,
+      lockedForMs: 0,
+      unlocked: true,
+      session: false,
+    });
+
+  it("a window with no live cookie never mounts the app at all (#319 review P2)", async () => {
+    // the vault is unlocked, but THIS request's credential is not the live
+    // session: rendering the app would paint a page of failed queries and then
+    // send the owner to the unlock screen they belong on from the start
+    vaultStatusResponse = deadSession;
+    const host = await mountAuthGateFor('[data-testid="vault-passphrase"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+  });
+
+  it("lands on the unlock screen, and the owner's unlock comes back into the app", async () => {
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+
+    // another window unlocked, or the owner logged out: the RPC guard's
+    // refusal reaches the app, and the unlock screen is the answer to it. The
+    // status agrees — this request's credential is dead — so the screen is the
+    // right answer and the one re-probe cannot take it back.
+    vaultStatusResponse = deadSession;
+    await act(async () => {
+      markAuthLost();
+    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector('[data-testid="vault-passphrase"]') !== null) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+
+    // and the unlock CLEARS the refusal: without that, one dead session would
+    // strand the owner on this screen for the life of the page
+    const passphrase = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    if (passphrase === null) throw new Error("the gate rendered no passphrase input");
+    setInputValue(passphrase, "correct horse battery");
+    await submitForm(host);
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector('[data-testid="owner-content"]') !== null) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
+  });
+
+  it("recovers from a TRANSIENT refusal without asking for a passphrase (#319 review P1)", async () => {
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+
+    // a query in flight across another window's rotation is refused, with a
+    // perfectly live cookie behind it. One refusal must not latch the unlock
+    // screen: recovery used to cost a passphrase, which rotates the token and
+    // refuses the window that WAS working.
+    await act(async () => {
+      markAuthLost();
+    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector('[data-testid="owner-content"]') !== null) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    // the app came back on the server's answer alone
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
+    // and nothing rotated it: an unlock request would have replaced the cookie
+    expect(vaultCalls).not.toContain("POST /api/vault/unlock");
   });
 });
 

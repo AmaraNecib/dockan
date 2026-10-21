@@ -11,7 +11,6 @@ import {
   listRecoveryKeys,
   removeRecoveryKey,
   resetVaultPassphrase,
-  storeVaultSessionToken,
   vaultErrorCopy,
 } from "@/lib/vault-client";
 
@@ -58,9 +57,9 @@ export function VaultSettings() {
 
   const changePassphrase = useMutation({
     mutationFn: () => changeVaultPassphrase(currentPassphrase, newPassphrase),
-    onSuccess: (sessionToken) => {
-      // a credential change rotates the session; keep the current window alive
-      storeVaultSessionToken(sessionToken);
+    onSuccess: () => {
+      // a credential change rotates the session: the browser path's cookie is
+      // replaced by the response, the broker path's token is kept in memory
       setMessage(t("vaultChanged"));
       setFailure(null);
       setCurrentPassphrase("");
@@ -81,9 +80,8 @@ export function VaultSettings() {
 
   const deleteKey = useMutation({
     mutationFn: (id: string) => removeRecoveryKey(id),
-    onSuccess: (sessionToken) => {
-      // deleting a key revokes sessions; adopt the freshly minted token
-      storeVaultSessionToken(sessionToken);
+    onSuccess: () => {
+      // deleting a key revokes the session; the fresh one rides the cookie
       setPendingDelete(null);
       void queryClient.invalidateQueries({ queryKey: ["vault", "recovery-keys"] });
     },
@@ -93,8 +91,7 @@ export function VaultSettings() {
   const recoveryReset = useMutation({
     // broker mode refuses the HTTP reset route: route it over the pipe
     mutationFn: () => resetVaultPassphrase(resetRecoveryKey, resetNewPassphrase, status.data?.broker === true),
-    onSuccess: (sessionToken) => {
-      storeVaultSessionToken(sessionToken);
+    onSuccess: () => {
       setMessage(t("vaultChanged"));
       setFailure(null);
       setShowRecoveryReset(false);

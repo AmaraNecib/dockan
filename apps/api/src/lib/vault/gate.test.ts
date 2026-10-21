@@ -18,7 +18,7 @@ import { ensureSessionSecret } from "../../lib/session-secret";
 import { createOverlay, type NodeRequestEnv } from "../overlay";
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
 import { extractVaultBackup } from "./backup";
-import { createVaultHttpApp, type VaultCleanupResult } from "./http";
+import { createVaultHttpApp, type VaultBootstrapInput, type VaultCleanupResult } from "./http";
 import { VaultManager } from "./manager";
 import { createRpcRouter } from "../../rpc/router";
 import type { StorePort } from "../../store/port";
@@ -89,6 +89,12 @@ type GateHarness = {
   gateApp: ReturnType<typeof createVaultHttpApp>;
   /** the full app comes alive after bootstrap; gate tests use it post-unlock */
   appFor: () => ReturnType<typeof createApp>;
+  /**
+   * Bootstrap the app the way an unlock does, for the tests that need a live
+   * RPC router without going through an HTTP unlock — the broker mode refuses
+   * the pre-boot routes, so its manager is driven directly (issue #141).
+   */
+  bootstrapApp: (input: VaultBootstrapInput) => Promise<void>;
   /** simulate a process restart: the next unlock re-runs bootstrap */
   resetApp: () => void;
   connection: () => ReturnType<typeof createEncryptedConnection>;
@@ -195,6 +201,7 @@ function harness(
       if (app === undefined) throw new Error("app not bootstrapped");
       return app;
     },
+    bootstrapApp: bootstrap,
     resetApp: () => {
       store = undefined;
       connection = undefined;
@@ -230,6 +237,20 @@ async function json<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * The vault session token, read from the cookie the browser path hands it in
+ * (#319). The unlock/setup response body no longer carries the token, so a
+ * test that needs one reads it here and presents it as the header a
+ * non-browser client would use.
+ */
+function sessionTokenFrom(response: Response): string {
+  const setCookie = response.headers.get("set-cookie");
+  if (setCookie === null) throw new Error("the response carries no session cookie");
+  const match = /(?:^|;\s*)dokan\.vault\.session=([^;]+)/u.exec(setCookie);
+  if (match === null || match[1] === undefined) throw new Error(`no session cookie in ${setCookie}`);
+  return match[1];
+}
+
 /** Late-bound handle so an afterCredentialChange hook can rotate mid-request. */
 type ManagerHolder = { manager?: VaultManager };
 describe("vault HTTP gate", () => {
@@ -259,10 +280,13 @@ describe("vault HTTP gate", () => {
       body: JSON.stringify({ passphrase: "correct horse battery" }),
     });
     expect(setup.status).toBe(200);
-    // SAFETY: the setup contract is { ok: true, recoveryKey, sessionToken }
-    const setupBody = await json<{ ok: boolean; recoveryKey: string; sessionToken: string }>(setup);
+    // SAFETY: the setup contract is { ok: true, recoveryKey }: the token rides
+    // the cookie, never the body (issue #319)
+    const setupBody = await json<{ ok: boolean; recoveryKey: string }>(setup);
+    const setupToken = sessionTokenFrom(setup);
     expect(setupBody.ok).toBe(true);
     expect(setupBody.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+    expect(setupBody).not.toHaveProperty("sessionToken");
     expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(true);
     expect(fs.existsSync(path.join(h.dir, "dokan.db.enc"))).toBe(true);
 
@@ -271,7 +295,7 @@ describe("vault HTTP gate", () => {
     await expect(unauthed.categoriesList()).rejects.toThrow();
 
     // owner setup in vault mode sends no password
-    const provisioned = h.linkWith({ "x-vault-session": setupBody.sessionToken });
+    const provisioned = h.linkWith({ "x-vault-session": setupToken });
     await provisioned.firstTimeSetup({
       ownerName: "مالك الاختبار",
       phoneNumber: "0550123123",
@@ -437,8 +461,8 @@ describe("vault HTTP gate", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ passphrase: "correct horse battery" }),
     });
-    // SAFETY: the setup contract carries a session token
-    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // the browser path carries the credential in an HttpOnly cookie (#319)
+    const sessionToken = sessionTokenFrom(setup);
     const authHeaders = { "content-type": "application/json", "x-vault-session": sessionToken };
     const added = await h.gate.request("/api/vault/recovery-keys", { method: "POST", headers: authHeaders });
     expect(added.status).toBe(200);
@@ -454,9 +478,8 @@ describe("vault HTTP gate", () => {
     const removed = await h.gate.request(`/api/vault/recovery-keys/${addedBody.id}`, { method: "DELETE", headers: authHeaders });
     expect(removed.status).toBe(200);
     // deleting a credential rotates the session token; adopt the fresh one
-    // SAFETY: the delete contract is { ok: true, sessionToken }
-    const afterRemove = await json<{ sessionToken: string }>(removed);
-    const rotatedHeaders = { "content-type": "application/json", "x-vault-session": afterRemove.sessionToken };
+    // from the cookie the rotation handed back
+    const rotatedHeaders = { "content-type": "application/json", "x-vault-session": sessionTokenFrom(removed) };
 
     const changed = await h.gate.request("/api/vault/change-passphrase", {
       method: "POST",
@@ -585,8 +608,8 @@ describe("vault gate hardening (review supplement)", () => {
   itHeavy("refuses to delete the last recovery key (finding C8)", async () => {
     const h = harness(tempDir("dokan-vault-lastkey-"));
     const setup = await setupVault(h);
-    // SAFETY: the setup contract carries the session token
-    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // the browser path carries the credential in an HttpOnly cookie (#319)
+    const sessionToken = sessionTokenFrom(setup);
     const listed = await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } });
     // SAFETY: the list contract is { keys: Array<{ id: string }> }
     const keys = (await json<{ keys: Array<{ id: string }> }>(listed)).keys;
@@ -639,8 +662,8 @@ describe("vault gate hardening (review supplement)", () => {
   itHeavy("throttles credential changes, returns retryAfterMs, and rotates the session (findings C13/A14)", async () => {
     const h = harness(tempDir("dokan-vault-throttle-"));
     const setup = await setupVault(h);
-    // SAFETY: the setup contract carries the session token
-    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // the browser path carries the credential in an HttpOnly cookie (#319)
+    const sessionToken = sessionTokenFrom(setup);
 
     // a successful change rotates the token: the old one dies, the new works
     const changed = await h.gate.request("/api/vault/change-passphrase", {
@@ -649,8 +672,8 @@ describe("vault gate hardening (review supplement)", () => {
       body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "a brand new passphrase" }),
     });
     expect(changed.status).toBe(200);
-    // SAFETY: the change contract carries the fresh session token
-    const rotated = (await json<{ sessionToken: string }>(changed)).sessionToken;
+    // the change rotates the session; the fresh token rides the cookie
+    const rotated = sessionTokenFrom(changed);
     expect(rotated).not.toBe(sessionToken);
     expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } })).status).toBe(401);
     expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": rotated } })).status).toBe(200);
@@ -738,10 +761,10 @@ describe("vault gate hardening (review supplement)", () => {
     // the original passphrase still resumes and receives the token
     const owner = await setupVault(h, "correct horse battery");
     expect(owner.status).toBe(200);
-    // SAFETY: the setup contract carries the recovery key and the session token
-    const ownerBody = await json<{ recoveryKey: string; sessionToken: string }>(owner);
+    // SAFETY: the setup contract carries the recovery key
+    const ownerBody = await json<{ recoveryKey: string }>(owner);
     expect(ownerBody.recoveryKey).toBe(recoveryKey);
-    expect(ownerBody.sessionToken.length).toBeGreaterThan(20);
+    expect(sessionTokenFrom(owner).length).toBeGreaterThan(20);
   });
 
   itHeavy("surfaces plaintext files that could not be removed instead of silently succeeding", async () => {
@@ -776,8 +799,8 @@ describe("vault gate hardening (review supplement)", () => {
   itHeavy("revokes the in-process session on logout (finding 4)", async () => {
     const h = harness(tempDir("dokan-vault-logout-"));
     const setup = await setupVault(h);
-    // SAFETY: the setup contract carries the session token
-    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // the browser path carries the credential in an HttpOnly cookie (#319)
+    const sessionToken = sessionTokenFrom(setup);
     expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } })).status).toBe(200);
 
     const logout = await h.gate.request("/api/vault/logout", {
@@ -785,6 +808,15 @@ describe("vault gate hardening (review supplement)", () => {
       headers: { "x-vault-session": sessionToken },
     });
     expect(logout.status).toBe(200);
+    // the browser path's credential is the cookie, and the page cannot clear an
+    // HttpOnly cookie itself: the reply must do it, exactly (test-audit lens)
+    const cleared = logout.headers.get("set-cookie");
+    expect(cleared).not.toBeNull();
+    expect(cleared).toContain("dokan.vault.session=;");
+    expect(cleared).toContain("Max-Age=0");
+    expect(cleared).toContain("HttpOnly");
+    expect(cleared).toContain("SameSite=Strict");
+    expect(cleared).not.toContain("Domain");
     // a copied token is dead: the unlocked process no longer accepts it
     expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } })).status).toBe(401);
     // the client can unlock again and receive a fresh token
@@ -839,7 +871,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(false);
     const retry = await startSetup();
     expect(retry.status).toBe(200);
-    const retryBody = await json<{ recoveryKey: string; sessionToken: string }>(retry);
+    const retryBody = await json<{ recoveryKey: string }>(retry);
     expect(retryBody.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
   });
@@ -913,30 +945,31 @@ describe("vault gate hardening (review supplement)", () => {
   itHeavy("returns an increasing session generation on credential rotations (round-7 finding 5)", async () => {
     const h = harness(tempDir("dokan-vault-generation-"));
     const setup = await setupVault(h);
-    // SAFETY: the setup contract carries the session token
-    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // the browser path carries the credential in an HttpOnly cookie (#319)
+    const sessionToken = sessionTokenFrom(setup);
     const first = await h.gate.request("/api/vault/change-passphrase", {
       method: "POST",
       headers: { ...jsonHeaders, "x-vault-session": sessionToken },
       body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "another long passphrase" }),
     });
     expect(first.status).toBe(200);
-    // SAFETY: the rotation contract carries a token and its generation
-    const firstBody = await json<{ sessionToken: string; sessionGeneration: number }>(first);
+    // SAFETY: the rotation contract carries the generation; the token rides the cookie
+    const firstBody = await json<{ sessionGeneration: number }>(first);
+    const firstToken = sessionTokenFrom(first);
     const second = await h.gate.request("/api/vault/change-passphrase", {
       method: "POST",
-      headers: { ...jsonHeaders, "x-vault-session": firstBody.sessionToken },
+      headers: { ...jsonHeaders, "x-vault-session": firstToken },
       body: JSON.stringify({ currentPassphrase: "another long passphrase", newPassphrase: "a third long passphrase" }),
     });
     expect(second.status).toBe(200);
-    // SAFETY: the rotation contract carries a token and its generation
-    const secondBody = await json<{ sessionToken: string; sessionGeneration: number }>(second);
+    // SAFETY: the rotation contract carries the generation; the token rides the cookie
+    const secondBody = await json<{ sessionGeneration: number }>(second);
     expect(secondBody.sessionGeneration).toBeGreaterThan(firstBody.sessionGeneration);
     // the newest generation corresponds to the server's live token
-    expect(h.manager.sessionMatches(secondBody.sessionToken)).toBe(true);
+    expect(h.manager.sessionMatches(sessionTokenFrom(second))).toBe(true);
   });
 
-  itHeavy("never reports a generation newer than the token it returns when a rotation lands during the delete refresh (round-8 finding 2)", async () => {
+  itHeavy("installs NO credential when a rotation lands during the delete refresh (round-8 finding 2, greptile P1)", async () => {
     const holder: ManagerHolder = {};
     const h = harness(tempDir("dokan-vault-rotation-gap-delete-"), {
       afterCredentialChange: async () => {
@@ -946,8 +979,8 @@ describe("vault gate hardening (review supplement)", () => {
     });
     holder.manager = h.manager;
     const setup = await setupVault(h);
-    // SAFETY: the setup contract carries the session token
-    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // the browser path carries the credential in an HttpOnly cookie (#319)
+    const sessionToken = sessionTokenFrom(setup);
     // add the second key directly, so the hook fires only for the delete
     const added = await h.manager.addRecoveryKey();
     const before = h.manager.sessionEpoch();
@@ -957,16 +990,18 @@ describe("vault gate hardening (review supplement)", () => {
       headers: { "x-vault-session": sessionToken },
     });
     expect(removed.status).toBe(200);
-    // SAFETY: the rotation contract carries a token and its generation
-    const body = await json<{ sessionToken: string; sessionGeneration: number }>(removed);
+    // SAFETY: the rotation contract carries the generation
+    const body = await json<{ sessionGeneration: number }>(removed);
     // the delete rotated to before+1; the interleaved change rotated to before+2
     expect(h.manager.sessionEpoch()).toBe(before + 2);
-    // the response must carry ITS OWN generation, never the newer one
-    expect(body.sessionGeneration).toBe(before + 1);
-    expect(h.manager.sessionMatches(body.sessionToken)).toBe(false);
+    // The reply must install NOTHING: its own token is dead, and a Set-Cookie
+    // carrying it would overwrite whatever the window that rotated holds. The
+    // generation it reports is the one in force, never its own dead one.
+    expect(removed.headers.get("set-cookie")).toBeNull();
+    expect(body.sessionGeneration).toBe(before + 2);
   });
 
-  itHeavy("never reports a generation newer than the token it returns when a rotation lands during the reset refresh (round-8 finding 2)", async () => {
+  itHeavy("installs NO credential when a rotation lands during the reset refresh (round-8 finding 2, greptile P1)", async () => {
     const holder: ManagerHolder = {};
     const h = harness(tempDir("dokan-vault-rotation-gap-reset-"), {
       afterCredentialChange: async () => {
@@ -982,15 +1017,15 @@ describe("vault gate hardening (review supplement)", () => {
 
     const reset = await h.gate.request("/api/vault/reset-passphrase", {
       method: "POST",
-      headers: jsonHeaders,
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ recoveryKey, newPassphrase: "reset passphrase" }),
     });
     expect(reset.status).toBe(200);
-    // SAFETY: the rotation contract carries a token and its generation
-    const body = await json<{ sessionToken: string; sessionGeneration: number }>(reset);
+    // SAFETY: the rotation contract carries the generation
+    const body = await json<{ sessionGeneration: number }>(reset);
     expect(h.manager.sessionEpoch()).toBe(before + 2);
-    expect(body.sessionGeneration).toBe(before + 1);
-    expect(h.manager.sessionMatches(body.sessionToken)).toBe(false);
+    expect(reset.headers.get("set-cookie")).toBeNull();
+    expect(body.sessionGeneration).toBe(before + 2);
   });
 
   itHeavy("refuses a stale backup after a credential change and restores the refreshed one with the new passphrase (round-7 finding 3)", async () => {
@@ -1001,8 +1036,8 @@ describe("vault gate hardening (review supplement)", () => {
       },
     });
     const setup = await setupVault(h);
-    // SAFETY: the setup contract carries the session token
-    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // the browser path carries the credential in an HttpOnly cookie (#319)
+    const sessionToken = sessionTokenFrom(setup);
     const backupPath = path.join(h.dir, "backups", "dokan-2026-01-01.db");
     fs.mkdirSync(path.dirname(backupPath), { recursive: true });
     await h.connection().writeBackupTo(backupPath);
@@ -1037,3 +1072,405 @@ describe("vault gate hardening (review supplement)", () => {
   });
 });
 
+
+/**
+ * One browser, several windows (#319).
+ *
+ * The vault session is ONE live token on the API and the browser path carries
+ * it in an HttpOnly cookie. A cookie jar belongs to the browser, not the
+ * window, so the second window presents the same credential instead of needing
+ * an unlock of its own — and a jar that does not hold the live token gets a
+ * refusal that names the vault, not a generic failure.
+ */
+type Jar = { cookie: string };
+
+describe("one unlocked vault shared between windows (#319)", () => {
+  const jsonHeaders = { "content-type": "application/json" };
+
+  /** Create the vault over the gate, as the first window's owner would. */
+  async function setupVault(h: GateHarness, passphrase = "correct horse battery"): Promise<Response> {
+    return await h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase }),
+    });
+  }
+
+  /** The cookie a browser would attach after the unlock reply set it. */
+  function jarWith(token: string): Jar {
+    return { cookie: `dokan.vault.session=${token}` };
+  }
+
+  itHeavy("serves a second window from the same jar without a second unlock", async () => {
+    const h = harness(tempDir("dokan-vault-two-windows-"));
+    const setup = await setupVault(h);
+    expect(setup.status).toBe(200);
+    const token = sessionTokenFrom(setup);
+    // the owner row is what the RPC guard signs in; vault mode needs no password
+    await h.linkWith(jarWith(token)).firstTimeSetup({ ownerName: "مالك", phoneNumber: "0550123123", storeName: "متجر" });
+
+    // window A: the window that unlocked, making its own call
+    const windowA = h.linkWith(jarWith(token));
+    expect((await windowA.categoriesList()).items.length).toBeGreaterThan(0);
+
+    // window B: opened later, never unlocked, holding only the shared jar
+    const windowB = h.linkWith(jarWith(token));
+    const categories = await windowB.categoriesList();
+    expect(categories.items.some((category) => category.name === "عام")).toBe(true);
+
+    // the vault routes agree: the same cookie reads what the unlock authorised
+    const keys = await h.gate.request("/api/vault/recovery-keys", { headers: jarWith(token) });
+    expect(keys.status).toBe(200);
+  });
+
+  itHeavy("refuses a jar that does not hold the live session, and names the vault", async () => {
+    const h = harness(tempDir("dokan-vault-foreign-jar-"));
+    expect((await setupVault(h)).status).toBe(200);
+
+    // a different token: refused as "not unlocked", never a generic failure
+    const wrong = await h.gate.request("/api/vault/recovery-keys", { headers: jarWith("not-the-live-token") });
+    expect(wrong.status).toBe(401);
+    // SAFETY: the error contract is { error: { code } }: stable code, no copy
+    expect((await json<{ error: { code: string } }>(wrong)).error.code).toBe("VAULT_NOT_UNLOCKED");
+
+    // no token at all: the same answer, through the same route
+    const none = await h.gate.request("/api/vault/recovery-keys");
+    expect(none.status).toBe(401);
+    // SAFETY: the error contract is { error: { code } }
+    expect((await json<{ error: { code: string } }>(none)).error.code).toBe("VAULT_NOT_UNLOCKED");
+
+    // and the RPC guard says the same thing in its own dialect, which is what
+    // the web maps back to the unlock screen
+    const stranger = h.linkWith(jarWith("not-the-live-token"));
+    await expect(stranger.categoriesList()).rejects.toThrow("AUTH_REQUIRED");
+  });
+
+  itHeavy("refuses a foreign-origin request: it neither reads nor unlocks", async () => {
+    const h = harness(tempDir("dokan-vault-foreign-origin-"));
+    const foreign = { origin: "https://evil.example" };
+    // a cross-origin setup does not create a vault
+    const setup = await h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: { ...jsonHeaders, ...foreign },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(setup.status).toBe(403);
+    // SAFETY: the error contract is { error: { code } }
+    expect((await json<{ error: { code: string } }>(setup)).error.code).toBe("VAULT_LOOPBACK_REQUIRED");
+    expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(false);
+
+    const owner = await setupVault(h);
+    expect(owner.status).toBe(200);
+    const token = sessionTokenFrom(owner);
+
+    // a cross-origin read with the cookie: refused, and no key is disclosed
+    const read = await h.gate.request("/api/vault/recovery-keys", { headers: { ...jarWith(token), ...foreign } });
+    expect(read.status).toBe(403);
+    // SAFETY: the error contract is { error: { code } }
+    const readBody = await json<{ error: { code: string }; keys?: unknown }>(read);
+    expect(readBody.error.code).toBe("VAULT_LOOPBACK_REQUIRED");
+    expect(readBody.keys).toBeUndefined();
+
+    // a cross-origin write with the cookie changes nothing: the passphrase it
+    // named is not the one that opens the vault
+    const write = await h.gate.request("/api/vault/change-passphrase", {
+      method: "POST",
+      headers: { ...jsonHeaders, ...jarWith(token), ...foreign },
+      body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "an attacker passphrase" }),
+    });
+    expect(write.status).toBe(403);
+    expect(
+      (await h.gate.request("/api/vault/change-passphrase", {
+        method: "POST",
+        headers: { ...jsonHeaders, ...jarWith(token) },
+        body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "a brand new passphrase" }),
+      })).status,
+    ).toBe(200);
+  });
+
+  itHeavy("a copied token outlives neither the next unlock nor the lock", async () => {
+    const h = harness(tempDir("dokan-vault-stolen-token-"));
+    const setup = await setupVault(h);
+    const stolen = sessionTokenFrom(setup);
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: jarWith(stolen) })).status).toBe(200);
+
+    // another window unlocks: exactly one live token, and the old one dies
+    const again = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(again.status).toBe(200);
+    const live = sessionTokenFrom(again);
+    expect(live).not.toBe(stolen);
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: jarWith(stolen) })).status).toBe(401);
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: jarWith(live) })).status).toBe(200);
+    await expect(h.linkWith(jarWith(stolen)).categoriesList()).rejects.toThrow();
+
+    // and the lock takes the live one with it
+    h.manager.close();
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: jarWith(live) })).status).toBe(401);
+  });
+
+  itHeavy("keeps the broker path unchanged: no cookie, and the pre-boot routes stay off HTTP", async () => {
+    const h = harness(tempDir("dokan-vault-broker-mode-"), { broker: true });
+    // the shell's pipe owns the pre-boot credential: HTTP refuses it, as before
+    for (const [path, body] of [
+      ["/api/vault/setup", { passphrase: "correct horse battery" }],
+      ["/api/vault/unlock", { passphrase: "correct horse battery" }],
+    ] as const) {
+      const refused = await h.gate.request(path, { method: "POST", headers: jsonHeaders, body: JSON.stringify(body) });
+      expect(refused.status).toBe(403);
+      // SAFETY: the error contract is { error: { code } }
+      expect((await json<{ error: { code: string } }>(refused)).error.code).toBe("VAULT_BROKER_REQUIRED");
+      // broker mode never issues the browser path's credential
+      expect(refused.headers.get("set-cookie")).toBeNull();
+    }
+    // the gate still tells the web which transport owns the secret
+    // SAFETY: the status contract carries the broker flag
+    expect((await json<{ broker: boolean }>(await h.gate.request("/api/vault/status"))).broker).toBe(true);
+  });
+});
+
+/**
+ * Round 2 — the origin rule, at both seams, and the refusal it produces.
+ *
+ * The loopback question was the hole (greptile P1): cookies ignore ports and
+ * `SameSite` is scoped by site, so a page on ANY other loopback port was
+ * same-site with the API and its `Origin` passed, letting one no-preflight
+ * `POST` run an RPC as the owner. The rule is "is this OUR origin" now, and
+ * these tests are the ones that can tell the two questions apart.
+ */
+describe("the origin gate at both seams (#319 round 2)", () => {
+  const jsonHeaders = { "content-type": "application/json" };
+
+  /** The app's own origin: the harness config binds port 4399. */
+  const OWN_ORIGIN = "http://127.0.0.1:4399";
+
+  function jarWith(token: string) {
+    return { cookie: `dokan.vault.session=${token}` };
+  }
+
+  itHeavy("refuses a same-site page on ANOTHER PORT, which the loopback rule admitted", async () => {
+    const h = harness(tempDir("dokan-vault-origin-other-port-"));
+    const setup = await h.gate.request("http://127.0.0.1:4399/api/vault/setup", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(setup.status).toBe(200);
+    const token = sessionTokenFrom(setup);
+
+    // positive control: the app's own origin, on the port the request named
+    const own = await h.gate.request("http://127.0.0.1:4399/api/vault/recovery-keys", {
+      headers: { ...jarWith(token), origin: OWN_ORIGIN },
+    });
+    expect(own.status).toBe(200);
+
+    // a different port on the same host is a different origin: same site, so
+    // the browser attaches the live cookie, and only the origin rule stands
+    // between that page and the vault
+    for (const origin of ["http://127.0.0.1:9999", "http://localhost:9999", "http://evil.localhost:7777"]) {
+      const other = await h.gate.request("http://127.0.0.1:4399/api/vault/recovery-keys", {
+        headers: { ...jarWith(token), origin },
+      });
+      expect(other.status, origin).toBe(403);
+      // SAFETY: the error contract is { error: { code } }
+      expect((await json<{ error: { code: string } }>(other)).error.code, origin).toBe("VAULT_LOOPBACK_REQUIRED");
+    }
+
+    // and the write path that mattered: no RPC runs as the owner from that page
+    await expect(
+      h.linkWith({ ...jarWith(token), origin: "http://127.0.0.1:9999" }).categoriesList(),
+    ).rejects.toThrow("VAULT_ORIGIN_FORBIDDEN");
+  });
+
+  itHeavy("names the RPC-seam origin refusal instead of calling it a missing session (P3)", async () => {
+    const h = harness(tempDir("dokan-vault-rpc-origin-"));
+    const setup = await h.gate.request("http://127.0.0.1:4399/api/vault/setup", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(setup.status).toBe(200);
+    const token = sessionTokenFrom(setup);
+
+    // positive control: the app's own origin is accepted at the RPC seam
+    const own = await h.gate.request("http://127.0.0.1:4399/api/vault/recovery-keys", {
+      headers: { ...jarWith(token), origin: OWN_ORIGIN },
+    });
+    expect(own.status).toBe(200);
+
+    // the refusal the RPC seam emits carries its own stable code, not
+    // `AUTH_REQUIRED`: the web must be able to tell a foreign origin from a
+    // dead session
+    const foreign = h.linkWith({ ...jarWith(token), origin: "https://evil.example" });
+    await expect(foreign.categoriesList()).rejects.toThrow("VAULT_ORIGIN_FORBIDDEN");
+  });
+});
+
+/**
+ * Round 2 — one live session, and the server as its arbiter.
+ *
+ * The browser applies a `Set-Cookie` whatever the page decided, so a minting
+ * reply that was overtaken while it was in flight used to overwrite the LIVE
+ * cookie with a revoked one: window A's slow delete reply landing after window
+ * B's unlock signed every window out. The page's generation guard cannot reach
+ * that, because it never sees the header. The tests below reverse the replies,
+ * which is the ordering the sequential tests cannot produce.
+ */
+describe("the server arbitrates the one live session (#319 round 2)", () => {
+  const jsonHeaders = { "content-type": "application/json" };
+
+  async function setupVault(h: GateHarness): Promise<Response> {
+    return await h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+  }
+
+  itHeavy("drops the credential from a minting reply that another window overtook (greptile P1)", async () => {
+    const holder: ManagerHolder = {};
+    const h = harness(tempDir("dokan-vault-late-mint-"), {
+      afterCredentialChange: async () => {
+        // window B unlocks while THIS delete reply is still being built. Both
+        // windows share one cookie jar, so B's Set-Cookie is already in it.
+        await holder.manager?.unlock("correct horse battery");
+      },
+    });
+    holder.manager = h.manager;
+    const setup = await setupVault(h);
+    const sessionToken = sessionTokenFrom(setup);
+    const added = await h.manager.addRecoveryKey();
+    const before = h.manager.sessionEpoch();
+
+    const slow = await h.gate.request(`/api/vault/recovery-keys/${added.id}`, {
+      method: "DELETE",
+      headers: { "x-vault-session": sessionToken },
+    });
+    expect(slow.status).toBe(200);
+    // the delete itself happened: the reply is not a failure
+    expect(h.manager.metadata().wraps.filter((wrap) => wrap.kind === "recovery")).toHaveLength(1);
+    // the delete minted before+1, B minted before+2, and the LATE reply must
+    // install nothing at all — so B's live cookie is still in the jar
+    expect(h.manager.sessionEpoch()).toBe(before + 2);
+    expect(slow.headers.get("set-cookie")).toBeNull();
+    // SAFETY: the rotation contract carries the generation
+    const body = await json<{ sessionGeneration: number }>(slow);
+    expect(body.sessionGeneration).toBe(before + 2);
+  });
+
+  itHeavy("still installs a credential when the reply carries the live session", async () => {
+    // the positive control for the test above: an UNOvertaken reply sets one
+    const h = harness(tempDir("dokan-vault-unraced-mint-"));
+    const setup = await setupVault(h);
+    const added = await h.manager.addRecoveryKey();
+    const removed = await h.gate.request(`/api/vault/recovery-keys/${added.id}`, {
+      method: "DELETE",
+      headers: { "x-vault-session": sessionTokenFrom(setup) },
+    });
+    expect(removed.status).toBe(200);
+    expect(removed.headers.get("set-cookie")).not.toBeNull();
+    expect(h.manager.sessionMatches(sessionTokenFrom(removed))).toBe(true);
+    // SAFETY: the rotation contract carries the generation
+    const body = await json<{ sessionGeneration: number }>(removed);
+    expect(body.sessionGeneration).toBe(h.manager.sessionEpoch());
+  });
+
+  itHeavy("authorises exactly one of two racing unlocks, and never installs a dead cookie", async () => {
+    const h = harness(tempDir("dokan-vault-racing-unlock-"));
+    expect((await setupVault(h)).status).toBe(200);
+    const unlockReply = async (): Promise<Response> =>
+      await h.gate.request("/api/vault/unlock", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ passphrase: "correct horse battery" }),
+      });
+
+    const both = await Promise.all([unlockReply(), unlockReply()]);
+    expect(both.map((reply) => reply.status)).toEqual([200, 200]);
+    // whatever a reply installed is LIVE: the loser of the race installs
+    // nothing rather than a token the winner already revoked
+    const installed = both
+      .filter((reply) => reply.headers.get("set-cookie") !== null)
+      .map((reply) => sessionTokenFrom(reply));
+    expect(installed.length).toBeLessThanOrEqual(1);
+    for (const token of installed) expect(h.manager.sessionMatches(token)).toBe(true);
+    // exactly one session exists: whichever token is live is the only one that
+    // authorises, so the racing unlock neither widens nor empties the session
+    expect(installed.length === 1 ? h.manager.sessionMatches(installed[0] ?? "") : true).toBe(true);
+  });
+
+  itHeavy("a broker-configured RPC seam ignores a cookie entirely (test-audit round 2)", async () => {
+    const h = harness(tempDir("dokan-vault-broker-cookie-rpc-"), { broker: true });
+    // the broker refuses the pre-boot HTTP routes, so the shell drives the
+    // manager over its stdin pipe; the app is bootstrapped the way an unlock
+    // over that pipe does it
+    await h.manager.prepareSetup("correct horse battery");
+    h.manager.finishSetupBootstrap();
+    const session = await h.manager.commitSetup();
+    await h.bootstrapApp({
+      masterKey: h.manager.requireMasterKey(),
+      vaultId: h.manager.metadata().vaultId,
+      fresh: true,
+    });
+    await h.linkWith({ "x-vault-session": session.token }).firstTimeSetup({
+      ownerName: "مالك",
+      phoneNumber: "0550123123",
+      storeName: "متجر",
+    });
+
+    // the header is the broker transport and works
+    expect((await h.linkWith({ "x-vault-session": session.token }).categoriesList()).items.length).toBeGreaterThan(0);
+    // the same live token in a COOKIE is not a credential on this server: the
+    // packaged desktop's promise is that the secret never crosses the network,
+    // so a page holding a cookie of the same name cannot act as the shell
+    await expect(h.linkWith({ cookie: `dokan.vault.session=${session.token}` }).categoriesList()).rejects.toThrow(
+      "AUTH_REQUIRED",
+    );
+  });
+});
+
+/**
+ * The status route's `session` answer (#319 review P2).
+ *
+ * Without it the web cannot know whether THIS window holds the live credential,
+ * so a window with no valid cookie mounted the app and was sent to the unlock
+ * screen by its first refused query — the page of failed queries the module
+ * exists to prevent, only shorter. The answer is about the request that asked.
+ */
+describe("the status route reports this request's own credential (#319 round 2)", () => {
+  const jsonHeaders = { "content-type": "application/json" };
+  const AT = "http://127.0.0.1:4399/api/vault/status";
+
+  async function sessionOf(response: Response | Promise<Response>): Promise<boolean> {
+    // SAFETY: the status contract carries the flag
+    const body = await json<{ session: boolean }>(await response);
+    return body.session;
+  }
+
+  itHeavy("is false before an unlock, true for the window that holds the cookie, and false for anything else", async () => {
+    const h = harness(tempDir("dokan-vault-status-session-"));
+    expect(await sessionOf(h.gate.request(AT))).toBe(false);
+
+    const setup = await h.gate.request("http://127.0.0.1:4399/api/vault/setup", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(setup.status).toBe(200);
+    const token = sessionTokenFrom(setup);
+
+    // the window that unlocked: its cookie is the live session
+    expect(await sessionOf(h.gate.request(AT, { headers: { cookie: `dokan.vault.session=${token}` } }))).toBe(true);
+    // a jar that does not hold the live session, and a window with no jar
+    expect(await sessionOf(h.gate.request(AT, { headers: { cookie: "dokan.vault.session=not-the-token" } }))).toBe(false);
+    expect(await sessionOf(h.gate.request(AT))).toBe(false);
+    // and a refused origin is not "your credential works": the answer is false,
+    // which leaks nothing to the page that asked
+    expect(
+      await sessionOf(h.gate.request(AT, { headers: { cookie: `dokan.vault.session=${token}`, origin: "http://127.0.0.1:9999" } })),
+    ).toBe(false);
+  });
+});

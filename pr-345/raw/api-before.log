@@ -1,0 +1,3 @@
+@dokan/api start: [2026-10-22T00:32:35] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+@dokan/api start: Dokan API listening on http://127.0.0.1:4461
+@dokan/api start: Exited with code 1

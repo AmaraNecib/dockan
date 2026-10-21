@@ -1,0 +1,89 @@
+{
+ "side": "before",
+ "base": "http://127.0.0.1:5461",
+ "item": "كرتون-5982045",
+ "marks": [
+  {
+   "at": 1134,
+   "what": "logged in"
+  },
+  {
+   "at": 6800,
+   "what": "cart built: line=كرتون-5982045 منتج جديد qty=2 note=ملاحظة-5982045 طرف ثانٍ"
+  },
+  {
+   "at": 9916,
+   "what": "exit 1: navigated to /customers with no question (dialog=null)"
+  },
+  {
+   "at": 12016,
+   "what": "exit 1: back on /purchase, line=null note= (the work is gone)"
+  },
+  {
+   "at": 16322,
+   "what": "cart rebuilt for the Back test: line=كرتون-5982045 منتج جديد note=ملاحظة-5982045 طرف ثانٍ"
+  },
+  {
+   "at": 19129,
+   "what": "exit 2: Back navigated to /customers with no question"
+  }
+ ],
+ "exit1": {
+  "dialog": null,
+  "landedAt": "/customers",
+  "afterReturn": {
+   "at": 10657,
+   "path": "/purchase",
+   "lineText": null,
+   "lineQty": null,
+   "lineCost": null,
+   "note": "",
+   "dialog": null,
+   "focus": "a"
+  },
+  "shot": "D:\\projects\\mani-project\\.scratch\\evidence\\pr-345\\before.png"
+ },
+ "exit2": {
+  "dialog": null,
+  "landedAt": "/customers"
+ },
+ "navigationLog": [
+  {
+   "at": 1249,
+   "path": "/purchase"
+  },
+  {
+   "at": 1596,
+   "path": "/purchase"
+  },
+  {
+   "at": 7752,
+   "path": "/customers"
+  },
+  {
+   "at": 10367,
+   "path": "/purchase"
+  },
+  {
+   "at": 12034,
+   "path": "/customers"
+  },
+  {
+   "at": 12205,
+   "path": "/customers"
+  },
+  {
+   "at": 12423,
+   "path": "/purchase"
+  },
+  {
+   "at": 17126,
+   "path": "/customers"
+  }
+ ],
+ "shots": {
+  "raw/before-customers-landed.png": "D:\\projects\\mani-project\\.scratch\\evidence\\pr-345\\raw\\before-customers-landed.png"
+ },
+ "videoSource": "D:\\projects\\mani-project\\.scratch\\evidence\\pr-345\\raw\\video-before\\page@798d48a2c76deaa3615bcdd25df6f2e6.webm",
+ "startedAt": 1792625982045
+}

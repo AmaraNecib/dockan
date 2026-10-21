@@ -1,0 +1,111 @@
+{
+ "side": "after",
+ "base": "http://127.0.0.1:5462",
+ "item": "كرتون-5893536",
+ "marks": [
+  {
+   "at": 1841,
+   "what": "logged in"
+  },
+  {
+   "at": 7830,
+   "what": "cart built: line=كرتون-5893536 منتج جديد qty=2 note=ملاحظة-5893536 طرف ثانٍ"
+  },
+  {
+   "at": 11912,
+   "what": "exit 1: question shown — \"تجاهل فاتورة الشراء؟ عدد أسطر الفاتورة التي ستُفقد: 1. هل تريد المتابعة؟ البقاء في الفاتورة تجاهل الفاتورة\""
+  },
+  {
+   "at": 14837,
+   "what": "exit 1: stayed. path=/purchase line=كرتون-5893536 منتج جديد qty=2 note=ملاحظة-5893536 طرف ثانٍ focus=input[name=notes]"
+  },
+  {
+   "at": 19262,
+   "what": "cart rebuilt for the Back test: line=كرتون-5893536 منتج جديد note=ملاحظة-5893536 طرف ثانٍ"
+  },
+  {
+   "at": 23840,
+   "what": "exit 2: Back asked, stayed. path=/purchase line=كرتون-5893536 منتج جديد note=ملاحظة-5893536 طرف ثانٍ focus=input[name=notes]"
+  }
+ ],
+ "exit1": {
+  "dialogText": "تجاهل فاتورة الشراء؟\n\nعدد أسطر الفاتورة التي ستُفقد: 1. هل تريد المتابعة؟\n\nالبقاء في الفاتورة\nتجاهل الفاتورة",
+  "asked": {
+   "at": 9899,
+   "path": "/purchase",
+   "lineText": "كرتون-5893536 منتج جديد",
+   "lineQty": "2",
+   "lineCost": "300",
+   "note": "ملاحظة-5893536 طرف ثانٍ",
+   "dialog": "تجاهل فاتورة الشراء؟ عدد أسطر الفاتورة التي ستُفقد: 1. هل تريد المتابعة؟ البقاء في الفاتورة تجاهل الفاتورة",
+   "focus": "button[data-testid=purchase-discard-stay]"
+  },
+  "stayed": {
+   "at": 11244,
+   "path": "/purchase",
+   "lineText": "كرتون-5893536 منتج جديد",
+   "lineQty": "2",
+   "lineCost": "300",
+   "note": "ملاحظة-5893536 طرف ثانٍ",
+   "dialog": null,
+   "focus": "input[name=notes]"
+  },
+  "shot": "D:\\projects\\mani-project\\.scratch\\evidence\\pr-345\\after.png",
+  "keptShot": "D:\\projects\\mani-project\\.scratch\\evidence\\pr-345\\raw\\after-cart-kept.png"
+ },
+ "exit2": {
+  "asked": {
+   "at": 7755,
+   "path": "/customers",
+   "lineText": "كرتون-5893536 منتج جديد",
+   "lineQty": "2",
+   "lineCost": "300",
+   "note": "ملاحظة-5893536 طرف ثانٍ",
+   "dialog": "تجاهل فاتورة الشراء؟ عدد أسطر الفاتورة التي ستُفقد: 1. هل تريد المتابعة؟ البقاء في الفاتورة تجاهل الفاتورة",
+   "focus": "button[data-testid=purchase-discard-stay]"
+  },
+  "stayed": {
+   "at": 8994,
+   "path": "/purchase",
+   "lineText": "كرتون-5893536 منتج جديد",
+   "lineQty": "2",
+   "lineCost": "300",
+   "note": "ملاحظة-5893536 طرف ثانٍ",
+   "dialog": null,
+   "focus": "input[name=notes]"
+  }
+ },
+ "navigationLog": [
+  {
+   "at": 1930,
+   "path": "/purchase"
+  },
+  {
+   "at": 2370,
+   "path": "/purchase"
+  },
+  {
+   "at": 14860,
+   "path": "/customers"
+  },
+  {
+   "at": 15073,
+   "path": "/customers"
+  },
+  {
+   "at": 15308,
+   "path": "/purchase"
+  },
+  {
+   "at": 20071,
+   "path": "/customers"
+  },
+  {
+   "at": 22637,
+   "path": "/purchase"
+  }
+ ],
+ "shots": {},
+ "videoSource": "D:\\projects\\mani-project\\.scratch\\evidence\\pr-345\\raw\\video-after\\page@c36a5bd5a69b912c607b7243e0a6b0a2.webm",
+ "startedAt": 1792625893536
+}

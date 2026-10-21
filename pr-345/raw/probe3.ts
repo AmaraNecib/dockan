@@ -1,0 +1,10 @@
+import { chromium } from "@playwright/test";
+const BASE = process.argv[2] ?? "http://127.0.0.1:5462";
+const browser = await chromium.launch();
+const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, locale: "ar-DZ", storageState: "raw/storage-after.json" });
+const page = await context.newPage();
+await page.goto(`${BASE}/purchase`);
+await page.waitForTimeout(3000);
+console.log("url:", page.url());
+console.log("body:", (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 500));
+await browser.close();

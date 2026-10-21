@@ -145,6 +145,24 @@ Selecting fewer specs changes which tests run, not how the servers start: a
 subset run still boots the config's shared API+web pair and is wiped/reseeded
 from `E2E_DATA_DIR` (see the vault section below).
 
+### The same decision, asked locally
+
+`scripts/e2e-changed.ts` (`bun run test:e2e:changed`) puts a front end on this
+selector inside a lane's own checkout: it imports `selectSpecs`, diffs
+`origin/develop` with `git diff --no-renames`, and spawns `bun run test:e2e` with
+the mapped paths as positional filters — with no filters when the answer is
+`full`, and not at all when it is `skip`. It prints the same `mode=` / `specs=` /
+`reason=` lines the `changes` job parses, so a lane can compare its local
+decision with the PR's. `--dry-run` stops after printing them.
+
+It is in `always_full`, for the reason the selector is: a file that decides which
+specs run is a change to every spec.
+
+This narrows **local** wall-clock only. The repository is public and standard
+runner minutes are not billed, so the PR jobs keep making their own decision; the
+local driver is tier 1 in `development-workflow.md` §7 and never replaces the
+PR's CI head.
+
 ## e2e failure evidence
 
 `playwright.config.ts` sets `trace: "retain-on-failure"` and

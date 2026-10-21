@@ -115,6 +115,20 @@ export function selectSpecs(changed: string[], map: SelectionMap = loadMap()): S
   return { mode: "affected", specs, reason: `${specs.length} spec(s) mapped from ${files.length} file(s)` };
 }
 
+// The `mode=` / `specs=` / `reason=` lines are the selector's output contract:
+// ci.yml parses them, and so does the local driver in `e2e-changed.ts`. One
+// formatter, so the two front ends cannot drift into two formats.
+// `specs` is emitted as space-separated `tests/e2e/<name>` paths for the
+// Playwright CLI; empty for full and skip.
+export function contractLines(scope: Scope): string[] {
+  const specs = scope.mode === "affected" ? scope.specs.map((s) => `tests/e2e/${s}`) : [];
+  return [
+    `mode=${scope.mode}`,
+    `specs=${specs.join(" ")}`,
+    `reason=${scope.reason}`,
+  ];
+}
+
 if (import.meta.main) {
   const file = process.argv[2];
   if (!file) {
@@ -122,10 +136,5 @@ if (import.meta.main) {
     process.exit(2);
   }
   const scope = selectSpecs(readFileSync(file, "utf8").split("\n"));
-  // `specs` is emitted as space-separated `tests/e2e/<name>` paths for the
-  // Playwright CLI; empty for full and skip.
-  const specs = scope.mode === "affected" ? scope.specs.map((s) => `tests/e2e/${s}`) : [];
-  for (const [k, v] of [["mode", scope.mode], ["specs", specs.join(" ")], ["reason", scope.reason]]) {
-    console.log(`${k}=${v}`);
-  }
+  for (const line of contractLines(scope)) console.log(line);
 }

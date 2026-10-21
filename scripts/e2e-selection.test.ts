@@ -321,6 +321,15 @@ describe("e2e-selection behaviour", () => {
     expect(scope.specs).toContain("rpc-helpers.spec.ts");
   });
 
+  test("the local selection driver is critical: it decides which specs run", () => {
+    // `scripts/e2e-changed.ts` narrows a lane's local run the way this file's
+    // CLI narrows CI. A change there can mis-select exactly as a change to the
+    // selector can, so it runs the whole suite.
+    const scope = selectSpecs(["scripts/e2e-changed.ts"], map);
+    expect(scope.mode).toBe("full");
+    expect(scope.reason).toContain("critical path");
+  });
+
   test("shared web code is critical, not a feature rule", () => {
     // lib/ is read by every screen; a change there must run the whole suite.
     const scope = selectSpecs(["apps/web/src/lib/receipt.ts"], map);

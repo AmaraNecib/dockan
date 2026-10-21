@@ -7,6 +7,7 @@
     "tests/e2e/**",
     "tests/e2e-selection.map.json",
     "scripts/e2e-selection.ts",
+    "scripts/e2e-changed.ts",
     "scripts/wipe-e2e.mjs",
     "scripts/reset-e2e-preferences.mjs",
     "scripts/reset-e2e-records.mjs",

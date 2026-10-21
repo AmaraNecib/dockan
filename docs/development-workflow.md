@@ -194,3 +194,47 @@ Every technical error (and every info/warn entry) is appended to a daily JSONL l
   newest first, bounded to 200 lines; the `diagnosticsLogsTail` RPC clamps `lines` to 1..500.
 - **Reading a failure:** the api mirrors non-info entries to stdout, and the workflow for a bug
   report is: open `/diagnostics`, copy the `DKN` code + `ts`, then grep the repo for the event.
+
+## 7. Local verification tiers
+
+Four tiers, cheapest first. The full suite is the last one, not the first.
+
+| Tier | What runs | When | Cost |
+|------|-----------|------|------|
+| 0 | `bun run typecheck`, `bun run lint`, `bun run test:affected` | after every edit | seconds |
+| 1 | `bun run test:e2e:changed` | before every push | the mapped specs, ~1-3 minutes |
+| 2 | the PR's CI head | after the push | free; it also proves red-on-parent |
+| 3 | `bun run test:e2e` | **once per PR**, right before the lane reports | all 35 specs, ~9 minutes |
+
+Tier 0 never takes a heavy slot: it is fast enough to run while the work is
+still in your hands. `test:affected` runs turbo's impacted filter
+(`--filter=...[origin/develop]`, the changed packages **and the packages that
+depend on them**) and then the scripts suite, which carries the e2e map's drift
+guard. When `origin/develop` does not resolve — a fresh clone, a failed fetch —
+it runs every package and prints why.
+
+Tier 1 is the same decision CI makes, asked locally. It imports `selectSpecs`
+from `scripts/e2e-selection.ts`, so there is one map and one set of precedence
+rules; the lane and CI cannot drift.
+
+```bash
+bun run test:e2e:changed --dry-run                                        # decide, run nothing
+bun run test:e2e:changed --dry-run --files apps/web/src/pages/backups.tsx # decide for a path list
+bun run test:e2e:changed                                                  # decide and run
+```
+
+`--dry-run` prints the same `mode=` / `specs=` / `reason=` lines `ci.yml` parses.
+The diff is `<merge-base with origin/develop>..HEAD`, the same range CI reads, so
+uncommitted work is invisible to it: commit first, or pass `--files`. Two
+outcomes widen the run, on purpose: a critical path (the router, shared web code,
+a spec, `package.json`, the harness itself), and any path the map does not know.
+Do not hand-write the spec list to get around that. Either the map is missing a
+row, or the change really can move every screen.
+
+Tiers 1 and 3 spawn the api and web servers and pin every core, so both go
+through the heavy slot queue, at most 2 at once on this box.
+
+**The policy for tier 3:** a lane runs the full suite at most once per PR, right
+before it reports. Everything between the first push and the last fix iterates on
+tier 1. The full run is what makes the narrowed runs safe, so it is not optional
+— it is just not repeated.

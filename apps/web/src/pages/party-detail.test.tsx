@@ -207,6 +207,9 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     customersCreate: { mutationOptions: () => ({ mutationFn: async () => ({}) }) },
+    // #323 — the party's canonical balance key and the debts list
+    debtsByParty: { queryKey: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ["debtsByParty", input] },
+    reportsDebts: { queryKey: () => ["reportsDebts"] },
     suppliersPay: {
       mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
         mutationKey: ["suppliersPay"],

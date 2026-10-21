@@ -45,6 +45,8 @@ mock.module("@/lib/rpc", () => ({
     },
     invoicesList: { queryKey: () => ["invoicesList"] },
     activitiesList: { queryKey: () => ["activitiesList"] },
+    // #323 — the debts list every party's total comes from
+    reportsDebts: { queryKey: () => ["reportsDebts"] },
     settingsGet: {
       queryOptions: () => ({ queryKey: ["settingsGet"], queryFn: async () => ({ storeName: "متجر", storePhone: null }) }),
     },

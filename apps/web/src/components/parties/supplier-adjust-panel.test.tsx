@@ -32,6 +32,8 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     suppliersGet: { queryKey: ({ input }: { input: { id: string } }) => ["suppliersGet", input.id] },
+    // #323 — the party's canonical balance key
+    debtsByParty: { queryKey: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ["debtsByParty", input] },
     reportsDebts: { queryKey: () => ["reportsDebts"] },
     dashboardSummary: { queryKey: () => ["dashboardSummary"] },
   },
@@ -324,7 +326,7 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
-  it("invalidates the real debts and dashboard keys after saving (Greptile finding 5)", async () => {
+  it("invalidates the real debts and dashboard keys after saving (Greptile finding 5, #323)", async () => {
     render();
     typeInto("supplier-adjust-amount", "500");
     const spy = spyOn(queryClient!, "invalidateQueries");
@@ -335,7 +337,10 @@ describe("SupplierAdjustPanel (issue 176)", () => {
 
     const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
     expect(keys).toContain(JSON.stringify(["reportsDebts"]));
-    expect(keys).toContain(JSON.stringify([["debtsByParty"]]));
+    // #323 — the party is invalidated under ITS canonical key (the id), not
+    // under a prefix that sweeps every party's tab
+    expect(keys).toContain(JSON.stringify(["debtsByParty", { kind: "PURCHASE", counterpartyId: "sup-1", counterpartyName: null }]));
+    expect(keys).not.toContain(JSON.stringify([["debtsByParty"]]));
     expect(keys).toContain(JSON.stringify(["dashboardSummary"]));
     expect(keys).toContain(JSON.stringify([["invoicesList"]]));
     expect(keys).toContain(JSON.stringify([["activitiesList"]]));

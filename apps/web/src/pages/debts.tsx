@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
+import { partyBalanceInput } from "../lib/party-cache-key";
+import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
 import { tError } from "../lib/i18n";
 import { formatDate } from "../lib/dates";
 import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
@@ -33,7 +35,7 @@ function partyId(signature: string): string {
   return encodeURIComponent(signature);
 }
 
-function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSummary; groupLabel: string; expanded: boolean; onToggle: () => void }) {
+function DebtPersonRow({ row, groupLabel, expanded, onToggle, refreshMs = LEDGER_REFETCH_MS }: { row: DebtSummary; groupLabel: string; expanded: boolean; onToggle: () => void; refreshMs?: number }) {
   const { t } = useTranslation();
   const signature = partySignature(row);
   // #161/#260 — a supplier row is the signed net balance (positive = the
@@ -51,11 +53,30 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
   // Per-row query gated on expansion: a freshly opened row shows its own
   // loading skeleton (never another party's cached invoices), while
   // re-opening the same row is served from the query cache instantly.
+  // #323 — one party, one cache identity. The drill-down reads the party under
+  // the canonical key (the id when the shop knows it, the trimmed typed name
+  // otherwise), the same key the invoice screen's customer tab reads and every
+  // money write invalidates. A party with no identity at all is refused below.
+  const balanceInput = partyBalanceInput({
+    kind: row.kind,
+    counterpartyId: row.counterpartyId,
+    counterpartyName: row.counterpartyName,
+  });
   const invoices = useQuery({
     ...orpc.debtsByParty.queryOptions({
-      input: { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
+      // The unidentified party's own values keep the key well-formed. The query is
+      // disabled and invalidation never re-enables a disabled query, so this entry
+      // is inert — it is NOT a read under the nameless key, and the refusal below
+      // renders before any of the states this query reports.
+      input: balanceInput ?? { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
     }),
-    enabled: expanded,
+    enabled: expanded && balanceInput !== null,
+    // #323 review — a balance read in a second window. `invalidatePartyBalance`
+    // reaches this window's cache only, and two windows side by side never
+    // exchange a focus event, so the party's tab re-reads on a bounded tick or
+    // not at all. Same answer #295 gave the counters for the #294 gap;
+    // `refreshMs` is injectable so a test can run this wiring on a fast clock.
+    ...hotCounterRefresh(refreshMs),
   });
   // supplier account movements behind the net balance (issue 161)
   const account = useQuery({
@@ -82,7 +103,12 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       {expanded && (
         <div id={`${groupLabel}-${partyId(signature)}-invoices`} className="border-t bg-accent px-4 py-3">
           <h3 className="text-sm font-semibold text-muted-foreground">{t("debtsInvoicesTitle")}</h3>
-          {invoices.isPending ? (
+          {balanceInput === null ? (
+            // #323 — no id and no usable name: there is no key to read this party
+            // under, so the read is refused and the owner is told the one thing
+            // that fixes it.
+            <p className="mt-2 text-sm text-destructive" role="alert" data-testid="debts-party-unidentified">{t("debtsPartyUnidentified")}</p>
+          ) : invoices.isPending ? (
             <div className="mt-2 grid gap-2">
               <Skeleton className="h-6 w-full" />
               <Skeleton className="h-6 w-full" />
@@ -153,7 +179,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
   );
 }
 
-function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, openSignature, onToggle, creditLabel }: {
+function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, openSignature, onToggle, creditLabel, refreshMs = LEDGER_REFETCH_MS }: {
   title: string;
   rows: DebtSummary[];
   label: string;
@@ -164,6 +190,8 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
   onToggle: (party: PartyIdentity) => void;
   /** #180 — shown instead of the plain total when the group nets in credit */
   creditLabel?: string;
+  /** the drill-down's re-read interval; injectable so a test can run it fast */
+  refreshMs?: number;
 }) {
   const { t } = useTranslation();
   // #260 — the weOwe group nets the SIGNED supplier position: positive = the
@@ -207,6 +235,7 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
               key={partySignature(row)}
               row={row}
               groupLabel={label}
+              refreshMs={refreshMs}
               expanded={openSignature === partySignature(row)}
               onToggle={() => onToggle({ kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName })}
             />
@@ -217,7 +246,7 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
   );
 }
 
-export function DebtsPage() {
+export function DebtsPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const debts = useQuery(orpc.reportsDebts.queryOptions());
   const [openParty, setOpenParty] = useState<PartyIdentity | null>(null);
@@ -259,6 +288,7 @@ export function DebtsPage() {
             }
             openSignature={openParty !== null ? partySignature(openParty) : null}
             onToggle={toggleParty}
+            refreshMs={refreshMs}
           />
           <DebtGroup
             title={t("debtsWeOwe")}
@@ -274,6 +304,7 @@ export function DebtsPage() {
             }
             openSignature={openParty !== null ? partySignature(openParty) : null}
             onToggle={toggleParty}
+            refreshMs={refreshMs}
           />
         </div>
       )}

@@ -56,11 +56,10 @@ Code's lineage panel lists only app-owned child threads — so the owner sees no
 nothing is happening, and cannot steer or stop work that does exist. Inside a T3 thread every lane
 is `delegate_task`, with its model from `orchestrator_capabilities`, `mode: "async"` for anything
 that runs minutes, and one stable `clientRequestId` per lane. The native tool is the fallback only
-when `delegate_task` is missing from the toolset or for a read-only probe the owner does not need to
-see, and that reply says the children will not show up in lineage. Lineage is the default view for every
+when `delegate_task` is missing from the toolset, and that reply says the children will not show up
+in lineage. Lineage is the default view for every
 child, so `delegate_task` is the mechanism for all of them — a one-line probe included. A T3 child is
-its own `pi.exe`
-process with its own context: **6 ordinary lanes at once is the default** (the owner may raise it for
+its own `pi.exe` process with its own context: **6 ordinary lanes at once is the default** (the owner may raise it for
 a session), while **heavy work — a full suite, `test:e2e`, a build, a browser agent — is 2 or 3 at
 once across every thread**, through the slot queue. The tighter limit on lanes is the files they
 edit, not their count.
@@ -229,9 +228,11 @@ gate doc §5. A human commit carries none of them.
 
 ## Waiting on CI / Greptile
 
-Do not hand the wait back to the user. After pushing and requesting
-`@greptile-apps review`, poll in-session with `sleep`: start at ~5 minutes,
-then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
+Do not hand the wait back to the user. A PR this thread opened is watched, and the
+watch is what reports it: a red check, a new head, a verdict. Never sit in a
+`gh pr checks` loop for a watched PR — that is the same as not watching it, only
+busier. Poll only a PR nobody here watches, and then with `sleep`: start at
+~5 minutes, then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
 Greptile comment each time, until the verdict appears. Same for CI.
 
 A lane reports by finishing: its completion wakes the session. Stop and let it

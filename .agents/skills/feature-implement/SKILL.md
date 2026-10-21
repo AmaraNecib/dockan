@@ -215,7 +215,9 @@ credits, and makes the previous report stale.
 
 `.github/workflows/ci.yml` runs three jobs on every PR to
 `develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
-(cargo test + clippy). Poll them in-session with `sleep`, never by polling a lane.
+(cargo test + clippy). A PR this thread opened is **watched**, and the watch is
+what reports the run — do not sit in a `gh pr checks` loop for it. Poll only a PR
+nobody here watches, and never poll a lane.
 A lane cannot trigger CI or a Greptile review at all, because it cannot push
 (step 11). This wait belongs to the parent, never the lane.
 
@@ -237,6 +239,12 @@ Load `improve-codebase-architecture`. Run it **after Greptile returns 5/5**, nev
 order is lenses → push and PR → Greptile to 5/5 → this review → fold → merge. Running it earlier
 spends the budget on code whose acceptability is still in question, and a review of code that may
 still be wrong is the expensive way to learn nothing.
+
+**Budget: two passes, and the second one only if the code changed.** One pass on the
+head Greptile scored, then one more on the head that carries the fold — a fold that
+touched no code needs no second pass, because the first pass still describes the
+tree. That is the same rule `docs/engineering-workflow.md` states as its re-run
+budget, and the two must not disagree.
 
 **The vocabulary is cheaper and starts earlier.** While the code is being designed and written,
 `codebase-design` supplies the words (module, interface, depth, seam, adapter, leverage, locality)
@@ -345,11 +353,12 @@ it merges, whatever Greptile says.
 | Code not written | Step 3 — implement |
 | Guard Phase 1 not run | Step 4 — guard pre-review |
 | No quality check | Step 5 — quality check |
-| No debate | Step 6 — debate |
-| No test audit | Step 7 — test audit |
-| No code-review | Step 8 — code-review |
-| Guard Phase 2 not run | Step 9 — guard pre-push |
-| Lane done, not pushed | Parent only — Step 10 (push + PR) |
-| Greptile not clean | Parent only — Step 11 (CI + Greptile) |
-| Greptile 5/5, architecture not reviewed | Parent only — Step 12 (architecture review) |
-| All done | Parent only — Steps 13-14 (guard pre-report, then report to the owner) |
+| No author review | Step 6 — author review |
+| No debate | Step 7 — debate |
+| No test audit | Step 8 — test audit |
+| No code-review | Step 9 — code-review |
+| Guard Phase 2 not run | Step 10 — guard pre-push |
+| Lane done, not pushed | Parent only — Step 11 (push + PR) |
+| Greptile not clean | Parent only — Step 12 (CI + Greptile) |
+| Greptile 5/5, architecture not reviewed | Parent only — Step 13 (architecture review) |
+| All done | Parent only — Steps 14-15 (guard pre-report, then report to the owner) |

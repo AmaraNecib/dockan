@@ -27,7 +27,7 @@
  *     where every failure was typed `AssertionError`; on the pinned 1.4.3 that
  *     counter is not load-bearing, and it misread a `node:assert` red (also
  *     `AssertionError`, but `assertions="0"`) as a wrong-reason red. The
- *     measured table and the residual hole are on `isAssertionRed`.
+ *     measured table and the residual hole are on `isOwnRed`.
  *   - a hook that *asserts* rather than throws is not a wrong-reason red: it
  *     reports `AssertionError`, exactly like a test body, and the junit names
  *     the failing line. A helper a test body calls fails at that helper's
@@ -71,7 +71,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, posix, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import ts from "typescript";
@@ -192,6 +192,7 @@ export type VerdictName =
   | "NOT_ON_CHANGE"
   | "WRONG_REASON_RED"
   | "NOT_ON_PARENT"
+  | "CANNOT_HOLLOW"
   | "GREEN_ON_PARENT"
   | "WAIVER_MISFILED"
   | "RUN_INCOMPLETE";
@@ -558,6 +559,7 @@ export function verdictPasses(verdict: Verdict): boolean {
       return true;
     case "WRONG_REASON_RED":
     case "NOT_ON_PARENT":
+    case "CANNOT_HOLLOW":
     case "GREEN_ON_PARENT":
       return verdict.waiver !== null;
     // A test that is red on the change is broken, and a waiver says why a test
@@ -608,6 +610,7 @@ function classifyResult(
   result: TestResult,
   waiver: Waiver | null,
   matching: Waiver[],
+  hollowed: boolean,
 ): Verdict {
   const test = displayName(result);
   if (result.status === "skipped") {
@@ -630,13 +633,13 @@ function classifyResult(
       waivers: matching,
     };
   }
-  if (isAssertionRed(result)) {
+  if (isOwnRed(result, hollowed)) {
     if (waiver !== null) {
       return {
         file,
         test,
         name: "WAIVER_MISFILED",
-        detail: `waived, but the test already fails on the parent with an AssertionError — delete the waiver`,
+        detail: `waived, but the test already fails on the parent for its own reason — delete the waiver`,
         waiver,
         waivers: matching,
       };
@@ -645,7 +648,9 @@ function classifyResult(
       file,
       test,
       name: "RIGHT_REASON_RED",
-      detail: `fails on the parent with an assertion on the behaviour the change adds`,
+      detail: hollowed
+        ? `fails on the parent against the hollow stand-in, for a reason the test itself produced (${failureReason(result)})`
+        : `fails on the parent with an assertion on the behaviour the change adds`,
       waiver: null,
       waivers: [],
     };
@@ -692,8 +697,23 @@ function classifyResult(
  * `expect.fail` on 1.4.3 is not a function at all (TypeError, assertions="0"),
  * so a test that calls it needs a waiver; nothing in this repo does.
  */
-function isAssertionRed(result: TestResult): boolean {
-  return result.failureType === "AssertionError";
+function isOwnRed(result: TestResult, hollowed: boolean): boolean {
+  if (result.failureType === "AssertionError") return true;
+  // A hollow module's functions return `undefined` and its consts are
+  // `undefined`, so a test that reads a property of what the module produced dies
+  // with a TypeError before any assertion runs — `turboArgs(...).args` on a hollow
+  // is `undefined.args`. That red is caused by the module the change adds, and the
+  // test only reaches it by using the module, so it is the test's own red on a
+  // hollowed file.
+  //
+  // The residual hole, stated because a gate that hides it is the thing this gate
+  // exists against: a `beforeEach` that dereferences the hollow makes every test
+  // in the file read as its own red without a body running, so a vacuous test
+  // behind such a hook passes. RED ON CHANGE still catches a test that is broken
+  // on the change, and the hook is code the reviewer reads in the diff. The
+  // alternative — waiving twelve rows of a file whose only defect is this shape —
+  // buries the same fact in twelve lines nobody reads.
+  return hollowed && result.failureType === "TypeError";
 }
 
 /** Why a failing test is not a right-reason red, in wording bun does not vary. */
@@ -712,7 +732,9 @@ export function classifyFileRun(
   run: FileRun,
   waivers: Waiver[],
   changeResults: TestResult[] = [],
+  options: { hollowed?: boolean } = {},
 ): Classification {
+  const hollowed = options.hollowed === true;
   const used = new Set<number>();
   const verdicts: Verdict[] = [];
 
@@ -821,7 +843,7 @@ export function classifyFileRun(
     const matching = waivers.filter((candidate) => matches(candidate, result));
     const waiver = matching[0] ?? null;
     if (waiver !== null) used.add(waiver.line);
-    verdicts.push(classifyResult(run.file, result, waiver, matching));
+    verdicts.push(classifyResult(run.file, result, waiver, matching, hollowed));
   }
   return { verdicts, usedWaiverLines: used, problems: waiverProblems };
 }
@@ -980,6 +1002,20 @@ export function missingExport(stdout: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * The export bun could not find, and the module it looked in.
+ *
+ * `missingExport` answers "which name"; this answers "which name, in which
+ * file", which is what tells an export the change ADDS to a module the parent
+ * already has (a real, waivable "the parent cannot run this file") from a module
+ * the parent is missing altogether (which the hollow path already handles).
+ */
+export function missingExportDetail(stdout: string): { name: string; module: string } | null {
+  const match = /Export named ['"]([^'"]+)['"] not found in module ['"]([^'"]+)['"]/u.exec(stdout);
+  if (match?.[1] === undefined || match[2] === undefined) return null;
+  return { name: match[1], module: match[2] };
+}
+
 export function loadFailureReason(stdout: string): string {
   if (/Ran 0 tests/u.test(stdout)) return "the file declares no tests";
   // The report says what the parent was missing, not only that it could not
@@ -1043,6 +1079,69 @@ export function notRegisteredOnChange(
   return verdicts;
 }
 
+/**
+ * The one row a file gets when the gate cannot write a faithful hollow of an added
+ * module it imports.
+ *
+ * It replaces the parent's rows rather than joining them, because the parent's run
+ * never judged the file: it read a checkout that is missing the module. The row's
+ * test name is `(whole file)`, the same name the gate already uses for a run that
+ * produced no verdict — so the existing waiver grammar clears it, and a pattern
+ * that names a real test still cannot.
+ *
+ * The pattern is matched against the name with and without its parentheses, so
+ * the waiver an author writes is `red-on-parent-waive: "whole file" — …` and not
+ * `"^\(whole file\)$"`. A waiver here excuses the whole file because the whole
+ * file is what the parent could not run; that is the case
+ * `fileLevelWaiverProblems` exists to forbid, and this is the one verdict where
+ * it is also the only thing a waiver can mean.
+ */
+/**
+ * Why the parent cannot run an added test file, when the cause is an export the
+ * parent's copy of a module the diff *edits* does not have.
+ *
+ * The hollow path cannot fix this one: the parent HAS the module, so replacing it
+ * with a stand-in would erase behaviour the parent really carries, and a test that
+ * pins that behaviour would then fail on the parent and be read as a right-reason
+ * red — a false PASS. So the file is unjudgeable on this parent, and the report
+ * says exactly which export and which module, in one row a single waiver clears.
+ *
+ * Without this, the file got one WRONG REASON RED row per test it registers (the
+ * round-8 rule: a waiver must name the test it excuses), which is 40 waiver lines
+ * for one cause in this repo's `scripts/e2e-changed.test.ts` — and
+ * `fileLevelWaiverProblems` refuses a pattern that names all of them at once. A
+ * gate nobody can satisfy is a gate that gets bypassed.
+ */
+export function editedModuleExportRefusal(
+  stdout: string,
+  touched: ReadonlySet<string>,
+): string | null {
+  const detail = missingExportDetail(stdout);
+  if (detail === null) return null;
+  const modulePath = detail.module.replaceAll("\\", "/");
+  const touchedPath = [...touched].find(
+    (path) => modulePath === path || modulePath.endsWith(`/${path}`),
+  );
+  if (touchedPath === undefined) return null;
+  return `${touchedPath}: the parent has this module but not its \`${detail.name}\` export, and a hollow cannot stand in for a module the parent already has — faking it would erase the behaviour the parent really carries`;
+}
+
+function cannotHollowVerdict(file: string, refusal: string, waivers: Waiver[]): Verdict {
+  const test = "(whole file)";
+  const matching = waivers.filter((waiver) => {
+    const pattern = new RegExp(waiver.pattern, "u");
+    return pattern.test(test) || pattern.test("whole file");
+  });
+  return {
+    file,
+    test,
+    name: "CANNOT_HOLLOW",
+    detail: `${refusal} — so the parent cannot load this file, and nothing was judged there`,
+    waiver: matching[0] ?? null,
+    waivers: matching,
+  };
+}
+
 /** Waivers that matched no test at all. Each is a failure: it excuses nothing. */
 export function unusedWaiverVerdicts(file: string, waivers: Waiver[], used: Set<number>): Verdict[] {
   return waivers
@@ -1063,12 +1162,18 @@ export function unusedWaiverVerdicts(file: string, waivers: Waiver[], used: Set<
 
 /**
  * New unit-test files, and only those. A `.spec.ts` is Playwright (its red
- * needs both servers); a file under an `e2e` directory is the same thing; and
- * nothing outside `apps/` and `packages/` is a product test.
+ * needs both servers), and a file under an `e2e` directory is the same thing.
+ *
+ * `scripts/` is in scope because its tests are tests: the round-2 change added
+ * 26 of them and the gate judged none. The cost of leaving them out was measured
+ * — a vacuous assertion sat in one of those files, unchallenged, because no gate
+ * ever asked the parent to run it. The cost of including them is the hollow-module
+ * path below, which is what makes such a file runnable on a parent that does not
+ * have the module it imports.
  */
 export function isGatedTestPath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
-  if (!/^(apps|packages)\//u.test(normalized)) return false;
+  if (!/^(apps|packages|scripts)\//u.test(normalized)) return false;
   if (normalized.includes("/e2e/") || normalized.includes("/tests/e2e/")) return false;
   if (/\.spec\.[cm]?[jt]sx?$/u.test(normalized)) return false;
   return /\.test\.[cm]?[jt]sx?$/u.test(normalized);
@@ -1116,24 +1221,42 @@ function isTypeOnlyReference(node: ts.ImportDeclaration | ts.ExportDeclaration):
  * contributed. So a file that imports another test file brings that file's
  * cases into its own report and the report cannot say whose case it holds.
  * The import is found in the source instead, because the report cannot be
- * asked.
+ * asked: `loadedRelativeSpecifiers` walks the tree, and this function decides
+ * which of the modules it names are test files. An alias resolved by the
+ * package's `tsconfig` paths — `@/lib/fixtures.test.ts` — is invisible to that
+ * walk, so a file that reaches another test file that way is judged on a mixed
+ * report.
+ */
+export function importedTestFiles(source: string, path: string): string[] {
+  return loadedRelativeSpecifiers(source, path).filter((specifier) =>
+    TEST_LIKE_BASENAME.test(specifier.split("/").pop() ?? ""),
+  );
+}
+
+/**
+ * Every relative module a source file loads, in the order the file names them.
+ *
+ * One walk serves two readers, because they must agree on what counts as a load:
+ * `importedTestFiles` refuses a file that mixes a second file's cases into its
+ * report, and `planHollowModules` decides which added module the parent has to be
+ * given a stand-in for. A specifier one of them saw and the other did not would
+ * either let a mixed report through or leave the parent unable to load the file.
  *
  * The specifiers come from the AST, not from a text scan. That is what makes a
- * commented-out import impossible to report: `// import "./setup.test.ts"` is
- * not a node, so there is nothing for this function to find. The text scan it
- * replaced needed a mask over every comment and literal in the file to make the
- * same distinction, and each of the mask's four bugs was a shape it read as code
- * that was not code. `path` decides how the file is parsed, because `<Foo>"ok"`
- * is a type assertion in `.ts` and JSX in `.tsx`, and it is required: a default
- * let a `.tsx` file be read as `.ts`, and the same source then reported an import
- * the real file does not have (or missed one it does).
+ * commented-out import impossible to report: `// import "./setup.test.ts"` is not
+ * a node, so there is nothing here to find. The text scan this replaced needed a
+ * mask over every comment and literal in the file to make the same distinction,
+ * and each of the mask's four bugs was a shape it read as code that was not code.
+ * `path` decides how the file is parsed, because `<Foo>"ok"` is a type assertion
+ * in `.ts` and JSX in `.tsx`, and it is required: a default let a `.tsx` file be
+ * read as `.ts`, and the same source then reported an import the real file does
+ * not have (or missed one it does).
  *
  * Only **relative** specifiers (`./`, `../`) are read. An alias resolved by the
- * package's `tsconfig` paths — `@/lib/fixtures.test.ts` — is invisible here, so a
- * file that reaches another test file that way is judged on a mixed report.
+ * package's `tsconfig` paths — `@/lib/fixtures.test.ts` — is invisible here.
  *
- * `require("…")` and `import("…")` are read here too, from the call nodes, since
- * both load a module the report cannot attribute. A specifier written as a
+ * `require("…")` and `import("…")` are read too, from the call nodes, since both
+ * load a module the report cannot attribute. A specifier written as a
  * no-substitution template (a dynamic import whose argument is a backtick
  * literal) is as static as a quoted one, import attributes after it change
  * nothing, and `require` is recognised bare, qualified (`module.require`),
@@ -1144,7 +1267,7 @@ function isTypeOnlyReference(node: ts.ImportDeclaration | ts.ExportDeclaration):
  * file. They are known limits of asking the source, not a claim that the gate
  * covers them.
  */
-export function importedTestFiles(source: string, path: string): string[] {
+function loadedRelativeSpecifiers(source: string, path: string): string[] {
   const file = ts.createSourceFile(
     path,
     source,
@@ -1158,8 +1281,6 @@ export function importedTestFiles(source: string, path: string): string[] {
   const add = (specifier: string | undefined): void => {
     if (specifier === undefined) return;
     if (!specifier.startsWith("./") && !specifier.startsWith("../")) return;
-    const name = specifier.split("/").pop() ?? "";
-    if (!TEST_LIKE_BASENAME.test(name)) return;
     specifiers.add(specifier);
   };
   /**
@@ -1230,7 +1351,7 @@ export function isTestLikePath(path: string): boolean {
 /** Why the gate does not gate this path, or null when the path is in scope. */
 export function skipReason(path: string): string | null {
   const normalized = path.replaceAll("\\", "/");
-  if (!/^(apps|packages)\//u.test(normalized)) return "outside apps/ and packages/";
+  if (!/^(apps|packages|scripts)\//u.test(normalized)) return "outside apps/, packages/ and scripts/";
   if (normalized.includes("/e2e/") || normalized.includes("/tests/e2e/")) {
     return "under an e2e directory";
   }
@@ -1240,6 +1361,295 @@ export function skipReason(path: string): string | null {
 
 /** A test file the diff touches and the gate does not gate. */
 export type SkippedTestFile = { path: string; reason: string };
+
+// ---------------------------------------------------------------------------
+// Hollow stand-ins for the modules a change adds
+// ---------------------------------------------------------------------------
+
+/**
+ * Why the gate fakes a module at all.
+ *
+ * A test file the diff adds usually imports a module the same diff adds. On the
+ * parent that module does not exist, so the file does not load: bun writes no
+ * junit, every case reads WRONG REASON RED, and one waiver line clears all of
+ * them. A test that asserts `true` is then indistinguishable from a test that
+ * pins the new behaviour — which is not a hypothetical. The round-2 change added
+ * 26 tests under `scripts/` that the gate never looked at, and a vacuous
+ * assertion sat in one of them.
+ *
+ * So the parent gets a HOLLOW version of the module, written at its own path:
+ * the same export names, no behaviour. A test that pins nothing then runs on the
+ * parent and passes there (GREEN ON PARENT, rejected), and a real test fails for
+ * its own assertion reason. That is the discrimination the gate exists to make.
+ *
+ * A hollow is a mirror, and a wrong mirror is worse than a refusal: one that
+ * carries behaviour lets a vacuous test through, and one that drops an export
+ * makes a real test fail for a reason the change did not cause. So anything the
+ * mirror cannot reproduce faithfully is refused with CANNOT HOLLOW, which fails
+ * closed and is cleared only by the waiver grammar every other unjudgeable case
+ * uses.
+ */
+
+/** A module the gate faked into the parent, and the file that needed it. */
+export type HollowedModule = { path: string; importedBy: string };
+
+export type HollowResult = { ok: true; text: string } | { ok: false; refusal: string };
+
+export type HollowPlan = {
+  modules: Array<HollowedModule & { text: string }>;
+  refusal: string | null;
+};
+
+const HOLLOW_HEADER = [
+  "// Hollow stand-in, written by scripts/red-on-parent.ts for the parent checkout:",
+  "// this module is added by the change under review, so the parent does not have",
+  "// it. Same export names, no behaviour — a test that pins nothing passes here.",
+].join("\n");
+
+/** The extensions a relative specifier is resolved against, in bun's order. */
+const MODULE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+
+/**
+ * Whether a node carries one of the keywords a declaration can be written with.
+ *
+ * Asked per keyword through `getModifiers`, which takes any node and answers for
+ * the ones that can have modifiers, rather than through
+ * `getCombinedModifierFlags`, whose signature takes a `Declaration`: the loop
+ * below walks `Statement`s, and an expression statement's lack of modifiers is
+ * the answer rather than a type error to work around.
+ */
+function hasKeyword(node: ts.Node, keyword: ts.SyntaxKind): boolean {
+  if (!ts.canHaveModifiers(node)) return false;
+  return (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === keyword);
+}
+
+/**
+ * The names a module exports, sorted.
+ *
+ * Read from the tree twice: once for the real module and once for the mirror the
+ * gate wrote, so the mirror must declare exactly the export names the module
+ * does. A `export {}` list, a re-export or a default export names no declaration
+ * here — every one of those is refused before the mirror is written, so the two
+ * lists are comparable rather than merely similar.
+ */
+export function declaredExportNames(path: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const names: string[] = [];
+  for (const statement of file.statements) {
+    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text);
+      }
+      continue;
+    }
+    if (
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      ts.isModuleDeclaration(statement)
+    ) {
+      const name = statement.name;
+      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * The hollow mirror of one module, or the reason it cannot be mirrored.
+ *
+ * Every export mirror is chosen so that calling it cannot throw: a function with
+ * an empty body returns `undefined`, a `const` is `undefined`, a `let` is
+ * uninitialised, a class is empty. A hollow that threw on call would make a
+ * vacuous test fail for the harness's reason and read as a real red.
+ *
+ * Imports are dropped rather than mirrored. Importing a module runs it, and a
+ * hollow's whole contract is that it runs nothing — so a chain of added modules
+ * cannot put behaviour back through it. That is why the nested case needs no
+ * chain walk: after hollowing, nothing in the module loads anything.
+ */
+export function hollowModuleSource(source: string, path: string): HollowResult {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const refuse = (why: string): HollowResult => ({ ok: false, refusal: `${path}: ${why}` });
+  const lines: string[] = [];
+  for (const statement of file.statements) {
+    if (ts.isImportDeclaration(statement) || ts.isImportEqualsDeclaration(statement)) {
+      // `export import X = require(…)` re-exports, so it is not an import to drop.
+      if (hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) {
+        return refuse("it exports an `import =` alias, which a hollow cannot mirror");
+      }
+      continue;
+    }
+    // `export { a }` and `export default x` carry no `export` *modifier* — the
+    // statement kind is the export — so they are refused before the modifier
+    // check below, which would otherwise read them as behaviour with no name to
+    // mirror and drop them in silence.
+    if (ts.isExportDeclaration(statement)) {
+      return refuse(
+        "it re-exports from another module (`export … from`), and a hollow has nothing to re-export",
+      );
+    }
+    if (ts.isExportAssignment(statement)) {
+      return refuse(statement.isExportEquals ? "it uses `export =`" : "it has an `export default`");
+    }
+    // A statement with no `export` modifier is behaviour with no name to mirror,
+    // which is exactly what a hollow leaves out.
+    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (hasKeyword(statement, ts.SyntaxKind.DefaultKeyword)) {
+      return refuse("it has an `export default`, whose meaning is the whole module's value");
+    }
+    if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) {
+      return refuse(
+        "it declares an ambient (`declare`) export, which emits no runtime value — mirroring it would invent an export the real module does not have",
+      );
+    }
+    const decorators = ts.canHaveDecorators(statement) ? ts.getDecorators(statement) : undefined;
+    if (decorators !== undefined && decorators.length > 0) {
+      return refuse("an exported declaration is decorated, and a decorator is behaviour");
+    }
+    if (ts.isFunctionDeclaration(statement)) {
+      const name = statement.name;
+      if (name === undefined) return refuse("it exports a function with no name");
+      // `..._args: unknown[]` rather than the real signature: the parent's copy
+      // is never type-checked, and a test that calls it with anything must reach
+      // its own assertion instead of a load error.
+      lines.push(`export function ${name.text}(..._args: unknown[]): unknown {\n  return undefined;\n}`);
+      continue;
+    }
+    if (ts.isClassDeclaration(statement)) {
+      const name = statement.name;
+      if (name === undefined) return refuse("it exports a class with no name");
+      lines.push(`export class ${name.text} {}`);
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      const flags = statement.declarationList.flags;
+      const keyword =
+        (flags & ts.NodeFlags.Const) !== 0 ? "const" : (flags & ts.NodeFlags.Let) !== 0 ? "let" : "var";
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) {
+          return refuse("it exports a destructured binding, whose names are not one declaration each");
+        }
+        // `let`/`var` without an initialiser is already `undefined`; `const`
+        // needs one to parse.
+        lines.push(
+          keyword === "const"
+            ? `export const ${declaration.name.text} = undefined;`
+            : `export ${keyword} ${declaration.name.text};`,
+        );
+      }
+      continue;
+    }
+    if (ts.isInterfaceDeclaration(statement)) {
+      // Erased by the runtime, so an empty one is not a lie — the mirror must
+      // *declare* it only because the real module does.
+      lines.push(`export interface ${statement.name.text} {}`);
+      continue;
+    }
+    if (ts.isTypeAliasDeclaration(statement)) {
+      lines.push(`export type ${statement.name.text} = unknown;`);
+      continue;
+    }
+    if (ts.isEnumDeclaration(statement)) {
+      return refuse("it exports an enum, whose members are runtime values a hollow cannot reproduce");
+    }
+    if (ts.isModuleDeclaration(statement)) {
+      return refuse("it exports a namespace, whose members are runtime values a hollow cannot reproduce");
+    }
+    return refuse(
+      `it exports a ${ts.SyntaxKind[statement.kind]} declaration, which a hollow does not mirror`,
+    );
+  }
+
+  const text = [HOLLOW_HEADER, "", ...lines].join("\n") + "\n";
+  // The last line of defence, and the reason the mirror is parsed again rather
+  // than trusted: an emission that lost or invented an export name would be a
+  // hollow that lies about the module's shape, and refusing is always available.
+  const wanted = declaredExportNames(path, source);
+  const mirrored = declaredExportNames(path, text);
+  if (wanted.join("\u0000") !== mirrored.join("\u0000")) {
+    return refuse(
+      `a hollow would export ${mirrored.join(", ") || "nothing"} where the module exports ${wanted.join(", ") || "nothing"}`,
+    );
+  }
+  return { ok: true, text };
+}
+
+/**
+ * The file a relative specifier names, when the same diff adds it.
+ *
+ * Only an exact hit against the diff's added paths is accepted, so the gate never
+ * guesses at a resolution it cannot confirm. The probe order is bun's: the
+ * specifier itself (it may carry an extension), then the bare extensions, then a
+ * directory index. A `..` that climbs out of the repository resolves to nothing.
+ */
+function resolveAddedModule(
+  fromFile: string,
+  specifier: string,
+  added: ReadonlySet<string>,
+): string | null {
+  const joined = posix.normalize(posix.join(posix.dirname(fromFile), specifier));
+  if (joined.startsWith("../") || joined === ".." || posix.isAbsolute(joined)) return null;
+  const candidates = [
+    joined,
+    ...MODULE_EXTENSIONS.map((extension) => `${joined}${extension}`),
+    ...MODULE_EXTENSIONS.map((extension) => `${joined}/index${extension}`),
+  ];
+  return candidates.find((candidate) => added.has(candidate)) ?? null;
+}
+
+/**
+ * The hollow modules one added test file needs on the parent.
+ *
+ * `added` is every path the diff adds, and `readAdded` reads one at `head`. A
+ * specifier that names a test file is not hollowed: a file that imports another
+ * test file is refused outright before this runs, because the report cannot say
+ * whose case failed.
+ */
+export function planHollowModules(
+  testFile: string,
+  testSource: string,
+  added: ReadonlySet<string>,
+  readAdded: (path: string) => string | null,
+): HollowPlan {
+  const modules: HollowPlan["modules"] = [];
+  const seen = new Set<string>();
+  for (const specifier of loadedRelativeSpecifiers(testSource, testFile)) {
+    if (TEST_LIKE_BASENAME.test(specifier.split("/").pop() ?? "")) continue;
+    const path = resolveAddedModule(testFile, specifier, added);
+    if (path === null || seen.has(path)) continue;
+    seen.add(path);
+    const source = readAdded(path);
+    if (source === null) {
+      return {
+        modules: [],
+        refusal: `${path}: the gate cannot read the module this file imports at the change's commit, so it cannot tell what the parent is missing`,
+      };
+    }
+    const hollow = hollowModuleSource(source, path);
+    if (!hollow.ok) return { modules: [], refusal: hollow.refusal };
+    modules.push({ path, importedBy: testFile, text: hollow.text });
+  }
+  // Sorted so the report and the manifest describe one order whatever order the
+  // file lists its imports in.
+  modules.sort((left, right) => (left.path < right.path ? -1 : 1));
+  return { modules, refusal: null };
+}
 
 // ---------------------------------------------------------------------------
 // Git and the base worktree
@@ -1573,6 +1983,8 @@ export type GateRun = {
   uncommitted: string[];
   /** Test files the diff touches that the gate does not gate, with the reason. */
   skipped: SkippedTestFile[];
+  /** Added modules the gate faked into the parent, and the file that needed each. */
+  hollowed: HollowedModule[];
 };
 
 function resolveBase(repo: string, requested: string | null): string {
@@ -1590,12 +2002,17 @@ function resolveBase(repo: string, requested: string | null): string {
   );
 }
 
+/** The paths the diff adds. A path present at the parent is an edit, not an add. */
+export function addedFiles(repo: string, mergeBase: string, head: string): string[] {
+  return changedPaths(repo, mergeBase, head).filter(
+    (path) => !git(repo, ["cat-file", "-e", `${mergeBase}:${path}`]).ok,
+  );
+}
+
 export function addedTestFiles(repo: string, mergeBase: string, head: string): string[] {
   const added: string[] = [];
-  for (const path of changedPaths(repo, mergeBase, head)) {
+  for (const path of addedFiles(repo, mergeBase, head)) {
     if (!isGatedTestPath(path)) continue;
-    // Present at the parent => an edited file, never gated. Absent => added.
-    if (git(repo, ["cat-file", "-e", `${mergeBase}:${path}`]).ok) continue;
     added.push(path);
   }
   return added.sort();
@@ -1821,8 +2238,19 @@ export function runGate(options: GateOptions, versions: { bun?: string } = bunVe
       problems,
       uncommitted,
       skipped,
+      hollowed: [],
     };
   }
+  // Every path the diff adds, so the parent can be given a hollow stand-in for
+  // the added module a gated test file imports. Read once: it is a git call per
+  // changed path, and the answer cannot change inside one run.
+  const added = new Set(addedFiles(repo, baseSha, head));
+  // The modules the diff edits rather than adds. A hollow is never written for
+  // one: the parent has it, and a fake would erase behaviour the parent really
+  // carries. It is here so a load failure caused by one can say which export.
+  const touched = new Set(
+    changedPaths(repo, baseSha, head).filter((path) => !added.has(path)),
+  );
   // Two runs from the same checkout and the same base share this worktree, and
   // one of them copying files into it or `--fresh`-deleting it would corrupt the
   // other's verdicts. The lock covers everything that reads or writes it, so the
@@ -1835,7 +2263,17 @@ export function runGate(options: GateOptions, versions: { bun?: string } = bunVe
     files.length,
   );
   try {
-    return gateBaseWorktree({ repo, head, baseSha, files, uncommitted, skipped, fresh });
+    return gateBaseWorktree({
+      repo,
+      head,
+      baseSha,
+      files,
+      uncommitted,
+      skipped,
+      added,
+      touched,
+      fresh,
+    });
   } finally {
     release();
   }
@@ -1849,9 +2287,11 @@ function gateBaseWorktree(input: {
   files: string[];
   uncommitted: string[];
   skipped: SkippedTestFile[];
+  added: ReadonlySet<string>;
+  touched: ReadonlySet<string>;
   fresh: boolean;
 }): GateRun {
-  const { repo, head, baseSha, files, uncommitted, skipped, fresh } = input;
+  const { repo, head, baseSha, files, uncommitted, skipped, added, touched, fresh } = input;
   const { path: worktree, created } = ensureBaseWorktree(repo, baseSha, fresh);
   const installLog = ensureBaseNodeModules(worktree);
 
@@ -1863,6 +2303,7 @@ function gateBaseWorktree(input: {
       `${path}: is in the working tree but not in HEAD, so the gate cannot judge it — commit it and run again`,
   );
   const copied: string[] = [];
+  const hollowed: HollowedModule[] = [];
   const manifest = manifestPath(repo, baseSha);
   // The parent side runs the file *at `head`*, copied into the base worktree.
   // The change side has to run the checkout's own modules, so it can only
@@ -1913,6 +2354,22 @@ function gateBaseWorktree(input: {
       // leaves ignored paths alone, so the installed `node_modules` survives.
       resetBaseWorktree(worktree);
       copyIntoBaseWorktree(manifest, worktree, file, source, copied);
+      // The added modules this file imports are the ones the parent cannot load,
+      // so they are the ones it gets a hollow copy of. Written after the restore
+      // and after the test file's own copy, in the order a run needs them; the
+      // next file's restore removes them, and each is named in the manifest so a
+      // run that dies half way still leaves nothing behind for the next one.
+      const hollow = planHollowModules(file, source, added, (path) => {
+        try {
+          return readAtRevision(repo, head, path);
+        } catch {
+          return null;
+        }
+      });
+      for (const module of hollow.modules) {
+        copyIntoBaseWorktree(manifest, worktree, module.path, module.text, copied);
+        hollowed.push({ path: module.path, importedBy: module.importedBy });
+      }
 
       const junitPath = join(outDir, `${copied.length}.xml`);
       rmSync(junitPath, { force: true });
@@ -1954,7 +2411,12 @@ function gateBaseWorktree(input: {
       // working tree is dirty, registers nothing — and comparing that against
       // the parent's list would restate the problem once per test.
       const changeSideRan = enumerateChange && problems.length === problemsBeforeChange;
-      const classified = classifyFileRun(fileRun, parsed.waivers, changeResults);
+      // A module the parent has but the change extends with a new export is not
+      // something a mirror can stand in for, and bun names it in the transcript.
+      const refusal = hollow.refusal ?? editedModuleExportRefusal(fileRun.stdout, touched);
+      const classified = classifyFileRun(fileRun, parsed.waivers, changeResults, {
+        hollowed: hollow.modules.length > 0,
+      });
       for (const problem of classified.problems) problems.push(problem);
       const unregistered =
         parentResults.length === 0
@@ -1966,15 +2428,29 @@ function gateBaseWorktree(input: {
       const notOnChange = changeSideRan
         ? notRegisteredOnChange(file, parentResults, changeResults)
         : [];
-      verdicts.push(...classified.verdicts, ...unregistered.verdicts, ...notOnChange);
+      // A module the gate could not mirror replaces the parent's verdicts with
+      // one row, because the parent's run never judged the file: it read a parent
+      // that is missing the module, and every row it produced says so. Keeping
+      // those rows would print "the parent could not load the file" once per test
+      // and leave the real reason — an unfaithful mirror — nowhere in the report.
+      const parentVerdicts =
+        refusal === null
+          ? [...classified.verdicts, ...unregistered.verdicts, ...notOnChange]
+          : [cannotHollowVerdict(file, refusal, parsed.waivers)];
+      verdicts.push(...parentVerdicts);
       // The change's own run is already made, so its statuses cost nothing to
       // read. They are read independently of the parent's waivers: a waiver says
       // why the parent could not run a test, not that the test works on the
       // change.
-      verdicts.push(
-        ...changeSideVerdicts(file, [...classified.verdicts, ...unregistered.verdicts], changeResults),
+      verdicts.push(...changeSideVerdicts(file, parentVerdicts, changeResults));
+      // When the file's rows are replaced by one CANNOT HOLLOW row, the waivers
+      // `classifyFileRun` matched belong to rows nobody will read — counting them
+      // used would hide the per-test waiver as accepted when the run says the file
+      // was never judged. So only the rows that reach the report mark waivers used.
+      const usedLines = new Set<number>(
+        refusal === null ? [...classified.usedWaiverLines, ...unregistered.usedWaiverLines] : [],
       );
-      const usedLines = new Set([...classified.usedWaiverLines, ...unregistered.usedWaiverLines]);
+      for (const verdict of parentVerdicts) for (const waiver of verdict.waivers) usedLines.add(waiver.line);
       // A waiver can only be judged against tests the run actually enumerated.
       // When nothing was enumerated (a load failure with no change-side names,
       // or a run that could not judge the file), a waiver naming a real test
@@ -1999,6 +2475,7 @@ function gateBaseWorktree(input: {
     problems,
     uncommitted,
     skipped,
+    hollowed,
   };
 }
 
@@ -2046,6 +2523,16 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
       "land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken",
       "or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`",
       "if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`",
+    ],
+  },
+  {
+    name: "CANNOT_HOLLOW",
+    title:
+      "the file imports a module the change adds, and the gate could not write a hollow stand-in for it",
+    fixes: [
+      "the gate fakes an added module into the parent so this file can load there; it refuses when the mirror would be unfaithful (a default export, a re-export, an enum, a namespace, an ambient `declare`, a destructured export, a decorator)",
+      'if the module really cannot be mirrored, add `// red-on-parent-waive: "whole file" — <why the parent cannot run this file>` to the added test file',
+      "do not waive it to get past the gate: an unfaithful hollow lets a test that pins nothing pass on the parent",
     ],
   },
   {
@@ -2125,6 +2612,17 @@ export function renderReport(run: GateRun, problems: string[]): string {
     return `${lines.join("\n")}\n`;
   }
   if (run.installLog.length > 0) lines.push(`installed the parent's dependencies: ${run.installLog}`);
+  // A run whose red was produced against a fake has to say so, in the transcript
+  // a human reads: a hollow that quietly swallowed an export would otherwise look
+  // exactly like a verdict about the change.
+  if (run.hollowed.length > 0) {
+    lines.push(
+      "hollowed modules (the parent has none of these, so the gate wrote a stand-in — same export names, no behaviour):",
+    );
+    for (const entry of run.hollowed) {
+      lines.push(`  ${entry.path} — hollowed for ${entry.importedBy}`);
+    }
+  }
   lines.push("");
 
   const fileWidth = Math.max(12, ...run.verdicts.map((v) => v.file.length));
@@ -2208,7 +2706,10 @@ export function renderReport(run: GateRun, problems: string[]): string {
       // explanation for a run whose only waived row was the second, while the
       // guide for that verdict says the same thing.
       const unjudged = waived.filter(
-        (verdict) => verdict.name === "WRONG_REASON_RED" || verdict.name === "NOT_ON_PARENT",
+        (verdict) =>
+          verdict.name === "WRONG_REASON_RED" ||
+          verdict.name === "NOT_ON_PARENT" ||
+          verdict.name === "CANNOT_HOLLOW",
       ).length;
       if (unjudged > 0) {
         lines.push(
@@ -2252,6 +2753,7 @@ function summaryLine(counts: Map<VerdictName, number>): string {
     "NOT_ON_CHANGE",
     "WRONG_REASON_RED",
     "NOT_ON_PARENT",
+    "CANNOT_HOLLOW",
     "GREEN_ON_PARENT",
     "WAIVER_MISFILED",
     "RUN_INCOMPLETE",

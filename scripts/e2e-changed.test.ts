@@ -17,6 +17,8 @@ import {
 } from "./e2e-changed";
 import { specPaths, type Scope } from "./e2e-selection";
 
+// red-on-parent-waive: "whole file" — the parent's `e2e-selection.ts` has no `specPaths`, so this file cannot load there and there is no test to judge. `specPaths` was added to an existing module, and a hollow cannot stand in for a module the parent already has: the parent runs the real one, or the change is what gets measured.
+
 // The local twin of the CI selector. CI answers "which specs does this PR
 // reach" server-side; this answers the same question on the lane that is about
 // to push, so the wait is the mapped specs instead of all 35.

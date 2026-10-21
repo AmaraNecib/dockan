@@ -49,6 +49,9 @@ mock.module("@/lib/rpc", () => ({
     },
     suppliersGet: { queryKey: ({ input }: { input: { id: string } }) => ["suppliersGet", input.id] },
     suppliersReturnsList: { queryKey: () => ["suppliersReturnsList"] },
+    // #323 — the party's canonical balance key and the debts list
+    debtsByParty: { queryKey: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ["debtsByParty", input] },
+    reportsDebts: { queryKey: () => ["reportsDebts"] },
   },
   rpcClient: {},
 }));

@@ -563,6 +563,10 @@ const resources = {
       debtsGroupTotal: "الإجمالي",
       debtsInvoiceCount: "عدد الفواتير",
       debtsInvoicesTitle: "الفواتير غير المدفوعة",
+      // #323 — a party with neither an id nor a usable name has no key to read
+      // its balance under, so the read is refused and the owner is told the one
+      // thing that fixes it.
+      debtsPartyUnidentified: "لا يمكن قراءة ديون هذا الطرف: لا اسم له ولا معرّف. افتح فاتورته وسجّل اسم الطرف.",
       debtsInvNumber: "الرقم",
       debtsInvDate: "التاريخ",
       debtsInvTotal: "الإجمالي",

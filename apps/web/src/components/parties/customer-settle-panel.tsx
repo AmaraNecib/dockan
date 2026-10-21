@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 import { formatDate } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
+import { invalidatePartyBalance } from "@/lib/party-cache-key";
 import { orpc } from "@/lib/rpc";
 import { distributePayment, settleAmountError } from "./party-settle";
 
@@ -103,6 +104,13 @@ export function CustomerSettlePanel({
   function refresh() {
     return Promise.all([
       queryClient.invalidateQueries({ queryKey: orpc.customersGet.queryKey({ input: { id: partyId } }) }),
+      // #323 — the payment moved the customer's tab, so the balance the invoice
+      // screen's refund preview reads is stale until that key is invalidated.
+      // It is the SAME key both screens read under (the party id).
+      invalidatePartyBalance(queryClient, { kind: "SALE", counterpartyId: partyId, counterpartyName: null }),
+      // #323 — the debts screen shows this customer's total; the payment moved
+      // it, so that list is stale too.
+      queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
       queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
       queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
     ]);

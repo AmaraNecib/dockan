@@ -19,6 +19,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { invalidatePartyBalance, partyBalanceInput } from "../lib/party-cache-key";
 import { combineBusinessDateTime, formatDateTime } from "../lib/dates";
 import { debtOffsetDisplay } from "../lib/return-voucher";
 
@@ -58,21 +59,6 @@ function firstEnabledField(form: HTMLFormElement | null): HTMLInputElement | nul
   return (
     Array.from(form?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled) ?? null
   );
-}
-
-/**
- * The `debtsByParty` input for an invoice's customer tab. ReturnsPanel reads it
- * and PaymentPanel invalidates the same key after `invoicesPay`, so one helper
- * keeps them from drifting: the refund preview's derived method must follow a
- * recorded payment (#256 round 4). A purchase invoice has no customer tab (the
- * panel is SALE-only).
- */
-function partyDebtQueryInput(invoice: InvoiceDetail) {
-  return {
-    kind: "SALE" as const,
-    counterpartyId: invoice.counterpartyId,
-    counterpartyName: invoice.counterpartyId === null ? invoice.counterpartyName : null,
-  };
 }
 
 /**
@@ -136,13 +122,24 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
           queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
           queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
+          // #323 — the debts screen shows this customer's total; the payment
+          // moved it, so that list is stale too.
+          queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         ]);
         // #256 round 4 — the returns panel derives its refund default from the
         // party's whole tab, so a recorded payment must refresh that read too or
         // the preview keeps the pre-payment total. Exact key, like the detail
         // read above; a purchase invoice has no customer tab to refresh.
         if (invoice.kind === "SALE") {
-          void queryClient.invalidateQueries({ queryKey: orpc.debtsByParty.queryKey({ input: partyDebtQueryInput(invoice) }) });
+          // #323 — the customer's tab is read under the canonical party key (the
+          // id when known, the trimmed typed name otherwise), so this
+          // invalidation lands on the SAME key the debts screen reads and the
+          // refund preview this screen shows.
+          void invalidatePartyBalance(queryClient, {
+            kind: "SALE",
+            counterpartyId: invoice.counterpartyId,
+            counterpartyName: invoice.counterpartyName,
+          });
         }
       },
       onError: (err) => {
@@ -391,9 +388,23 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // default uses (the party id when known, else the typed name), so the method
   // this form pre-selects is the method the server would pick with no
   // cashPaidOut. A sale with no name at all has no tab to consult.
-  const hasPartyIdentity = invoice.counterpartyId !== null || invoice.counterpartyName !== null;
+  // #323 — one party, one cache identity: the customer's tab is read under
+  // the canonical party key (the id when the shop knows it, the trimmed typed
+  // name otherwise), the same key the debts screen reads and every money write
+  // invalidates. A sale whose party has no identity at all has no tab to
+  // consult.
+  const partyBalance = partyBalanceInput({
+    kind: "SALE",
+    counterpartyId: invoice.counterpartyId,
+    counterpartyName: invoice.counterpartyName,
+  });
+  const hasPartyIdentity = partyBalance !== null;
   const partyDebtQuery = useQuery({
-    ...orpc.debtsByParty.queryOptions({ input: partyDebtQueryInput(invoice) }),
+    ...orpc.debtsByParty.queryOptions({
+      // the unidentified party's own values keep the key well-formed; the query
+      // is disabled, so nothing is ever sent under it
+      input: partyBalance ?? { kind: "SALE", counterpartyId: invoice.counterpartyId, counterpartyName: invoice.counterpartyName },
+    }),
     enabled: invoice.kind === "SALE" && hasPartyIdentity,
   });
   const [drafts, setDrafts] = useState<Record<string, string>>({});

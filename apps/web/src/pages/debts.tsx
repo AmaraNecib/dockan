@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
+import { partyBalanceInput } from "../lib/party-cache-key";
 import { tError } from "../lib/i18n";
 import { formatDate } from "../lib/dates";
 import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
@@ -51,11 +52,22 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
   // Per-row query gated on expansion: a freshly opened row shows its own
   // loading skeleton (never another party's cached invoices), while
   // re-opening the same row is served from the query cache instantly.
+  // #323 — one party, one cache identity. The drill-down reads the party under
+  // the canonical key (the id when the shop knows it, the trimmed typed name
+  // otherwise), the same key the invoice screen's customer tab reads and every
+  // money write invalidates. A party with no identity at all is refused below.
+  const balanceInput = partyBalanceInput({
+    kind: row.kind,
+    counterpartyId: row.counterpartyId,
+    counterpartyName: row.counterpartyName,
+  });
   const invoices = useQuery({
     ...orpc.debtsByParty.queryOptions({
-      input: { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
+      // the unidentified party's own values keep the key well-formed; the query
+      // is disabled, so nothing is ever sent under it
+      input: balanceInput ?? { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
     }),
-    enabled: expanded,
+    enabled: expanded && balanceInput !== null,
   });
   // supplier account movements behind the net balance (issue 161)
   const account = useQuery({
@@ -82,7 +94,12 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       {expanded && (
         <div id={`${groupLabel}-${partyId(signature)}-invoices`} className="border-t bg-accent px-4 py-3">
           <h3 className="text-sm font-semibold text-muted-foreground">{t("debtsInvoicesTitle")}</h3>
-          {invoices.isPending ? (
+          {balanceInput === null ? (
+            // #323 — no id and no usable name: there is no key to read this party
+            // under, so the read is refused and the owner is told the one thing
+            // that fixes it.
+            <p className="mt-2 text-sm text-destructive" role="alert" data-testid="debts-party-unidentified">{t("debtsPartyUnidentified")}</p>
+          ) : invoices.isPending ? (
             <div className="mt-2 grid gap-2">
               <Skeleton className="h-6 w-full" />
               <Skeleton className="h-6 w-full" />

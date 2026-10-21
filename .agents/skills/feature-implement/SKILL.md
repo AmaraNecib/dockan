@@ -294,7 +294,7 @@ gate. The deep pass is only the audit that the habit happened.
 - At most five candidates; each is one sentence plus a deletion-test verdict.
 - The HTML report goes to the OS temp dir and its path goes in the PR comment. Never paste it back
   into the conversation.
-- Fold the findings once. Do not re-run the review after the fold — the lenses check the fold.
+- Fold the findings once. The lenses check the fold, and a second pass is spent only when the fold changed code — the same budget `docs/engineering-workflow.md` states.
 - No seam moved means no report: `architecture: no seam moved` is the whole output.
 
 **A measured run (PR #291).** Five candidates: two re-derivations the code-review lens had already

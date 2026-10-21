@@ -45,6 +45,7 @@ export default defineConfig({
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
     "typescript/no-non-null-assertion": "error",
+    "no-extra-boolean-cast": "error",
   },
   // `typescript/no-non-null-assertion` is ON, and every file that still carries one
   // is listed here with the rule off. The list is the progress bar: clean a file,

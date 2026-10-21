@@ -29,9 +29,12 @@ export interface DiscardNavigationGuardOptions {
  * reload) asks the same question, and a link the owner opens in a new tab
  * leaves this tab's cart alone because this tab never navigates.
  *
- * The dirty rule is the caller's, not the hook's: the sale screen counts a
- * typed customer and a typed discount as work, the purchase screen counts the
- * cart's lines. Sharing the rule would silently drop one screen's fields.
+ * The dirty rule is the caller's, not the hook's: the sale screen counts a typed
+ * customer and a typed discount as work, the purchase screen counts the cart's
+ * lines AND a typed supplier, note, payment amount, quick-add field or half-made
+ * line. Each screen passes a predicate it owns (`purchaseCartDirty`, sale's
+ * `draftDirty`); sharing the predicate would silently drop one screen's fields,
+ * which is what a review round measured when the two were wired together.
  *
  * The blocker answers with the LIVE dirty flag, never with the value captured
  * when its callback was created: the callback is registered once and outlives

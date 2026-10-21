@@ -10,6 +10,7 @@ import { createBrowserHistory, createMemoryHistory, createRouter, RouterProvider
 
 import { ThemeProvider } from "../lib/theme";
 import { chooseOption } from "../tests/select-driver";
+import { mustFind } from "../tests/find";
 
 /**
  * #321 — a purchase cart must not vanish on a navigation click.
@@ -112,7 +113,9 @@ let mounted: MountedApp[] = [];
  * Not style: `scripts/red-on-parent.ts` reads the junit failure type, and only
  * `AssertionError` counts as a red on the behaviour this change adds. A body
  * `throw` is reported as `Error`, which the gate reads as «the test could not be
- * evaluated» and judges worthless. Do not turn these back into throws.
+ * evaluated» and judges worthless. So the ASSERTIONS in a test body must be
+ * `expect(...)`; a setup helper may still throw (`mustFind`, `typeInto`) because a
+ * setup failure is not a verdict on the behaviour either way.
  */
 function typeInto(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -192,15 +195,6 @@ async function mountPurchaseRouteOnBrowserHistory(): Promise<MountedApp> {
 }
 
 /** quick-add one purchase line, the way the owner does it at the counter */
-/** an element the test needs, or a failure that names the selector it could not
- * find — never a bare non-null assertion, which would report a null deref far
- * from the line that actually broke */
-function mustFind<T extends Element>(root: ParentNode, selector: string): T {
-  const found = root.querySelector<T>(selector);
-  if (found === null) throw new Error(`the test could not find ${selector}`);
-  return found;
-}
-
 async function addQuickLine(container: HTMLElement, qty: string, cost: string) {
   await act(async () => {
     container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();

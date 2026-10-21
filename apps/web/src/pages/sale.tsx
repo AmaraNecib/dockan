@@ -13,6 +13,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { cn } from "@/lib/utils";
+import { anyTyped } from "@/lib/invoice-draft";
 import { draftBlank, parseGroupedAmount, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import {
   draftTotals,
@@ -203,17 +204,14 @@ export function SalePage() {
   // a value decision — a pasted bidi mark IS work the discard warning must keep.
   // `saleDebt` below reads the payment draft through `draftBlank` because there
   // the mark means «nothing paid»; the two deliberately differ here.
-  const quickDraft =
-    quick.fields.name.trim() !== "" ||
-    quick.fields.barcode.trim() !== "" ||
-    quick.fields.cost.trim() !== "" ||
-    quick.fields.sell.trim() !== "";
+  // The question («is any of this work?») is `anyTyped`, the same one the purchase
+  // screen asks; the field LIST is this screen's, because a sale's quick bag has
+  // cost/sell where a purchase's has a category, a threshold and a unit cost.
+  const quickDraft = anyTyped([quick.fields.name, quick.fields.barcode, quick.fields.cost, quick.fields.sell]);
   const draftDirty =
     lines.length > 0 ||
-    customer.name.trim() !== "" ||
+    anyTyped([customer.name, discountValue, payment.amount]) ||
     discountType !== "" ||
-    discountValue.trim() !== "" ||
-    payment.amount.trim() !== "" ||
     quickDraft;
   const savePending = createInvoice.isPending || createItem.isPending || createWithStock.isPending;
 

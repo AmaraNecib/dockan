@@ -87,13 +87,7 @@ const CLASSIFIED = new Map<string, Classification>([
   // classification there): a mark-only paste is work the prompt must keep.
   ["pages/purchase.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/purchase.tsx::savedInvoice.counterpartyName.trim() === \"\"", { verdict: "raw", reason: TEXT }],
-  ["pages/sale.tsx::quick.fields.name.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
-  ["pages/sale.tsx::quick.fields.barcode.trim() !== \"\"", { verdict: "raw", reason: BARCODE }],
-  ["pages/sale.tsx::quick.fields.cost.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
-  ["pages/sale.tsx::quick.fields.sell.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
   ["pages/sale.tsx::customer.name.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
-  ["pages/sale.tsx::discountValue.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
-  ["pages/sale.tsx::payment.amount.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
   ["pages/sale.tsx::savedSale.counterpartyName.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::customer.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::fields.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],

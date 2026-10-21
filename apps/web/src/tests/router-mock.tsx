@@ -51,3 +51,9 @@ export function routerMock(params: Record<string, string> = {}) {
     }),
   };
 }
+
+// #321 — why `apps/web` runs `bun test --isolate`: `mock.module` is process-global,
+// so a leaked router mock swaps `useBlocker` for an inert stub and every guard test
+// in the same process passes for the wrong reason. The flag isolates per FILE, not
+// per test, so a leak inside one file (a history the back-button test pushes onto)
+// is still shared by the tests after it in that file — keep per-file state honest.

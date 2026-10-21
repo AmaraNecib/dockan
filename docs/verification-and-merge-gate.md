@@ -210,10 +210,10 @@ model, the harness and the thinking effort that produced it — and so an effort
 tested against real outcomes instead of a feeling:
 
 ```
-Model: opencode-go/deepseek-v4.1-flash
+Model: zen-proxy/deepseek-v4.1-flash-free
 Thinking: high
-Harness: t3-code
-Agent: crew-lane/269-round7
+Harness: pi
+Agent: delegate/269-round7
 ```
 
 Rules:

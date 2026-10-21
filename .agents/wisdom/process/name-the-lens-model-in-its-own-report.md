@@ -12,19 +12,21 @@ Every lens report carries these two lines right under its title, and nothing sit
 
 ```
 Reviewer model: zen-proxy/minimax-m3.1-flash-free
-Author model:   opencode-go/deepseek-v4.1-flash
+Author model:   zen-proxy/deepseek-v4.1-flash-free
 ```
 
-Those IDs are the pair in force from 2026-10-19, when OpenCode's free tier began refusing this box's IP.
-For part of that day the owner required a single model for both roles, which removed the separation this
-entry exists to protect; the owner then opened a free second model, so the split is back. The lens runs
-`zen-proxy/minimax-m3.1-flash-free`: the same MiniMax model is also advertised as
-`opencode-go/minimax-m3.1-flash-free`, and that route answered a CLI probe but returned `404 status code
-(no body)` from a real sub-agent run, so the `zen-proxy` route is the one to use. `zen-proxy/beam-free` is
-the next free reviewer, free lenses take no parallelism slot, and `opencode-go/deepseek-v4.1-flash` is
-the fallback when a free route fails. The rule is the lines,
-not those strings: name the models that actually ran. If a round ever runs reviewer and author on one
-model, say so in the report rather than let a reader assume a separation that was not there.
+Those IDs are the pair in force now. They were first named on 2026-10-19, when OpenCode's free tier began refusing
+this box's IP: the reviewer has always been `zen-proxy/minimax-m3.1-flash-free` — the same MiniMax model is also
+advertised as `opencode-go/minimax-m3.1-flash-free`, and that route answered a CLI probe but returned `404 status code
+(no body)` from a real sub-agent run, so the `zen-proxy` route is the one to use. The author was the paid
+`opencode-go/deepseek-v4.1-flash` until that route left the catalogue, so the author id moved to
+`zen-proxy/deepseek-v4.1-flash-free`. For part of that day the owner required a single model for both roles, which
+removed the separation this entry exists to protect; the owner then opened a free second model, so the split is back.
+`zen-proxy/beam-free` is the next free reviewer, then `zen-proxy/glm-5.3-flash-free` and
+`zen-proxy/mimo-v2.6-flash-free`; free lenses take no parallelism slot. A DeepSeek route is not a reviewer fallback:
+it is the author model. The rule is the lines, not those strings: name the models that actually ran. If a round ever
+runs reviewer and author on one model, say so in the report rather than let a reader assume a separation that was not
+there.
 
 Why it matters past tidiness: the reason the reviewer is a second model is that the author's blind
 spots are not the reviewer's. If the report does not name the reviewer, the gate cannot check that
@@ -45,4 +47,5 @@ Full HD pair under `<PR>/after/hd/`. A capture harness stays local until another
 review for a web fix and earned the P2 above. The media is the evidence; the tooling is a convenience
 that has to earn its place, and the default is that it does not.
 
-**Seen in:** #282 (code-review header, Greptile P2), #285 (`capture.mjs:157`, Greptile P2).
+**Seen in:** #282 (code-review header, Greptile P2), #285 (`capture.mjs:157`, Greptile P2), #335 (the author id in the
+template and in the two other rule files went stale when the paid route left the catalogue, Greptile P2).

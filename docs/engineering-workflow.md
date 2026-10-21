@@ -93,13 +93,14 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   separate sub-agents. A child that reports "I ran the gates in-lane" has not run
   them — re-run the lenses where the tool exists, and record the disclosure.
 - **The lenses run on a different model than the author (owner decision, 2026-10-19).** Author
-  lanes run `opencode-go/deepseek-v4.1-flash`; `debate`, `test-audit` and `code-review` run
+  lanes run `zen-proxy/deepseek-v4.1-flash-free`; `debate`, `test-audit` and `code-review` run
   `zen-proxy/minimax-m3.1-flash-free`. A model that reviews its own diff shares the blind spots the lens exists to
   catch, so the reviewer is never the author. For one stretch on 2026-10-19 the owner required a
-  single model for both roles; that is no longer the rule, and these two are the pair.
+  single model for both roles; that is no longer the rule, and these two are the pair. The author
+  route was the paid `opencode-go/deepseek-v4.1-flash` until it left the catalogue.
   `zen-proxy/beam-free` is the next free reviewer when MiniMax is down or a round wants a third
-  opinion. Free lenses carry no parallelism cap; `opencode-go/deepseek-v4.1-flash` is the fallback
-  when a free route fails.
+  opinion, then `zen-proxy/glm-5.3-flash-free` and `zen-proxy/mimo-v2.6-flash-free`. Free lenses
+  carry no parallelism cap; a DeepSeek route is not a lens fallback, because it is the author model.
 - **All three lenses run at Standard and above.** `debate` is no longer reserved
   for High-assurance (owner decision, 2026-10-18); the tier decides how much
   scrutiny a failure mode earns, not whether the debate happens.

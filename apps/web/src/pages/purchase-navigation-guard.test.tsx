@@ -10,7 +10,6 @@ import { createBrowserHistory, createMemoryHistory, createRouter, RouterProvider
 
 import { ThemeProvider } from "../lib/theme";
 import { chooseOption } from "../tests/select-driver";
-import { mustFind } from "../tests/find";
 
 /**
  * #321 — a purchase cart must not vanish on a navigation click.
@@ -192,6 +191,23 @@ async function mountPurchaseRouteOnBrowserHistory(): Promise<MountedApp> {
   history.push("/purchase");
   await Promise.resolve();
   return mountRouter(createRouter({ routeTree, history }));
+}
+
+/**
+ * An element the test needs, or a failure that names the selector it could not
+ * find — never a bare non-null assertion, which reports the failure far from the
+ * line that broke.
+ *
+ * LOCAL on purpose, and not shared with `apps/web/src/tests/`: this file is
+ * *gated* by `scripts/red-on-parent.ts`, which copies it alone into a checkout of
+ * the parent commit. Any module the change adds is absent there, so importing a
+ * new helper turns the whole file into a load failure and the gate reads that as
+ * WRONG-REASON RED. A gated test file may only use what the parent already has.
+ */
+function mustFind<T extends Element = HTMLElement>(root: ParentNode, selector: string): T {
+  const found = root.querySelector<T>(selector);
+  if (found === null) throw new Error(`the test could not find ${selector}`);
+  return found;
 }
 
 /** quick-add one purchase line, the way the owner does it at the counter */

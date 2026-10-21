@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { hasRef, planAffected, turboArgs } from "./test-affected";
+import {
+  BASE_REF,
+  enumeratePackages,
+  hasRef,
+  planAffected,
+  turboArgs,
+  type Step,
+} from "./test-affected";
 
 // `test:affected` narrows the unit suite to the packages a branch can move.
 // The filter string is pinned exactly, because the three turbo spellings mean
@@ -17,6 +25,29 @@ import { hasRef, planAffected, turboArgs } from "./test-affected";
 // git about the branch under review would pass or fail depending on what the
 // lane happened to be editing. `planAffected` takes the reader for that reason.
 const ROOT = join(import.meta.dir, "..");
+
+/**
+ * Every workspace package this repo declares, read from disk.
+ *
+ * Derived rather than listed: a hardcoded list stops noticing a package the
+ * workspace gained, and the claim under test is "every package", not "these
+ * five".
+ */
+function workspaceNames(): string[] {
+  const names: string[] = [];
+  for (const group of ["apps", "packages"]) {
+    for (const entry of readdirSync(join(ROOT, group), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const manifest = join(ROOT, group, entry.name, "package.json");
+      if (!existsSync(manifest)) continue;
+      // SAFETY: a workspace manifest is a file this repo owns, and only its
+      // `name` is read; a manifest without one is skipped rather than guessed at.
+      const parsed = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string };
+      if (parsed.name !== undefined) names.push(parsed.name);
+    }
+  }
+  return names.sort();
+}
 
 const inScope = () => ["apps/web/src/pages/backups.tsx", "packages/contracts/src/items.ts"];
 
@@ -140,5 +171,124 @@ describe("test:affected ref probe", () => {
 
   test("an unknown repository path resolves nothing instead of throwing", () => {
     expect(hasRef("origin/develop", join(ROOT, "no-such-directory"))).toBe(false);
+  });
+});
+
+describe("the impacted filter, live against turbo", () => {
+  // The string pin above is the decision as the author measured it. What it
+  // cannot see is turbo changing what `...` MEANS across a version bump: the
+  // string stays green while the selected package set changes. `--dry-run=json`
+  // enumerates that set without running a suite (~0.6 s), so the behaviour is
+  // asserted here instead of being trusted.
+  //
+  // The selector used for the dependents check is package-scoped rather than
+  // `[origin/develop]`, and that is deliberate: this repo's branches usually
+  // touch no workspace package, so `...[origin/develop]` selects only `//` and a
+  // test demanding a dependent there would be green only on PRs that touch a
+  // package — content-dependent, which is the flake this suite exists to avoid.
+  // `...@dokan/contracts` asks turbo the same question with an answer that does
+  // not depend on the branch.
+  const ALL = workspaceNames();
+
+  function selected(step: Step): string[] {
+    const result = enumeratePackages(step, ROOT);
+    if (result.refusal !== null) throw new Error(result.refusal);
+    return result.packages;
+  }
+
+  test("the ref the filter names resolves here, or this test says which ref is missing", () => {
+    // Not a skip: a shallow clone without the remote-tracking ref would otherwise
+    // pass this suite while asserting nothing, and the fix is `git fetch origin`.
+    if (!hasRef(BASE_REF, ROOT)) {
+      throw new Error(
+        `${BASE_REF} does not resolve in ${ROOT}, so turbo cannot enumerate anything for it — run \`git fetch origin\` and re-run. CI's checks job already fetches with depth 0.`,
+      );
+    }
+    expect(hasRef(BASE_REF, ROOT)).toBe(true);
+  });
+
+  test("`...` before a selector selects the package and the packages that depend on it", () => {
+    const packages = selected([
+      "turbo",
+      "run",
+      "test",
+      "--concurrency=2",
+      "--filter=...@dokan/contracts",
+    ]);
+    expect(packages).toContain("@dokan/contracts");
+    // A dependent the filter never named: this is what `...` buys.
+    expect(packages).toContain("@dokan/api");
+    // And it is a narrowing, not "everything": if a version bump made `...` a
+    // no-op this would be the whole workspace and the assertion above would still
+    // pass.
+    expect(packages.length).toBeLessThan(ALL.length);
+  });
+
+  test("`...` after a selector selects its dependencies, so the two sides stay distinct", () => {
+    // The other direction. turbo 2.10.11 measured: `...foo` is foo + dependents,
+    // `foo...` is foo + dependencies. A bump that swapped them breaks exactly one
+    // of these two tests, which is the point of asserting both.
+    const packages = selected([
+      "turbo",
+      "run",
+      "test",
+      "--concurrency=2",
+      "--filter=@dokan/contracts...",
+    ]);
+    expect(packages).toEqual(["@dokan/contracts"]);
+  });
+
+  test("the unfiltered argv from turboArgs selects every workspace package", () => {
+    // A root file drops the filter, so the argv is turbo's own: every package,
+    // and nothing silently left out of the run the fallback promises.
+    const plan = planAffected(BASE_REF, ROOT, () => ["package.json"]);
+    expect(plan.scope).toBe("full");
+    expect(selected(plan.steps[0] ?? []).sort()).toEqual([...ALL].sort());
+  });
+
+  test("the filtered argv from a workspace diff selects only packages this repo has", () => {
+    const plan = planAffected(BASE_REF, ROOT, () => ["apps/web/src/pages/sale.tsx"]);
+    expect(plan.scope).toBe("filtered");
+    const packages = selected(plan.steps[0] ?? []);
+    // Whatever the branch's own diff is, `...[base]` can only narrow: `//` is
+    // turbo's root package and every other entry must be a real workspace.
+    for (const name of packages) {
+      if (name === "//") continue;
+      expect({ name, known: ALL.includes(name) }).toEqual({ name, known: true });
+    }
+  });
+
+  test("a dry run that prints no JSON is a refusal naming the argv, not an empty selection", () => {
+    const result = enumeratePackages(["turbo", "run", "test"], ROOT, () => ({
+      status: 0,
+      stdout: "not json at all",
+      stderr: "turbo exploded",
+      error: "",
+    }));
+    expect(result.packages).toEqual([]);
+    expect(result.refusal).toContain("turbo run test");
+    expect(result.refusal).toContain("turbo exploded");
+  });
+
+  test("a dry run that cannot start is a refusal, not an empty selection", () => {
+    const result = enumeratePackages(["turbo", "run", "test"], ROOT, () => ({
+      status: null,
+      stdout: "",
+      stderr: "",
+      error: "spawn ENOTDIR",
+    }));
+    expect(result.packages).toEqual([]);
+    expect(result.refusal).toContain("spawn ENOTDIR");
+  });
+
+  test("a dry run JSON without a packages array is refused, not read as nothing selected", () => {
+    const result = enumeratePackages(["turbo", "run", "test"], ROOT, () => ({
+      status: 0,
+      stdout: '• turbo 2.10.11\n{ "id": "x", "tasks": [] }',
+      stderr: "",
+      error: "",
+    }));
+    expect(result.packages).toEqual([]);
+    expect(result.refusal).toContain("packages");
   });
 });

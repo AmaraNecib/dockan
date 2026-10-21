@@ -146,6 +146,96 @@ export function planAffected(base: string, cwd: string, readChanged: DiffReader 
   return { steps: [[...turbo, ...decision.args], scripts], scope: decision.scope, note: decision.reason };
 }
 
+/**
+ * Turbo's answer to "which packages would this argv select", never "run them".
+ *
+ * The injected runner is the seam the live test uses: the test does not spawn
+ * turbo itself, it asks this function, so the argv under test and the argv that
+ * runs are the same one. `--dry-run=json` costs about half a second and runs no
+ * suite, which is what makes a behaviour assertion affordable at all — the string
+ * pin in the tests cannot see turbo changing what `...` MEANS across a bump.
+ */
+export type TurboOutput = { status: number | null; stdout: string; stderr: string; error: string };
+export type TurboRunner = (args: string[], cwd: string) => TurboOutput;
+
+export type TurboSelection = { packages: string[]; refusal: string | null };
+
+/** The part of turbo's dry-run JSON this file reads. */
+type DryRunJson = { packages?: string[] };
+
+/** The same argv a step would run, asking turbo to enumerate instead of execute. */
+export function dryRunArgs(step: Step): string[] {
+  // `step[0]` is the program name; the rest is what turbo receives.
+  return [...step.slice(1), "--dry-run=json"];
+}
+
+function spawnTurbo(args: string[], cwd: string): TurboOutput {
+  const child = spawnSync(process.execPath, [TURBO_BIN, ...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return {
+    status: child.status,
+    stdout: child.stdout ?? "",
+    stderr: child.stderr ?? "",
+    error: child.error === undefined ? "" : child.error.message,
+  };
+}
+
+/**
+ * The packages turbo selects for one step's argv.
+ *
+ * A refusal is returned rather than an empty list, for the same reason
+ * `changedSince` returns `null` instead of `[]`: an empty selection is a claim
+ * that turbo would run nothing, and a failed dry run is not evidence of that. The
+ * report names the argv so a reader can reproduce it by hand.
+ */
+export function enumeratePackages(
+  step: Step,
+  cwd: string,
+  run: TurboRunner = spawnTurbo,
+): TurboSelection {
+  const args = dryRunArgs(step);
+  // The step, not the argv: a reader reproduces this by running what the plan
+  // prints, and `--dry-run=json` is the only thing this added.
+  const shown = step.join(" ");
+  const result = run(args, cwd);
+  if (result.error.length > 0) {
+    return { packages: [], refusal: `turbo did not start for \`${shown}\`: ${result.error}` };
+  }
+  if (result.status !== 0) {
+    const said = (result.stderr.trim() || result.stdout.trim()).slice(0, 300);
+    return {
+      packages: [],
+      refusal: `turbo's dry run exited ${result.status ?? "with no status"} for \`${shown}\`${said.length > 0 ? `: ${said}` : ""}`,
+    };
+  }
+  // turbo prints its version banner before the JSON, so the object is located
+  // rather than assumed to start at byte 0.
+  const start = result.stdout.indexOf("{");
+  let parsed: DryRunJson;
+  try {
+    // SAFETY: turbo's `--dry-run=json` prints this shape, and the check below
+    // refuses a payload without a package list rather than reading it as "nothing
+    // selected" — the difference between a gate that ran and one that did not.
+    parsed = JSON.parse(start === -1 ? "" : result.stdout.slice(start)) as DryRunJson;
+  } catch {
+    const said = (result.stderr.trim() || result.stdout.trim()).slice(0, 300);
+    return {
+      packages: [],
+      refusal: `turbo's dry run printed JSON that does not parse for \`${shown}\`${said.length > 0 ? `: ${said}` : ""}`,
+    };
+  }
+  if (!Array.isArray(parsed.packages)) {
+    return {
+      packages: [],
+      refusal: `turbo's dry run printed no packages list for \`${shown}\`${result.stderr.trim().length > 0 ? `: ${result.stderr.trim().slice(0, 300)}` : ""}`,
+    };
+  }
+  return { packages: parsed.packages, refusal: null };
+}
+
 function runStep(step: Step, cwd: string): number {
   const [program = "", ...args] = step;
   // Both steps run under this bun — the one this script is already executing —

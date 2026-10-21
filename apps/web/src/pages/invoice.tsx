@@ -400,6 +400,11 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
     counterpartyName: invoice.counterpartyName,
   });
   const hasPartyIdentity = partyBalance !== null;
+  // a SALE whose party has a name that the read cannot express: not a walk-in
+  // (there is a tab), so the refund split must stay unknown rather than default
+  // to cash
+  const partyNameUnaddressable =
+    invoice.kind === "SALE" && !hasPartyIdentity && (invoice.counterpartyName?.trim() ?? "") !== "";
   const partyDebtQuery = useQuery({
     ...orpc.debtsByParty.queryOptions({
       // the unidentified party's own values keep the key well-formed; the query
@@ -524,7 +529,15 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
     ? partyDebtQuery.data === undefined
       ? null
       : Math.max(invoice.remainingAmount, partyDebtQuery.data.items.reduce((sum, row) => sum + row.remainingAmount, 0))
-    : invoice.remainingAmount;
+    : // #323 review — a party the wire cannot address (a stored name padded with a
+      // character sqlite's TRIM does not strip) still HAS a tab; it just cannot be
+      // read from here. Falling back to the invoice's own remaining would promise
+      // cash for a refund the server will offset against that tab, so the split is
+      // left UNKNOWN instead — the same state the panel already shows while the
+      // read is in flight, and it blocks the save rather than guessing.
+      partyNameUnaddressable
+        ? null
+        : invoice.remainingAmount;
   const settlementDefault = returnSettlementDefault({ returnValue: valueTotal, invoiceDebt: invoice.remainingAmount, partyDebt });
   // the numbers the SERVER derives while the owner has not touched the control
   // (an untouched form sends no cashPaidOut, so the server applies this same

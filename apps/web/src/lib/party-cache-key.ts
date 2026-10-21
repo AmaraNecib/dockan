@@ -47,8 +47,8 @@ export function partyBalanceInput(identity: PartyBalanceIdentity): PartyBalanceI
   const raw = identity.counterpartyName ?? "";
   const name = raw.trim();
   if (name === "") return null;
-  // #323 review — a name the trim CHANGED is not addressable, so it is refused
-  // rather than looked up.
+  // #323 review — a name that JavaScript's trim changes but sqlite's TRIM() does
+  // not is unaddressable, so it is refused rather than looked up.
   //
   // The wire contract trims with JavaScript semantics
   // (`packages/contracts/src/core.ts` `counterpartyName: z.string().trim()`),
@@ -56,16 +56,16 @@ export function partyBalanceInput(identity: PartyBalanceIdentity): PartyBalanceI
   // counterparty_name)` and `debtsByParty` matches with sqlite's `TRIM()`, which
   // strips U+0020 only. A stored name padded with anything JavaScript strips and
   // sqlite does not (NBSP, U+3000, tab, U+FEFF) therefore cannot be asked for at
-  // all: the request leaves as the trimmed name, the store matches the UNPADDED
-  // party, and the padded row's drill-down draws another party's unpaid invoices
-  // under its own label. One party's money under another party's name is worse
-  // than a refusal, and refusing is the only honest answer a client has, because
-  // no client-side input can express the padded query.
+  // all: the request leaves trimmed, the store answers with the UNPADDED party,
+  // and the padded row's drill-down draws another party's invoices under its own
+  // label. One party's money under another party's name is worse than a refusal.
   //
-  // The repair belongs on the server — one identity rule, so the GROUP BY and the
-  // WHERE trim the same way — and is filed as its own issue. This branch stops the
-  // mis-attribution without pretending to fix it.
-  if (name !== raw) return null;
+  // Padding with ORDINARY SPACES is different and must stay readable: sqlite's
+  // TRIM() strips exactly those, so the store answers the query correctly. The
+  // two rows (padded and not) share one key as a result, which is what the server
+  // itself says — its WHERE treats them as the same typed party.
+  const spaceTrimmed = raw.replace(/^ +| +$/g, "");
+  if (name !== spaceTrimmed) return null;
   return { kind: identity.kind, counterpartyId: null, counterpartyName: name };
 }
 

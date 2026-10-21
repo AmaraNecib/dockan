@@ -36,6 +36,13 @@ const ITEM_ID = "00000000-0000-4000-8000-0000000000f5";
 
 /** the customer's open invoices — the tab `debtsByParty` returns */
 let openInvoices: Array<{ id: string; remainingAmount: number }> = [];
+/**
+ * Every party-balance READ the screens actually issued, in order. The no-read
+ * test needs reads, not cache keys: a disabled query keeps an entry under a key
+ * whose name it was given, so inspecting keys cannot tell a fetch from an idle
+ * entry. Cleared by `renderScreens`.
+ */
+let partyReads: Array<{ counterpartyId: string | null; counterpartyName: string | null }> = [];
 /** the debts screen's rows */
 let owedToUs: DebtSummary[] = [];
 let weOwe: DebtSummary[] = [];
@@ -59,6 +66,7 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ({
         queryKey: ["debtsByParty", input],
         queryFn: async () => {
+          partyReads.push({ counterpartyId: input.counterpartyId, counterpartyName: input.counterpartyName });
           const items = openInvoices
             .filter((row) => row.remainingAmount > 0)
             .map((row) => ({ remainingAmount: row.remainingAmount }));
@@ -205,6 +213,7 @@ afterEach(() => {
 /** mounts the given screens on ONE query cache, the way two open tabs share it */
 function renderScreens(children: ReactNode): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  partyReads = [];
   queryClient = client;
   root = createRoot(host);
   act(() => {
@@ -361,7 +370,7 @@ describe("one party, one cache identity (#323)", () => {
   it("refuses a party that has no id and no usable name, and reads nothing under a nameless key", async () => {
     owedToUs = [summary({ counterpartyId: null, counterpartyName: "   " })];
     openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
-    const client = renderScreens(<DebtsPage />);
+    renderScreens(<DebtsPage />);
     await flushAsync();
 
     await act(async () => {
@@ -372,17 +381,54 @@ describe("one party, one cache identity (#323)", () => {
     expect(host.querySelector('[data-testid="debts-party-unidentified"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="debts-invoices"]')).toBeNull();
     // and no read was ever issued: the nameless key is the key of every other
-    // nameless party, so a fetch under it would hand this row someone else's money
-    const nameless = client
-      .getQueryCache()
-      .findAll({ queryKey: ["debtsByParty"] })
-      .filter((query) => {
-        // SAFETY: the mocked key is ["debtsByParty", input]; the second element is
-        // the party's identity (or undefined for a key that carries none)
-        const input = query.queryKey[1] as { counterpartyId: string | null; counterpartyName: string | null } | undefined;
-        return input !== undefined && input.counterpartyId === null && input.counterpartyName === null;
-      });
-    expect(nameless.every((query) => query.state.fetchStatus === "idle" && query.state.data === undefined)).toBe(true);
+    // nameless party, so a fetch under it would hand this row someone else's money.
+    // Asserting on READS, not on cache keys — a disabled query keeps an entry under
+    // whatever name it was handed, so a key filter proves nothing either way.
+    expect(partyReads).toHaveLength(0);
+  });
+
+  // #323 review (Greptile P1) — ordinary-space padding is NOT the unaddressable
+  // case: sqlite's TRIM() strips exactly those, so the store answers the query
+  // correctly and the party must stay readable. Refusing it turned a readable tab
+  // into an anonymous one, and the anonymous fallback promises cash for a refund
+  // the server offsets.
+  it("keeps a space-padded name readable, because sqlite's TRIM strips it", async () => {
+    owedToUs = [summary({ counterpartyId: null, counterpartyName: "زبون " })];
+    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
+    renderScreens(<DebtsPage />);
+    await flushAsync();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="debts-person"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(host.querySelector('[data-testid="debts-party-unidentified"]')).toBeNull();
+    expect(host.querySelector('[data-testid="debts-invoices"]')).not.toBeNull();
+    // and the read went out under the name the wire can express
+    expect(partyReads).toEqual([{ counterpartyId: null, counterpartyName: "زبون" }]);
+  });
+
+  // #323 review (Greptile P1, the money half) — a name that truly cannot be read
+  // leaves the refund split UNKNOWN. Falling back to the invoice's own remaining
+  // would preview a 900 cash refund on a paid invoice while the server records 900
+  // against the party's other unpaid invoice.
+  it("leaves the refund split unknown, not cash, when the party's name cannot be read", async () => {
+    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
+    renderScreens(
+      <ReturnsPanel
+        invoice={invoiceDetail({ counterpartyId: null, counterpartyName: "زبون ", remainingAmount: 0 })}
+      />,
+    );
+    await flushAsync();
+
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
+
+    expect(host.querySelector('[data-testid="returns-split-unknown"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="returns-cash-now"]')).toBeNull();
+    // nothing was read either: there is no input that could answer for this party
+    expect(partyReads).toHaveLength(0);
   });
 
   // #323 review (debate lens P2) — a stored name the trim CHANGED cannot be asked

@@ -4,6 +4,7 @@ import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 
 import type { Item } from "@dokan/contracts";
 
+import { PURCHASE_QUICK, PURCHASE_QUICK_NOT_WORK } from "./purchase-quick";
 import {
   EMPTY_PAYMENT_PAIR,
   addDraftLine,
@@ -800,7 +801,15 @@ describe("resolvedInitialPaid (the commit-ready payload value)", () => {
 describe("purchaseCartDirty (#321 review round 2)", () => {
   // every field the owner can type or pick, one at a time. The inline `||` chain
   // this replaced missed three of them and the suite stayed green.
-  const emptyQuick = { name: "", barcode: "", categoryId: "", sellPrice: "", threshold: "", qty: "1", unitCost: "" };
+  // Enumerated from the FORM's own empty value, not hand-copied: a field added to
+  // `PurchaseQuickFields` appears here by itself and fails until it is either
+  // counted as work or named in `PURCHASE_QUICK_NOT_WORK`
+  // (#345 review — the hand-copied list was a fourth copy of the enumeration and
+  // could not fail).
+  const emptyQuick = PURCHASE_QUICK.empty();
+  // SAFETY: Object.keys of a typed object literal yields exactly its keys, and the
+  // empty value is built from the same type, so every entry names a real field.
+  const formFields = Object.keys(emptyQuick) as (keyof typeof emptyQuick)[];
   const clean = {
     savedInvoice: false,
     lineCount: 0,
@@ -810,7 +819,7 @@ describe("purchaseCartDirty (#321 review round 2)", () => {
     quick: emptyQuick,
     lineCreate: null,
   };
-  const quickFields = ["name", "barcode", "categoryId", "sellPrice", "threshold", "unitCost"] as const;
+  const quickFields = formFields.filter((field) => !PURCHASE_QUICK_NOT_WORK.includes(field));
 
   it("is clean when nothing was typed on an untouched form", () => {
     expect(purchaseCartDirty(clean)).toBe(false);

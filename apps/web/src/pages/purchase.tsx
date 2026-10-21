@@ -17,8 +17,9 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { draftBlank, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
+import { PURCHASE_QUICK, type PurchaseQuickFields } from "@/lib/purchase-quick";
 import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseCartDirty, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
-import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
+import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
 import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
@@ -51,17 +52,9 @@ const PURCHASE_DRAFT = {
   unitPrice: purchaseUnitPrice,
 };
 
-/** The quick-add field bag; purchase keeps what is typed across a close. */
-type PurchaseQuickFields = { name: string; barcode: string; categoryId: string; sellPrice: string; threshold: string; qty: string; unitCost: string };
-
-const PURCHASE_QUICK = {
-  empty: (): PurchaseQuickFields => ({ name: "", barcode: "", categoryId: "", sellPrice: "", threshold: "", qty: "1", unitCost: "" }),
-  resetOnOpen: false,
-  // the owner stocks several items in one sitting, so a successful create keeps
-  // the destination category. The old handler cleared the item fields and kept
-  // quickCategoryId for the same reason.
-  keepOnCreate: ["categoryId"],
-} satisfies QuickAddSpec<PurchaseQuickFields>;
+// The quick-add field bag lives in `lib/purchase-quick` so the dirty rule's test can
+// enumerate its keys (#345 review): a field that only existed here was invisible to
+// the suite that is supposed to notice it.
 
 /**
  * The line-scoped create form (#257). It asks only for what the line cannot
@@ -425,7 +418,8 @@ export function PurchasePage() {
   // #321 review round 2 — the whole dirty rule lives in `purchaseCartDirty`, so
   // every field can be enumerated in one test: the inline `||` chain this replaced
   // missed a picked category, a typed threshold and a typed quantity, and no test
-  // could see the miss.
+  // could see the miss. The field LIST now lives beside the form's empty value
+  // (`lib/purchase-quick`), so adding a field fails the test instead of shipping.
   const cartDirty = purchaseCartDirty({
     savedInvoice: savedInvoice !== null,
     lineCount: lines.length,
@@ -449,7 +443,6 @@ export function PurchasePage() {
   useEffect(() => {
     if (discardGuard.blocked) setPickerTarget(null);
   }, [discardGuard.blocked]);
-
 
   function submit() {
     setError(null);

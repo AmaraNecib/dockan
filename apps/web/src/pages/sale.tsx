@@ -207,7 +207,14 @@ export function SalePage() {
   // The question («is any of this work?») is `anyTyped`, the same one the purchase
   // screen asks; the field LIST is this screen's, because a sale's quick bag has
   // cost/sell where a purchase's has a category, a threshold and a unit cost.
-  const quickDraft = anyTyped([quick.fields.name, quick.fields.barcode, quick.fields.cost, quick.fields.sell]);
+  //
+  // `stock` is in the list because it is a real input (`sale-quick-stock`) that is
+  // blank until the owner types an opening count — leaving it out loses that count
+  // silently, which is the bug #321 fixed on the purchase screen (#345 review).
+  // `categoryId` is deliberately NOT in the list: it is seeded from the first
+  // category the shop has, so it is never blank and cannot signal work — the same
+  // reason purchase excludes its `qty`.
+  const quickDraft = anyTyped([quick.fields.name, quick.fields.barcode, quick.fields.cost, quick.fields.sell, quick.fields.stock]);
   const draftDirty =
     lines.length > 0 ||
     anyTyped([customer.name, discountValue, payment.amount]) ||

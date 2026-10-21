@@ -273,6 +273,25 @@ describe("sale route reset (header New Sale action)", () => {
     await waitFor(() => document.querySelector('[data-testid="sale-quick-form"]') === null);
   });
 
+  it("treats a typed opening stock as a draft on its own (#345 review)", async () => {
+    // `sale-quick-stock` is a real input and blank until the owner types a count.
+    // It was missing from sale's dirty list, so that count was destroyed by the
+    // header's New Sale — the same loss #321 fixed on the purchase screen, in the
+    // sibling rule this change rewrote.
+    await mountSaleRoute();
+
+    await act(async () => buttonByTestId("sale-quick-add").click());
+    await waitFor(() => document.querySelector('[data-testid="sale-quick-stock"]') !== null);
+    await act(async () => typeInto(inputByTestId("sale-quick-stock"), "7"));
+
+    await act(async () => buttonByTestId("new-sale-button").click());
+    await waitFor(() => document.querySelector('[data-testid="new-sale-discard-confirm"]') !== null);
+    expect(inputByTestId("sale-quick-stock").value).toBe("7");
+
+    await act(async () => buttonByTestId("new-sale-discard-confirm").click());
+    await waitFor(() => document.querySelector('[data-testid="sale-quick-form"]') === null);
+  });
+
   it("keeps an in-progress sale when the sidebar Sale link is used", async () => {
     await mountSaleRoute();
 

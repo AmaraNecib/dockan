@@ -77,6 +77,75 @@ export const MAX_DRAFT_QUANTITY = 1_000_000;
  * share that reader too (#210), so the same typed value resolves in every field.
  * The reader stays digits-only: no grouping separators, exactly as before.
  */
+/**
+ * Does any of these drafts hold work the owner would lose? One rule for both
+ * invoice screens (#321 review round 2): the field LIST belongs to the screen,
+ * the question does not — two hand-rolled `||` chains had already drifted, one
+ * of them missing a category the code itself preserves as work.
+ *
+ * Raw `.trim()` on purpose, the sale screen's rule (#244): this is an unsaved-work
+ * indicator, not a value decision, so a pasted bidi mark counts as work.
+ */
+/** the quick-add form's typed/picked fields (#321 review round 2) */
+export type QuickDraftFields = {
+  name: string;
+  barcode: string;
+  categoryId: string;
+  sellPrice: string;
+  threshold: string;
+  qty: string;
+  unitCost: string;
+};
+
+/** the line-create form's fields, or null when no line is being created */
+export type LineCreateFields = { name: string; categoryId: string; sellPrice: string } | null;
+
+/**
+ * Is there unsaved work on the purchase screen?
+ *
+ * The whole rule in one place so it can be enumerated: every field the owner can
+ * type OR PICK is listed here, and a field added to a form without being added
+ * here is the bug this function exists to make visible. `savedInvoice` bounds it
+ * to the render where the form is on screen — the success card is not a draft,
+ * and the quick-add bag deliberately survives a save (`keepOnCreate`), so counting
+ * it after the invoice landed would ask about text nobody can see.
+ */
+export function purchaseCartDirty(input: {
+  savedInvoice: boolean;
+  lineCount: number;
+  supplierName: string;
+  notes: string;
+  paymentAmount: string;
+  quick: QuickDraftFields;
+  lineCreate: LineCreateFields;
+}): boolean {
+  if (input.savedInvoice) return false;
+  if (input.lineCount > 0) return true;
+  if (anyTyped([input.supplierName, input.notes, input.paymentAmount])) return true;
+  // `qty` is deliberately NOT here: the quick form opens at `qty: "1"`, so it is
+  // never blank and cannot signal work — counting it would make the gate always
+  // dirty and prompt on every visit, which is the failure mode that trains the
+  // owner to click through the prompt that matters. The rest are blank until the
+  // owner types or picks them.
+  if (
+    anyTyped([
+      input.quick.name,
+      input.quick.barcode,
+      input.quick.categoryId,
+      input.quick.sellPrice,
+      input.quick.threshold,
+      input.quick.unitCost,
+    ])
+  ) {
+    return true;
+  }
+  return input.lineCreate !== null && anyTyped([input.lineCreate.name, input.lineCreate.categoryId, input.lineCreate.sellPrice]);
+}
+
+export function anyTyped(drafts: readonly string[]): boolean {
+  return drafts.some((draft) => draft.trim() !== "");
+}
+
 export function parseQuantityDraft(draft: string): number {
   const trimmed = normalizeArabicIndicDigits(draft).trim();
   if (trimmed === "" || !/^\d+$/u.test(trimmed)) return 0;

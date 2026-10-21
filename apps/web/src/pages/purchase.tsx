@@ -17,10 +17,13 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { draftBlank, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
-import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
-import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
+import { PURCHASE_QUICK, type PurchaseQuickFields } from "@/lib/purchase-quick";
+import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseCartDirty, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
+import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
+import { DiscardDraftDialog } from "../components/app/discard-draft-dialog";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -49,17 +52,9 @@ const PURCHASE_DRAFT = {
   unitPrice: purchaseUnitPrice,
 };
 
-/** The quick-add field bag; purchase keeps what is typed across a close. */
-type PurchaseQuickFields = { name: string; barcode: string; categoryId: string; sellPrice: string; threshold: string; qty: string; unitCost: string };
-
-const PURCHASE_QUICK = {
-  empty: (): PurchaseQuickFields => ({ name: "", barcode: "", categoryId: "", sellPrice: "", threshold: "", qty: "1", unitCost: "" }),
-  resetOnOpen: false,
-  // the owner stocks several items in one sitting, so a successful create keeps
-  // the destination category. The old handler cleared the item fields and kept
-  // quickCategoryId for the same reason.
-  keepOnCreate: ["categoryId"],
-} satisfies QuickAddSpec<PurchaseQuickFields>;
+// The quick-add field bag lives in `lib/purchase-quick` so the dirty rule's test can
+// enumerate its keys (#345 review): a field that only existed here was invisible to
+// the suite that is supposed to notice it.
 
 /**
  * The line-scoped create form (#257). It asks only for what the line cannot
@@ -185,6 +180,13 @@ export function PurchasePage() {
 
   const draft = useInvoiceDraft(PURCHASE_DRAFT);
   const { lines } = draft;
+
+  /**
+   * The last control the owner touched inside the form. When the navigation is
+   * refused the caret goes back there, so the owner resumes the line he was
+   * on instead of starting again (WCAG 2.4.3).
+   */
+  const lastFocusRef = useRef<HTMLElement | null>(null);
 
   function requestFocus(kind: FocusRequest["kind"], itemId: string) {
     focusSeqRef.current += 1;
@@ -398,6 +400,50 @@ export function PurchasePage() {
     setError,
   });
 
+  /**
+   * #321 — what a navigation would throw away on this screen. The cart is the
+   * obvious part; a typed supplier, a note, a half-typed quick-add item and an
+   * open line-create form are work too, and they die with the cart without ever
+   * being re-derivable.
+   *
+   * These gates stay raw `.trim()` on purpose, the sale screen's rule (#244):
+   * this is an unsaved-work indicator, not a value decision — a pasted bidi
+   * mark IS work the discard prompt must keep.
+   *
+   * `savedInvoice === null` bounds the gate to the render where the form is on
+   * screen: the success card is not a draft, and the quick-add bag deliberately
+   * survives a save (`keepOnCreate`), so counting it once the invoice landed
+   * would ask about text the owner can no longer see.
+   */
+  // #321 review round 2 — the whole dirty rule lives in `purchaseCartDirty`, so
+  // every field can be enumerated in one test: the inline `||` chain this replaced
+  // missed a picked category, a typed threshold and a typed quantity, and no test
+  // could see the miss. The field LIST now lives beside the form's empty value
+  // (`lib/purchase-quick`), so adding a field fails the test instead of shipping.
+  const cartDirty = purchaseCartDirty({
+    savedInvoice: savedInvoice !== null,
+    lineCount: lines.length,
+    supplierName: supplier.name,
+    notes,
+    paymentAmount: payment.amount,
+    quick: quick.fields,
+    lineCreate: lineDraft,
+  });
+  /**
+   * The guard sits at the router, not at each link, so every way out of the
+   * screen asks the same question: a sidebar link, the header action, the
+   * browser's back button.
+   */
+  const discardGuard = useDiscardNavigationGuard({ dirty: cartDirty, lineCount: lines.length });
+  // #345 review round 4 (Greptile P2) — one dialog at a time. The picker's layer
+  // takes Escape before the question can, so an inner dialog under the question
+  // makes Escape and the backdrop unreachable. Closing it when the question opens
+  // is deterministic; its search text is a lookup, not cart work, and the cart
+  // itself is untouched.
+  useEffect(() => {
+    if (discardGuard.blocked) setPickerTarget(null);
+  }, [discardGuard.blocked]);
+
   function submit() {
     setError(null);
     // `firstCommitError` owns the check order — empty cart → party → per-line
@@ -569,7 +615,16 @@ export function PurchasePage() {
       )}
 
       {!savedInvoice && (
-        <div className="mt-4 grid gap-4" data-testid="purchase-form">
+        <div
+          className="mt-4 grid gap-4"
+          data-testid="purchase-form"
+          // the caret's home while the cart is on screen: the guard sends it
+          // back here when it refuses a navigation (#321)
+          onFocusCapture={(event) => {
+            const target = event.target;
+            lastFocusRef.current = target instanceof HTMLElement ? target : null;
+          }}
+        >
           <div className="grid gap-3 rounded border border-border bg-card p-4">
             <PartyPicker
               role="supplier"
@@ -937,6 +992,32 @@ export function PurchasePage() {
       )}
 
       <ItemPickerDialog open={pickerTarget !== null} onClose={() => setPickerTarget(null)} onSelect={pickItem} />
+
+      {/* The cart guard (#321). It sits outside the form on purpose: the form
+          records the caret's home, and a dialog inside it would overwrite that
+          record with its own button the moment it opens. */}
+      <DiscardDraftDialog
+        open={discardGuard.blocked}
+        onOpenChange={(open) => {
+          // Escape or a backdrop click is the owner refusing: the navigation
+          // is cancelled and the cart stays exactly as it was.
+          if (!open) discardGuard.stay();
+        }}
+        onConfirm={discardGuard.discard}
+        title={t("purchasesDiscardTitle")}
+        // the line count is only honest while there are lines; a typed
+        // supplier with no line yet would otherwise be «0 lines would be lost»
+        description={
+          discardGuard.lineCount > 0
+            ? t("purchasesDiscardDesc", { count: discardGuard.lineCount })
+            : t("purchasesDiscardDescNoCart")
+        }
+        confirmLabel={t("purchasesDiscardConfirm")}
+        cancelLabel={t("purchasesDiscardStay")}
+        confirmTestId="purchase-discard-confirm"
+        cancelTestId="purchase-discard-stay"
+        finalFocus={() => lastFocusRef.current}
+      />
     </section>
   );
 }

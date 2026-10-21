@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "bun test --max-concurrency=2"
+    "test": "bun test --max-concurrency=2 --isolate"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

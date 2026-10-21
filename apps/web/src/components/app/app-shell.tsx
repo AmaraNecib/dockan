@@ -10,15 +10,8 @@ import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { SLOW_REFETCH_MS } from "@/lib/freshness";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPopup,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { AppSidebar, type ShellUser } from "./app-sidebar";
+import { DiscardDraftDialog } from "./discard-draft-dialog";
 import { ThemeToggle } from "./theme-toggle";
 import { ShortcutsHelp } from "./shortcuts-help";
 import { LogoutDialog } from "./logout-dialog";
@@ -100,23 +93,19 @@ interface DiscardSaleDialogProps {
 
 function DiscardSaleDialog({ open, onOpenChange, onConfirm }: DiscardSaleDialogProps) {
   const { t } = useTranslation();
+  // the shared dialog (#321): the sale screen's question and its answers are
+  // unchanged, only the markup moved
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>{t("saleDiscardTitle")}</DialogTitle>
-          <DialogDescription>{t("saleDiscardDesc")}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t("dialogClose")}
-          </Button>
-          <Button variant="destructive" onClick={onConfirm} data-testid="new-sale-discard-confirm">
-            {t("saleDiscardConfirm")}
-          </Button>
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
+    <DiscardDraftDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onConfirm={onConfirm}
+      title={t("saleDiscardTitle")}
+      description={t("saleDiscardDesc")}
+      confirmLabel={t("saleDiscardConfirm")}
+      cancelLabel={t("dialogClose")}
+      confirmTestId="new-sale-discard-confirm"
+    />
   );
 }
 

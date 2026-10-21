@@ -78,18 +78,16 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/items.tsx::barcode.trim() !== \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/items.tsx::name === \"\" [draft.name.trim()]", { verdict: "raw", reason: TEXT }],
   ["pages/items.tsx::thresholdText !== \"\" [draft.threshold.trim()]", { verdict: "draftBlank", reason: "converted (#244): blank → leave the stored threshold alone" }],
+  ["lib/invoice-draft.ts::draft.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
   ["pages/purchase.tsx::supplier.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/purchase.tsx::name === \"\" [current.name.trim()]", { verdict: "raw", reason: TEXT }],
   ["pages/purchase.tsx::notes.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  // #321 — the cart guard counts the quick-add bag and the open line-create form
+  // as draft work, with the sale screen's raw-`.trim()` rule (see the DIRTY
+  // classification there): a mark-only paste is work the prompt must keep.
   ["pages/purchase.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/purchase.tsx::savedInvoice.counterpartyName.trim() === \"\"", { verdict: "raw", reason: TEXT }],
-  ["pages/sale.tsx::quick.fields.name.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
-  ["pages/sale.tsx::quick.fields.barcode.trim() !== \"\"", { verdict: "raw", reason: BARCODE }],
-  ["pages/sale.tsx::quick.fields.cost.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
-  ["pages/sale.tsx::quick.fields.sell.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
   ["pages/sale.tsx::customer.name.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
-  ["pages/sale.tsx::discountValue.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
-  ["pages/sale.tsx::payment.amount.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
   ["pages/sale.tsx::savedSale.counterpartyName.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::customer.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::fields.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],

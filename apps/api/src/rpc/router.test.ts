@@ -13,7 +13,7 @@ import { createAuth, type BetterAuthInstance } from "../auth/auth";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { accounts, users } from "../db/schema";
-import { AppLogger } from "../lib/logger";
+import { AppLogger, localDateTime } from "../lib/logger";
 import { ensureSessionSecret } from "../lib/session-secret";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { createRpcRouter } from "./router";
@@ -3125,6 +3125,78 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
     ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+});
+
+/**
+ * #317 — a supplier account holding a row the rule table cannot sign must reach
+ * the owner as a NAMED refusal. Unmapped it arrived as a generic internal error
+ * (`errorGeneric` in the UI) for a bug whose whole point is naming the broken
+ * account, and the write procedures that fold could return a partial payload.
+ */
+describe("an unsignable supplier balance at the RPC boundary (#317)", () => {
+  /** A direction-less ADJUSTMENT, written the way a migrated database can hold
+   * one (the ALTER path cannot add the fresh DDL's CHECK, which is why the read
+   * is the boundary). Deleted afterwards: the store readers refuse while it
+   * exists. */
+  const insertDirectionlessRow = (supplierId: string): string => {
+    const entryId = crypto.randomUUID();
+    conn.raw.exec("PRAGMA ignore_check_constraints = ON");
+    try {
+      conn.raw
+        .query("INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, dedup_key, occurred_at, created_at) VALUES (?, ?, 'ADJUSTMENT', 700, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)")
+        .run(entryId, supplierId, localDateTime(), localDateTime());
+    } finally {
+      conn.raw.exec("PRAGMA ignore_check_constraints = OFF");
+    }
+    return entryId;
+  };
+
+  it("rejects the read with its own code instead of a generic internal error", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد-غير-موقّع-${Date.now()}` });
+    const entryId = insertDirectionlessRow(supplier.id);
+    try {
+      // SAFETY: oRPC surfaces a server ORPCError as an error with `code`, `message`
+      // and the `data` payload the router attached
+      await expect(client.suppliersGet({ id: supplier.id })).rejects.toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "SUPPLIER_ENTRY_UNSIGNABLE",
+        data: { supplierId: supplier.id, entryId },
+      });
+
+      // the write that folds the account must fail as the same refusal, not
+      // return a partial payload with a number it cannot vouch for
+      await expect(client.suppliersPay({ supplierId: supplier.id, amount: 100, target: { kind: "CREDIT" } })).rejects.toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "SUPPLIER_ENTRY_UNSIGNABLE",
+      });
+
+      // the SAVED diagnostics must name the account. The page tells the owner to
+      // look the movement up, so an id that only ever travelled on the wire is a
+      // sentence with no destination — `app.ts` saves the replacement's stack, and
+      // the replacement has no ids, so the original has to be logged with them.
+      type SavedEntry = { event: string; context?: { supplierId?: string; entryId?: string; supplierEntryKind?: string } };
+      const saved = logger
+        .tail(500)
+        .lines.map((line) => {
+          // SAFETY: the logger writes one JSON object per line, and the fields read
+          // below are optional on `LogContext`, so a missing key is a miss.
+          return JSON.parse(line) as SavedEntry;
+        })
+        // SERVER_ERROR, not the RPC code: a log event has to be a code from the
+        // shared vocabulary (#253), and the refusal's own code is not one. The
+        // ids ride in the context, which is what the owner's diagnostics read.
+        .filter((entry) => entry.event === "SERVER_ERROR" && entry.context?.supplierId === supplier.id);
+      expect(saved.length).toBeGreaterThan(0);
+      expect(saved.some((entry) => entry.context?.supplierId === supplier.id && entry.context?.entryId === entryId)).toBe(true);
+      expect(saved.some((entry) => entry.context?.supplierEntryKind === "ADJUSTMENT")).toBe(true);
+    } finally {
+      conn.raw.query("DELETE FROM supplier_account_entries WHERE id = ?").run(entryId);
+    }
+    // the write's unit rolled back with the refusal: no payment entry landed
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account).toEqual({ balance: 0, entries: [] });
+    await expect(client.suppliersDelete({ id: supplier.id })).resolves.toBeDefined();
   });
 });
 

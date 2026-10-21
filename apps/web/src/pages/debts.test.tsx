@@ -36,6 +36,8 @@ type Invoice = {
 
 let owedToUs: Summary[] = [];
 let weOwe: Summary[] = [];
+/** when set, the whole-page read rejects with this server key (#317) */
+let failingDebts: string | null = null;
 let perParty: Map<string, Invoice[]> = new Map();
 /** when set to a party key, the drill-down for that party rejects */
 let failingParty: string | null = null;
@@ -65,7 +67,10 @@ mock.module("@/lib/rpc", () => ({
     reportsDebts: {
       queryOptions: () => ({
         queryKey: ["reportsDebts"],
-        queryFn: async () => ({ owedToUs, weOwe }),
+        queryFn: async () => {
+          if (failingDebts !== null) throw new Error(failingDebts);
+          return { owedToUs, weOwe };
+        },
       }),
     },
     debtsByParty: {
@@ -137,6 +142,8 @@ async function mountPage(queryClient: QueryClient) {
     groupTotal: (label: string) => container.querySelector<HTMLElement>(`[data-testid='${label}-total']`),
     groupCount: (label: string) => container.querySelector<HTMLElement>(`[data-testid='${label}-count']`),
     alert: () => container.querySelector<HTMLElement>("[role='alert']"),
+    /** the loading placeholders, which must never stand in for a refusal */
+    skeletons: () => container.querySelectorAll("[data-slot='skeleton']"),
     emptyOwed: () => container.querySelector<HTMLElement>("[data-testid='debts-group-owed-empty']"),
     emptyWeOwe: () => container.querySelector<HTMLElement>("[data-testid='debts-group-weowe-empty']"),
     unmount: async () => {
@@ -165,6 +172,7 @@ describe("DebtsPage (ticket 9)", () => {
     weOwe = [];
     perParty = new Map();
     failingParty = null;
+    failingDebts = null;
     supplierAccount = null;
   });
 
@@ -482,6 +490,22 @@ describe("DebtsPage (ticket 9)", () => {
     const theyOweRow = pairOf(1);
     expect(theyOweRow.direction).toContain("نسالوه");
     expect(theyOweRow.amount).toContain("+");
+
+    await ui.unmount();
+  });
+
+  it("renders the refusal instead of loading placeholders when the read is rejected (#317)", async () => {
+    // `!debts.data` is true for a REJECTED query as well, so the old branch order
+    // showed skeletons forever and the sentence the owner needs — which is the
+    // whole reason the refusal is typed — never reached the screen.
+    failingDebts = "SUPPLIER_ENTRY_UNSIGNABLE";
+
+    const ui = await mountPage(queryClient);
+    const refused = await ui.waitFor(() => ui.alert() !== null);
+    expect(refused).toBe(true);
+    expect(ui.skeletons()).toHaveLength(0);
+    expect(ui.alert()?.textContent).toContain("لا يمكن ترجيحها");
+    expect(ui.alert()?.textContent).not.toContain("errorGeneric");
 
     await ui.unmount();
   });

@@ -158,6 +158,9 @@ describe("opening-balance refusals stay translatable (review round 3)", () => {
     "ADJUSTMENT_INVALID_AMOUNT",
     "ADJUSTMENT_NOT_TRANSACTIONAL",
     "INVOICE_NOT_PURCHASE",
+    // #317 — an account holding a row the rule table cannot sign, raised by every
+    // supplier read that folds or aggregates the account
+    "SUPPLIER_ENTRY_UNSIGNABLE",
     "AUTH_REQUIRED",
     "FORBIDDEN",
   ] as const;

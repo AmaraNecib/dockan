@@ -328,8 +328,9 @@ export interface StorePort {
    * #183 — the bulk opening-balance screen's supplier projection: the signed
    * account balance and entry count per supplier, read from
    * `supplier_account_entries` alone (no invoice join). Only suppliers that carry
-   * an entry appear; the caller defaults a missing id to 0/0. Uses the same sign
-   * expression as `listParties`/`supplierBalance`, so the two cannot disagree.
+   * an entry appear; the caller defaults a missing id to 0/0. Uses the same rule
+   * table as `listParties`/`supplierBalance` (#317), so the two cannot disagree;
+   * a balance holding a row the table cannot sign is refused, not guessed.
    */
   listSupplierAccountSummaries(): Promise<SupplierAccountSummary[]>;
   getParty(role: PartyRole, partyId: string): Promise<Party | undefined>;

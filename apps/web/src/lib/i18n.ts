@@ -1079,6 +1079,7 @@ const resources = {
       ADJUSTMENT_LINK_INVALID: "تعذّر ربط التسوية بالفاتورة",
       ADJUSTMENT_NOT_TRANSACTIONAL: "تعذّر حفظ التسوية؛ أعد المحاولة",
       DUPLICATE_ADJUSTMENT: "سبق تسجيل هذه التسوية بنفس السبب والتاريخ",
+      SUPPLIER_ENTRY_UNSIGNABLE: "حركة في حساب مورّد واحد على الأقل لا يمكن ترجيحها، فلا يمكن حساب الرصيد. راجع سجل المورّد وأصلح الحركة التي لا يمكن ترجيحها.",
       DUPLICATE_OPENING_BALANCE_ROW: "هذا المورّد مكرّر في الدفعة بنفس المبلغ والاتجاه",
       OPENING_BALANCE_EXISTS: "لهذا المورّد حركات سابقة؛ أكّد قبل الإضافة",
       OPENING_BALANCE_TARGET_CHANGED: "تغيّرت وجهة الاسم؛ تحقّق من المورّد المذكور حديثاً قبل التأكيد",

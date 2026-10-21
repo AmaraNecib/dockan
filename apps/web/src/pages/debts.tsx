@@ -232,15 +232,18 @@ export function DebtsPage() {
     <section data-testid="debts-page">
       <h1 className="text-xl font-bold">{t("debtsTitle")}</h1>
 
-      {debts.isPending || !debts.data ? (
+      {/* #317 — the refusal comes FIRST: `!debts.data` is also true for a rejected
+          query, so the old order rendered skeletons forever and the owner never saw
+          the sentence that tells them what to fix. */}
+      {debts.isError ? (
+        <p className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
+          {tError(debts.error.message)}
+        </p>
+      ) : debts.isPending || !debts.data ? (
         <div className="mt-4 grid gap-3">
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
         </div>
-      ) : debts.isError ? (
-        <p className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
-          {tError(debts.error.message)}
-        </p>
       ) : (
         <div className="mt-4 grid gap-6">
           <DebtGroup

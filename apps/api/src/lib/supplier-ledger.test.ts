@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { supplierEntryKinds } from "@dokan/contracts";
+
 import {
   adjustmentDedupKey,
   allocateOldestFirst,
@@ -7,10 +9,13 @@ import {
   deriveInvoicePaid,
   hasExplicitIdempotencyKey,
   splitAgainstRemaining,
+  SUPPLIER_ENTRY_KINDS,
+  SUPPLIER_ENTRY_RULES,
   supplierBalance,
   supplierChargeEntryAmount,
   supplierEntrySign,
   supplierReturnSplit,
+  UnsignableSupplierEntryError,
   type AdjustmentDedupInput,
   type AllocatableInvoice,
 } from "./supplier-ledger";
@@ -34,6 +39,119 @@ describe("supplierEntrySign", () => {
   it("refuses to sign an adjustment with no direction rather than guess", () => {
     expect(() => supplierEntrySign("ADJUSTMENT")).toThrow(/direction/);
     expect(() => supplierEntrySign("ADJUSTMENT", null)).toThrow(/direction/);
+  });
+
+  it("refuses a kind the rule table does not define instead of crashing", () => {
+    // no CHECK restricts `kind` to the five values (db/schema.ts constrains only
+    // that an ADJUSTMENT carries a direction), so a row the write seams cannot
+    // produce but the database allows reaches this fold. The SQL reader answers
+    // NULL for it; the TypeScript fold must refuse the same way, not die on an
+    // undefined rule.
+    let caught: UnsignableSupplierEntryError | undefined;
+    try {
+      supplierEntrySign("BOGUS", null, "entry-9", "supplier-3");
+    } catch (error) {
+      if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(UnsignableSupplierEntryError);
+    expect(caught).toMatchObject({ kind: "BOGUS", entryId: "entry-9", supplierId: "supplier-3" });
+    expect(caught?.message).toContain("BOGUS");
+  });
+
+  it("refuses a direction Object.prototype happens to own", () => {
+    // `directions` is an object literal, so `direction in directions` is true for
+    // every inherited name and would hand back a FUNCTION where a sign belongs.
+    for (const direction of ["toString", "constructor", "valueOf", "hasOwnProperty"]) {
+      let caught: UnsignableSupplierEntryError | undefined;
+      try {
+        supplierEntrySign("ADJUSTMENT", direction);
+      } catch (error) {
+        if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+        caught = error;
+      }
+      expect(caught, `${direction} signed instead of refusing`).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(caught).toMatchObject({ kind: "ADJUSTMENT", direction });
+    }
+  });
+});
+
+/**
+ * #317 — the kind-to-sign rule is DATA (SUPPLIER_ENTRY_RULES) and both readers
+ * consume it. These tests pin the table itself: one case per kind, so a new kind
+ * cannot arrive without a sign, and the direction-required kind fails loudly.
+ */
+describe("SUPPLIER_ENTRY_RULES — one table decides every kind's sign (#317)", () => {
+  it("holds every kind exactly once", () => {
+    expect([...SUPPLIER_ENTRY_KINDS].sort()).toEqual(["ADJUSTMENT", "PAYMENT", "PURCHASE", "REFUND", "RETURN"]);
+  });
+
+  it("is pinned to the contracts kind list, so a new kind names its own omission", () => {
+    // The canonical list feeds the DB enum, the zod schema and the port. Adding a
+    // kind there and forgetting this table used to surface as a cryptic widening
+    // error where the wider type met the narrower one; the diff below names the
+    // kind instead.
+    const missingFromRules = supplierEntryKinds.filter((kind) => !SUPPLIER_ENTRY_KINDS.includes(kind));
+    const missingFromContract = SUPPLIER_ENTRY_KINDS.filter((kind) => !supplierEntryKinds.includes(kind));
+    expect({ missingFromRules, missingFromContract }).toEqual({ missingFromRules: [], missingFromContract: [] });
+  });
+
+  // The expected sign is the SPEC (#260), written out here rather than read back
+  // from the table: a test that recomputes the table proves nothing.
+  const fixed: ReadonlyArray<["PURCHASE" | "REFUND" | "PAYMENT" | "RETURN", 1 | -1, string]> = [
+    ["PURCHASE", -1, "a purchase is a charge: the shop owes the supplier"],
+    ["REFUND", -1, "a refund is money leaving the register: it restores the debt"],
+    ["PAYMENT", 1, "a payment reduces what the shop owes"],
+    ["RETURN", 1, "a return reduces what the shop owes"],
+  ];
+
+  for (const [kind, sign, why] of fixed) {
+    it(`${kind} carries ${sign > 0 ? "+1" : "−1"} — ${why}`, () => {
+      expect(SUPPLIER_ENTRY_RULES[kind]).toEqual({ directionRequired: false, sign });
+      expect(supplierEntrySign(kind)).toBe(sign);
+      // a fixed kind ignores a direction: it cannot be flipped by one
+      expect(supplierEntrySign(kind, "WE_OWE")).toBe(sign);
+      expect(supplierEntrySign(kind, "THEY_OWE")).toBe(sign);
+    });
+  }
+
+  it("ADJUSTMENT requires a direction and takes its sign from it", () => {
+    expect(SUPPLIER_ENTRY_RULES.ADJUSTMENT).toEqual({
+      directionRequired: true,
+      directions: { WE_OWE: -1, THEY_OWE: 1 },
+    });
+    expect(supplierEntrySign("ADJUSTMENT", "WE_OWE")).toBe(-1);
+    expect(supplierEntrySign("ADJUSTMENT", "THEY_OWE")).toBe(1);
+  });
+
+  it("fails loudly instead of defaulting when the required direction is missing", () => {
+    for (const missing of [undefined, null]) {
+      let caught: UnsignableSupplierEntryError | undefined;
+      try {
+        supplierEntrySign("ADJUSTMENT", missing);
+      } catch (error) {
+        if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+        caught = error;
+      }
+      // a typed refusal, not a plain Error and never a silent −1
+      expect(caught).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(caught).toMatchObject({ kind: "ADJUSTMENT", direction: null, entryId: null });
+      expect(caught?.message).toMatch(/direction/);
+    }
+  });
+
+  it("names the entry and its kind in the refusal (issue 317, story 9)", () => {
+    let caught: UnsignableSupplierEntryError | undefined;
+    try {
+      // the fold is where an owner-visible read meets a corrupt row
+      supplierBalance([{ id: "entry-7", kind: "ADJUSTMENT", amount: 500 }]);
+    } catch (error) {
+      if (!(error instanceof UnsignableSupplierEntryError)) throw error;
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(UnsignableSupplierEntryError);
+    expect(caught).toMatchObject({ kind: "ADJUSTMENT", entryId: "entry-7" });
+    expect(caught?.message).toContain("entry-7");
   });
 });
 

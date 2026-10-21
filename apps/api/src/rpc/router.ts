@@ -7,7 +7,7 @@ import { rankCatalog } from "../lib/catalog-search";
 import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
 import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
-import type { AppLogger } from "../lib/logger";
+import type { AppLogger, LogContext } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
@@ -17,7 +17,7 @@ import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment 
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
-import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
+import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { tokenMatches } from "../lib/boot-token";
@@ -317,7 +317,7 @@ async function partyOutstandingDebt(
  * the shop owes, so the polarity here is `balance < 0`.
  */
 async function defaultSupplierCashBack(tx: StorePort, supplierId: string, returnValue: number): Promise<number> {
-  const balance = supplierBalance(await tx.listSupplierEntries(supplierId));
+  const balance = supplierBalance(await tx.listSupplierEntries(supplierId), supplierId);
   return balance < 0 ? 0 : returnValue;
 }
 
@@ -358,9 +358,58 @@ export function createRpcRouter(deps: RpcDeps) {
     return session;
   };
 
+  /**
+   * #317 — a supplier account holding a row the rule table cannot sign used to
+   * reach the owner as an unmapped internal error, and the UI's `serverErrorKey`
+   * passes only known keys, so every such bug read as "an error occurred" on a
+   * screen whose whole point is naming the broken account.
+   *
+   * The original is logged BEFORE it is replaced: the replacement carries the
+   * stable key as its message and a fresh stack, and `app.ts` saves that stack and
+   * name, so without this line the ids that make the copy actionable exist only on
+   * the wire and never in the diagnostics the owner is told to read.
+   */
+  const unsignableEntryRefusal = (error: UnsignableSupplierEntryError) => {
+    // each id is added only when the read observed it: an absent key says "not
+    // seen", which is the whole point of the sentinel the refusal carries
+    const context: LogContext = {};
+    if (error.supplierId !== null) context.supplierId = error.supplierId;
+    if (error.entryId !== null) context.entryId = error.entryId;
+    if (error.kind !== null) context.supplierEntryKind = error.kind;
+    // A log event must be a code from the shared vocabulary (#253); the RPC code
+    // is not one, and using it here put an event outside `logEvents` that the
+    // scan catches. SERVER_ERROR carries the ids in `context` instead, and the
+    // wire code stays on the ORPCError below.
+    deps.logger.error("SERVER_ERROR", error.message, error, context);
+    return new ORPCError("INTERNAL_SERVER_ERROR", {
+      message: "SUPPLIER_ENTRY_UNSIGNABLE",
+      data: { supplierId: error.supplierId, entryId: error.entryId, kind: error.kind },
+    });
+  };
+
+  /**
+   * Every store refusal the router translates, mapped in ONE place. A typed store
+   * error can come out of a read, a write, or a read the write performs as part of
+   * its unit, so the procedure wrapper owns both: `SupplierAdjustmentError` used to
+   * be re-thrown from inside each adjustment handler while this one was mapped at
+   * the wrapper, and two conventions for one job is how the next store refusal gets
+   * mapped in whichever place its author happened to open.
+   */
+  const rethrowStoreRefusal = (error: Error): never => {
+    if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
+    if (error instanceof UnsignableSupplierEntryError) throw unsignableEntryRefusal(error);
+    throw error;
+  };
+
   const guarded = <T>(handler: (context: RpcContext) => Promise<T>) => async ({ context }: { context: RpcContext }): Promise<T> => {
     await requireSession(context);
-    return handler(context);
+    try {
+      return await handler(context);
+    } catch (error) {
+      // a thrown non-Error (`throw "x"`) carries no store refusal to translate
+      if (error instanceof Error) rethrowStoreRefusal(error);
+      throw error;
+    }
   };
 
   /** Like guarded, but passes the procedure input through as well. */
@@ -369,7 +418,13 @@ export function createRpcRouter(deps: RpcDeps) {
     context,
   }: { input: I; context: RpcContext }): Promise<T> => {
     await requireSession(context);
-    return handler(input, context);
+    try {
+      return await handler(input, context);
+    } catch (error) {
+      // a thrown non-Error (`throw "x"`) carries no store refusal to translate
+      if (error instanceof Error) rethrowStoreRefusal(error);
+      throw error;
+    }
   };
 
   return {
@@ -947,7 +1002,7 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_PAYMENT ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(entries), entries };
+          return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
@@ -1060,13 +1115,13 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           if (cashBack > 0) {
             const before = await tx.listSupplierEntries(input.supplierId);
-            const availableCredit = availableSupplierCredit(supplierBalance(before));
+            const availableCredit = availableSupplierCredit(supplierBalance(before, input.supplierId));
             if (cashBack > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
             await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "REFUND", amount: cashBack, invoiceId: null, note: reason, ref: returnNumber, occurredAt });
           }
           await tx.insertActivity({ type: "RETURN_RECORDED", summary: `SUPPLIER_RETURN ${returnNumber} ${amount} ${supplier.name}`, ref: returnId });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(entries), entries };
+          return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
@@ -1076,7 +1131,7 @@ export function createRpcRouter(deps: RpcDeps) {
           const supplier = await tx.getParty("supplier", input.supplierId);
           if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          const availableCredit = availableSupplierCredit(supplierBalance(entries));
+          const availableCredit = availableSupplierCredit(supplierBalance(entries, input.supplierId));
           if (input.amount > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
           const occurredAt = localDateTime();
           await tx.insertSupplierEntry({
@@ -1090,7 +1145,7 @@ export function createRpcRouter(deps: RpcDeps) {
           });
           await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_REFUND ${input.amount} ${supplier.name}`, ref: supplier.id });
           const next = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(next), entries: next };
+          return { balance: supplierBalance(next, input.supplierId), entries: next };
         }),
       ),
     ),
@@ -1122,28 +1177,25 @@ export function createRpcRouter(deps: RpcDeps) {
             // request had reduced the invoice. The store's conditional offset
             // still refuses a genuinely oversized link (EXCEEDS_REMAINING).
           }
-          try {
-            await tx.insertSupplierAdjustment({
-              supplierId: input.supplierId,
-              direction: input.direction,
-              amount: input.amount,
-              reason,
-              occurredAt,
-              invoiceId: input.invoiceId ?? null,
-              // when the caller omitted the date the server stamped it, so a
-              // retry cannot be told apart by time: the store matches any time
-              serverStamped: input.occurredAt === undefined,
-              // #181 — an explicit client key is the primary dedup identity;
-              // the #177 signature arm stays in force
-              idempotencyKey: input.idempotencyKey ?? null,
-            });
-          } catch (error) {
-            if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
-            throw error;
-          }
+          // the store's typed refusals (a dedup collision, an oversized link) are
+          // translated once by `guardedInput`; nothing is caught here
+          await tx.insertSupplierAdjustment({
+            supplierId: input.supplierId,
+            direction: input.direction,
+            amount: input.amount,
+            reason,
+            occurredAt,
+            invoiceId: input.invoiceId ?? null,
+            // when the caller omitted the date the server stamped it, so a
+            // retry cannot be told apart by time: the store matches any time
+            serverStamped: input.occurredAt === undefined,
+            // #181 — an explicit client key is the primary dedup identity;
+            // the #177 signature arm stays in force
+            idempotencyKey: input.idempotencyKey ?? null,
+          });
           await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          return { balance: supplierBalance(entries), entries };
+          return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
@@ -1247,26 +1299,22 @@ export function createRpcRouter(deps: RpcDeps) {
             seen.add(key);
           }
           for (const row of plan) {
-            try {
-              await tx.insertSupplierAdjustment({
-                supplierId: row.supplierId,
-                direction: row.direction,
-                amount: row.amount,
-                reason,
-                occurredAt: input.occurredAt,
-                invoiceId: null,
-                ref: "OPENING_BALANCE",
-              });
-            } catch (error) {
-              if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
-              throw error;
-            }
+            // translated by `guardedInput`, like the single-adjustment path
+            await tx.insertSupplierAdjustment({
+              supplierId: row.supplierId,
+              direction: row.direction,
+              amount: row.amount,
+              reason,
+              occurredAt: input.occurredAt,
+              invoiceId: null,
+              ref: "OPENING_BALANCE",
+            });
             await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });
           }
           const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];
           for (const row of plan) {
             const entries = await tx.listSupplierEntries(row.supplierId);
-            accounts.push({ supplierId: row.supplierId, name: row.name, balance: supplierBalance(entries) });
+            accounts.push({ supplierId: row.supplierId, name: row.name, balance: supplierBalance(entries, row.supplierId) });
           }
           return { created: plan.length, accounts };
         }),

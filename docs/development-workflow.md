@@ -213,7 +213,7 @@ before any of these. Otherwise the first failure reads as a broken script.
 | 0 | `bun run typecheck`, `bun run lint` | after every edit | seconds, no queue |
 | 1 | `bun run test:affected` | per iteration, not per edit | ~2-4 minutes cold, queued |
 | 2 | `bun run test:e2e:changed` | before every push | the mapped specs, ~1-3 minutes, queued |
-| 3 | the PR's CI head | after the push | free; it also proves red-on-parent |
+| 3 | the PR's CI head | after the push | free; it also runs red-on-parent |
 | 4 | `bun run test:e2e` | **once per PR**, right before the lane reports | all 35 specs, ~9 minutes, queued |
 
 Only tier 0 is free. Tiers 1, 2 and 4 are queued rather than excluded from the
@@ -223,8 +223,12 @@ believing they run inline. Tier 1 is also not "seconds": the scripts step alone
 measured 156 s here (294 pass, 1 skip, 7 files), and `turbo.json` gives `test` a
 `dependsOn: ["^build"]`, so a cold run builds every package first.
 
-Tier 1 is `bun run test:affected`: turbo's impacted filter, then the scripts
-suite that carries the e2e map's drift guard. The filter follows the diff, and
+Tier 1 is `bun run test:affected`: turbo's impacted filter **and** the scripts
+suite that carries the e2e map's drift guard, run at the same time. They cannot
+reach each other, so the tier costs the longer step instead of the sum, and both
+verdicts arrive in one pass: a red package suite is no longer masked by a green
+scripts run. Each step's exit code is printed as it finishes, and the script's own
+exit code is the first failure in plan order. The filter follows the diff, and
 that is load-bearing rather than tidy. turbo's root `//` package declares no
 `test` task, so a filter that selects only `//` runs zero tasks and **exits 0**
 ("WARNING No tasks were executed as part of this run"). A diff entirely inside
@@ -239,6 +243,19 @@ decision and runs nothing:
 ```bash
 bun run test:affected --dry-run   # scope= + reason= + one step= line per command
 ```
+
+Tier 3 is the one that runs `scripts/red-on-parent.ts`. That gate judges every
+test file the change **adds** under `apps/`, `packages/` and `scripts/`, on the
+parent of the change — and it fakes the modules the change adds: a hollow stand-in
+with the same export names and no behaviour, so a test that pins nothing passes on
+the parent (and is rejected) while a real one fails for its own reason. A module a
+faithful mirror cannot reproduce — an `export default`, a re-export, an enum, a
+namespace, a decorated or destructured export — is the verdict CANNOT_HOLLOW,
+which fails closed and is cleared only by
+`// red-on-parent-waive: "whole file" — <why the parent cannot run this file>` in
+the added test file. The same verdict covers a file that needs an export the
+parent's copy of an *edited* module does not have: the parent cannot run it, and
+one waiver line records that instead of one per test.
 
 Tier 2 is `bun run test:e2e:changed`, the only supported spelling (the npm script
 is what the guard recognises; `bun scripts/e2e-changed.ts` is the same program and

@@ -7,6 +7,7 @@ import {
   enumeratePackages,
   hasRef,
   planAffected,
+  runSteps,
   turboArgs,
   type Step,
 } from "./test-affected";
@@ -199,12 +200,14 @@ describe("the impacted filter, live against turbo", () => {
   test("the ref the filter names resolves here, or this test says which ref is missing", () => {
     // Not a skip: a shallow clone without the remote-tracking ref would otherwise
     // pass this suite while asserting nothing, and the fix is `git fetch origin`.
-    if (!hasRef(BASE_REF, ROOT)) {
-      throw new Error(
-        `${BASE_REF} does not resolve in ${ROOT}, so turbo cannot enumerate anything for it — run \`git fetch origin\` and re-run. CI's checks job already fetches with depth 0.`,
-      );
-    }
-    expect(hasRef(BASE_REF, ROOT)).toBe(true);
+    // The assertion carries the ref in its payload rather than throwing, so the
+    // failure names it AND the verdict stays an assertion red: a `throw` here
+    // reports `Error`, which the gate reads as "the body never ran" — true of a
+    // hollowed module, and exactly the shape this file must not produce.
+    expect({ ref: BASE_REF, resolves: hasRef(BASE_REF, ROOT) }).toEqual({
+      ref: BASE_REF,
+      resolves: true,
+    });
   });
 
   test("`...` before a selector selects the package and the packages that depend on it", () => {
@@ -290,5 +293,80 @@ describe("the impacted filter, live against turbo", () => {
     }));
     expect(result.packages).toEqual([]);
     expect(result.refusal).toContain("packages");
+  });
+});
+
+describe("tier 0 runs both steps at once, and either red reddens the exit", () => {
+  // The two steps cannot reach each other: turbo runs the workspace suites, the
+  // scripts suite runs the gate's own tests. They were spawned one after the
+  // other and fail-fast, which spent the shorter step's time twice and made the
+  // fail-fast loop invisible — flipping `if (status !== 0) return status` left
+  // every test green while a red package suite was masked by a green scripts run.
+  const STEPS: Step[] = [
+    ["turbo", "run", "test", "--concurrency=2"],
+    ["bun", "test", "./scripts/"],
+  ];
+
+  test("both steps start, and two green steps exit 0", async () => {
+    const started: string[] = [];
+    const result = await runSteps(STEPS, ROOT, async (step) => {
+      started.push(step[0] ?? "");
+      return 0;
+    });
+    expect(started).toEqual(["turbo", "bun"]);
+    expect(result.results.map((entry) => entry.status)).toEqual([0, 0]);
+    expect(result.status).toBe(0);
+  });
+
+  test("a red first step reddens the combined exit", async () => {
+    const result = await runSteps(STEPS, ROOT, async (step) => (step[0] === "turbo" ? 1 : 0));
+    expect(result.results.map((entry) => entry.status)).toEqual([1, 0]);
+    expect(result.status).toBe(1);
+  });
+
+  test("a red second step reddens the combined exit when the first was green", async () => {
+    // The fail-fast shape returned the first step's status before the second ran,
+    // so this case could not exist: a green first step ended the run at 0.
+    const result = await runSteps(STEPS, ROOT, async (step) => (step[0] === "bun" ? 1 : 0));
+    expect(result.results.map((entry) => entry.status)).toEqual([0, 1]);
+    expect(result.status).toBe(1);
+  });
+
+  test("a failing first step does not stop the second from starting", async () => {
+    // One pass with both verdicts is the point: a short-circuit is a regression.
+    const started: string[] = [];
+    const result = await runSteps(STEPS, ROOT, async (step) => {
+      started.push(step[0] ?? "");
+      return step[0] === "turbo" ? 2 : 0;
+    });
+    expect(started).toEqual(["turbo", "bun"]);
+    expect(result.results.map((entry) => entry.status)).toEqual([2, 0]);
+    expect(result.status).toBe(2);
+  });
+
+  test("the combined status is the first failure in plan order, not the last to finish", async () => {
+    // Two children finish in whatever order they finish; the exit code has to be
+    // the same on every run, so it is chosen from the plan, not from arrival.
+    const result = await runSteps(STEPS, ROOT, async (step) => {
+      if (step[0] === "turbo") {
+        await Bun.sleep(20);
+        return 2;
+      }
+      return 3;
+    });
+    expect(result.results.map((entry) => entry.status)).toEqual([2, 3]);
+    expect(result.status).toBe(2);
+  });
+
+  test("a step that cannot start counts as a failure, and the other step still runs", async () => {
+    const started: string[] = [];
+    const result = await runSteps(STEPS, ROOT, async (step) => {
+      started.push(step[0] ?? "");
+      if (step[0] === "turbo") throw new Error("could not start turbo");
+      return 0;
+    });
+    expect(started).toEqual(["turbo", "bun"]);
+    expect(result.results.map((entry) => entry.status)).toEqual([1, 0]);
+    expect(result.status).toBe(1);
   });
 });

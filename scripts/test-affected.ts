@@ -236,23 +236,77 @@ export function enumeratePackages(
   return { packages: parsed.packages, refusal: null };
 }
 
-function runStep(step: Step, cwd: string): number {
+export type StepStatus = { step: Step; status: number };
+export type StepsOutcome = { results: StepStatus[]; status: number };
+
+/** How one step is run. Injected so the aggregation can be asserted without a suite. */
+export type StepRunner = (step: Step, cwd: string) => Promise<number>;
+
+/**
+ * One step, started and awaited as a child process.
+ *
+ * Both steps run under this bun — the one this script is already executing —
+ * rather than a `bun` looked up on PATH. A PATH lookup cannot prove the runner
+ * exists; `process.execPath` is the runner, so it cannot fail for that reason.
+ * `bun <shim> ...` for turbo, `bun test ...` for the scripts suite: no shell, so
+ * no quoting to get wrong per platform.
+ *
+ * `Bun.spawn` rather than `spawnSync`: the two steps have nothing in common, so
+ * they run at once and the tier costs the longer step instead of the sum.
+ */
+async function runStepAsync(step: Step, cwd: string): Promise<number> {
   const [program = "", ...args] = step;
-  // Both steps run under this bun — the one this script is already executing —
-  // rather than a `bun` looked up on PATH. A PATH lookup cannot prove the runner
-  // exists; `process.execPath` is the runner, so it cannot fail for that reason.
-  // `bun <shim> ...` for turbo, `bun test ...` for the scripts suite: no shell,
-  // so no quoting to get wrong per platform.
   const argv = program === "turbo" ? [TURBO_BIN, ...args] : args;
-  const child = spawnSync(process.execPath, argv, { cwd, stdio: "inherit" });
-  if (child.error) {
-    console.error(`test:affected: could not start ${program}: ${child.error.message}`);
+  try {
+    const child = Bun.spawn({ cmd: [process.execPath, ...argv], cwd, stdio: ["inherit", "inherit", "inherit"] });
+    return await child.exited;
+  } catch (error) {
+    console.error(
+      `test:affected: could not start ${program}: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return 1;
   }
-  return child.status ?? 1;
 }
 
-export function main(argv: string[], cwd: string = ROOT): number {
+/**
+ * Both steps, at once, with one exit code.
+ *
+ * A short-circuit is the failure mode this replaces: returning the first step's
+ * status stopped the second from running, so a red package suite was masked by a
+ * green scripts suite whenever the plan put the scripts suite last — and the
+ * fail-fast branch itself had no test that could tell it from a pass. Every step
+ * starts, every step is awaited, and the code is the first failure in plan order
+ * so it does not depend on which child finished first.
+ */
+export async function runSteps(
+  steps: Step[],
+  cwd: string,
+  run: StepRunner = runStepAsync,
+): Promise<StepsOutcome> {
+  const statuses = await Promise.all(
+    steps.map(async (step) => {
+      try {
+        return await run(step, cwd);
+      } catch (error) {
+        // A runner that throws has not run the step, and a step that did not run
+        // is not a pass. The injected runner is the only caller that can do this;
+        // `runStepAsync` reports its own failure as a status.
+        console.error(
+          `test:affected: ${step.join(" ")} failed to run: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return 1;
+      }
+    }),
+  );
+  const results = steps.map((step, index) => ({ step, status: statuses[index] ?? 1 }));
+  for (const result of results) {
+    console.error(`test:affected: ${result.step.join(" ")} → exit ${result.status}`);
+  }
+  const status = results.find((result) => result.status !== 0)?.status ?? 0;
+  return { results, status };
+}
+
+export async function main(argv: string[], cwd: string = ROOT): Promise<number> {
   let base = BASE_REF;
   let dryRun = false;
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -295,13 +349,10 @@ export function main(argv: string[], cwd: string = ROOT): number {
   // On stderr: a narrowed run must state its scope and the cause of a fallback,
   // and `bun run` shows both without polluting a step's stdout.
   console.error(`test:affected: ${plan.note}`);
-  for (const step of plan.steps) {
-    const status = runStep(step, cwd);
-    if (status !== 0) return status;
-  }
-  return 0;
+  const outcome = await runSteps(plan.steps, cwd);
+  return outcome.status;
 }
 
 if (import.meta.main) {
-  process.exitCode = main(process.argv.slice(2));
+  process.exitCode = await main(process.argv.slice(2));
 }

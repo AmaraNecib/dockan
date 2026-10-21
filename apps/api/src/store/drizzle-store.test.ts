@@ -2745,6 +2745,49 @@ describe("#317 one rule decides what a supplier balance means", () => {
     }
   });
 
+  it("refuses an unsignable adjustment at the WRITE seam, before the row exists", async () => {
+    // The fold replaced this predicate with a call to `supplierEntrySign`: the
+    // store used to walk the rule table a second time to answer "can this row be
+    // signed", and that copy is the one that can PERSIST a wrong sign rather than
+    // merely display one. Nothing else proved the delegation still refuses, so
+    // this pins it — including the directions `Object.prototype` owns, which an
+    // `in` check would accept and sign as a function.
+    const supplier = await newSupplier("كتابة-غير-قابلة-للترجيح");
+    const refused: ReadonlyArray<{ label: string; direction: string | null | undefined }> = [
+      { label: "no direction", direction: null },
+      { label: "undefined direction", direction: undefined },
+      { label: "an unknown direction", direction: "SIDEWAYS" },
+      { label: "toString", direction: "toString" },
+      { label: "constructor", direction: "constructor" },
+      { label: "valueOf", direction: "valueOf" },
+    ];
+    for (const { label, direction } of refused) {
+      const refusal = await refusalOf(
+        store.insertSupplierEntry({
+          supplierId: supplier.id,
+          kind: "ADJUSTMENT",
+          amount: 250,
+          // SAFETY: the point of this test is a direction the union does not contain;
+          // a value the type rejects is exactly the row a corrupted write can carry.
+          direction: direction as "WE_OWE" | null | undefined,
+          invoiceId: null,
+          occurredAt: localDateTime(),
+        }),
+      );
+      expect(refusal, label).toBeInstanceOf(UnsignableSupplierEntryError);
+      expect(refusal).toMatchObject({ kind: "ADJUSTMENT", supplierId: supplier.id });
+    }
+    // nothing landed: a refusal at the seam is not a refused write followed by a row
+    expect(await store.listSupplierEntries(supplier.id)).toEqual([]);
+
+    // and the same call with a real direction is accepted, so the refusal is about
+    // the direction rather than the write
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", amount: 250, direction: "WE_OWE", invoiceId: null, occurredAt: localDateTime() });
+    const entries = await store.listSupplierEntries(supplier.id);
+    expect(entries).toHaveLength(1);
+    expect(supplierBalance(entries, supplier.id)).toBe(-250);
+  });
+
   it("refuses the invoice-grouped /debts arm too, not only the credit-only one", async () => {
     // The /debts read has TWO arms: the invoice aggregate (a supplier with an open
     // purchase invoice) and the credit-only list (a supplier whose purchase

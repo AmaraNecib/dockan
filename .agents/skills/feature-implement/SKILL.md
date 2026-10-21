@@ -149,8 +149,9 @@ Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
 
 Run this lens, `test-audit` and `code-review` on `zen-proxy/minimax-m3.1-flash-free` —
-never on the model that wrote the diff (`opencode-go/deepseek-v4.1-flash`). When MiniMax is down,
-`zen-proxy/beam-free` is the free reviewer. The
+never on the model that wrote the diff (`zen-proxy/deepseek-v4.1-flash-free`). When MiniMax is down,
+`zen-proxy/beam-free` is the free reviewer, then `zen-proxy/glm-5.3-flash-free` and
+`zen-proxy/mimo-v2.6-flash-free`. The
 reviewer is never the author. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.
 

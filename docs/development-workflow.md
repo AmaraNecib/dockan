@@ -197,44 +197,106 @@ Every technical error (and every info/warn entry) is appended to a daily JSONL l
 
 ## 7. Local verification tiers
 
-Four tiers, cheapest first. The full suite is the last one, not the first.
+Five **verification tiers**, cheapest first. The full suite is the last one, not
+the first.
 
-| Tier | What runs | When | Cost |
-|------|-----------|------|------|
-| 0 | `bun run typecheck`, `bun run lint`, `bun run test:affected` | after every edit | seconds |
-| 1 | `bun run test:e2e:changed` | before every push | the mapped specs, ~1-3 minutes |
-| 2 | the PR's CI head | after the push | free; it also proves red-on-parent |
-| 3 | `bun run test:e2e` | **once per PR**, right before the lane reports | all 35 specs, ~9 minutes |
+"Tier" is overloaded in this repo: `engineering-workflow.md` owns the *review*
+tiers (Standard, High-assurance), which decide how much scrutiny a change gets,
+while these decide what a lane runs and when. A lane brief that says "tier 1"
+means this section, and when the meaning matters write "verification tier".
 
-Tier 0 never takes a heavy slot: it is fast enough to run while the work is
-still in your hands. `test:affected` runs turbo's impacted filter
-(`--filter=...[origin/develop]`, the changed packages **and the packages that
-depend on them**) and then the scripts suite, which carries the e2e map's drift
-guard. When `origin/develop` does not resolve — a fresh clone, a failed fetch —
-it runs every package and prints why.
+A fresh worktree has no `node_modules`, so run `bun install --frozen-lockfile`
+before any of these. Otherwise the first failure reads as a broken script.
 
-Tier 1 is the same decision CI makes, asked locally. It imports `selectSpecs`
-from `scripts/e2e-selection.ts`, so there is one map and one set of precedence
-rules; the lane and CI cannot drift.
+| Verification tier | What runs | When | Cost |
+|-------------------|-----------|------|------|
+| 0 | `bun run typecheck`, `bun run lint` | after every edit | seconds, no queue |
+| 1 | `bun run test:affected` | per iteration, not per edit | ~2-4 minutes cold, queued |
+| 2 | `bun run test:e2e:changed` | before every push | the mapped specs, ~1-3 minutes, queued |
+| 3 | the PR's CI head | after the push | free; it also proves red-on-parent |
+| 4 | `bun run test:e2e` | **once per PR**, right before the lane reports | all 35 specs, ~9 minutes, queued |
+
+Only tier 0 is free. Tiers 1, 2 and 4 are queued rather than excluded from the
+queue: both new scripts are matched by the bash heavy-work guard's "a test run"
+pattern, so a lane calls `heavy_run` (or takes the guard's redirect) instead of
+believing they run inline. Tier 1 is also not "seconds": the scripts step alone
+measured 156 s here (294 pass, 1 skip, 7 files), and `turbo.json` gives `test` a
+`dependsOn: ["^build"]`, so a cold run builds every package first.
+
+Tier 1 is `bun run test:affected`: turbo's impacted filter, then the scripts
+suite that carries the e2e map's drift guard. The filter follows the diff, and
+that is load-bearing rather than tidy. turbo's root `//` package declares no
+`test` task, so a filter that selects only `//` runs zero tasks and **exits 0**
+("WARNING No tasks were executed as part of this run"). A diff entirely inside
+`apps/<name>/` or `packages/<name>/` therefore gets `--filter=...[origin/develop]`
+(the changed packages **and the packages that depend on them**), while any path
+outside those trees — `package.json`, `turbo.json`, `bun.lock`,
+`tsconfig.base.json`, `scripts/`, `docs/` — drops the filter so every package
+runs, naming the path that caused it. The same unfiltered fallback covers
+`origin/develop` not resolving and a diff git cannot read. `--dry-run` prints the
+decision and runs nothing:
+
+```bash
+bun run test:affected --dry-run   # scope= + reason= + one step= line per command
+```
+
+Tier 2 is `bun run test:e2e:changed`, the only supported spelling (the npm script
+is what the guard recognises; `bun scripts/e2e-changed.ts` is the same program and
+is not queued). It imports `selectSpecs` and the checked-in map from
+`scripts/e2e-selection.ts`, so there is one map and one set of precedence rules.
+What differs is the range and the overrides: this driver diffs
+`<merge-base with origin/develop>..HEAD`, while CI diffs `base.sha..head.sha` —
+on a stacked PR that is the parent branch, not `origin/develop` — and replaces
+the decision outright for `push`, `workflow_dispatch` and the `e2e:full` label.
+The local run is a cheaper early warning, never a substitute for the PR's head.
 
 ```bash
 bun run test:e2e:changed --dry-run                                        # decide, run nothing
 bun run test:e2e:changed --dry-run --files apps/web/src/pages/backups.tsx # decide for a path list
-bun run test:e2e:changed                                                  # decide and run
+DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bun run test:e2e:changed              # decide and run, on a lane's own ports
 ```
 
-`--dry-run` prints the same `mode=` / `specs=` / `reason=` lines `ci.yml` parses.
-The diff is `<merge-base with origin/develop>..HEAD`, the same range CI reads, so
-uncommitted work is invisible to it: commit first, or pass `--files`. Two
-outcomes widen the run, on purpose: a critical path (the router, shared web code,
-a spec, `package.json`, the harness itself), and any path the map does not know.
-Do not hand-write the spec list to get around that. Either the map is missing a
-row, or the change really can move every screen.
+`--dry-run` prints `mode=` / `specs=` / `reason=` — the three lines `ci.yml`
+parses — plus a fourth, `source=git|files|dirty`. Read the fourth line before
+quoting the other three in a report: `--files` produces a contract byte-shaped
+exactly like a git decision and can overrule an `always_full` verdict, so
+`source=files` says "this is about the paths I listed, not about my branch".
+`source=dirty` means tracked files have uncommitted edits; the decision describes
+`HEAD` only, so commit or pass `--files`, and the reason carries the same caveat.
 
-Tiers 1 and 3 spawn the api and web servers and pin every core, so both go
-through the heavy slot queue, at most 2 at once on this box.
+Three outcomes widen the run on purpose. A critical path (the router, shared web
+code, a spec, `package.json`, the harness itself). Any path the map does not
+know. And **a diff git cannot produce at all** — an unresolvable base, or a
+`merge-base` that returns nothing: a worktree cut before `origin/develop` was
+fetched answers `mode=full` for a git reason, which reads as a map problem and is
+not one. `git fetch origin` and ask again. Do not hand-write the spec list to get
+around any of them: either the map is missing a row, or the change really can
+move every screen.
 
-**The policy for tier 3:** a lane runs the full suite at most once per PR, right
+Tier 2 and tier 4 start the api and the web dev server, and both default to the
+same pair — `DOKAN_PORT=4317` and `DOKAN_WEB_PORT=5173` in
+`playwright.config.ts`, with `reuseExistingServer: false` and an explicitly
+configured port taken as authoritative. Two lanes on those defaults do not fail
+loudly: the second lane's API cannot bind, Playwright's `/health` wait is
+satisfied by the **first** lane's API, and the second lane's specs then run
+against the first lane's server and sqlite store. That is the "a different set of
+specs fails each run" failure recorded in
+`.agents/wisdom/process/concurrent-lane-e2e-ports.md`. In a lane, always set
+both, to a pair no sibling is using:
+
+```bash
+DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bun run test:e2e:changed
+```
+
+The shared 4317/5173 pair belongs to whoever is not in a lane.
+
+The queue is measured, not a fixed count: capacity is recomputed from free RAM
+and CPU load on every acquire, so it narrows when the box is busy and widens when
+it is idle. `HEAVY_SLOT_MAX` (default 5) is a ceiling, not the number anyone gets
+— "at most 2 at once" is not a mechanism this repo has.
+
+**The policy for tier 4:** a lane runs the full suite at most once per PR, right
 before it reports. Everything between the first push and the last fix iterates on
-tier 1. The full run is what makes the narrowed runs safe, so it is not optional
-— it is just not repeated.
+tier 2, and a `--dry-run` at either tier answers the cheap questions first. The
+full run is what makes the narrowed runs safe, so it is not optional — it is just
+not repeated.

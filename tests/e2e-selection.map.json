@@ -7,7 +7,6 @@
     "tests/e2e/**",
     "tests/e2e-selection.map.json",
     "scripts/e2e-selection.ts",
-    "scripts/e2e-changed.ts",
     "scripts/wipe-e2e.mjs",
     "scripts/reset-e2e-preferences.mjs",
     "scripts/reset-e2e-records.mjs",
@@ -80,6 +79,9 @@
     ".husky/**",
     "scripts/sync-claude-skills.ts",
     "scripts/sync-claude-skills.test.ts",
+
+    "$comment: the rest of scripts/ builds and drives local tooling, never a browser surface. `scripts/e2e-changed.ts` is here on purpose: CI never executes it — the changes job runs scripts/e2e-selection.ts — so a tweak to the local driver cannot move CI's coverage and must not cost the full 35-spec suite. `scripts/test-affected.ts` was unmapped and fell through to a full run. The always_full rows above still win, because always_full is checked first: scripts/e2e-selection.ts and the e2e reset helpers stay critical",
+    "scripts/**",
     "apps/desktop/**",
 
     "$comment: unit tests and their harness never reach the browser; a feature rule above still wins for the test files it names",

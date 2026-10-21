@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { globToRegExp, loadMap, selectSpecs } from "./e2e-selection";
+import { contractLines, globToRegExp, loadMap, selectSpecs, specPaths } from "./e2e-selection";
 
 // This file is the reason the map can be trusted. It is cheap (no browser, no
 // server) and runs inside `bun run test` (`turbo test` then `bun test ./scripts/`),
@@ -31,6 +31,44 @@ const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--excl
 })
   .split("\n")
   .filter(Boolean);
+
+describe("specPaths", () => {
+  // The `tests/e2e/` prefix used to be built in two files — `contractLines` here
+  // and `playwrightArgs` in `e2e-changed.ts` — so a change to one left the other
+  // printing the old shape, and the byte-comparison between the two front ends
+  // stayed green because both went through `contractLines`. One builder now.
+  test("an affected scope becomes tests/e2e/ paths", () => {
+    expect(specPaths({ mode: "affected", specs: ["backups.spec.ts"], reason: "1 spec(s)" })).toEqual([
+      "tests/e2e/backups.spec.ts",
+    ]);
+  });
+
+  test("full and skip carry no paths", () => {
+    expect(specPaths({ mode: "full", specs: [], reason: "critical path: package.json" })).toEqual([]);
+    expect(specPaths({ mode: "skip", specs: [], reason: "docs only" })).toEqual([]);
+  });
+});
+
+describe("the CI wire", () => {
+  // ci.yml seds `^mode=`, `^specs=` and `^reason=` out of this output. Rename a
+  // key in `contractLines` and both scripts change together, the byte
+  // comparison between the two front ends stays green, and the job's
+  // `e2e_mode` / `e2e_specs` outputs silently go empty — the `e2e` job then runs
+  // the full suite for every PR, or nothing at all. So the emitter and its
+  // parser are asserted against each other here.
+  test("every key the selector emits is one ci.yml seds out", () => {
+    const workflow = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8").replace(/\r\n?/gu, "\n");
+    const keys = contractLines({ mode: "affected", specs: ["backups.spec.ts"], reason: "1 spec(s)" }).map(
+      (line) => line.slice(0, line.indexOf("=")),
+    );
+    // Pinned as a set, not by membership: a fourth key would need its own sed.
+    expect(keys).toEqual(["mode", "specs", "reason"]);
+    for (const key of keys) {
+      const parser = `s/^${key}=//p`;
+      expect({ key, parsed: workflow.includes(parser) }).toEqual({ key, parsed: true });
+    }
+  });
+});
 
 describe("e2e-selection map", () => {
   test("has the shape the selector reads", () => {
@@ -321,11 +359,36 @@ describe("e2e-selection behaviour", () => {
     expect(scope.specs).toContain("rpc-helpers.spec.ts");
   });
 
-  test("the local selection driver is critical: it decides which specs run", () => {
-    // `scripts/e2e-changed.ts` narrows a lane's local run the way this file's
-    // CLI narrows CI. A change there can mis-select exactly as a change to the
-    // selector can, so it runs the whole suite.
+  test("the CI selector is critical: it decides which specs CI runs", () => {
+    // `scripts/e2e-selection.ts` is what `ci.yml` runs, so a change there can
+    // mis-select the PR's coverage. Whole suite.
+    const scope = selectSpecs(["scripts/e2e-selection.ts"], map);
+    expect(scope.mode).toBe("full");
+    expect(scope.reason).toContain("critical path");
+  });
+
+  test("the local driver cannot move CI's coverage, so it is not critical", () => {
+    // CI never executes `scripts/e2e-changed.ts`: the `changes` job runs the
+    // selector above. Charging the full 35-spec suite for a tweak to a script
+    // CI does not run buys no coverage, so the driver is `skip_e2e` (via the
+    // `scripts/**` row) instead of `always_full`.
     const scope = selectSpecs(["scripts/e2e-changed.ts"], map);
+    expect(scope.mode).toBe("skip");
+  });
+
+  test("an unmapped script is inert, not a full run", () => {
+    // `scripts/test-affected.ts` had no row at all, so it fell through to
+    // `unmapped path` and forced the full suite. The `scripts/**` skip row is
+    // the `scripts/sync-claude-skills.ts` fix, applied to the whole directory.
+    const scope = selectSpecs(["scripts/test-affected.ts"], map);
+    expect(scope.mode).toBe("skip");
+    expect(scope.reason).toContain("no browser-reachable path");
+  });
+
+  test("the always_full rows under scripts/ still beat the scripts/** skip row", () => {
+    // Precedence, not membership: `scripts/wipe-e2e.mjs` resets the store every
+    // run, so it stays critical even though `scripts/**` now skips.
+    const scope = selectSpecs(["scripts/wipe-e2e.mjs"], map);
     expect(scope.mode).toBe("full");
     expect(scope.reason).toContain("critical path");
   });

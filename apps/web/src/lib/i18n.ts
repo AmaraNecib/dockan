@@ -498,6 +498,16 @@ const resources = {
       purchasesNewInvoice: "فاتورة جديدة",
       purchasesInvalidQuantity: "أدخل كمية صحيحة (عدد صحيح ≥ 1)",
       purchasesInvalidCost: "أدخل تكلفة وحدة صحيحة أكبر من صفر",
+      // #321 — the cart guard: the prompt names how many lines would go, so it
+      // is not the generic «unsaved changes». The count is a digit in every
+      // form, because the line the owner is reading must carry the number.
+      purchasesDiscardTitle: "تجاهل فاتورة الشراء؟",
+      purchasesDiscardDesc: "عدد أسطر الفاتورة التي ستُفقد: {{count}}. هل تريد المتابعة؟",
+      // no line yet, but the screen still holds typed work (a supplier, a note,
+      // a half-typed item): naming «0 lines» there would be a lie
+      purchasesDiscardDescNoCart: "على هذه الفاتورة عمل لم يُحفظ بعد. هل تريد المتابعة؟",
+      purchasesDiscardConfirm: "تجاهل الفاتورة",
+      purchasesDiscardStay: "البقاء في الفاتورة",
       purchasesProposalTitle: "ربط المخزون السابق",
       purchasesProposalEmpty: "ستظهر هنا كميات من مشتريات سابقة لم تُفتر بعد لتربطها بهذه الفاتورة؛ لا توجد حالياً.",
       purchasesProposalUninvoiced: "غير مُفوتر:",

@@ -37,5 +37,17 @@ export function routerMock(params: Record<string, string> = {}) {
     // PartyDetailPage navigates on delete; the stub keeps every page test from
     // needing to know about the router just to mount
     useNavigate: () => () => undefined,
+    // The navigation blocker needs a live router to hold a navigation in; a
+    // page test mounts a page, not a router, so the guard stays inert there
+    // (#321). The real module is spread first, so this is the one hook that
+    // has to be answered by hand.
+    useBlocker: () => ({
+      status: "idle" as const,
+      current: undefined,
+      next: undefined,
+      action: undefined,
+      proceed: undefined,
+      reset: undefined,
+    }),
   };
 }

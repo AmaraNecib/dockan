@@ -19,8 +19,10 @@ import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { draftBlank, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
+import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
+import { DiscardDraftDialog } from "../components/app/discard-draft-dialog";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -185,6 +187,13 @@ export function PurchasePage() {
 
   const draft = useInvoiceDraft(PURCHASE_DRAFT);
   const { lines } = draft;
+
+  /**
+   * The last control the owner touched inside the form. When the navigation is
+   * refused the caret goes back there, so the owner resumes the line he was
+   * on instead of starting again (WCAG 2.4.3).
+   */
+  const lastFocusRef = useRef<HTMLElement | null>(null);
 
   function requestFocus(kind: FocusRequest["kind"], itemId: string) {
     focusSeqRef.current += 1;
@@ -398,6 +407,42 @@ export function PurchasePage() {
     setError,
   });
 
+  /**
+   * #321 — what a navigation would throw away on this screen. The cart is the
+   * obvious part; a typed supplier, a note, a half-typed quick-add item and an
+   * open line-create form are work too, and they die with the cart without ever
+   * being re-derivable.
+   *
+   * These gates stay raw `.trim()` on purpose, the sale screen's rule (#244):
+   * this is an unsaved-work indicator, not a value decision — a pasted bidi
+   * mark IS work the discard prompt must keep.
+   *
+   * `savedInvoice === null` bounds the gate to the render where the form is on
+   * screen: the success card is not a draft, and the quick-add bag deliberately
+   * survives a save (`keepOnCreate`), so counting it once the invoice landed
+   * would ask about text the owner can no longer see.
+   */
+  const quickDraft =
+    quick.fields.name.trim() !== "" ||
+    quick.fields.barcode.trim() !== "" ||
+    quick.fields.sellPrice.trim() !== "" ||
+    quick.fields.unitCost.trim() !== "";
+  const lineCreateDraft = lineDraft !== null && (lineDraft.name.trim() !== "" || lineDraft.sellPrice.trim() !== "");
+  const cartDirty =
+    savedInvoice === null &&
+    (lines.length > 0 ||
+      supplier.name.trim() !== "" ||
+      notes.trim() !== "" ||
+      payment.amount.trim() !== "" ||
+      quickDraft ||
+      lineCreateDraft);
+  /**
+   * The guard sits at the router, not at each link, so every way out of the
+   * screen asks the same question: a sidebar link, the header action, the
+   * browser's back button.
+   */
+  const discardGuard = useDiscardNavigationGuard({ dirty: cartDirty, lineCount: lines.length });
+
   function submit() {
     setError(null);
     // `firstCommitError` owns the check order — empty cart → party → per-line
@@ -569,7 +614,16 @@ export function PurchasePage() {
       )}
 
       {!savedInvoice && (
-        <div className="mt-4 grid gap-4" data-testid="purchase-form">
+        <div
+          className="mt-4 grid gap-4"
+          data-testid="purchase-form"
+          // the caret's home while the cart is on screen: the guard sends it
+          // back here when it refuses a navigation (#321)
+          onFocusCapture={(event) => {
+            const target = event.target;
+            lastFocusRef.current = target instanceof HTMLElement ? target : null;
+          }}
+        >
           <div className="grid gap-3 rounded border border-border bg-card p-4">
             <PartyPicker
               role="supplier"
@@ -937,6 +991,32 @@ export function PurchasePage() {
       )}
 
       <ItemPickerDialog open={pickerTarget !== null} onClose={() => setPickerTarget(null)} onSelect={pickItem} />
+
+      {/* The cart guard (#321). It sits outside the form on purpose: the form
+          records the caret's home, and a dialog inside it would overwrite that
+          record with its own button the moment it opens. */}
+      <DiscardDraftDialog
+        open={discardGuard.blocked}
+        onOpenChange={(open) => {
+          // Escape or a backdrop click is the owner refusing: the navigation
+          // is cancelled and the cart stays exactly as it was.
+          if (!open) discardGuard.stay();
+        }}
+        onConfirm={discardGuard.discard}
+        title={t("purchasesDiscardTitle")}
+        // the line count is only honest while there are lines; a typed
+        // supplier with no line yet would otherwise be «0 lines would be lost»
+        description={
+          discardGuard.lineCount > 0
+            ? t("purchasesDiscardDesc", { count: discardGuard.lineCount })
+            : t("purchasesDiscardDescNoCart")
+        }
+        confirmLabel={t("purchasesDiscardConfirm")}
+        cancelLabel={t("purchasesDiscardStay")}
+        confirmTestId="purchase-discard-confirm"
+        cancelTestId="purchase-discard-stay"
+        finalFocus={() => lastFocusRef.current}
+      />
     </section>
   );
 }

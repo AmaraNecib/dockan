@@ -199,7 +199,7 @@ repository, and it is paid for once per PR.
 | Scope | The modules the diff touches and their direct callers. No repo-wide sweep. |
 | Output | At most five candidates, each with a deletion-test verdict and one sentence of change. |
 | Chat | The report path goes in the PR comment; the HTML is never pasted back into the conversation. |
-| Re-runs | One, and only after the code changed: the fold is reviewed at the final head. Findings are folded once, and the lenses check the fold. |
+| Re-runs | Two passes: one on the head Greptile scored, one on the head that carries the fold. The second is spent only when the fold changed code — a fold that changed nothing leaves the first pass describing the tree. |
 | Default | No seam moved means no report at all — the one-line form costs one sentence. |
 
 **What a measured run returns.** On PR #291 the review produced five candidates: two that the

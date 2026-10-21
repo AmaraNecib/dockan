@@ -48,7 +48,7 @@ import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
-import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntryRule, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
+import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
@@ -67,8 +67,9 @@ const duplicateKeyRefusal = (error: Error): SupplierAdjustmentError | null =>
 
 /**
  * #317 — the SQL face of `SUPPLIER_ENTRY_RULES`, built from that table so the
- * store cannot restate a sign the ledger owns. One pass over the table emits three
- * fragments, for one alias:
+ * store cannot restate a sign the ledger owns. One pass over the table builds the
+ * `total` fragment for one alias — the signable predicate and the signed amount
+ * are inlined into it, so `SupplierSignFragments` has one field, not three:
  *
  *   - the signed amount: one `CASE` arm per rule, with `ELSE NULL` for a row the
  *     table cannot sign — an unknown kind (no CHECK restricts `kind` to the five
@@ -187,12 +188,11 @@ const assertAdjustmentDirection = (
   direction: SupplierAdjustmentDirection | null | undefined,
   supplierId: string | null = null,
 ): void => {
-  const rule = supplierEntryRule(kind);
-  if (rule === undefined) throw new UnsignableSupplierEntryError({ kind, direction: direction ?? null, supplierId });
-  if (!rule.directionRequired) return;
-  if (direction === null || direction === undefined || !Object.hasOwn(rule.directions, direction)) {
-    throw new UnsignableSupplierEntryError({ kind, direction: direction ?? null, supplierId });
-  }
+  // The predicate is the ledger's, not a second copy of it: `supplierEntrySign`
+  // already refuses an unknown kind and a direction the table cannot use for
+  // that kind. Walking the table here too meant two traversals of one table, and
+  // this is the copy that can persist a wrong sign.
+  void supplierEntrySign(kind, direction ?? null, null, supplierId);
 };
 
 const now = () => localDateTime();

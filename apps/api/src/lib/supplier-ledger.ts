@@ -9,8 +9,15 @@
 /** #258 — the number format lives in one place: a legacy INV-0001 and a new
  * SUP-0002 order by their trailing digits. */
 import { documentNumberSequence as invoiceSequence } from "./document-number";
+import type { SupplierEntryKind } from "@dokan/contracts";
 
-export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "ADJUSTMENT";
+/** The wire union, imported rather than restated. It was hand-declared here, and
+ * that copy is what the table's `satisfies` checked — so adding a kind to
+ * `supplierEntryKinds` left this table silently unexhaustive: the compiler
+ * complained at seven assignment sites instead of naming the missing row, and a
+ * reader could satisfy those without ever opening the table. The guard is only a
+ * guard when it keys off the union every other package already reads. */
+export type { SupplierEntryKind } from "@dokan/contracts";
 
 /** The direction of a manual adjustment (issue 176). «يسالنا» (WE_OWE) = he asks
  * us: the shop owes the supplier more, money leaves us; «نسالوه» (THEY_OWE) = we

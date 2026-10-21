@@ -163,8 +163,16 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     // cookie exists (#319). The rule itself lives in `session.ts`, one copy,
     // and the RPC seam asks the same one. See `vaultOriginGate` for why a
     // loopback origin is not enough and why broker mode is exempt.
+    //
+    // The code is the seam's code, not the peer's (#319 round 3): a foreign
+    // origin is `VAULT_ORIGIN_FORBIDDEN`, the same string the RPC seam throws,
+    // because it is the same rule and the same refusal. `VAULT_LOOPBACK_REQUIRED`
+    // stays the answer to the OTHER question one line up — the peer address is
+    // not loopback — which no origin can describe. One rule, one code, and one
+    // sentence for each: a request from `127.0.0.1` on another port is loopback
+    // and used to be told it was not.
     if (requiresLoopback(c.req.path) && vaultOriginGate(c.req.raw, { broker: deps.config.vaultBroker }) === "foreign-origin") {
-      return errorResponse("VAULT_LOOPBACK_REQUIRED", 403);
+      return errorResponse("VAULT_ORIGIN_FORBIDDEN", 403);
     }
     return next();
   });

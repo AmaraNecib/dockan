@@ -1,8 +1,11 @@
 import { afterEach, describe, expect } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+
+import { serve } from "@hono/node-server";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
@@ -1156,7 +1159,11 @@ describe("one unlocked vault shared between windows (#319)", () => {
     });
     expect(setup.status).toBe(403);
     // SAFETY: the error contract is { error: { code } }
-    expect((await json<{ error: { code: string } }>(setup)).error.code).toBe("VAULT_LOOPBACK_REQUIRED");
+    // one rule, one code: a foreign origin is VAULT_ORIGIN_FORBIDDEN here and
+    // at the RPC seam. VAULT_LOOPBACK_REQUIRED answers the other question (the
+    // peer is not loopback), and this peer IS loopback, so the old code told
+    // the owner to open Dokan on a machine they were already on (#319 round 3).
+    expect((await json<{ error: { code: string } }>(setup)).error.code).toBe("VAULT_ORIGIN_FORBIDDEN");
     expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(false);
 
     const owner = await setupVault(h);
@@ -1168,7 +1175,7 @@ describe("one unlocked vault shared between windows (#319)", () => {
     expect(read.status).toBe(403);
     // SAFETY: the error contract is { error: { code } }
     const readBody = await json<{ error: { code: string }; keys?: unknown }>(read);
-    expect(readBody.error.code).toBe("VAULT_LOOPBACK_REQUIRED");
+    expect(readBody.error.code).toBe("VAULT_ORIGIN_FORBIDDEN");
     expect(readBody.keys).toBeUndefined();
 
     // a cross-origin write with the cookie changes nothing: the passphrase it
@@ -1276,7 +1283,7 @@ describe("the origin gate at both seams (#319 round 2)", () => {
       });
       expect(other.status, origin).toBe(403);
       // SAFETY: the error contract is { error: { code } }
-      expect((await json<{ error: { code: string } }>(other)).error.code, origin).toBe("VAULT_LOOPBACK_REQUIRED");
+      expect((await json<{ error: { code: string } }>(other)).error.code, origin).toBe("VAULT_ORIGIN_FORBIDDEN");
     }
 
     // and the write path that mattered: no RPC runs as the owner from that page
@@ -1310,14 +1317,174 @@ describe("the origin gate at both seams (#319 round 2)", () => {
 });
 
 /**
+ * Round 3 — the same gate with `Host` as the INPUT (test-audit P2).
+ *
+ * Every case above drives `app.request(absoluteUrl)`, so the only host
+ * `addressedHost` ever parsed was one the test itself wrote into the URL. The
+ * gate's whole claim is that it judges the host the CLIENT addressed, and only
+ * a real listener can produce that: `@hono/node-server` builds `request.url`
+ * from the incoming `Host` header (`newRequest` in its `request.js`). So these
+ * tests bind the gate the api binds, on an ephemeral port, and speak HTTP/1.1
+ * at it with each header spelled as the case needs. No session is involved:
+ * `GET /api/vault/recovery-keys` runs the loopback peer check and the origin
+ * gate before it looks for a credential, so the answer is 403 (refused) or 401
+ * (same origin, no session).
+ *
+ * The three shapes here were unproven and load-bearing: a port-less loopback
+ * origin against our own port, a Host the transport cannot parse (or none at
+ * all), and the INERT direction of `x-forwarded-host` — the header must be
+ * ignored, not merely tolerated while absent.
+ */
+describe("the origin gate with Host as the input (#319 round 3)", () => {
+  type Listener = { port: number; close: () => void };
+
+  /** Bind this harness's gate on an ephemeral loopback port, as main.ts does. */
+  function listen(h: GateHarness): Promise<Listener> {
+    return new Promise((resolve, reject) => {
+      const server = serve(
+        // `fetch(request, env)`, the shape main.ts uses for the real handler: the
+        // server socket env rides along because the loopback peer guard reads it
+        { fetch: (request, env) => h.gate.fetch(request, env), port: 0, hostname: "127.0.0.1" },
+        (info) => resolve({ port: info.port, close: () => server.close() }),
+      );
+      server.on("error", reject);
+    });
+  }
+
+  type RawReply = { status: number; body: string };
+
+  /**
+   * One HTTP/1.1 request with the headers written verbatim. `omitHost`
+   * suppresses the header Node would otherwise add, which is how the absent-Host
+   * case is produced; a supplied `host` value is sent exactly as written.
+   */
+  function raw(port: number, headers: Record<string, string>, omitHost = false): Promise<RawReply> {
+    return new Promise((resolve, reject) => {
+      const request = http.request(
+        { host: "127.0.0.1", port, path: "/api/vault/recovery-keys", method: "GET", headers, setHost: !omitHost },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+  }
+
+  /** The refusal code a body carries, or undefined when it is not a vault envelope. */
+  function refusalCode(body: string): string | undefined {
+    try {
+      // SAFETY: the vault routes answer `{ error: { code } }` by contract; a
+      // body that is not JSON throws into the catch below, and a JSON body with
+      // no envelope reads as no code
+      const parsed = JSON.parse(body) as { error?: { code?: string } };
+      return parsed.error?.code;
+    } catch {
+      return undefined;
+    }
+  }
+
+  itHeavy("refuses a port-less loopback Origin against our own port", async () => {
+    const h = harness(tempDir("dokan-vault-origin-host-portless-"));
+    const listener = await listen(h);
+    try {
+      // positive control: the full own origin is accepted, and the answer is the
+      // missing session, not a refusal
+      const own = await raw(listener.port, { host: `127.0.0.1:${listener.port}`, origin: `http://127.0.0.1:${listener.port}` });
+      expect(own.status).toBe(401);
+      expect(refusalCode(own.body)).toBe("VAULT_NOT_UNLOCKED");
+
+      // `http://127.0.0.1` is a DIFFERENT origin from `http://127.0.0.1:PORT`: no
+      // page can be served on a port nobody listens on, so an Origin with no port
+      // is a foreign page, not this app
+      for (const origin of ["http://127.0.0.1", "http://localhost:4399", "http://127.0.0.1:9999"]) {
+        const reply = await raw(listener.port, { host: `127.0.0.1:${listener.port}`, origin });
+        expect(reply.status, origin).toBe(403);
+        expect(refusalCode(reply.body), origin).toBe("VAULT_ORIGIN_FORBIDDEN");
+      }
+      expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(false);
+    } finally {
+      listener.close();
+    }
+  });
+
+  itHeavy("fails closed on a Host the transport cannot parse, and on none at all", async () => {
+    const h = harness(tempDir("dokan-vault-origin-host-malformed-"));
+    const listener = await listen(h);
+    try {
+      // No Host header at all: HTTP/1.1 has no destination to judge, and the
+      // transport refuses it before the gate — 400 and no vault envelope. A
+      // request whose destination is unstateable must never read as same-origin.
+      const absent = await raw(listener.port, { origin: `http://127.0.0.1:${listener.port}` }, true);
+      expect(absent.status).toBe(400);
+      expect(refusalCode(absent.body)).toBeUndefined();
+
+      // A Host a proxy concatenated onto the real one ("host:port, proxy"): also
+      // refused by the transport, never parsed into a host the gate would bless
+      const malformed = await raw(listener.port, {
+        host: `127.0.0.1:${listener.port}, proxy`,
+        origin: `http://127.0.0.1:${listener.port}`,
+      });
+      expect(malformed.status).toBe(400);
+      expect(refusalCode(malformed.body)).toBeUndefined();
+
+      // Neither refusal reached the gate, and neither wrote anything
+      expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(false);
+    } finally {
+      listener.close();
+    }
+  });
+
+  itHeavy("ignores x-forwarded-host: our own origin passes with an attacker-set value", async () => {
+    const h = harness(tempDir("dokan-vault-origin-host-forwarded-"));
+    const listener = await listen(h);
+    try {
+      // the INERT direction. A gate that honoured this header would read the host
+      // it was handed; on our own origin the same header must change nothing
+      const inert = await raw(listener.port, {
+        host: `127.0.0.1:${listener.port}`,
+        origin: `http://127.0.0.1:${listener.port}`,
+        "x-forwarded-host": "evil.example:4399",
+      });
+      expect(inert.status).toBe(401);
+      expect(refusalCode(inert.body)).toBe("VAULT_NOT_UNLOCKED");
+
+      // ... and it does not decide a refusal either: a foreign origin stays
+      // foreign whatever the header claims, so the header is ignored rather than
+      // merely harmless when absent
+      const foreign = await raw(listener.port, {
+        host: `127.0.0.1:${listener.port}`,
+        origin: "http://evil.example:4399",
+        "x-forwarded-host": `127.0.0.1:${listener.port}`,
+      });
+      expect(foreign.status).toBe(403);
+      expect(refusalCode(foreign.body)).toBe("VAULT_ORIGIN_FORBIDDEN");
+    } finally {
+      listener.close();
+    }
+  });
+});
+
+/**
  * Round 2 — one live session, and the server as its arbiter.
  *
  * The browser applies a `Set-Cookie` whatever the page decided, so a minting
  * reply that was overtaken while it was in flight used to overwrite the LIVE
  * cookie with a revoked one: window A's slow delete reply landing after window
  * B's unlock signed every window out. The page's generation guard cannot reach
- * that, because it never sees the header. The tests below reverse the replies,
- * which is the ordering the sequential tests cannot produce.
+ * that, because it never sees the header.
+ *
+ * How the overtaking is produced here: the harness's `afterCredentialChange`
+ * hook — which the delete route awaits BEFORE it builds its reply — calls
+ * `manager.unlock` directly, so the second session is minted while the first
+ * reply is still being built. That is the same interleaving a slow reply has,
+ * without needing two HTTP clients. No cookie jar is applied anywhere in this
+ * file: these tests read the `Set-Cookie` header the server produced and decide
+ * from that. The client half — a real browser applying a late `Set-Cookie` — is
+ * NOT covered; the server-side rule is what this file pins, and a browser cannot
+ * be told a header it already applied is stale.
  */
 describe("the server arbitrates the one live session (#319 round 2)", () => {
   const jsonHeaders = { "content-type": "application/json" };
@@ -1334,8 +1501,8 @@ describe("the server arbitrates the one live session (#319 round 2)", () => {
     const holder: ManagerHolder = {};
     const h = harness(tempDir("dokan-vault-late-mint-"), {
       afterCredentialChange: async () => {
-        // window B unlocks while THIS delete reply is still being built. Both
-        // windows share one cookie jar, so B's Set-Cookie is already in it.
+        // window B unlocks while THIS delete reply is still being built: the
+        // hook runs after the rotation and before the reply is assembled
         await holder.manager?.unlock("correct horse battery");
       },
     });
@@ -1353,7 +1520,7 @@ describe("the server arbitrates the one live session (#319 round 2)", () => {
     // the delete itself happened: the reply is not a failure
     expect(h.manager.metadata().wraps.filter((wrap) => wrap.kind === "recovery")).toHaveLength(1);
     // the delete minted before+1, B minted before+2, and the LATE reply must
-    // install nothing at all — so B's live cookie is still in the jar
+    // install nothing at all — so the credential a browser holds is still B's
     expect(h.manager.sessionEpoch()).toBe(before + 2);
     expect(slow.headers.get("set-cookie")).toBeNull();
     // SAFETY: the rotation contract carries the generation
@@ -1378,6 +1545,66 @@ describe("the server arbitrates the one live session (#319 round 2)", () => {
     expect(body.sessionGeneration).toBe(h.manager.sessionEpoch());
   });
 
+  /**
+   * A minting reply that lands AFTER the credential was dropped. The generation
+   * is what "still live" means, so dropping the token has to move it. The tests
+   * below drop it two ways — a logout and a lock — and require that the late
+   * reply installs no credential at all.
+   */
+  itHeavy("installs nothing when a minting reply lands after the owner logged out (round 3)", async () => {
+    const holder: ManagerHolder = {};
+    const h = harness(tempDir("dokan-vault-mint-after-logout-"), {
+      afterCredentialChange: async () => {
+        // the owner logs out while THIS delete reply is still being built
+        holder.manager?.revokeSession();
+      },
+    });
+    holder.manager = h.manager;
+    const setup = await setupVault(h);
+    const added = await h.manager.addRecoveryKey();
+    const before = h.manager.sessionEpoch();
+
+    const late = await h.gate.request(`/api/vault/recovery-keys/${added.id}`, {
+      method: "DELETE",
+      headers: { "x-vault-session": sessionTokenFrom(setup) },
+    });
+    expect(late.status).toBe(200);
+    // the delete itself happened: only the credential it would install is lost
+    expect(h.manager.metadata().wraps.filter((wrap) => wrap.kind === "recovery")).toHaveLength(1);
+    // the reply installs NO credential: the cookie is what the browser would
+    // apply, and the token behind it is one the server no longer holds
+    expect(late.headers.get("set-cookie")).toBeNull();
+    // the rotation minted before+1 and the logout moved the epoch again, so the
+    // reply can only be the arbitrated-out one
+    expect(h.manager.sessionEpoch()).toBe(before + 2);
+    // SAFETY: the rotation contract carries the generation
+    expect((await json<{ sessionGeneration: number }>(late)).sessionGeneration).toBe(before + 2);
+  });
+
+  itHeavy("installs nothing when a minting reply lands after the lock (round 3)", async () => {
+    const holder: ManagerHolder = {};
+    const h = harness(tempDir("dokan-vault-mint-after-lock-"), {
+      afterCredentialChange: async () => {
+        // the vault locks (no master key) while the reply is still being built
+        holder.manager?.close();
+      },
+    });
+    holder.manager = h.manager;
+    const setup = await setupVault(h);
+    const added = await h.manager.addRecoveryKey();
+    const before = h.manager.sessionEpoch();
+
+    const late = await h.gate.request(`/api/vault/recovery-keys/${added.id}`, {
+      method: "DELETE",
+      headers: { "x-vault-session": sessionTokenFrom(setup) },
+    });
+    expect(late.status).toBe(200);
+    expect(late.headers.get("set-cookie")).toBeNull();
+    expect(h.manager.sessionEpoch()).toBe(before + 2);
+    // SAFETY: the rotation contract carries the generation
+    expect((await json<{ sessionGeneration: number }>(late)).sessionGeneration).toBe(before + 2);
+  });
+
   itHeavy("authorises exactly one of two racing unlocks, and never installs a dead cookie", async () => {
     const h = harness(tempDir("dokan-vault-racing-unlock-"));
     expect((await setupVault(h)).status).toBe(200);
@@ -1390,16 +1617,17 @@ describe("the server arbitrates the one live session (#319 round 2)", () => {
 
     const both = await Promise.all([unlockReply(), unlockReply()]);
     expect(both.map((reply) => reply.status)).toEqual([200, 200]);
-    // whatever a reply installed is LIVE: the loser of the race installs
-    // nothing rather than a token the winner already revoked
+    // EXACTLY one reply installs: the loser of the race installs nothing rather
+    // than a token the winner already revoked. The earlier form accepted zero
+    // (so a server that never handed out a credential passed) and its liveness
+    // arm had a `: true` branch that could not fail.
     const installed = both
       .filter((reply) => reply.headers.get("set-cookie") !== null)
       .map((reply) => sessionTokenFrom(reply));
-    expect(installed.length).toBeLessThanOrEqual(1);
+    expect(installed).toHaveLength(1);
+    // and what it installed is LIVE: exactly one session exists, so the racing
+    // unlock neither widens nor empties it
     for (const token of installed) expect(h.manager.sessionMatches(token)).toBe(true);
-    // exactly one session exists: whichever token is live is the only one that
-    // authorises, so the racing unlock neither widens nor empties the session
-    expect(installed.length === 1 ? h.manager.sessionMatches(installed[0] ?? "") : true).toBe(true);
   });
 
   itHeavy("a broker-configured RPC seam ignores a cookie entirely (test-audit round 2)", async () => {

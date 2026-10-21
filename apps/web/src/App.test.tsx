@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
 import { storeVaultSessionToken } from "./lib/vault-client";
-import { clearAuthLost, markAuthLost } from "./lib/auth-refusal";
+import { clearAuthLost, markAuthLost, markSignedOut } from "./lib/auth-refusal";
 import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
@@ -522,6 +522,99 @@ describe("a session that died under a live window (#319)", () => {
     expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
     // and nothing rotated it: an unlock request would have replaced the cookie
     expect(vaultCalls).not.toContain("POST /api/vault/unlock");
+  });
+
+  it("ignores a refusal probe that was read before the owner unlocked (#319 round 3)", async () => {
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+
+    // The re-probe's answer is HELD, so it can be delivered after the unlock.
+    // It is the world before the unlock: this request's credential was dead.
+    let releaseProbe: (() => void) | undefined;
+    const probeGate = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
+    });
+    let probeReads = 0;
+    vaultStatusResponse = async () => {
+      probeReads += 1;
+      await probeGate;
+      return deadSession();
+    };
+
+    await act(async () => {
+      markAuthLost();
+    });
+    for (let attempt = 0; attempt < 50 && probeReads === 0; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    // the probe left while the unlock screen was up
+    expect(probeReads).toBe(1);
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+
+    // the owner unlocks with the probe still in flight
+    const passphrase = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    if (passphrase === null) throw new Error("the gate rendered no passphrase input");
+    setInputValue(passphrase, "correct horse battery");
+    await submitForm(host);
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector('[data-testid="owner-content"]') !== null) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+
+    // ... and only now does the pre-unlock answer land. It describes a session
+    // that no longer exists, so applying it would put the gate back on top of an
+    // open vault for up to a poll interval.
+    releaseProbe?.();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
+  });
+
+  it("keeps the unlock screen for a sign-out the server never confirmed (#319 round 3)", async () => {
+    // The state `logout.ts` creates when the revoke FAILS: the page gives up its
+    // own copy, cannot disable an `HttpOnly` cookie, and records the sign-out as
+    // its own reason. `logout.test.ts` proves that at the module boundary; what
+    // was never proven is what `RequireSession` does with it — and the fixture
+    // here is the dangerous case, a server that still reports this request's
+    // credential as LIVE (the mount fixture is `session: true`). A live cookie
+    // must not undo a sign-out the server could not confirm.
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    const statusReads = (): number => vaultCalls.filter((call) => call === "GET /api/vault/status").length;
+    const readsBefore = statusReads();
+
+    await act(async () => {
+      markSignedOut();
+    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector('[data-testid="vault-passphrase"]') !== null) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+
+    // the re-probe ran, and the server answered "live" — the answer that must
+    // NOT recover a sign-out
+    for (let attempt = 0; attempt < 50 && statusReads() === readsBefore; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(statusReads()).toBeGreaterThan(readsBefore);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
+    // the unlock screen stays: only the owner's own unlock may leave it
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
   });
 });
 

@@ -83,6 +83,22 @@ export function useVaultStatus(): VaultHook {
   const [status, setStatus] = useState<VaultStatus | undefined>(undefined);
   const [failure, setFailure] = useState<VaultFailure | undefined>(undefined);
   const aliveRef = useRef(true);
+  /**
+   * How many status answers this hook has applied. It is what makes a READ
+   * stale-able (#319 round 3): the owner's unlock installs a status of its own
+   * (`setStatus`, from `onUnlocked`), and a read that was issued BEFORE that
+   * unlock describes a world that no longer exists. Applying it would put the
+   * gate back for up to `VAULT_REFUSAL_POLL_MS` with the vault wide open — the
+   * refusal probe in `App.tsx` is exactly that shape: its request leaves while
+   * the screen is up, the owner unlocks, and then the pre-unlock answer lands.
+   */
+  const appliedRef = useRef(0);
+
+  /** Apply an answer, and mark it the newest one this hook knows. */
+  const settle = useCallback((next: VaultStatus): void => {
+    appliedRef.current += 1;
+    setStatus(next);
+  }, []);
 
   /**
    * Read the status once.
@@ -93,16 +109,24 @@ export function useVaultStatus(): VaultHook {
    * loading screen while `failure` is undefined, so the sentence and the retry
    * button disappeared and came back every poll, and the keyboard focus that
    * was on the button was dropped with them.
+   *
+   * The answer is only applied if nothing newer has been applied since the read
+   * started, and resolves `undefined` when it was overtaken: a caller that has
+   * to DECIDE on the answer (the refusal re-probe) must not decide on one the
+   * page has already moved past.
    */
   const load = useCallback(async (): Promise<VaultStatus | undefined> => {
+    const appliedAtStart = appliedRef.current;
     try {
       const result = await fetchVaultStatus();
+      // a local answer (an unlock) landed while this read was in flight
+      if (appliedAtStart !== appliedRef.current) return undefined;
       if (!aliveRef.current) return result;
-      setStatus(result);
+      settle(result);
       setFailure(undefined);
       return result;
     } catch (reason) {
-      if (aliveRef.current) {
+      if (aliveRef.current && appliedAtStart === appliedRef.current) {
         const code = reason instanceof VaultRequestError ? reason.code : "VAULT_UNREACHABLE";
         const mapped = VAULT_STATUS_FAILURES.get(code) ?? "unreachable";
         // the recycled-pid flag only ever refines the lock refusal: it must not
@@ -112,7 +136,7 @@ export function useVaultStatus(): VaultHook {
       }
       return undefined;
     }
-  }, []);
+  }, [settle]);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -135,7 +159,7 @@ export function useVaultStatus(): VaultHook {
     return () => clearInterval(timer);
   }, [failure, load]);
 
-  return { status, failure, setStatus, refresh: load };
+  return { status, failure, setStatus: settle, refresh: load };
 }
 
 /** A form-level error announced through role="alert". */

@@ -236,6 +236,14 @@ export function resolveVaultCredential(
   const cookie = readVaultSessionCookie(request);
   if (cookie === undefined) {
     if (header === null || header === "") return { kind: "none" };
+    // This branch does NOT ask the origin gate, deliberately. The clients that
+    // hold this token and no cookie are the non-browser ones (curl, the e2e
+    // helpers, the dev tooling) and they send no `Origin`; a page cannot reach
+    // it either, because a cross-origin `x-vault-session` is not a simple
+    // request and needs a preflight this server never answers. What it leaves
+    // open is the local-SERVER replay the ADR records beside #343: a process on
+    // this box sets any `Origin` it likes — and it needs the token first. Stated
+    // in docs/adr/0013-shared-vault-session.md, in Consequences.
     return { kind: "credential", token: header, carrier: "header" };
   }
   if (vaultOriginGate(request, options) === "foreign-origin") return { kind: "refused", reason: "foreign-origin" };

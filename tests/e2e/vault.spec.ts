@@ -317,6 +317,52 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
 });
 
+test("the browser's own Host survives the dev proxy, and an unlock through vite still lands in the app (#319 round 3)", async ({ page, request }) => {
+  // `apps/web/vite.config.ts` sets `changeOrigin: false`, and NOTHING failed if a
+  // future edit (or a `proxy_set_header Host $proxy_host`) rewrote the header:
+  // the api would then address every proxied request on its OWN port, every
+  // browser write would look like a foreign origin, and the round-1 bug would be
+  // back silently. This test is the one that can tell the two apart, because the
+  // api's origin gate compares the page's `Origin` with the host it was
+  // ADDRESSED on — so the pair below inverts if the proxy rewrites `Host`.
+  //
+  // No cookie and no session are involved: `GET /api/vault/recovery-keys` runs the
+  // loopback peer check and the origin gate before it looks for a credential, so
+  // the answer is 401 for same-origin and 403 for a foreign one.
+  const ownOrigin = await request.get(`http://127.0.0.1:${WEB_PORT}/api/vault/recovery-keys`, {
+    headers: { origin: `http://127.0.0.1:${WEB_PORT}` },
+  });
+  expect(ownOrigin.status()).toBe(401);
+  // SAFETY: the vault routes answer `{ error: { code } }` by contract
+  expect(((await ownOrigin.json()) as { error?: { code?: string } }).error?.code).toBe("VAULT_NOT_UNLOCKED");
+
+  // the same request naming the API's port is a FOREIGN origin: the api judged
+  // the host the browser addressed (the web port), not the one it listens on
+  const apiOrigin = await request.get(`http://127.0.0.1:${WEB_PORT}/api/vault/recovery-keys`, {
+    headers: { origin: `http://127.0.0.1:${API_PORT}` },
+  });
+  expect(apiOrigin.status()).toBe(403);
+  // SAFETY: same contract as above: a refusal carries a stable code
+  expect(((await apiOrigin.json()) as { error?: { code?: string } }).error?.code).toBe("VAULT_ORIGIN_FORBIDDEN");
+
+  // And the real flow through the proxy: this window has no cookie (a fresh
+  // context), so the unlocked vault sends it to the unlock screen; the unlock
+  // POST carries the browser's `Origin` and mints the credential on the reply.
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await expect(page.getByTestId("vault-passphrase")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+  await page.getByTestId("vault-passphrase").fill(NEW_PASSPHRASE);
+  await page.getByTestId("vault-unlock-submit").click();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+
+  // the minted cookie is the credential the app then works on: a reload asks the
+  // api again (through the proxy, with the browser's own jar) and lands in the
+  // app instead of the gate — which only holds if the unlock reply's `Set-Cookie`
+  // arrived and the api accepts the session it minted for this window
+  await page.reload();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+  await expect(page.getByTestId("vault-passphrase")).toHaveCount(0);
+});
+
 test("a second instance on this folder: the browser is told the folder is in use (#276)", async ({ page }) => {
   // The first instance above still holds the folder, so this child cannot take
   // the lock and serves the refusal on its own port (ADR-0012). Its /api/vault

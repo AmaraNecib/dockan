@@ -221,6 +221,37 @@ describe("the broker path keeps its token across a webview reload (#319 review P
     // the in-memory copy still signs this page's calls (the header fallback)
     expect(readVaultSessionToken()).toBe("should-not-persist");
   });
+
+  /**
+   * The browser-path guarantee with a token ALREADY planted (#319 round 3,
+   * test-audit P1). The tests above never wrote a token, so "there is nothing in
+   * storage" was true because nothing had put one there — deleting
+   * `brokerStorage()`'s `brokerAvailable()` guard left them all green. This one
+   * plants the exact key a Tauri build would have written and requires the
+   * browser path to ignore it twice over: it never becomes this page's
+   * credential, and the value is left exactly as it was found.
+   */
+  it("ignores a token already in storage when this is a plain browser", () => {
+    // SAFETY: no `__TAURI_INTERNALS__` is the browser path; the delete in
+    // afterEach keeps that true for the next test
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    window.sessionStorage.setItem("dokan.vault.session", "planted-token");
+    window.sessionStorage.setItem("dokan.vault.session-generation", "7");
+
+    // not adopted: a page that cannot be trusted with a token must not borrow one
+    expect(readVaultSessionToken()).toBeUndefined();
+    // and not "cleaned up" either: a read is a read, and the path that may not
+    // write must not write
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBe("planted-token");
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBe("7");
+
+    // storing a newer generation does not rewrite the planted one either
+    storeVaultSessionToken("browser-token", 9);
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBe("planted-token");
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBe("7");
+    // the token this page holds is its own, in memory only
+    expect(readVaultSessionToken()).toBe("browser-token");
+  });
 });
 
 describe("vault status and logout", () => {

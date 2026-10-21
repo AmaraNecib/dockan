@@ -157,16 +157,19 @@ whether the debate happens. Run them in that order, each as its own sub-agent,
 before the lane reports.
 
 - **The lenses run on a different model than the author.** Author lanes run
-  `opencode-go/deepseek-v4.1-flash`; the three lenses run
+  `zen-proxy/deepseek-v4.1-flash-free`; the three lenses run
   `zen-proxy/minimax-m3.1-flash-free`. A model reviewing its own diff shares the blind spots the
   lens exists to catch, so the reviewer is never the author. The owner named these two on
-  2026-10-19 after the free tier began refusing this box's IP: the author model is a paid one on the
-  OpenCode Go subscription, the lens model is free, reached through `zen-proxy`. The same MiniMax
+  2026-10-19, when the author model was the paid `opencode-go/deepseek-v4.1-flash` on the OpenCode
+  Go subscription; that route left the catalogue, so the author lanes moved to the free DeepSeek
+  route and the split is now a rule about the *model* rather than about who pays. The same MiniMax
   model is advertised as `opencode-go/minimax-m3.1-flash-free`, but that route answered a CLI probe
   and then returned `404 status code (no body)` from a real sub-agent run, so use the `zen-proxy`
   one. `zen-proxy/beam-free` is the next free reviewer to reach for when MiniMax is down or a round
-  wants a third opinion. Free lenses have no parallelism cap, so a review round can go as wide as
-  the work needs; DeepSeek is the fallback when a free route fails.
+  wants a third opinion, then `zen-proxy/glm-5.3-flash-free` and `zen-proxy/mimo-v2.6-flash-free`.
+  A DeepSeek route is not a lens fallback any more: it is the author model, and a lens on the
+  author's model reviews its own diff. Free lenses have no parallelism cap, so a review round can
+  go as wide as the work needs.
 - **Every reviewed change gets two reviews: the author's own, and an
   independent one** (owner decision, 2026-10-20). The **author review** is a short
   account written by the author's model in a fresh session that reads the diff: what

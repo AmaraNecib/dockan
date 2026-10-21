@@ -6,7 +6,7 @@
   `test-*`, `chore-*`, `docs-*`, …) works in its own worktree and commits its diff. Its
   completion wakes the parent; there is no report tool to call. It **never** runs
   `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
-  `feature-implement` step 10 is parent-only.
+  `feature-implement` step 11 is parent-only.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
   lane's branch, opens the PR, requests Greptile review, drives the rounds, and
   merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
@@ -50,6 +50,19 @@ they no longer have to be serialized across lanes (#202).
 `isolation: "worktree"` checks out the work from the parent's local commit, runs project setup,
 and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,
 none to close afterwards, and the completion arrives by itself instead of being polled.
+
+**Never pi's native `subagent` tool for a lane.** It runs the child inside the pi process, and T3
+Code's lineage panel lists only app-owned child threads — so the owner sees no lane, concludes
+nothing is happening, and cannot steer or stop work that does exist. Inside a T3 thread every lane
+is `delegate_task`, with its model from `orchestrator_capabilities`, `mode: "async"` for anything
+that runs minutes, and one stable `clientRequestId` per lane. The native tool is the fallback only
+when `delegate_task` is missing from the toolset, and that reply says the children will not show up
+in lineage. Lineage is the default view for every
+child, so `delegate_task` is the mechanism for all of them — a one-line probe included. A T3 child is
+its own `pi.exe` process with its own context: **6 ordinary lanes at once is the default** (the owner may raise it for
+a session), while **heavy work — a full suite, `test:e2e`, a build, a browser agent — is 2 or 3 at
+once across every thread**, through the slot queue. The tighter limit on lanes is the files they
+edit, not their count.
 
 A top-level thread (`t3_thread_launch`) is for the one case a fresh worktree cannot serve:
 **resuming work that only exists uncommitted** in an existing worktree. That is the fallback for a
@@ -123,14 +136,17 @@ you are in — do not improvise a process.**
 | Any code-changing issue, start to finish | `feature-implement` (the lifecycle orchestrator — read it first) |
 | Design conversation before code | `grill-with-docs` |
 | Review round, in order | `debate` → `test-audit` → `code-review` |
+| After Greptile's 5/5, before the merge | `improve-codebase-architecture` (parent only; the deep pass when a module, seam, adapter or interface changed) |
 | Before the push | `guard` |
 | Greptile, either path | `cli-review` |
 | After a repeated failure | `capture-wisdom` (parent only) |
 | Every piece of writing, always | `unslop` |
 
-Two rules that hold across all of them: a lane **reads** wisdom and never writes it, and a
-lane **commits and reports** — it never pushes, opens a PR or merges. The parent owns those,
-plus CI, Greptile and the merge decision.
+Three rules that hold across all of them: a lane **reads** wisdom and never writes it, a lane
+**commits and reports** — it never pushes, opens a PR or merges — and `codebase-design` plus
+`domain-modeling` are **always on**, the way TDD is. They supply the words while the code is
+designed and written; the deep architecture pass after Greptile's 5/5 is only the audit that the
+habit happened. The parent owns push, CI, Greptile and the merge decision.
 
 ## Review lenses
 
@@ -151,6 +167,17 @@ before the lane reports.
   one. `zen-proxy/beam-free` is the next free reviewer to reach for when MiniMax is down or a round
   wants a third opinion. Free lenses have no parallelism cap, so a review round can go as wide as
   the work needs; DeepSeek is the fallback when a free route fails.
+- **Every reviewed change gets two reviews: the author's own, and an
+  independent one** (owner decision, 2026-10-20). The **author review** is a short
+  account written by the author's model in a fresh session that reads the diff: what
+  the change is for, which part is load-bearing, what the author knows is weak, what
+  was deliberately left out, and where the reviewer should look hardest. It is a brief
+  to the reviewer, not a verdict — it approves nothing, and it lives in the PR body so
+  the reviewer and the owner both read it.
+  The **independent review** is the three lenses below, on a different model. The
+  lenses read the author review FIRST, so the known-weak list becomes their checklist
+  and the author's claims arrive as claims to test rather than facts to agree with.
+  Order is author review → lenses → fix → both again at the new head.
 - **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
   has not run it. The parent re-runs the lens where the tool exists and records
   the disclosure.
@@ -166,6 +193,13 @@ before the lane reports.
   requires a fresh look, so no lens ever signs off on its own edit.
 
 ## Merging
+
+**Every PR this thread opens is linked and watched in the same turn** (`link_pull_request` then
+`watch_pull_request`). A watch is the only way a red check or a verdict reaches the session that can
+act on it, so it is the default rather than a favour the owner has to ask for: one watch per open PR,
+never dropped because a wait is long, and dropped **after** confirming a terminal state — `MERGED` or
+`CLOSED` — so the thread returns to their inbox. A reopened PR is watched again; a terminal one is
+never watched again.
 
 **The class decides who merges.** A lane never merges. The parent session merges a
 **cheap-to-reverse, no-decision** diff itself once the gate is clean (owner decision,
@@ -194,9 +228,11 @@ gate doc §5. A human commit carries none of them.
 
 ## Waiting on CI / Greptile
 
-Do not hand the wait back to the user. After pushing and requesting
-`@greptile-apps review`, poll in-session with `sleep`: start at ~5 minutes,
-then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
+Do not hand the wait back to the user. A PR this thread opened is watched, and the
+watch is what reports it: a red check, a new head, a verdict. Never sit in a
+`gh pr checks` loop for a watched PR — that is the same as not watching it, only
+busier. Poll only a PR nobody here watches, and then with `sleep`: start at
+~5 minutes, then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
 Greptile comment each time, until the verdict appears. Same for CI.
 
 A lane reports by finishing: its completion wakes the session. Stop and let it

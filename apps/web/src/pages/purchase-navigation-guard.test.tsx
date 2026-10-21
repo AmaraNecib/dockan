@@ -331,6 +331,45 @@ describe("purchase cart guard (issue #321)", () => {
     expect(app.container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(1);
   });
 
+  it("puts the discard question in front of an open picker, and Escape answers it", async () => {
+    // #345 review round 4 (Greptile P2) — two dialogs stacked: the picker's search
+    // field handles Escape itself, so the question must be the one that receives it.
+    const app = await mountPurchaseRouteOnBrowserHistory();
+    // the cart must hold work, or there is no blocked navigation to raise the
+    // question: typing in the PICKER's search field is not cart work
+    await addQuickLine(app.container, "2", "500");
+    await waitFor(() => document.querySelector('[data-testid="purchase-lines"]') !== null);
+    await act(async () => byTestId<HTMLButtonElement>("purchase-open-picker").click());
+    await waitFor(() => document.querySelector('[data-testid="picker-dialog"]') !== null);
+
+    const search = mustFind<HTMLInputElement>(app.container, '[data-testid="picker-dialog"] input');
+    await act(async () => typeInto(search, "بطارية"));
+
+    // a blocked navigation raises the question over the picker
+    window.history.back();
+    await waitFor(() => document.querySelector('[data-testid="purchase-discard-confirm"]') !== null);
+
+    // Escape must answer the question, not close the thing underneath it. Dispatched
+    // on the FOCUSED element, the way a browser delivers it — not on `document`,
+    // which no real Escape ever targets.
+    const focused = document.activeElement ?? document.body;
+    await act(async () => {
+      focused.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitFor(() => document.querySelector('[data-testid="purchase-discard-confirm"]') === null);
+    // what is on screen after Escape: the question answered «stay», the route did not
+    // move, and the cart is intact. The picker is closed on purpose — the question is
+    // the only dialog on screen, so Escape and the backdrop are both reachable
+    // (Greptile P2); its search text is a lookup, not cart work.
+    expect({
+      discard: document.querySelector('[data-testid="purchase-discard-confirm"]') !== null,
+      picker: document.querySelector('[data-testid="picker-dialog"]') !== null,
+      route: app.router.state.location.pathname,
+    }).toEqual({ discard: false, picker: false, route: "/purchase" });
+    expect(app.container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(1);
+  });
+
   it("asks the browser's own question on a reload, because a reload cannot be blocked", async () => {
     // #321 review round 2 — the hook's docstring claimed a reload asks the same
     // question, and nothing covered it. A reload cannot be intercepted, so the

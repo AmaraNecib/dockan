@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import { useEffect, type ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "@/components/ui/dialog";
@@ -48,6 +48,25 @@ export function DiscardDraftDialog({
   cancelTestId,
   finalFocus,
 }: DiscardDraftDialogProps) {
+  // #345 review round 4 (Greptile P2) — this question can open on top of another
+  // dialog (the purchase screen's item picker), and that one owns focus, so an
+  // Escape delivered to the focused element never reaches here and the owner has
+  // to reach for the mouse. Answering Escape in the CAPTURE phase makes the
+  // topmost question the one that answers it, whichever dialog holds the focus,
+  // and leaves the dialog underneath open with its work intact.
+  useEffect(() => {
+    if (!open) return;
+    const answerStay = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // this question is the top layer: the dialog beneath it must not consume
+      // the key, and «stay» is the answer Escape means
+      event.stopPropagation();
+      onOpenChange(false);
+    };
+    document.addEventListener("keydown", answerStay, true);
+    return () => document.removeEventListener("keydown", answerStay, true);
+  }, [open, onOpenChange]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPopup className="max-w-sm" finalFocus={finalFocus}>

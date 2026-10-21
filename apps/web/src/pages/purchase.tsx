@@ -441,6 +441,15 @@ export function PurchasePage() {
    * browser's back button.
    */
   const discardGuard = useDiscardNavigationGuard({ dirty: cartDirty, lineCount: lines.length });
+  // #345 review round 4 (Greptile P2) — one dialog at a time. The picker's layer
+  // takes Escape before the question can, so an inner dialog under the question
+  // makes Escape and the backdrop unreachable. Closing it when the question opens
+  // is deterministic; its search text is a lookup, not cart work, and the cart
+  // itself is untouched.
+  useEffect(() => {
+    if (discardGuard.blocked) setPickerTarget(null);
+  }, [discardGuard.blocked]);
+
 
   function submit() {
     setError(null);

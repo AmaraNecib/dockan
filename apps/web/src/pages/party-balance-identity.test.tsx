@@ -328,4 +328,80 @@ describe("one party, one cache identity (#323)", () => {
     expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("0");
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("900");
   });
+
+  // #323 review (Greptile P1) — the invalidation above reaches the WRITING
+  // window's cache only. A second window has its own QueryClient and no focus
+  // event is exchanged between two windows side by side, so the only thing that
+  // converges it is the bounded tick. This test proves the tick alone moves the
+  // preview: nothing invalidates this cache, the server's data changes underneath.
+  it("re-reads the party's tab on the tick, so a payment in another window lands without an invalidation", async () => {
+    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
+    renderScreens(<ReturnsPanel invoice={invoiceDetail()} refreshMs={20} />);
+    await flushAsync();
+
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("900");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("0");
+
+    // the other window records the payment: the server's answer changes and this
+    // cache is told NOTHING — no invalidateQueries, no refetch call, no focus
+    openInvoices = [];
+    const converged = await waitFor(
+      () => host.querySelector('[data-testid="returns-cash-now"]')?.textContent?.includes("900") ?? false,
+    );
+    expect(converged).toBe(true);
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("0");
+  });
+
+  // #323 review — the refusal path had no test at all, and the author review
+  // named it as the likeliest silent regression. A party with neither an id nor
+  // a usable name has no key, so the drill-down says so instead of drawing an
+  // empty invoice table.
+  it("refuses a party that has no id and no usable name, and reads nothing under a nameless key", async () => {
+    owedToUs = [summary({ counterpartyId: null, counterpartyName: "   " })];
+    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
+    const client = renderScreens(<DebtsPage />);
+    await flushAsync();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="debts-person"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(host.querySelector('[data-testid="debts-party-unidentified"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="debts-invoices"]')).toBeNull();
+    // and no read was ever issued: the nameless key is the key of every other
+    // nameless party, so a fetch under it would hand this row someone else's money
+    const nameless = client
+      .getQueryCache()
+      .findAll({ queryKey: ["debtsByParty"] })
+      .filter((query) => {
+        // SAFETY: the mocked key is ["debtsByParty", input]; the second element is
+        // the party's identity (or undefined for a key that carries none)
+        const input = query.queryKey[1] as { counterpartyId: string | null; counterpartyName: string | null } | undefined;
+        return input !== undefined && input.counterpartyId === null && input.counterpartyName === null;
+      });
+    expect(nameless.every((query) => query.state.fetchStatus === "idle" && query.state.data === undefined)).toBe(true);
+  });
+
+  // #323 review (debate lens P2) — a stored name the trim CHANGED cannot be asked
+  // for: the wire contract trims with JavaScript semantics, so the request leaves
+  // as the trimmed name and the store (sqlite TRIM, U+0020 only) answers with the
+  // UNPADDED party's invoices. Folding it into that party's key would draw one
+  // party's money under another party's label, so it is refused instead.
+  it("refuses a name the trim would change, instead of drawing the unpadded party's invoices under it", async () => {
+    owedToUs = [summary({ counterpartyId: null, counterpartyName: "زبون\u00A0" })];
+    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
+    renderScreens(<DebtsPage />);
+    await flushAsync();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="debts-person"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(host.querySelector('[data-testid="debts-party-unidentified"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="debts-invoices"]')).toBeNull();
+  });
 });

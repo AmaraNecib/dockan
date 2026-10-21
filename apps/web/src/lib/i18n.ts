@@ -566,7 +566,7 @@ const resources = {
       // #323 — a party with neither an id nor a usable name has no key to read
       // its balance under, so the read is refused and the owner is told the one
       // thing that fixes it.
-      debtsPartyUnidentified: "لا يمكن قراءة ديون هذا الطرف: لا اسم له ولا معرّف. افتح فاتورته وسجّل اسم الطرف.",
+      debtsPartyUnidentified: "لا يمكن تفصيل فواتير هذا الطرف: لا اسم له ولا معرّف. فواتيره تجدها في قائمة الفواتير.",
       debtsInvNumber: "الرقم",
       debtsInvDate: "التاريخ",
       debtsInvTotal: "الإجمالي",

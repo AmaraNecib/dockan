@@ -20,6 +20,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
 import { invalidatePartyBalance, partyBalanceInput } from "../lib/party-cache-key";
+import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
 import { combineBusinessDateTime, formatDateTime } from "../lib/dates";
 import { debtOffsetDisplay } from "../lib/return-voucher";
 
@@ -377,7 +378,7 @@ export function customCashError(draft: string, valueTotal: number): "INVALID" | 
   return null;
 }
 
-export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
+export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoice: InvoiceDetail; refreshMs?: number }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   // complete per-invoice history: the form's remaining quantity and refund
@@ -406,6 +407,13 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       input: partyBalance ?? { kind: "SALE", counterpartyId: invoice.counterpartyId, counterpartyName: invoice.counterpartyName },
     }),
     enabled: invoice.kind === "SALE" && hasPartyIdentity,
+    // #323 review — the refund preview reads the customer's tab, and a payment
+    // recorded in ANOTHER window moves it. `invalidatePartyBalance` refreshes
+    // this window's cache only, and two windows side by side never exchange a
+    // focus event, so without a bounded tick this preview stays as old as the
+    // last read made it. Same lever #295 gave the counters for the #294 gap;
+    // `refreshMs` is injectable so a test can run this wiring on a fast clock.
+    ...hotCounterRefresh(refreshMs),
   });
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");

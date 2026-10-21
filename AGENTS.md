@@ -51,6 +51,20 @@ they no longer have to be serialized across lanes (#202).
 and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,
 none to close afterwards, and the completion arrives by itself instead of being polled.
 
+**Never pi's native `subagent` tool for a lane.** It runs the child inside the pi process, and T3
+Code's lineage panel lists only app-owned child threads — so the owner sees no lane, concludes
+nothing is happening, and cannot steer or stop work that does exist. Inside a T3 thread every lane
+is `delegate_task`, with its model from `orchestrator_capabilities`, `mode: "async"` for anything
+that runs minutes, and one stable `clientRequestId` per lane. The native tool is the fallback only
+when `delegate_task` is missing from the toolset or for a read-only probe the owner does not need to
+see, and that reply says the children will not show up in lineage. Lineage is the default view for every
+child, so `delegate_task` is the mechanism for all of them — a one-line probe included. A T3 child is
+its own `pi.exe`
+process with its own context: **6 ordinary lanes at once is the default** (the owner may raise it for
+a session), while **heavy work — a full suite, `test:e2e`, a build, a browser agent — is 2 or 3 at
+once across every thread**, through the slot queue. The tighter limit on lanes is the files they
+edit, not their count.
+
 A top-level thread (`t3_thread_launch`) is for the one case a fresh worktree cannot serve:
 **resuming work that only exists uncommitted** in an existing worktree. That is the fallback for a
 dead lane, not the default. The cheaper path through the same situation is to commit the partial
@@ -180,6 +194,13 @@ before the lane reports.
   requires a fresh look, so no lens ever signs off on its own edit.
 
 ## Merging
+
+**Every PR this thread opens is linked and watched in the same turn** (`link_pull_request` then
+`watch_pull_request`). A watch is the only way a red check or a verdict reaches the session that can
+act on it, so it is the default rather than a favour the owner has to ask for: one watch per open PR,
+never dropped because a wait is long, and dropped **after** confirming a terminal state — `MERGED` or
+`CLOSED` — so the thread returns to their inbox. A reopened PR is watched again; a terminal one is
+never watched again.
 
 **The class decides who merges.** A lane never merges. The parent session merges a
 **cheap-to-reverse, no-decision** diff itself once the gate is clean (owner decision,

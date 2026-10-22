@@ -1,6 +1,7 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,10 @@ import path from "node:path";
 // poll, the vault-status poll and the page navigations, so the servers we start
 // and the servers we talk to can never be different ports.
 import { resolveVaultPorts } from "../../packages/e2e-support/src/vault-ports";
+// #343 — the app is served from a loopback hostname of its own, so the vault
+// cookie is scoped to this app alone. Imported by path, because Playwright
+// only transpiles TypeScript outside node_modules.
+import { resolveAppHost } from "../../packages/contracts/src/app-host";
 
 /**
  * The unified-vault flow (ADR-0008 §4.6) against a dedicated API+web pair in
@@ -22,6 +27,8 @@ import { resolveVaultPorts } from "../../packages/e2e-support/src/vault-ports";
  */
 
 const { api: API_PORT, web: WEB_PORT } = resolveVaultPorts();
+/** the name the app answers on — the vault cookie is scoped to it (#343) */
+const APP_HOST = resolveAppHost(process.env);
 const ROOT = process.cwd();
 const PASSPHRASE = "shop vault passphrase";
 const NEW_PASSPHRASE = "brand new shop passphrase";
@@ -186,17 +193,18 @@ test.afterAll(async () => {
  * reload) needs a configured vault, so it lives in its own case further down.
  */
 test("the browser's own Host survives the dev proxy (#319 round 3)", async ({ request }) => {
-  const ownOrigin = await request.get(`http://127.0.0.1:${WEB_PORT}/api/vault/recovery-keys`, {
-    headers: { origin: `http://127.0.0.1:${WEB_PORT}` },
+  const ownOrigin = await request.get(`http://${APP_HOST}:${WEB_PORT}/api/vault/recovery-keys`, {
+    headers: { origin: `http://${APP_HOST}:${WEB_PORT}` },
   });
   expect(ownOrigin.status()).toBe(401);
   // SAFETY: the vault routes answer `{ error: { code } }` by contract
   expect(((await ownOrigin.json()) as { error?: { code?: string } }).error?.code).toBe("VAULT_NOT_UNLOCKED");
 
-  // the same request naming the API's port is a FOREIGN origin: the api judged
-  // the host the browser addressed (the web port), not the one it listens on
-  const apiOrigin = await request.get(`http://127.0.0.1:${WEB_PORT}/api/vault/recovery-keys`, {
-    headers: { origin: `http://127.0.0.1:${API_PORT}` },
+  // the same request naming a DIFFERENT PORT on the same host is a FOREIGN
+  // origin: the api judged the host the browser addressed (the web port),
+  // port and all, not the one it listens on
+  const apiOrigin = await request.get(`http://${APP_HOST}:${WEB_PORT}/api/vault/recovery-keys`, {
+    headers: { origin: `http://${APP_HOST}:${API_PORT}` },
   });
   expect(apiOrigin.status()).toBe(403);
   // SAFETY: same contract as above: a refusal carries a stable code
@@ -204,7 +212,7 @@ test("the browser's own Host survives the dev proxy (#319 round 3)", async ({ re
 });
 
 test("the passphrase fields share one app-controlled reveal, pinned to the left edge", async ({ page }) => {
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
   await expect(page.getByRole("heading", { name: "إنشاء الخزنة" })).toBeVisible();
 
   const first = page.getByTestId("vault-passphrase");
@@ -257,7 +265,7 @@ test("the passphrase fields share one app-controlled reveal, pinned to the left 
 });
 
 test("an empty vault passphrase shows Arabic, never the browser bubble", async ({ page }) => {
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
   await expect(page.getByRole("heading", { name: "إنشاء الخزنة" })).toBeVisible();
 
   // the browser's own constraint UI is switched off; the app speaks instead
@@ -278,7 +286,7 @@ test("an empty vault passphrase shows Arabic, never the browser bubble", async (
 });
 
 test("first run: passphrase → recovery key shown once → owner setup → the app opens", async ({ page }) => {
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
 
   await expect(page.getByRole("heading", { name: "إنشاء الخزنة" })).toBeVisible();
   // losing both secrets is stated plainly before anything is created
@@ -315,7 +323,7 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   api = startApi();
   await waitForVaultState("locked");
 
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
   await expect(page.getByRole("heading", { name: "فتح الخزنة" })).toBeVisible();
 
   // an empty passphrase is refused by the app, not the browser
@@ -352,7 +360,7 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   await stopAndWait(api);
   api = startApi();
   await waitForVaultState("locked");
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
   await page.getByTestId("vault-passphrase").fill(NEW_PASSPHRASE);
   await page.getByTestId("vault-unlock-submit").click();
   await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
@@ -366,7 +374,7 @@ test("an unlock through the dev proxy keeps its cookie across a reload (#319 rou
   //
   // It needs the vault test 3 created and test 4's new passphrase, so it stays
   // after them; it is not the discriminating case (that one runs first).
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
   await expect(page.getByTestId("vault-passphrase")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
   await page.getByTestId("vault-passphrase").fill(NEW_PASSPHRASE);
   await page.getByTestId("vault-unlock-submit").click();
@@ -379,6 +387,82 @@ test("an unlock through the dev proxy keeps its cookie across a reload (#319 rou
   await page.reload();
   await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
   await expect(page.getByTestId("vault-passphrase")).toHaveCount(0);
+});
+
+test("the vault cookie stays on the app's own host (#343)", async ({ page }) => {
+  // THE POINT OF THE NAME. A cookie written for `127.0.0.1` is handed to every
+  // other local service on this machine — cookies ignore ports — so any of
+  // them could replay it from its own process, where it picks its own
+  // `Origin` and no origin check can tell it apart. The app answers on a name
+  // of its own, so the jar's cookie is written for that name and the services
+  // on 127.0.0.1 — the api's own address included — never receive it.
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
+  await expect(page.getByTestId("vault-passphrase")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+  await page.getByTestId("vault-passphrase").fill(NEW_PASSPHRASE);
+  await page.getByTestId("vault-unlock-submit").click();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+
+  // the cookie the unlock minted is written for the app's name
+  const jar = await page.context().cookies(`http://${APP_HOST}:${WEB_PORT}`);
+  expect(jar.map((cookie) => cookie.name)).toContain("dokan.vault.session");
+
+  // the app's own origin carries it: the api answers with the unlocked vault
+  const own = await page.request.get(`http://${APP_HOST}:${WEB_PORT}/api/vault/recovery-keys`);
+  expect(own.status()).toBe(200);
+
+  // a sibling service on 127.0.0.1 — a listener of its own, the way every
+  // other local program on this machine is one — receives nothing: the
+  // browser sends it no cookie at all, because the cookie was written for the
+  // app's name and cookies are matched by host
+  const siblingPort = await freePort();
+  const seen: (string | undefined)[] = [];
+  const sibling = http.createServer((req, res) => {
+    seen.push(req.headers.cookie);
+    res.writeHead(200);
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => sibling.listen(siblingPort, "127.0.0.1", resolve));
+  await page.evaluate(async (port) => {
+    // `credentials: "include"` is the whole test: `fetch()` defaults to
+    // "same-origin", so without it the browser sends NO cookie to any other
+    // origin and this case passes whatever the jar holds (#357 test-audit)
+    await fetch(`http://127.0.0.1:${port}/probe`, { credentials: "include" }).catch(() => undefined);
+  }, siblingPort);
+  await expect.poll(() => seen.length).toBe(1);
+  expect(seen[0]).toBeUndefined();
+  sibling.close();
+
+  // A POSITIVE CONTROL, so the check above cannot pass by never being able to
+  // detect receipt at all (#357 test-audit): the SAME listener, reached under the
+  // app's own name, DOES receive the cookie. Without this, "seen[0] undefined"
+  // would be satisfied by a browser that sends no cookies to anything.
+  //
+  // It is also the residual this change accepts: cookies ignore ports, so a
+  // service bound under the app's own hostname WOULD receive the jar's cookie.
+  // The change narrows "any loopback service the browser visits" to "any service
+  // under the app's name", which is the difference the issue asked for.
+  const coTenantPort = await freePort();
+  const coTenantSeen: (string | undefined)[] = [];
+  const coTenant = http.createServer((req, res) => {
+    coTenantSeen.push(req.headers.cookie);
+    res.writeHead(200, { "access-control-allow-origin": `http://${APP_HOST}:${WEB_PORT}` });
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => coTenant.listen(coTenantPort, "127.0.0.1", resolve));
+  await page.evaluate(async ({ host, port }) => {
+    await fetch(`http://${host}:${port}/probe`, { credentials: "include" }).catch(() => undefined);
+  }, { host: APP_HOST, port: coTenantPort });
+  await expect.poll(() => coTenantSeen.length).toBe(1);
+  // RECEIVES it: same host name, different port, and cookies ignore ports
+  expect(coTenantSeen[0]).toContain("dokan.vault.session");
+  coTenant.close();
+
+  // and the api's own address, which is a sibling like any other, answers a
+  // caller with no credential
+  const siblingApi = await page.request.get(`http://127.0.0.1:${API_PORT}/api/vault/recovery-keys`);
+  expect(siblingApi.status()).toBe(401);
+  // SAFETY: the vault routes answer `{ error: { code } }` by contract
+  expect(((await siblingApi.json()) as { error?: { code?: string } }).error?.code).toBe("VAULT_NOT_UNLOCKED");
 });
 
 test("a second instance on this folder: the browser is told the folder is in use (#276)", async ({ page }) => {
@@ -397,7 +481,7 @@ test("a second instance on this folder: the browser is told the folder is in use
   await page.route("**/api/vault/status", (route) =>
     route.fulfill({ status: 503, contentType: "application/json", body: refusalBody }),
   );
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
 
   const inUse = page.getByTestId("vault-status-in-use");
   await expect(inUse).toBeVisible();
@@ -435,7 +519,7 @@ test("a lock held by an alive pid that stopped beating names the lock file (#283
       body: JSON.stringify({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE", staleHeartbeat: true } }),
     }),
   );
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
   const stale = page.getByTestId("vault-status-stale-lock");
   await expect(stale).toBeVisible();
   // the recycled-pid story runs on the same retry loop, so it also promises the
@@ -449,7 +533,7 @@ test("a lock held by an alive pid that stopped beating names the lock file (#283
 test("a genuinely unreachable server keeps the server-down copy (#276)", async ({ page }) => {
   // the status call dies at the client, which is the honest "server down" case
   await page.route("**/api/vault/status", (route) => route.abort("failed"));
-  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.goto(`http://${APP_HOST}:${WEB_PORT}/`);
   const down = page.getByTestId("vault-status-unavailable");
   await expect(down).toBeVisible();
   await expect(down).toHaveText("تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.");

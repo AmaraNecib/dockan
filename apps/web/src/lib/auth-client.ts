@@ -6,6 +6,11 @@ import { usernameClient } from "better-auth/client/plugins";
 /**
  * The one auth entry point. The vite dev server proxies /api to the Bun api
  * (127.0.0.1:4317), so the session cookie stays same-origin.
+ *
+ * Same-origin is also what scopes the cookie: the app answers on a hostname
+ * of its own (`dokan.localhost`, #343), so the session cookie is written for
+ * that name and the other local services on 127.0.0.1 — which ignore the
+ * port and would otherwise receive it — never see it.
  */
 export const authClient = createAuthClient({
   plugins: [usernameClient()],

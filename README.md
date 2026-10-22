@@ -23,7 +23,7 @@ Patterns borrowed from the proven `tuari_react_hono` ERP monorepo in `D:\project
 ```bash
 bun install
 bun run dev:api        # API on http://127.0.0.1:4317
-bun run dev:web        # UI on http://localhost:5173
+bun run dev:web        # UI on http://dokan.localhost:5173 (the app's own name, not localhost)
 bun run dev:desktop    # Tauri window (needs Rust toolchain. installed)
 ```
 

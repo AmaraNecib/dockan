@@ -1,6 +1,10 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { resolveAppHost } from "../../packages/contracts/src/app-host";
 import { signIn } from "./auth-helpers";
 import { extractPdfText, pdfMediaBoxes, pdfPageCount } from "./pdf-helpers";
+
+/** the name the app answers on, so a renamed host does not break the header check */
+const APP_HOST = resolveAppHost(process.env);
 
 /**
  * Invoice print — the settled A4 sheet (#121).
@@ -309,6 +313,10 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
   }
   expect(pdf.length).toBeGreaterThan(10_000);
   expect(pdf.toString("latin1")).toContain("/FontFile");
+  // the drawn header/footer carries the page's URL, so the app's own host
+  // name is what a banner would leak (#343 — the app no longer answers on
+  // the shared `localhost` or on 127.0.0.1)
+  expect(extractPdfText(pdf)).not.toContain("localhost");
   expect(extractPdfText(pdf)).not.toContain("127.0.0.1");
   expect(extractPdfText(pdf)).not.toContain("http");
 
@@ -319,7 +327,8 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
     footerTemplate:
       '<div style="font-size:10px; width:100%; margin:0 10mm; text-align:center;"><span class="pageNumber"></span>/<span class="totalPages"></span></div>',
   });
-  expect(extractPdfText(headerControl)).toContain("127.0.0.1");
+  // the configured host, not a hardcoded one: DOKAN_APP_HOST may rename it
+  expect(extractPdfText(headerControl)).toContain(APP_HOST);
 
   // 13. the app's invoice detail screen shows the same business date + time,
   //     so the paper and the screen cannot disagree

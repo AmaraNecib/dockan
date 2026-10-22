@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { isSharedLoopbackAddress } from "@dokan/contracts";
+
 import { createAppConfig } from "./config";
 
 /**
@@ -147,5 +149,62 @@ describe("vault opt-out policy (finding D12)", () => {
     const config = createAppConfig({ DOKAN_VAULT: "off" });
     expect(config.vault).toBe("on");
     expect(config.vaultOptOutIgnored).toBe(false);
+  });
+});
+
+/**
+ * The app host (#343) — the NAME the app is reached at, which is what scopes
+ * the vault cookie to this app alone. The api keeps binding 127.0.0.1; the
+ * host is a different question and it has its own variable.
+ */
+describe("createAppConfig app host", () => {
+  it("defaults to a name of its own, not 127.0.0.1 and not localhost", () => {
+    const config = createAppConfig({});
+    expect(config.appHost).toBe("dokan.localhost");
+    // the bind address is untouched: nothing but this machine reaches the api
+    expect(config.host).toBe("127.0.0.1");
+  });
+
+  it("treats a blank DOKAN_APP_HOST as unset", () => {
+    expect(createAppConfig({ DOKAN_APP_HOST: "" }).appHost).toBe("dokan.localhost");
+    expect(createAppConfig({ DOKAN_APP_HOST: "   " }).appHost).toBe("dokan.localhost");
+  });
+
+  it("reads an explicit host, and a deployment that must keep 127.0.0.1 still works", () => {
+    expect(createAppConfig({ DOKAN_APP_HOST: "shop.internal" }).appHost).toBe("shop.internal");
+    expect(createAppConfig({ DOKAN_APP_HOST: "127.0.0.1" }).appHost).toBe("127.0.0.1");
+  });
+
+  it("refuses a host that is not a bare hostname (fail loudly at boot)", () => {
+    for (const raw of ["http://dokan.localhost:5173", "dokan.localhost:5173", "dokan..localhost"]) {
+      expect(() => createAppConfig({ DOKAN_APP_HOST: raw })).toThrow(/bare hostname/);
+    }
+  });
+
+  it("knows the browser-facing origin, including the DEFAULT dev port", () => {
+    // `bun run dev:up` sets no DOKAN_WEB_PORT and serves 5173 anyway: returning
+    // undefined there refused the app's own sign-in on the documented dev path
+    // (#357 review P1)
+    expect(createAppConfig({}).appOrigin).toBe("http://dokan.localhost:5173");
+    expect(createAppConfig({ DOKAN_WEB_PORT: "" }).appOrigin).toBeUndefined();
+    expect(createAppConfig({ DOKAN_WEB_PORT: "5173" }).appOrigin).toBe("http://dokan.localhost:5173");
+    expect(
+      createAppConfig({ DOKAN_WEB_PORT: "5174", DOKAN_APP_HOST: "shop.internal" }).appOrigin,
+    ).toBe("http://shop.internal:5174");
+  });
+});
+
+describe("isSharedLoopbackAddress", () => {
+  it("names the addresses every local service shares, and only those", () => {
+    // the two names of one loopback address, plus the IPv6 spelling
+    expect(isSharedLoopbackAddress("127.0.0.1")).toBe(true);
+    expect(isSharedLoopbackAddress("localhost")).toBe(true);
+    expect(isSharedLoopbackAddress("LOCALHOST")).toBe(true);
+    expect(isSharedLoopbackAddress("::1")).toBe(true);
+    expect(isSharedLoopbackAddress("[::1]")).toBe(true);
+    // a name of its own is not shared, and neither is another machine
+    expect(isSharedLoopbackAddress("dokan.localhost")).toBe(false);
+    expect(isSharedLoopbackAddress("shop.internal")).toBe(false);
+    expect(isSharedLoopbackAddress("127.0.0.2")).toBe(false);
   });
 });

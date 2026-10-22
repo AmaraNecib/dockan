@@ -141,6 +141,13 @@ describe("#362 the user table gains better-auth's email columns", () => {
     const dir = tempDir();
     const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "shop.db") })));
     await createDrizzleStore(conn).setup();
+    // The guard the red-on-parent gate needs, and the property this test rests
+    // on: assert the shape BEFORE inserting into it, so on a base branch without
+    // the columns this fails as an assertion (right-reason red) instead of dying
+    // in SQLite with "no such column" (wrong-reason red, which proves nothing).
+    // SAFETY: PRAGMA table_info returns one row per column with a string name
+    const existingColumns = conn.raw.query("PRAGMA table_info(user)").all() as Array<{ name: string }>;
+    expect(existingColumns.map((column) => column.name)).toContain("email");
     const insert = conn.raw.query(
       "INSERT INTO user (id, name, image, email, emailVerified, username, phoneNumber, phoneNumberVerified, created_at, updated_at) VALUES (?, ?, NULL, ?, 0, NULL, NULL, 0, ?, ?)",
     );
@@ -156,6 +163,13 @@ describe("#362 the user table gains better-auth's email columns", () => {
     seedVersion6UserTable(dbPath);
     const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(conn).setup();
+    // The guard the red-on-parent gate needs, and the property this test rests
+    // on: assert the shape BEFORE inserting into it, so on a base branch without
+    // the columns this fails as an assertion (right-reason red) instead of dying
+    // in SQLite with "no such column" (wrong-reason red, which proves nothing).
+    // SAFETY: PRAGMA table_info returns one row per column with a string name
+    const existingColumns = conn.raw.query("PRAGMA table_info(user)").all() as Array<{ name: string }>;
+    expect(existingColumns.map((column) => column.name)).toContain("email");
 
     const insert = conn.raw.query(
       "INSERT INTO user (id, name, image, email, emailVerified, username, phoneNumber, phoneNumberVerified, created_at, updated_at) VALUES (?, ?, NULL, ?, 0, NULL, NULL, 0, ?, ?)",

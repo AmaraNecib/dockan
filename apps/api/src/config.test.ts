@@ -181,8 +181,11 @@ describe("createAppConfig app host", () => {
     }
   });
 
-  it("knows the browser-facing origin only when a web server is in front", () => {
-    expect(createAppConfig({}).appOrigin).toBeUndefined();
+  it("knows the browser-facing origin, including the DEFAULT dev port", () => {
+    // `bun run dev:up` sets no DOKAN_WEB_PORT and serves 5173 anyway: returning
+    // undefined there refused the app's own sign-in on the documented dev path
+    // (#357 review P1)
+    expect(createAppConfig({}).appOrigin).toBe("http://dokan.localhost:5173");
     expect(createAppConfig({ DOKAN_WEB_PORT: "" }).appOrigin).toBeUndefined();
     expect(createAppConfig({ DOKAN_WEB_PORT: "5173" }).appOrigin).toBe("http://dokan.localhost:5173");
     expect(

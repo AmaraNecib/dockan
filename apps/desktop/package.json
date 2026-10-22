@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev --no-dev-server-wait",
+    "dev": "bun scripts/dev.ts",
     "sidecar": "bun scripts/sidecar.ts",
     "build": "bun run sidecar && tauri build",
     "portable": "bun scripts/release.ts",

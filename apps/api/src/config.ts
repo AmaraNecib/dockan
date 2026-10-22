@@ -162,10 +162,17 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
  * build), not a guess: there the api serves the ui itself and the browser's
  * origin IS the api's own.
  */
+/**
+ * The origin the app is served from, for better-auth's trusted list.
+ *
+ * The DEFAULT dev port counts (#357 review P1): `bun run dev:up` sets no
+ * `DOKAN_WEB_PORT`, the dev server serves 5173 anyway, and returning `undefined`
+ * there left the app's own sign-in refused on the documented developer path —
+ * the same defect #347 fixed, one rename later.
+ */
 function webOrigin(env: NodeJS.ProcessEnv, appHost: string): string | undefined {
-  const raw = env.DOKAN_WEB_PORT ?? "";
-  if (raw.trim() === "") return undefined;
+  const raw = env.DOKAN_WEB_PORT ?? "5173";
   const port = Number(raw);
-  if (!Number.isFinite(port) || port <= 0) return undefined;
+  if (raw.trim() === "" || !Number.isFinite(port) || port <= 0) return undefined;
   return appOriginFor(appHost, port);
 }

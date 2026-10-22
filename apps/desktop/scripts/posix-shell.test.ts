@@ -27,18 +27,30 @@ const PROGRAM_FILES = "C:\\Program Files";
  * `pathEnv` is the PATH the resolver walks. Nothing here touches the host's
  * real PATH or disk, which is the point — the System32-first ordering is
  * simulated rather than borrowed from whichever machine runs the suite.
+ *
+ * `platform` has no default on purpose. A default of `win32` once let a test
+ * written for a POSIX PATH look for `bash.exe` while its fixture held
+ * `/usr/bin/bash`, so the only candidate was rejected and the assertion below it
+ * never ran. A test that says which platform it simulates cannot make that
+ * mistake.
+ *
+ * `executable` defaults to `present`: unless a test says otherwise, a file in the
+ * fixture can run.
  */
 function fabricated(options: {
-  readonly platform?: "win32" | "linux" | "darwin";
+  readonly platform: "win32" | "linux" | "darwin";
   readonly pathEnv?: string;
   readonly env?: Record<string, string | undefined>;
   readonly present: readonly string[];
+  readonly executable?: readonly string[];
 }): PosixShellSearch {
+  const executable = options.executable ?? options.present;
   return {
-    platform: options.platform ?? "win32",
+    platform: options.platform,
     pathEnv: options.pathEnv ?? "",
     env: options.env ?? {},
     isFile: (candidate) => options.present.includes(candidate),
+    isExecutable: (candidate) => executable.includes(candidate),
   };
 }
 
@@ -47,6 +59,7 @@ describe("POSIX shell resolution", () => {
     // The reported condition, exactly: System32 comes first, Git bash second.
     const resolved = resolvePosixShell(
       fabricated({
+        platform: "win32",
         pathEnv: [SYSTEM32_DIR, `${GIT_ROOT}\\bin`].join(";"),
         present: [SYSTEM32_BASH, GIT_BASH],
       }),
@@ -63,6 +76,7 @@ describe("POSIX shell resolution", () => {
   it("falls back to a Git for Windows install root when PATH has only the launcher", () => {
     const resolved = resolvePosixShell(
       fabricated({
+        platform: "win32",
         pathEnv: SYSTEM32_DIR,
         env: { ProgramFiles: PROGRAM_FILES },
         present: [SYSTEM32_BASH, GIT_BASH],
@@ -88,18 +102,65 @@ describe("POSIX shell resolution", () => {
     expect(resolved.path).toBe("/usr/local/bin/bash");
   });
 
-  it("returns an absolute path, never a bare command name that re-enters PATH", () => {
+  it("skips a bash it cannot execute and takes the one it can", () => {
+    // The reported condition: an unusable `bash` earlier on PATH. Selecting it
+    // fails the workflow tests with EACCES even though a usable shell sits right
+    // behind it, so the check has to be "can this run", not "is this a file".
     const resolved = resolvePosixShell(
-      fabricated({ pathEnv: process.platform === "win32" ? SYSTEM32_DIR : "/usr/bin", present: [SYSTEM32_BASH, "/usr/bin/bash"] }),
+      fabricated({
+        platform: "linux",
+        pathEnv: ["/usr/local/bin", "/usr/bin"].join(":"),
+        present: ["/usr/local/bin/bash", "/usr/bin/bash"],
+        executable: ["/usr/bin/bash"],
+      }),
     );
 
-    // a bare `bash` would hand the choice back to the OS, which is the bug
-    if (resolved.kind === "resolved") expect(path.isAbsolute(resolved.path)).toBe(true);
+    expect(resolved.kind).toBe("resolved");
+    if (resolved.kind !== "resolved") throw new Error(resolved.reason);
+    // the one that runs, not merely the first one that exists
+    expect(resolved.path).toBe("/usr/bin/bash");
+    // and the unusable candidate is recorded as examined, not silently unseen
+    expect(resolved.searched).toContain("/usr/local/bin/bash");
+  });
+
+  it("names the shell it refused for being non-executable, rather than calling it absent", () => {
+    const resolved = resolvePosixShell(
+      fabricated({
+        platform: "linux",
+        pathEnv: "/usr/local/bin",
+        present: ["/usr/local/bin/bash"],
+        executable: [],
+      }),
+    );
+
+    // "not found" and "found but unrunnable" call for different fixes, so the
+    // reason has to tell them apart instead of reporting a bare absence.
+    expect(resolved.kind).toBe("absent");
+    if (resolved.kind !== "absent") throw new Error("expected no usable shell");
+    expect(resolved.reason).toContain("/usr/local/bin/bash");
+    expect(resolved.reason).toContain("not executable");
+  });
+
+  it("resolves a relative PATH entry against the working directory", () => {
+    // A relative entry must come back absolute: a bare `bash`, or a bare
+    // directory, hands the choice back to the OS, which is the bug #349 is about.
+    const resolved = resolvePosixShell({
+      platform: "linux",
+      pathEnv: "tools/git-bin",
+      isFile: (candidate) => candidate.endsWith("/bash"),
+      isExecutable: () => true,
+    });
+
+    expect(resolved.kind).toBe("resolved");
+    if (resolved.kind !== "resolved") throw new Error(resolved.reason);
+    expect(path.posix.isAbsolute(resolved.path)).toBe(true);
+    // the entry survived the conversion instead of being replaced by a guess
+    expect(resolved.path.endsWith("/tools/git-bin/bash")).toBe(true);
   });
 
   it("names what it looked for and where when no POSIX shell exists", () => {
     const resolved = resolvePosixShell(
-      fabricated({ pathEnv: SYSTEM32_DIR, present: [SYSTEM32_BASH] }),
+      fabricated({ platform: "win32", pathEnv: SYSTEM32_DIR, present: [SYSTEM32_BASH] }),
     );
 
     // never a silent absence: the reason is what a skip or a failure reports

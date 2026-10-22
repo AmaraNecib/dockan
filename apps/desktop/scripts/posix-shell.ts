@@ -23,12 +23,17 @@
  * The launcher is refused by location, not by guessing from behaviour: it is the
  * one file named `bash.exe` that ships inside the Windows system directory.
  *
+ * A candidate has to be able to run, not merely to exist. On POSIX that means the
+ * execute bit: a non-executable `bash` earlier on PATH used to be selected over a
+ * usable one behind it, and every workflow test that shelled out died with
+ * `EACCES`. Such a candidate is refused and the search falls through.
+ *
  * When nothing is found the resolution says so with the list of paths it
  * checked. Callers skip with that reason rather than passing silently, because a
  * green suite that verified nothing is worse than a red one.
  */
 
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import path from "node:path";
 
 export type PosixShellResolution =
@@ -57,6 +62,12 @@ export interface PosixShellSearch {
   readonly pathEnv?: string;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly isFile?: (candidate: string) => boolean;
+  /**
+   * True when the candidate carries the execute bit. Consulted on POSIX only:
+   * Windows has no such bit, so presence as a regular file is the whole rule
+   * there.
+   */
+  readonly isExecutable?: (candidate: string) => boolean;
 }
 
 /** Environment variables that point at a Git for Windows install root. */
@@ -71,6 +82,22 @@ const GIT_PER_USER_ROOT = "Programs\\Git";
 function existsAsFile(candidate: string): boolean {
   try {
     return statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when this process may execute `candidate`. A file that exists but is not
+ * executable (`chmod -x`, a package manager's stray copy, an extracted archive)
+ * is not a shell: selecting it turns every workflow test into `EACCES`, so it
+ * must fall through to the next candidate instead of being accepted because it
+ * is present.
+ */
+function hasExecuteAccess(candidate: string): boolean {
+  try {
+    accessSync(candidate, constants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -131,17 +158,22 @@ function absenceReason(
   shellFile: string,
   searched: readonly string[],
   refusedLauncher: string | undefined,
+  notExecutable: readonly string[],
 ): string {
   const refused =
     refusedLauncher === undefined
       ? ""
       : ` Refused the WSL launcher ${refusedLauncher}: it runs a different filesystem view, so it cannot be trusted to see the script's own files.`;
+  const unexecutable =
+    notExecutable.length === 0
+      ? ""
+      : ` Refused ${notExecutable.join(", ")}: present but not executable, so running it would fail with EACCES.`;
   const looked =
     platform === "win32"
       ? `on PATH and under the Git for Windows install roots named by ${GIT_ROOT_VARIABLES.join(", ")} and LOCALAPPDATA.`
       : "on PATH.";
   return (
-    `platform ${platform}: no POSIX-capable ${shellFile} found.${refused}` +
+    `platform ${platform}: no POSIX-capable ${shellFile} found.${refused}${unexecutable}` +
     ` Looked ${looked} Checked: ${searched.join(", ")}.`
   );
 }
@@ -152,6 +184,7 @@ export function resolvePosixShell(search: PosixShellSearch = {}): PosixShellReso
   const flavour: path.PlatformPath = platform === "win32" ? path.win32 : path.posix;
   const env = search.env ?? process.env;
   const isFile = search.isFile ?? existsAsFile;
+  const isExecutable = search.isExecutable ?? hasExecuteAccess;
   const shellFile = platform === "win32" ? "bash.exe" : "bash";
   const pathEnv = search.pathEnv ?? env.PATH ?? "";
   const delimiter = platform === "win32" ? ";" : ":";
@@ -174,6 +207,7 @@ export function resolvePosixShell(search: PosixShellSearch = {}): PosixShellReso
 
   const systemDirectory = platform === "win32" ? windowsSystemDirectory(env, flavour) : undefined;
   const searched: string[] = [];
+  const notExecutable: string[] = [];
   let refusedLauncher: string | undefined;
 
   for (const candidate of [...onPath, ...installRoots]) {
@@ -183,12 +217,21 @@ export function resolvePosixShell(search: PosixShellSearch = {}): PosixShellReso
       refusedLauncher = candidate;
       continue;
     }
-    if (isFile(candidate)) return { kind: "resolved", path: candidate, searched };
+    if (!isFile(candidate)) continue;
+    // A candidate has to run, not merely exist: on POSIX that means the execute
+    // bit, while on Windows there is no such bit and a regular file is the whole
+    // rule. An unusable candidate falls through to the next one rather than being
+    // selected because it happens to be there.
+    if (platform !== "win32" && !isExecutable(candidate)) {
+      notExecutable.push(candidate);
+      continue;
+    }
+    return { kind: "resolved", path: candidate, searched };
   }
 
   return {
     kind: "absent",
-    reason: absenceReason(platform, shellFile, searched, refusedLauncher),
+    reason: absenceReason(platform, shellFile, searched, refusedLauncher, notExecutable),
     searched,
   };
 }

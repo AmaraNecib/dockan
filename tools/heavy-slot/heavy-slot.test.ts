@@ -45,11 +45,17 @@ const ROOT = mkdtempSync(join(tmpdir(), "heavy-slot-test-"));
 // still bind right now (canary); a contended candidate is skipped, not fought over.
 const RUN_OFFSET = Math.floor(Math.random() * 8) * BASE_STRIDE;
 
-/** Walk candidate windows downward from `start` until one yields a free base; chooseFreeBase only walks up, and a high run offset can push a start past the top of the port range. */
+/** Walk candidate windows downward from `start` until one yields a base that is free twice in a row [T3]: the pick probes AND canary-binds, because an unexpected EADDRINUSE in the RUNNING test is a red, while an unexpected EADDRINUSE in the pick is a re-pick. Two runs together draw overlapping windows (8 offsets, 8-wide windows), so a sibling steal between the probe and the canary is the collision that ends here. */
 async function pickWindow(start: number): Promise<number> {
   for (let s = start; s > DEFAULT_BASE - BASE_STRIDE; s -= 4 * BASE_STRIDE) {
-    const candidate = await chooseFreeBase(s, 3);
-    if (candidate !== null) return candidate;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const candidate = await chooseFreeBase(s, 3);
+      if (candidate === null) break; // this window is exhausted; try the one below
+      const canary = await realOpenServer(candidate);
+      if ("error" in canary) continue; // a sibling run took it between probe and canary: re-pick, not red
+      await new Promise<void>((resolve) => canary.server.close(() => resolve()));
+      return candidate;
+    }
   }
   throw new Error(`no free base below ${start}`);
 }
@@ -164,9 +170,30 @@ describe("heavy-slot", () => {
     expect(EXIT_REFUSED).toBe(76);
   });
 
-  test("capacity never exceeds the ceiling", () => {
-    expect(capacityFor(1000, 10, false)).toBeLessThanOrEqual(maxSlots());
-    expect(capacityFor(1000, 10, true)).toBeLessThanOrEqual(maxSlots());
+  test("the policy is measured even for urgent callers: RAM gates capacity, the ceiling only caps it (T4)", () => {
+    // The scenario env holds HEAVY_SLOT_MAX=1, under which every input answers 1
+    // and the assertion would prove nothing about the policy - so the max is
+    // raised for this test alone and restored.
+    const prevMax = process.env.HEAVY_SLOT_MAX;
+    process.env.HEAVY_SLOT_MAX = "5";
+    try {
+      const scenarioPerJobGb = Number(process.env.HEAVY_SLOT_PER_JOB_GB ?? "0.1"); // per-test env, mirrored here so the pick cannot drift
+      const scenarioReserveGb = Number(process.env.HEAVY_SLOT_RESERVE_GB ?? "0");
+      const lowFreeRam = 0.05; // GB: below one scenario job (0.1 GB/job), so the measurement, not the ceiling, answers 1
+      const ampleRam = 1000; // GB, above any job count
+
+      expect(capacityFor(lowFreeRam, 50, true)).toBeLessThan(maxSlots());
+      expect(capacityFor(lowFreeRam, 50, true)).toBe(1);
+      expect(capacityFor(lowFreeRam, 50, false)).toBe(1);
+      // ample RAM, low CPU: urgent (and non-urgent) take the ceiling
+      expect(capacityFor(ampleRam, 10, true)).toBe(maxSlots());
+      expect(capacityFor(1000, 10, false)).toBe(maxSlots());
+      expect(scenarioPerJobGb).toBeGreaterThan(0);
+      expect(scenarioReserveGb).toBeGreaterThanOrEqual(0);
+    } finally {
+      if (prevMax === undefined) delete process.env.HEAVY_SLOT_MAX;
+      else process.env.HEAVY_SLOT_MAX = prevMax;
+    }
   });
 
   test("a busy port reads as busy and an injected EACCES reads as unusable, never the other way round", async () => {
@@ -313,11 +340,17 @@ describe("heavy-slot", () => {
       const r = await acquireSlot("shifter");
       expect(r.status).toBe("acquired");
       const slot = r.status === "acquired" ? r.slot : null;
-      expect(slot?.port).toBe(TEST_BASE + BASE_STRIDE);
-      if (slot) release(slot);
+      // [T5] No literal: pickWindow and the machine's own reserved bands do not
+      // know which STRIDE landed this run, so the assertion is the record the
+      // walk published, wherever it moved to off the stubbed unusable preferred.
+      const recorded = readPersistedBase(dir);
+      expect(recorded).not.toBeNull();
+      if (recorded === null) throw new Error("the walk published no record");
+      expect(recorded).toBeGreaterThan(TEST_BASE); // shifted UP off the unusable preferred
+      if (slot) expect(slot.port).toBe(recorded);
       // "wx" record: the first process to find a working base writes it once.
-      expect(readPersistedBase(dir)).toBe(TEST_BASE + BASE_STRIDE);
-      expect(readFileSync(join(dir, "base"), "utf8")).toBe(`${TEST_BASE + BASE_STRIDE}\n`);
+      expect(readFileSync(join(dir, "base"), "utf8")).toBe(`${recorded}\n`);
+      if (slot) release(slot);
     } finally {
       setBinderForTest(null);
       if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
@@ -337,11 +370,18 @@ describe("heavy-slot", () => {
     try {
       const r = await acquireSlot("stale-replace");
       // The walk replaced the stale record with the shifted candidate instead of
-      // keeping every later process frozen on it.
+      // keeping every later process frozen on it. [T5] The assertion is the
+      // record's own published value, wherever the walk landed, not a stride
+      // literal that a sibling window or a reserved band can invalidate.
       expect(r.status).toBe("acquired");
       const slot = r.status === "acquired" ? r.slot : null;
-      expect(slot?.port).toBe(TEST_BASE + BASE_STRIDE);
-      expect(readPersistedBase(dir)).toBe(TEST_BASE + BASE_STRIDE);
+      const recorded = readPersistedBase(dir);
+      expect(recorded).not.toBeNull();
+      if (recorded === null) throw new Error("the walk published no record");
+      expect(recorded).not.toBe(stale); // the planted stale base is gone
+      expect(recorded).not.toBe(TEST_BASE); // and not on the stubbed unusable preferred either
+      expect(recorded).toBeGreaterThan(TEST_BASE); // the walk only shifts up
+      if (slot) expect(slot.port).toBe(recorded);
       if (slot) release(slot);
     } finally {
       setBinderForTest(null);
@@ -587,7 +627,21 @@ describe("heavy-slot", () => {
       ],
       { cwd: process.cwd(), env: childEnv(freshDir()), stdio: "ignore" },
     );
-    await sleep(1500);
+    // [T6] The holder's reach to tryTake is not a constant (a cold bun start can
+    // pass 1.5s), so the busy assertion POLLS on a wall-clock budget - the same
+    // flake class F8 removed. Each free probe is released so the holder can win
+    // the bind the moment its launcher lets go of it.
+    let holderUp = false;
+    for (const deadline = Date.now() + 5000; Date.now() < deadline && !holderUp; ) {
+      const pre = await tryTake(1, "pre-kill-probe");
+      if (pre.ok) {
+        release(pre.slot); // the holder has not bound yet; give it the port back
+        await sleep(100);
+      } else {
+        holderUp = true; // held: the holder is up
+      }
+    }
+    expect(holderUp).toBe(true);
     const busy = await tryTake(1, "probe");
     expect(busy).toEqual({ ok: false, reason: "busy", port: TEST_BASE, code: "EADDRINUSE" });
     holder.kill("SIGKILL");
@@ -626,5 +680,260 @@ describe("heavy-slot", () => {
     // run() waits on before release), and the wrapper shell's own exit.
     expect(exited || !treeAlive(sleeper)).toBe(true);
     if (exited) expect(treeAlive(sleeper)).toBe(false);
+  }, 15000);
+
+  // [T2] run()'s cancel loop needs a grandchild the test can observe INDEPENDENTLY
+  // of treeAlive, because treeAlive probes the (dead) wrapper's pid and that is
+  // exactly the blind spot under audit: on Windows a taskkill without /T leaves
+  // the grandchild alive while the probe reads "tree dead". The observable is
+  // chosen per platform - Windows: the grandchild binds a port of its own, so
+  // "port bound" is "grandchild alive"; POSIX: the grandchild writes its pid to a
+  // file (the sh groups it into run()'s detached process group, so a bypass means
+  // treeAlive missed a live member). [F21] is respected: any release under a live
+  // grandchild outside the disclosed give-up is a violation.
+  const isPortBound = async (port: number): Promise<boolean> => {
+    const opened = await realOpenServer(port);
+    if ("error" in opened) return true; // busy: something holds it
+    await new Promise<void>((resolve) => opened.server.close(() => resolve()));
+    return false;
+  };
+
+  test("a cancelled run keeps its slot until the grandchild is gone (T2)", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    const gcPort = await chooseFreeBase(TEST_BASE + 3 * BASE_STRIDE, 4);
+    if (gcPort === null) throw new Error("no free port for the grandchild");
+    const pidFile = join(dir, "gc.pid");
+    let command: string;
+    const gcAlive =
+      process.platform === "win32"
+        ? (): Promise<boolean> => isPortBound(gcPort)
+        : async (): Promise<boolean> => {
+            try {
+              const pid = Number(readFileSync(pidFile, "utf8").trim());
+              process.kill(pid, 0);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+    if (process.platform === "win32") {
+      // The wrapper is what run() sees; the grandchild outlives any early close.
+      const gcScript = join(ROOT, `heavy-gc-${process.pid}.mjs`);
+      writeFileSync(
+        gcScript,
+        `import net from "node:net";\nnet.createServer().listen(${gcPort}, "127.0.0.1");\n// no exit: the socket keeps the event loop running, that IS the pin\n`,
+      );
+      const wrapper = join(ROOT, `heavy-wrapper-${process.pid}.cmd`);
+      writeFileSync(
+        wrapper,
+        `@echo off\r\nstart /b "" "${process.execPath}" "${gcScript}"\r\nping -n 8 127.0.0.1 > nul\r\n`,
+      );
+      command = `"${wrapper}"`;
+    } else {
+      // The grandchild joins run()'s detached group (sh -c does not setsid), so a
+      // group kill or probe reaches it; the pid file makes that observable.
+      command = `sleep 100 & echo $! > ${pidFile}; sleep 6`;
+    }
+
+    let violation: string | null = null;
+    let runDone = false;
+    const runPromise = run("cancel-me", command).finally(() => {
+      runDone = true;
+    });
+    let listenerBaseline = 0;
+    try {
+      listenerBaseline = process.listenerCount("SIGINT") + process.listenerCount("SIGTERM");
+      // [T2] Cancels only once the slot is held AND the grandchild is observable: the
+      // poll replaces both a fixed sleep and a race on child startup.
+      let slotBusy = false;
+      let gcUp = false;
+      for (const deadline = Date.now() + 10000; Date.now() < deadline && !(slotBusy && gcUp); ) {
+        const probe = await tryTake(1, "pre-cancel");
+        slotBusy = !probe.ok;
+        if (probe.ok) release(probe.slot);
+        if (slotBusy) gcUp = await gcAlive();
+        if (!slotBusy || !gcUp) await sleep(200);
+      }
+      expect(slotBusy).toBe(true);
+      expect(gcUp).toBe(true);
+
+      // Cancel: the script holds slot 1 already; its terminal writes into stderr
+      // of the test are the tool's own progress lines (inherit), harmless here.
+      process.emit("SIGINT");
+
+      // The invariant: while a grandchild is observable, the slot stays bound.
+      // The audit's failure mode (probe-only, no traversal) reads: wrapper dies,
+      // run releases immediately, grandchild runs on - visible HERE whichever
+      // way the sampling interleaves, for as long as the grandchild lives.
+      while (!runDone) {
+        const probe = await tryTake(1, "monitor");
+        const slotBound = !probe.ok;
+        if (probe.ok) release(probe.slot);
+        if (!runDone && !slotBound && (await gcAlive())) violation = `slot freed while the grandchild is still alive`;
+        await sleep(200);
+      }
+      const code = await runPromise;
+      // answered a CODE (0..255), not a throw: the contract run() must keep
+      expect(code).toBeInteger();
+      expect(code).toBeGreaterThanOrEqual(0);
+      expect(code).toBeLessThanOrEqual(255);
+      expect(violation).toBeNull();
+
+      // The grandchild is REALLY gone after cancel (POSIX: kill(grandchild,0)
+      // throws; Windows: its bind is released - taskkill /T traversed to it).
+      let gcGone = false;
+      for (const deadline = Date.now() + 10000; Date.now() < deadline && !gcGone; ) {
+        if (!(await gcAlive())) gcGone = true;
+        else await sleep(200);
+      }
+      expect(gcGone).toBe(true);
+      // Listener hygiene on the cancel path too: run() removed its pair.
+      expect(process.listenerCount("SIGINT") + process.listenerCount("SIGTERM")).toBe(listenerBaseline);
+    } finally {
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      resetBase();
+    }
+  }, 30000);
+
+  test("a launch that never starts returns a code, not a throw, and frees its slot (G1)", async () => {
+    if (process.platform !== "win32") return; // POSIX resolves shell:true to the absolute /bin/sh, which a test cannot make unspawnable; the Windows branch carries the pin
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    const sigint = process.listenerCount("SIGINT");
+    const sigterm = process.listenerCount("SIGTERM");
+    const prevComSpec = process.env.ComSpec;
+    process.env.ComSpec = "definitely-not-a-shell-6b3f7c.exe"; // spawn cannot start the shell: 'error' fires, 'close' never
+    try {
+      // Pre-run(): the old shape threw here, unhandled - the crash the fix names.
+      const code = await run("launch-failure", "echo hi");
+      expect(code).toBe(1);
+      // Listener removal ran on this path too - a library caller can keep calling.
+      expect(process.listenerCount("SIGINT")).toBe(sigint);
+      expect(process.listenerCount("SIGTERM")).toBe(sigterm);
+      // The slot is free afterwards: a failed launch releases in finally.
+      const t = await tryTake(1, "after-launch-failure");
+      expect(t.ok).toBe(true);
+      if (t.ok) release(t.slot);
+    } finally {
+      if (prevComSpec === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = prevComSpec;
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      resetBase();
+    }
+  }, 20000);
+
+  test("EMFILE is a machine refusal: a retry, a named code, never a holder nor a refusal (G2)", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    const prevWait = process.env.HEAVY_SLOT_WAIT_MS;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    process.env.HEAVY_SLOT_WAIT_MS = "400";
+    const errors: string[] = [];
+    const logs: string[] = [];
+    const err = console.error;
+    const log = console.log;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+    // The bind seam says EMFILE - the machine could not serve the bind. Nothing
+    // holds the port; nothing reserves the range; the answer may be neither.
+    setBinderForTest(async () => ({ error: "retryable", code: "EMFILE" }));
+    try {
+      resetBase();
+      const r = await acquireSlot("emfile-caller");
+      expect(r.status).toBe("full"); // NOT "refused": the range is not broken
+      await status();
+      const out = [...errors, ...logs].join("\n");
+      // The code reached the diagnostic - [T7] carried into the progress line...
+      expect(out).toContain("EMFILE");
+      // ...and the port never reads as a held job: the holder line's shape is
+      // "slot N: '<label>' ... running <age>" and is absent, because a machine
+      // refusal has no holder to name.
+      expect(out).not.toContain("running");
+      expect(out).not.toMatch(/slot \d+: '/);
+      // ...and never as the refusal the reserved range gets.
+      expect(out).not.toContain("netsh int ipv4 show excludedportrange");
+    } finally {
+      console.error = err;
+      console.log = log;
+      setBinderForTest(null);
+      if (prevWait === undefined) delete process.env.HEAVY_SLOT_WAIT_MS;
+      else process.env.HEAVY_SLOT_WAIT_MS = prevWait;
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      resetBase();
+    }
+  }, 15000);
+
+  test("a base whose range leaves the port space is named as the configuration it is (G3)", async () => {
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    const prevMax = process.env.HEAVY_SLOT_MAX;
+    const prevBase = process.env.HEAVY_SLOT_BASE;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    process.env.HEAVY_SLOT_MAX = "4";
+    process.env.HEAVY_SLOT_BASE = "65535"; // itself a valid port; its RANGE is not
+    resetBase();
+    let bindCalls = 0;
+    setBinderForTest(() => {
+      bindCalls++;
+      return Promise.resolve({ error: "unusable", code: "EACCES" });
+    });
+    const err = console.error;
+    const log = console.log;
+    const errors: string[] = [];
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+    try {
+      // recorded: the seam refuses to publish a range that cannot exist
+      expect(claimBase(65535, dir)).toBe(false);
+      expect(writeBase(65535, dir)).toBeNull();
+      expect(existsSync(join(dir, "base"))).toBe(false);
+      // read: a record an older install planted under a smaller max reads as
+      // stale, not adoptable, and without one binding attempt
+      writeFileSync(join(dir, "base"), "65535\n");
+      expect(readPersistedBase(dir)).toBeNull();
+      // used: acquireSlot refuses BEFORE any bind, naming base, max, limit
+      const r = await acquireSlot("stillborn");
+      expect(r).toEqual({ status: "refused", reason: "config" });
+      expect(bindCalls).toBe(0);
+      // status shows the same message - never the reserved-range banner
+      await status();
+      const out = [...errors, ...logs].join("\n");
+      expect(out).toContain("HEAVY_SLOT_BASE=65535");
+      expect(out).toContain("HEAVY_SLOT_MAX=4");
+      expect(out).toContain("limit of 65535");
+      expect(out).not.toContain("netsh int ipv4 show excludedportrange");
+      // and run() answers the library caller with the CLI's code
+      expect(await run("stillborn-cli", "echo hi")).toBe(EXIT_REFUSED);
+      expect(bindCalls).toBe(0);
+    } finally {
+      console.error = err;
+      console.log = log;
+      setBinderForTest(null);
+      if (prevMax === undefined) delete process.env.HEAVY_SLOT_MAX;
+      else process.env.HEAVY_SLOT_MAX = prevMax;
+      if (prevBase === undefined) delete process.env.HEAVY_SLOT_BASE;
+      else process.env.HEAVY_SLOT_BASE = prevBase;
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      resetBase();
+    }
   }, 15000);
 });

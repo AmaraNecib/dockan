@@ -14,7 +14,8 @@
  *
  * Exits with the child's exit code; 75 if it gave up waiting without running anything; 76 when
  * the port range cannot serve work (every candidate reserved, or part of the range refuses to
- * bind even after a re-decide) - refused loudly, never reported as
+ * bind even after a re-decide, or the configured base's range leaves the TCP port space [G3])
+ * - refused loudly, never reported as
  * "the queue is full", because waiting will never help. `run` returns that code and the CLI
  * dispatch applies it, so the queue is callable from a library too.
  */
@@ -98,6 +99,31 @@ function gb(n: number): number {
   return Math.round((n / 1e9) * 10) / 10;
 }
 
+/**
+ * [G3] A base is usable only when its WHOLE slot range lives inside the TCP port
+ * space (1..65535): `base + maxSlots() - 1 <= 65535`. `HEAVY_SLOT_BASE=65535`
+ * used to pass the single-port check on every read and then send the queue's
+ * probes at ports 65536+ - a configuration error surfacing as bind failures.
+ * Checked at the seam of every base source: read (readPersistedBase), walked
+ * (resolveBase, chooseFreeBase), recorded (claimBase, writeBase) and used
+ * (acquireSlot, status) - so the refusal names the base, the max and the limit
+ * before a single port is touched, and waiting is never presented as the cure.
+ * Returns null when the range fits, the message a caller must print as its own
+ * refusal when not.
+ */
+function baseRangeFault(base: number = preferredBase(), slots: number = maxSlots()): string | null {
+  if (!Number.isInteger(base) || base < 1 || base > 65535) {
+    return `HEAVY_SLOT_BASE=${base} is not a TCP port number (ports run 1..65535) - the queue cannot use it at all, and waiting will never fix it`;
+  }
+  if (base + slots - 1 > 65535) {
+    return (
+      `HEAVY_SLOT_BASE=${base} with HEAVY_SLOT_MAX=${slots} runs to port ${base + slots - 1}, past the TCP limit of 65535 - ` +
+      `lower HEAVY_SLOT_BASE or HEAVY_SLOT_MAX so the whole slot range fits; waiting will never fix a range that cannot exist`
+    );
+  }
+  return null;
+}
+
 async function cpuLoadPercent(): Promise<number> {
   const snap = () => cpus().map((c) => c.times);
   const a = snap();
@@ -136,12 +162,16 @@ export function capacityFor(freeGb: number, cpuLoad: number, urgent: boolean): n
 // EACCES, EADDRNOTAVAIL and EPERM mean "this port is not ours to use at all" -
 // on Windows, TCP port ranges the OS has reserved (they move across reboots and
 // Hyper-V changes). Waiting never fixes those, so they are the "unusable" family.
-// Every other error (EMFILE, a transient refusal, resource exhaustion) is
-// retryable: it reads as busy and keeps its code in every message so it is not
-// silently misread as "this whole range is reserved".
+// Every other error (EMFILE and friends) is a machine-side refusal of its own:
+// no queue holds the port and the port is not reserved - the machine could not
+// serve the bind at all. Folding those into "busy" made status() report a
+// caller out of file descriptors as a queue of running jobs [G2], so the three
+// stay separate at every seam and the code travels with the answer.
 // ---------------------------------------------------------------------------
 
-export type OpenResult = { server: net.Server } | { error: "busy" | "unusable"; code: string };
+export type OpenResult =
+  | { server: net.Server }
+  | { error: "busy" | "unusable" | "retryable"; code: string };
 export type OpenServer = (port: number) => Promise<OpenResult>;
 
 const UNUSABLE_BIND_CODES: ReadonlySet<string> = new Set(["EACCES", "EADDRNOTAVAIL", "EPERM"]);
@@ -151,7 +181,8 @@ export function realOpenServer(port: number): Promise<OpenResult> {
     const server = net.createServer();
     server.once("error", (err: NodeJS.ErrnoException | undefined) => {
       const code = err?.code ?? "UNKNOWN";
-      resolve({ error: code !== "EADDRINUSE" && UNUSABLE_BIND_CODES.has(code) ? "unusable" : "busy", code });
+      const error = code === "EADDRINUSE" ? "busy" : UNUSABLE_BIND_CODES.has(code) ? "unusable" : "retryable";
+      resolve({ error, code });
       try {
         server.removeAllListeners();
         server.close();
@@ -170,13 +201,14 @@ export function setBinderForTest(impl: OpenServer | null): void {
   openServerImpl = impl ?? realOpenServer;
 }
 
-type PortProbe = "free" | "busy" | "unusable";
+type PortProbe = "free" | "busy" | "unusable" | "retryable";
+type ProbedPort = { status: PortProbe; code: string | null };
 
-async function probePort(port: number): Promise<PortProbe> {
+async function probePort(port: number): Promise<ProbedPort> {
   const opened = await openServerImpl(port);
-  if ("error" in opened) return opened.error;
+  if ("error" in opened) return { status: opened.error, code: opened.code };
   await closeServer(opened.server);
-  return "free";
+  return { status: "free", code: null };
 }
 
 function closeServer(server: net.Server): Promise<void> {
@@ -196,14 +228,19 @@ function baseFilePath(dir: string = stateDir()): string {
 export function readPersistedBase(dir: string = stateDir()): number | null {
   try {
     const n = Number(readFileSync(baseFilePath(dir), "utf8").trim());
-    return Number.isInteger(n) && n > 0 && n < 65536 ? n : null;
+    // [G3] a record only reads as a base when its RANGE fits the current max:
+    // a record written under a smaller HEAVY_SLOT_MAX may point past the limit
+    // after the max is raised, and a null here (not a probed bind failure) is
+    // how that claim walks aside.
+    return Number.isInteger(n) && n > 0 && n < 65536 && baseRangeFault(n) === null ? n : null;
   } catch {
     return null;
   }
 }
 
-/** First-writer-wins claim, used only where the record must not be overwritten: an absent-record race. When it succeeds this process created the file; when it fails another process wrote between this one's read and claim. */
+/** First-writer-wins claim, used only where the record must not be overwritten: an absent-record race. When it succeeds this process created the file; when it fails another process wrote between this one's read and claim. [G3] refuses to record a base whose range leaves the port space. */
 export function claimBase(base: number, dir: string = stateDir()): boolean {
+  if (baseRangeFault(base) !== null) return false;
   try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(baseFilePath(dir), `${base}\n`, { flag: "wx" });
@@ -233,6 +270,10 @@ export function claimBase(base: number, dir: string = stateDir()): boolean {
  * Exported for tests: staging a record or a loser's claim at the write seam.
  */
 export function writeBase(base: number, dir: string = stateDir()): number | null {
+  // [G3] The record is the shared truth; a range that cannot exist must not be
+  // published into it. The current content is the answer, exactly as a failed
+  // write would answer.
+  if (baseRangeFault(base) !== null) return readPersistedBase(dir);
   let tmp = "";
   try {
     mkdirSync(dir, { recursive: true });
@@ -289,7 +330,7 @@ async function claimOrFollow(base: number): Promise<number> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const current = readPersistedBase(dir);
     if (current !== null) {
-      if ((await probePort(current)) !== "unusable") return current; // follow the live winner
+      if ((await probePort(current)).status !== "unusable") return current; // follow the live winner
       // Current content is exactly the record this process probed as stale:
       // replace the FILE, not the record that may have appeared under the walk.
       const afterWrite = writeBase(base, dir);
@@ -347,18 +388,23 @@ async function claimOrFollow(base: number): Promise<number> {
 async function resolveBase(): Promise<number | null> {
   if (agreedBase !== null) return agreedBase;
   const preferred = preferredBase();
+  const preferredFault = baseRangeFault(preferred);
+  if (preferredFault !== null) return null; // acquireSlot and status named this as the configuration it is
   const persisted = readPersistedBase();
-  if (persisted !== null && (await probePort(persisted)) !== "unusable") return activate(persisted);
+  if (persisted !== null && (await probePort(persisted)).status !== "unusable") return activate(persisted);
   // The preferred base is candidate 0 of the walk (BASE_PROBE_WINDOW counts it);
   // the loop takes the shifts 1..BASE_SHIFT_ATTEMPTS, so the two counts meet
   // exactly and nothing is skipped or probed twice.
-  if ((await probePort(portOf(preferred, 1))) !== "unusable") {
+  if ((await probePort(portOf(preferred, 1))).status !== "unusable") {
     return activate(await claimOrFollow(preferred));
   }
   for (let shift = 1; shift <= BASE_SHIFT_ATTEMPTS; shift++) {
     const candidate = preferred + shift * BASE_STRIDE;
-    if (candidate >= 65536) continue;
-    if ((await probePort(portOf(candidate, 1))) === "unusable") continue;
+    // [G3] A candidate is walkable only when its whole range fits - a base near
+    // the top of the port space is skipped here exactly where a mid-range shift
+    // would have sent a slot bind past 65535.
+    if (candidate >= 65536 || baseRangeFault(candidate) !== null) continue;
+    if ((await probePort(portOf(candidate, 1))).status === "unusable") continue;
     return activate(await claimOrFollow(candidate));
   }
   return null;
@@ -371,8 +417,10 @@ export async function chooseFreeBase(
 ): Promise<number | null> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     const candidate = preferred + attempt * BASE_STRIDE;
-    if (candidate >= 65536) break;
-    if ((await probePort(candidate)) === "free") return candidate;
+    // [G3] Same rule as the walk: stop at the first candidate whose range
+    // cannot exist, not at a bind failure it would cause.
+    if (candidate >= 65536 || baseRangeFault(candidate) !== null) break;
+    if ((await probePort(candidate)).status === "free") return candidate;
   }
   return null;
 }
@@ -398,7 +446,7 @@ export type Slot = { index: number; port: number; server: net.Server };
 
 export type TakeResult =
   | { ok: true; slot: Slot }
-  | { ok: false; reason: "busy" | "unusable"; port: number; code: string };
+  | { ok: false; reason: "busy" | "unusable" | "retryable"; port: number; code: string };
 
 // [F22] Slot metadata is keyed by the PORT, never by the slot index: two bases
 // can each hold "slot 1" at the same time (a re-decided base and the old one's
@@ -445,15 +493,28 @@ async function holders(): Promise<Holder[]> {
   return (await scanSlots()).list;
 }
 
-/** holders() plus the ports that fail to bind (EACCES) - status needs both so a broken range is never reported as an empty queue. */
-async function scanSlots(): Promise<{ list: Holder[]; unusablePorts: number[] }> {
+/** holders() plus the ports that fail to bind outright (EACCES) or at all (EMFILE and friends) - status needs all three so a broken range is never reported as an empty queue and a machine-side refusal is never reported as a running job [G2]. */
+async function scanSlots(): Promise<{
+  list: Holder[];
+  unusablePorts: number[];
+  retryablePorts: number[];
+  retryableCode: string | null;
+}> {
   const list: Holder[] = [];
   const unusablePorts: number[] = [];
+  const retryablePorts: number[] = [];
+  const retryablePortsByCode = new Map<string, number[]>();
   for (let i = 1; i <= maxSlots(); i++) {
     const port = portFor(i);
-    const probe = await probePort(port);
+    const { status: probe, code } = await probePort(port);
     if (probe === "unusable") {
       unusablePorts.push(port);
+      continue;
+    }
+    if (probe === "retryable") {
+      const same = retryablePortsByCode.get(code ?? "UNKNOWN") ?? [];
+      same.push(port);
+      retryablePortsByCode.set(code ?? "UNKNOWN", same);
       continue;
     }
     let label = "(unknown)";
@@ -472,18 +533,28 @@ async function scanSlots(): Promise<{ list: Holder[]; unusablePorts: number[] }>
     if (probe === "busy") list.push({ slot: i, port, label, pid, startedAt, stale: false });
     else if (existsSync(slotMetaPath(port))) list.push({ slot: i, port, label, pid, startedAt, stale: true });
   }
-  return { list, unusablePorts };
+  const codes = [...retryablePortsByCode.keys()];
+  const retryableCode = codes.length === 1 ? codes[0] ?? null : null;
+  return { list, unusablePorts, retryablePorts, retryableCode };
 }
 
 async function printHolders(): Promise<void> {
-  const { list, unusablePorts } = await scanSlots();
+  const { list, unusablePorts, retryablePorts, retryableCode } = await scanSlots();
   if (unusablePorts.length > 0) {
     console.log(
       `[heavy-slot] warning: slot ports ${unusablePorts.join(", ")} do not bind with EACCES (reserved on this machine?): check "netsh int ipv4 show excludedportrange protocol=tcp"`,
     );
   }
+  if (retryablePorts.length > 0) {
+    // [G2] A machine-side bind refusal is not a held slot: named apart from the
+    // holder lines, which is why this does not read "running".
+    console.log(
+      `[heavy-slot] warning: slot ports ${retryablePorts.join(", ")} failed to bind` +
+        `${retryableCode === null ? "" : ` (${retryableCode})`} - a machine-side refusal, neither free nor held on this pass; check the machine's open-file and socket limits`,
+    );
+  }
   if (list.length === 0) {
-    if (unusablePorts.length === 0) console.log("the queue is empty");
+    if (unusablePorts.length === 0 && retryablePorts.length === 0) console.log("the queue is empty");
     return;
   }
   for (const h of list) {
@@ -500,6 +571,13 @@ export async function status(): Promise<void> {
   console.log(
     `free ${freeGb} GB of ${gb(totalmem())} GB, cpu ${cpuLoad}%  ->  capacity ${capacityFor(freeGb, cpuLoad, false)} of max ${maxSlots()}`,
   );
+  // [G3] Name the configuration fault before any bind: the banner below is
+  // about_RESERVED ranges, and a base past the port space is not one.
+  const configFault = baseRangeFault();
+  if (configFault !== null) {
+    console.log(`[heavy-slot] ${configFault} - refusing loudly, never "the queue is full" (exit 76)`);
+    return;
+  }
   const base = await resolveBase();
   if (base === null) {
     console.log(unusableBanner());
@@ -527,13 +605,22 @@ export async function status(): Promise<void> {
 export type AcquireResult =
   | { status: "acquired"; slot: Slot }
   | { status: "full" }
-  | { status: "refused"; reason: "unusable" };
+  | { status: "refused"; reason: "unusable" | "config" };
 
 /** Wait for a slot until the queue admits one, the range is refused, or the wait budget runs out. */
 export async function acquireSlot(label: string): Promise<AcquireResult> {
   const started = Date.now();
   const urgent = process.env.HEAVY_PRIORITY === "high";
 
+  // [G3] The base's range is validated against the port space BEFORE anything
+  // binds: a base past the top (HEAVY_SLOT_BASE=65535 with HEAVY_SLOT_MAX=4
+  // wants ports 65536+) would otherwise surface as EADDRNOTAVAIL bind failures
+  // - a configuration error dressed as a machine problem.
+  const configFault = baseRangeFault();
+  if (configFault !== null) {
+    console.error(`[heavy-slot] ${configFault} - refusing loudly, never "the queue is full" (exit 76)`);
+    return { status: "refused", reason: "config" };
+  }
   if ((await resolveBase()) === null) return { status: "refused", reason: "unusable" };
   let redecided = false;
 
@@ -543,13 +630,23 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
     const capacity = capacityFor(freeGb, cpuLoad, urgent);
     const unusablePorts: number[] = [];
     let unusableCode: string | null = null;
+    const retryablePorts: number[] = [];
+    let retryableCode: string | null = null;
     for (let i = 1; i <= capacity; i++) {
       const taken = await tryTake(i, label);
       if (taken.ok) return { status: "acquired", slot: taken.slot };
-      if (taken.reason !== "busy") { // busy = a slot is held; not a reason to re-decide or refuse
-        unusablePorts.push(taken.port);
-        unusableCode ??= taken.code;
+      if (taken.reason === "busy") continue; // busy = a slot is held; not a reason to re-decide or refuse
+      if (taken.reason === "retryable") {
+        // [G2] A machine-side bind refusal (EMFILE and friends): the port has no
+        // holder, so it must not read as one - and it is not reserved either, so
+        // waiting still can help. The code travels to the progress line below
+        // instead of being dropped as an answer that reads "full" for no reason.
+        retryableCode ??= taken.code;
+        retryablePorts.push(taken.port);
+        continue;
       }
+      unusablePorts.push(taken.port);
+      unusableCode ??= taken.code;
     }
     if (unusableCode !== null) {
       // Some slot ports refuse to bind outright: part of the range is reserved or
@@ -591,6 +688,11 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
         return { status: "refused", reason: "unusable" };
       }
       continue;
+    }
+    if (retryableCode !== null) {
+      console.error(
+        `[heavy-slot] slot ports ${retryablePorts.join(", ")} failed to bind (${retryableCode}) - a machine-side refusal, not a held slot; the same step is retried after this wait`,
+      );
     }
     if (Date.now() - started > waitMs()) return { status: "full" };
     const busy = (await holders()).map((h) => `${h.label}(${h.slot})`);
@@ -683,7 +785,11 @@ export async function run(label: string, command: string): Promise<number> {
     return EXIT_FULL;
   }
   if (acquired.status === "refused") {
-    console.error(unusableBanner());
+    if (acquired.reason === "config") {
+      console.error(`[heavy-slot] ${baseRangeFault()} - refusing loudly, never "the queue is full" (exit 76)`);
+    } else {
+      console.error(unusableBanner());
+    }
     return EXIT_REFUSED;
   }
   const slot = acquired.slot;
@@ -702,53 +808,81 @@ export async function run(label: string, command: string): Promise<number> {
     cancelled = true;
     if (child) killTree(child, "SIGTERM");
   };
-  const code = await new Promise<number>((resolve) => {
-    // detached on POSIX: the command leads its own process group, so the kill below
-    // reaches every descendant and not only the wrapper shell that `shell: true`
-    // makes child.pid point at. Windows has no signalable group - taskkill walks
-    // the tree instead.
-    child = spawn(command, {
-      shell: true,
-      stdio: "inherit",
-      detached: process.platform !== "win32",
-    });
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
-    if (child) child.on("close", (c) => resolve(c ?? 1));
-  });
   // SAFETY: process is an EventEmitter at runtime; bun's NodeJS.Process augmentation
   // declares off() only for its own "memoryPressure" event, which is what narrows the
   // call away from the EventEmitter signature. The cast names the interface in use.
   const emitter = process as NodeJS.EventEmitter;
-  emitter.off("SIGINT", stop);
-  emitter.off("SIGTERM", stop);
-
-  if (cancelled && child) {
-    // The close event fires as soon as the wrapper shell dies, and the rest of the
-    // tree can outlive it - on Windows a tree can survive a SIGTERM to the shell
-    // outright. The slot is released only once the tree is really gone: re-kill
-    // and re-probe on a bounded budget, so a wedged machine cannot hold a slot
-    // hostage forever. A descendant that made its own process group is out of
-    // reach of both the signal and the probe; the same bound releases the slot
-    // when that happens too.
-    const deadline = Date.now() + STOP_GRACE_MS;
-    while (Date.now() < deadline && treeAlive(child)) {
-      killTree(child, "SIGKILL");
-      await wait(100);
+  // Settled by the promise below; 1 (a failed launch's outcome) if a throw from
+  // spawn itself beats it - the finally still releases the slot.
+  let code = 1;
+  try {
+    code = await new Promise<number>((resolve) => {
+      // detached on POSIX: the command leads its own process group, so the kill below
+      // reaches every descendant and not only the wrapper shell that `shell: true`
+      // makes child.pid point at. Windows has no signalable group - taskkill walks
+      // the tree instead.
+      child = spawn(command, {
+        shell: true,
+        stdio: "inherit",
+        detached: process.platform !== "win32",
+      });
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+      // [G1] Exactly one outcome: 'close' OR 'error'. spawn can fail to start the
+      // shell at all (the machine at its process limit is the classic case) - then
+      // 'error' fires alone, 'close' never fires, and the old shape had no 'error'
+      // listener: the event threw unhandled instead of returning a code. A failed
+      // launch is an outcome, a code the caller reads - never an exception and
+      // never a slot held hostage by a close that will not come.
+      let settled = false;
+      child.on("close", (c) => {
+        if (!settled) {
+          settled = true;
+          resolve(c ?? 1);
+        }
+      });
+      child.on("error", (err: NodeJS.ErrnoException | undefined) => {
+        if (!settled) {
+          settled = true;
+          console.error(
+            `[heavy-slot] the command could not start (${err?.code ?? "UNKNOWN"}: ${err?.message ?? err}): ${command} - returning 1, no shell was launched`,
+          );
+          resolve(1);
+        }
+      });
+    });
+    if (cancelled && child) {
+      // The close event fires as soon as the wrapper shell dies, and the rest of the
+      // tree can outlive it - on Windows a tree can survive a SIGTERM to the shell
+      // outright. The slot is released only once the tree is really gone: re-kill
+      // and re-probe on a bounded budget, so a wedged machine cannot hold a slot
+      // hostage forever. A descendant that made its own process group is out of
+      // reach of both the signal and the probe; the same bound releases the slot
+      // when that happens too.
+      const deadline = Date.now() + STOP_GRACE_MS;
+      while (Date.now() < deadline && treeAlive(child)) {
+        killTree(child, "SIGKILL");
+        await wait(100);
+      }
+      // [F21] Disclose the give-up: the bounded budget ran out with the tree still
+      // alive, so the slot is released while work may still be running - the same
+      // double load the queue exists to prevent. A disclosed weakness is a
+      // visible one; the old silent fallthrough read as a clean release.
+      if (treeAlive(child)) {
+        console.error(
+          `[heavy-slot] the tree under pid ${child.pid} survived ${STOP_GRACE_MS}ms of forced kills - releasing slot ${slot.index} with work possibly still running`,
+        );
+      }
     }
-    // [F21] Disclose the give-up: the bounded budget ran out with the tree still
-    // alive, so the slot is released while work may still be running - the same
-    // double load the queue exists to prevent. A disclosed weakness is a
-    // visible one; the old silent fallthrough read as a clean release.
-    if (treeAlive(child)) {
-      console.error(
-        `[heavy-slot] the tree under pid ${child.pid} survived ${STOP_GRACE_MS}ms of forced kills - releasing slot ${slot.index} with work possibly still running`,
-      );
-    }
+  } finally {
+    // [G1] Release and listener removal on EVERY exit path - the pre-'close'
+    // exit ('error' before 'close', the launch that never happened, a throw the
+    // caller lets propagate) held the slot and accumulated listeners before this.
+    emitter.off("SIGINT", stop);
+    emitter.off("SIGTERM", stop);
+    release(slot);
+    console.error(`[heavy-slot] slot ${slot.index} released, exit ${code}`);
   }
-
-  release(slot);
-  console.error(`[heavy-slot] slot ${slot.index} released, exit ${code}`);
   return code;
 }
 

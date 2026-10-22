@@ -390,8 +390,13 @@ const resources = {
       VAULT_LOCKED_BY_OTHER_INSTANCE: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى، وستأخذ هذه النسخة المجلد من تلقاء نفسها.",
       VAULT_LOOPBACK_REQUIRED: "لحماية بياناتك، لا يمكن إدخال كلمة المرور أو مفتاح الاسترداد عبر الشبكة. افتح دكان على الجهاز نفسه.",
       // #319: the vault session is ambient (a cookie), so a page this app is not
-      // served from is refused outright — not answered as if the vault were shut
-      VAULT_ORIGIN_FORBIDDEN: "لحماية بياناتك، لا تُقبل طلبات الخزنة إلا من العنوان الذي يخدمها دكان. افتح دكان من عنوانه: \u2066{{origin}}\u2069.",
+      // served from is refused outright — not answered as if the vault were shut.
+      // Names NO address (round 5): the RPC seam hands the callers the bare code,
+      // so a placeholder arrived as literal `{{origin}}`, and the one value a
+      // refused page could supply — `window.location.origin` — is the address
+      // that just refused it. The page cannot know the right one once `Host`
+      // was rewritten, so the sentence states the rule instead of an address.
+      VAULT_ORIGIN_FORBIDDEN: "لحماية بياناتك، لا تُقبل طلبات الخزنة من عنوان آخر. افتح دكان من العنوان الذي يعمل عليه.",
       VAULT_MALFORMED_RESPONSE: "تعذّر تنفيذ العملية: رد غير متوقع من الخادم. أعد المحاولة.",
       VAULT_RESET_FAILED: "تعذّر تعيين كلمة المرور الجديدة. أعد المحاولة.",
       VAULT_SETUP_IN_PROGRESS: "هناك تهيئة جارية بالفعل. انتظر قليلاً ثم أعد المحاولة.",
@@ -1259,14 +1264,14 @@ export function authErrorKey(error: AuthErrorInput): MessageKey {
 /**
  * Translate a server key or raw validator sentence to Arabic.
  *
- * `values` carries the one substitution any refusal needs: the origin this app
- * is served from, so the code that names a wrong address can name the right one
- * instead of telling the owner to "open Dokan on this machine" — which is what
- * they already did (round-4 P2). Callers that have no value to pass (every
- * other code) leave it out.
+ * No substitutions, deliberately (#319 round 5). The one code that once took a
+ * value carried the origin this app is served from, and the seam that raises it
+ * passes none — so the sentence rendered a literal `{{origin}}` — while the
+ * value a refused page *can* offer is the address that just refused it. That
+ * copy moved to the address-free sentence in the catalogue.
  */
-export function tError(message: string | undefined, values?: { origin?: string }): string {
-  return i18n.t(serverErrorKey(message), values);
+export function tError(message: string | undefined): string {
+  return i18n.t(serverErrorKey(message));
 }
 
 void i18n.use(initReactI18next).init({

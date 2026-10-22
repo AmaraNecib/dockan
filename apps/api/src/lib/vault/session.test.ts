@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   clearedVaultSessionCookie,
-  readVaultSessionCookie,
+  readVaultSessionCookies,
   resolveVaultCredential,
   vaultOriginGate,
   vaultSessionCookie,
@@ -29,7 +29,7 @@ import {
 // red-on-parent-waive: 'reply a minting route returns' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
 // red-on-parent-waive: 'which transport a request presents' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
 // red-on-parent-waive: 'one origin gate' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
-// red-on-parent-waive: 'reads the vault cookie out of a jar' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
+// red-on-parent-waive: 'reads every vault cookie out of a jar' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
 
 /** A request as the gate or the RPC guard would see it. */
 function requestAt(url: string, init: RequestInit = {}): Request {
@@ -78,14 +78,23 @@ describe("the vault session cookie's attributes (#319)", () => {
     );
   });
 
-  it("reads the vault cookie out of a jar and ignores the neighbours", () => {
+  it("reads every vault cookie out of a jar and ignores the neighbours", () => {
     const request = requestAt(ADDRESS_APP, {
       headers: { cookie: "other=1; dokan.vault.session=TOKEN; another=2" },
     });
-    expect(readVaultSessionCookie(request)).toBe("TOKEN");
+    expect(readVaultSessionCookies(request)).toEqual(["TOKEN"]);
     // no vault cookie is not an empty token
-    expect(readVaultSessionCookie(requestAt(ADDRESS_APP, { headers: { cookie: "other=1" } }))).toBeUndefined();
-    expect(readVaultSessionCookie(requestAt(ADDRESS_APP, { headers: { cookie: "dokan.vault.session=" } }))).toBeUndefined();
+    expect(readVaultSessionCookies(requestAt(ADDRESS_APP, { headers: { cookie: "other=1" } }))).toEqual([]);
+    expect(readVaultSessionCookies(requestAt(ADDRESS_APP, { headers: { cookie: "dokan.vault.session=" } }))).toEqual(
+      [],
+    );
+    // EVERY cookie of the name, in jar order: browsers send duplicate names
+    // longest-path-first, so a planted one can arrive before the live one and
+    // a caller that reads only the first refuses a request it should serve
+    expect(readVaultSessionCookies(requestAt(ADDRESS_APP, { headers: { cookie: "dokan.vault.session=A; dokan.vault.session=B" } }))).toEqual([
+      "A",
+      "B",
+    ]);
   });
 });
 
@@ -114,7 +123,20 @@ describe("which transport a request presents (#319)", () => {
     const request = requestAt(ADDRESS_APP, { headers: { cookie: "dokan.vault.session=TOKEN" } });
     expect(resolveVaultCredential(request, browserMode)).toEqual({
       kind: "credential",
-      token: "TOKEN",
+      tokens: ["TOKEN"],
+      carrier: "cookie",
+    });
+  });
+
+  it("carries every cookie of the name, so the caller can test each against the one live token", () => {
+    // the planted `Path=/api/vault` cookie arrives before the live `Path=/` one;
+    // returning only the first is what shut the owner out of their own vault
+    const request = requestAt(ADDRESS_APP, {
+      headers: { cookie: "dokan.vault.session=planted; dokan.vault.session=LIVE" },
+    });
+    expect(resolveVaultCredential(request, browserMode)).toEqual({
+      kind: "credential",
+      tokens: ["planted", "LIVE"],
       carrier: "cookie",
     });
   });
@@ -123,7 +145,7 @@ describe("which transport a request presents (#319)", () => {
     const request = requestAt(ADDRESS_APP, { headers: { "x-vault-session": "TOKEN" } });
     expect(resolveVaultCredential(request, browserMode)).toEqual({
       kind: "credential",
-      token: "TOKEN",
+      tokens: ["TOKEN"],
       carrier: "header",
     });
   });
@@ -134,7 +156,7 @@ describe("which transport a request presents (#319)", () => {
     const header = requestAt(ADDRESS_APP, { headers: { "x-vault-session": "TOKEN" } });
     expect(resolveVaultCredential(header, brokerMode)).toEqual({
       kind: "credential",
-      token: "TOKEN",
+      tokens: ["TOKEN"],
       carrier: "header",
     });
   });
@@ -145,7 +167,7 @@ describe("which transport a request presents (#319)", () => {
     });
     expect(resolveVaultCredential(both, browserMode)).toEqual({
       kind: "credential",
-      token: "FROM-COOKIE",
+      tokens: ["FROM-COOKIE"],
       carrier: "cookie",
     });
   });

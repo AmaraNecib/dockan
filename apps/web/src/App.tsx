@@ -37,6 +37,14 @@ export function RequireSession({ children }: { children: ReactNode }) {
    * The session can die under a live window — another window replaced it, the
    * owner logged out, the vault was locked. The refusal that says so must
    * land on the unlock screen, not on a page of failed queries (#319).
+   *
+   * Read only inside the `mode === "vault"` branch below, and that is the whole
+   * scope it has. A plaintext build has no unlock screen to hold and no vault
+   * cookie to protect, so a hold there could only strand the owner on a screen
+   * with no exit (or, reloaded, loop on the persisted flag). The unconfirmed
+   * sign-out on that build is answered where the decision is made instead: with
+   * no vault route, `logout.ts` treats the local clear as the whole credential
+   * and reloads (#319 round 5 P3).
    */
   const authLost = useAuthLost();
   /**

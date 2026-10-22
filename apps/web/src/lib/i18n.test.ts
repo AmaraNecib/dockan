@@ -105,16 +105,22 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     }
   });
 
-  it("names the origin to open, never the machine the owner is already on (round 4 P2)", () => {
-    // The rule is origin EQUALITY, and the case it closes is a page on this
-    // same device, another port. The copy used to repeat the loopback rule's
-    // remedy ("open Dokan on this machine"), which tells the owner to do what
-    // they just did.
-    const copy = tError("VAULT_ORIGIN_FORBIDDEN", { origin: "http://127.0.0.1:5173" });
-    expect(copy).toContain("http://127.0.0.1:5173");
-    // no unfilled placeholder can reach the owner
+  it("says the address is refused without naming one, so no fill-in reaches the owner (#319 round 5)", () => {
+    // The callers do not pass a value: the RPC seam hands over the bare code
+    // `VAULT_ORIGIN_FORBIDDEN` (party-forms, party-picker, customer-settle), so
+    // a sentence with a placeholder reached the owner as literal `{{origin}}`.
+    // Not passing one is therefore the case under test, and the old test
+    // passed a value, which is why it could not see this.
+    const copy = tError("VAULT_ORIGIN_FORBIDDEN");
+    // no unfilled placeholder can reach the owner, by either delimiter
     expect(copy).not.toContain("{{");
+    expect(copy).not.toContain("}}");
     expect(copy).toMatch(/[\u0600-\u06FF]/);
+    // A value the page HAS must not appear either: on a refused page
+    // `window.location.origin` is the refused address, so naming it tells the
+    // owner to open the address that just refused them.
+    expect(copy).not.toContain("127.0.0.1");
+    expect(copy).not.toContain("http");
     // and it is a different remedy from the peer-address rule one line above
     expect(copy).not.toBe(tError("VAULT_LOOPBACK_REQUIRED"));
     // the copied remedy was the loopback rule's own sentence

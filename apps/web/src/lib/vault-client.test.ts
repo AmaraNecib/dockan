@@ -13,6 +13,7 @@ import {
   storeVaultSessionToken,
   VaultRequestError,
   vaultErrorCopy,
+  vaultRouteAbsent,
   vaultSetup,
   vaultUnlock,
   vaultUnlockWithRecovery,
@@ -20,6 +21,18 @@ import {
 
 /** The reply an unlock crosses the broker bridge with, as this test fakes it. */
 type UnlockReply = { ok: boolean; sessionToken?: string; sessionGeneration?: number };
+
+/** A mounted vault build's status body, as the status route answers it. */
+const vaultStatusBody = {
+  mode: "vault",
+  state: "locked",
+  legacyDatabase: false,
+  recoveryKeyCount: 0,
+  lockedForMs: 0,
+  unlocked: false,
+  session: false,
+  broker: false,
+} as const;
 
 let routes = new Map<string, (init: RequestInit | undefined) => Response>();
 const originalFetch = globalThis.fetch;
@@ -52,7 +65,7 @@ afterEach(() => {
 });
 
 describe("a vault route this build does not have (round-4 P1)", () => {
-  it("reads a bodiless 404 as no vault, and keeps the code of a 404 that names one", async () => {
+  it("names a bodiless 404 as no vault, and keeps the code of a 404 that names one", async () => {
     // DOKAN_VAULT=disabled mounts no /api/vault/* route: the answer is the
     // server's own 404 page, and the only honest reading is "this build has no
     // vault". The generic failure would be indistinguishable from a refused
@@ -63,7 +76,10 @@ describe("a vault route this build does not have (round-4 P1)", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(VaultRequestError);
       if (error instanceof VaultRequestError) expect(error.code).toBe("VAULT_UNSUPPORTED");
-      if (error instanceof Error) expect(isAbsentVaultSession(error)).toBe(true);
+      // ... and the code alone is a GUESS about one hop, not a statement about
+      // the build: the absence question is asked of the status route
+      if (error instanceof Error) expect(isAbsentVaultSession(error)).toBe(false);
+      expect(await vaultRouteAbsent()).toBe(true);
     }
 
     // a vault route that DOES exist can answer 404 with an envelope (a recovery
@@ -80,6 +96,41 @@ describe("a vault route this build does not have (round-4 P1)", () => {
       if (error instanceof VaultRequestError) expect(error.code).toBe("VAULT_RECOVERY_NOT_FOUND");
       if (error instanceof Error) expect(isAbsentVaultSession(error)).toBe(false);
     }
+  });
+
+  it("does NOT read a logout 404 as no vault when the build answers the status route (round 5)", async () => {
+    // The 404 on the logout route is a guess about ONE hop: a proxy that never
+    // forwards it, a renamed route, a gateway page. `absent` reloads, and with
+    // a live cookie that is a walk back into the app. A mounted vault build
+    // answers `mode: "vault"`, so the guess is refused.
+    routes.set("/api/vault/status", () => Response.json(vaultStatusBody));
+    let failure: Error | undefined;
+    try {
+      await revokeVaultSession();
+    } catch (error) {
+      if (error instanceof Error) failure = error;
+    }
+    expect(failure).toBeInstanceOf(VaultRequestError);
+    if (failure === undefined) throw new Error("expected a refusal");
+    expect(isAbsentVaultSession(failure)).toBe(false);
+    expect(await vaultRouteAbsent()).toBe(false);
+  });
+
+  it("keeps an unconfirmed revoke unconfirmed when the status read cannot answer (round 5)", async () => {
+    // an unreachable server, or a status route that refuses: neither says the
+    // vault is absent, so the answer that cannot log anyone back in stands
+    routes.set("/api/vault/status", () => new Response("boom", { status: 500 }));
+    let failure: Error | undefined;
+    try {
+      await revokeVaultSession();
+    } catch (error) {
+      if (error instanceof Error) failure = error;
+    }
+    if (failure === undefined) throw new Error("expected a refusal");
+    expect(isAbsentVaultSession(failure)).toBe(false);
+    // a status route that refuses is not "no vault route": the answer that
+    // cannot log anyone back in stands
+    expect(await vaultRouteAbsent()).toBe(false);
   });
 });
 
@@ -329,12 +380,17 @@ describe("the broker path keeps its token across a webview reload (#319 review P
 });
 
 describe("vault status and logout", () => {
-  it("fills the origin refusal's remedy with the address this page is served from (round-4 P2)", () => {
-    // the one place a vault code becomes copy is `vaultErrorCopy`, so it is the
-    // one place that has to supply the address the copy names
+  it("names no address for the origin refusal, because the only one it could name is the refused one (round 5)", () => {
+    // `vaultErrorCopy` is the one place a vault code becomes copy. On a refused
+    // page `window.location.origin` IS the address that was just rejected, so
+    // naming it tells the owner to open the address that refuses them; and the
+    // RPC seam passes no value at all, which rendered a literal `{{origin}}`.
+    // The sentence now states the rule and names nothing.
     const copy = vaultErrorCopy(new VaultRequestError("VAULT_ORIGIN_FORBIDDEN"));
-    expect(copy).toContain(window.location.origin);
+    expect(copy).not.toContain(window.location.origin);
     expect(copy).not.toContain("{{");
+    expect(copy).not.toContain("}}");
+    expect(copy).not.toBe(vaultErrorCopy(new VaultRequestError("VAULT_LOOPBACK_REQUIRED")));
   });
 
   it("distinguishes a legacy build (404) from an unreachable server", async () => {

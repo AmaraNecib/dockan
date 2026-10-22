@@ -1198,6 +1198,36 @@ describe("one unlocked vault shared between windows (#319)", () => {
     await expect(stranger.categoriesList()).rejects.toThrow(AUTH_REFUSAL.message);
   });
 
+  itHeavy("reads the live cookie even when a planted one of the same name is presented first", async () => {
+    const h = harness(tempDir("dokan-vault-shadowed-cookie-"));
+    const setup = await setupVault(h);
+    const live = sessionTokenFrom(setup);
+    await h.linkWith(jarWith(live)).firstTimeSetup({ ownerName: "مالك", phoneNumber: "0550123123", storeName: "متجر" });
+
+    // Browsers send duplicate-name cookies LONGEST-PATH-FIRST (RFC 6265 §5.4),
+    // so a cookie planted on `Path=/api/vault` arrives before the live one on
+    // `Path=/`. Any page served under that path on loopback can plant it —
+    // cookies ignore ports — and the jar is the browser's, not one window's.
+    // Reading only the first match therefore refused every route while the
+    // live cookie sat in the same jar, and the next unlock minted another
+    // `Path=/` cookie the planted one shadowed again: the owner was shut out
+    // until they cleared the jar by hand. Exactly one token is live, so trying
+    // every candidate widens nothing.
+    const shadowed = { cookie: `dokan.vault.session=planted; dokan.vault.session=${live}` };
+    const keys = await h.gate.request("/api/vault/recovery-keys", { headers: shadowed });
+    expect(keys.status).toBe(200);
+    // the RPC seam reads the same jar the same way
+    expect((await h.linkWith(shadowed).categoriesList()).items.length).toBeGreaterThan(0);
+
+    // the other half: a jar of planted values alone is refused, so "try every
+    // candidate" is not "accept any candidate"
+    const plantedOnly = { cookie: "dokan.vault.session=planted; dokan.vault.session=also-planted" };
+    const refused = await h.gate.request("/api/vault/recovery-keys", { headers: plantedOnly });
+    expect(refused.status).toBe(401);
+    // SAFETY: the error contract is { error: { code } }: stable code, no copy
+    expect((await json<{ error: { code: string } }>(refused)).error.code).toBe("VAULT_NOT_UNLOCKED");
+  });
+
   itHeavy("refuses a foreign-origin request: it neither reads nor unlocks", async () => {
     const h = harness(tempDir("dokan-vault-foreign-origin-"));
     const foreign = { origin: "https://evil.example" };

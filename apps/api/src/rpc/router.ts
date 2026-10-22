@@ -346,8 +346,13 @@ export function createRpcRouter(deps: RpcDeps) {
     // Vault mode accepts ONLY this credential: a legacy password account that
     // survived a migration must not act as a second, weaker credential.
     if (deps.vault !== undefined) {
+      // bound once: the narrowing of an object property does not survive into
+      // the `some` callback below
+      const vault = deps.vault;
       const resolution = resolveVaultCredential(context.request, { broker: deps.config.vaultBroker });
-      if (resolution.kind === "credential" && deps.vault.sessionMatches(resolution.token)) {
+      // every token the request presented, because a jar can carry a planted
+      // duplicate of the cookie name ahead of the live one (#319 round 5)
+      if (resolution.kind === "credential" && resolution.tokens.some((token) => vault.sessionMatches(token))) {
         const ownerId = deps.vault.ownerId();
         if (ownerId !== undefined) return { user: { id: ownerId } };
       }

@@ -122,15 +122,14 @@ export class VaultRequestError extends Error {
  * copy (locale-neutral guard), so the web translates the code here — no raw
  * code can ever reach the owner.
  *
- * The page's own origin rides along because one refusal names it: the origin
- * rule refuses a page served from another address, and the remedy is to open
- * the address this app actually answers on, not "this machine" (round-4 P2).
+ * No substitutions: the origin refusal names no address (round 5). `tError`
+ * renders a sentence, and the page's own origin is the address that just
+ * refused it.
  */
 export function vaultErrorCopy(error: Error | undefined): string {
-  const values = { origin: window.location.origin };
-  if (error instanceof VaultRequestError) return tError(error.code, values);
-  if (error !== undefined) return tError(error.message, values);
-  return tError(undefined, values);
+  if (error instanceof VaultRequestError) return tError(error.code);
+  if (error !== undefined) return tError(error.message);
+  return tError(undefined);
 }
 
 /**
@@ -337,7 +336,26 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
     if (response.status === 404 && refusal === undefined) throw new VaultRequestError("VAULT_UNSUPPORTED");
     throw new VaultRequestError(refusal?.code ?? "VAULT_UNEXPECTED", refusal?.retryAfterMs, refusal?.staleHeartbeat ?? false);
   }
-  const decoded = schema.safeParse(JSON.parse(text));
+  return decodeReply(text, schema);
+}
+
+/**
+ * Decode a reply body, naming both failures in the vault's own vocabulary: a
+ * body that is not JSON at all, and a body that does not match the schema.
+ *
+ * A 200 whose body is not JSON — a proxy's interstitial, an HTML page, an empty
+ * reply — used to throw a bare `SyntaxError` out of here, so the caller saw a
+ * native error with no code and had to guess (`unconfirmed`) (round-5 P3). A
+ * malformed reply is a vault refusal like any other and now says so.
+ */
+function decodeReply<T>(text: string, schema: z.ZodType<T>): T {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
+  }
+  const decoded = schema.safeParse(value);
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
   return decoded.data;
 }
@@ -435,9 +453,7 @@ export async function fetchVaultStatus(): Promise<VaultStatus> {
     const refusal = errorEnvelopeIn(text);
     throw new VaultRequestError(refusal?.code ?? "VAULT_UNREACHABLE", refusal?.retryAfterMs, refusal?.staleHeartbeat ?? false);
   }
-  const decoded = statusSchema.safeParse(JSON.parse(text));
-  if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
-  return decoded.data;
+  return decodeReply(text, statusSchema);
 }
 
 export async function vaultSetup(
@@ -523,23 +539,56 @@ export async function revokeVaultSession(): Promise<void> {
 }
 
 /**
- * The refusals that name the ABSENCE of a vault session rather than an
- * unconfirmed one: this build has no vault route, or the server holds no
- * session to revoke. Both mean there is no server credential left behind, so a
- * caller that must decide whether a reload is safe may treat them as a
- * successful clear — the local copy was the whole credential (#319 round 4).
+ * The refusals that name the ABSENCE of a vault session in the code itself, in
+ * the one case a code can say it: the API's own envelope, stating there is no
+ * live session to revoke (#319 round 4).
+ *
+ * `VAULT_UNSUPPORTED` is deliberately NOT here (#319 round 5). The web infers
+ * it from "a 404 whose body carried no envelope", which is a guess about the
+ * route rather than a statement from it; see `vaultRouteAbsent`.
  */
-const ABSENT_SESSION_CODES = new Set<string>(["VAULT_UNSUPPORTED", "VAULT_NOT_UNLOCKED"]);
+const ABSENT_SESSION_CODES = new Set<string>(["VAULT_NOT_UNLOCKED"]);
 
 /**
- * Whether a failed vault call failed because there is no session, not because
- * the session could not be reached. Anything else — a network failure, a 403, a
- * restarting sidecar — is an UNCONFIRMED revoke and must not be read as one.
+ * Whether a failed vault call said, in its own code, that the server holds no
+ * session to revoke — the one condition under which the page's own clear is the
+ * whole credential and a reload is safe.
+ *
+ * `VAULT_NOT_UNLOCKED` says so by itself: it is the API's envelope and it
+ * states that there is nothing there to revoke.
+ *
+ * `VAULT_UNSUPPORTED` does NOT, and that is the round-5 finding. The code means
+ * "a 404 whose body did not parse into an envelope", and any hop can produce
+ * that: a proxy that never forwards `/api/vault/logout`, a renamed route, a
+ * gateway answering `{}`, `null` or an HTML error page. Reading it as absence
+ * RELOADS, and with a live cookie that walks the owner straight back into the
+ * app — the round-4 defect re-entering through a guess. So the absence question
+ * is asked of the build instead, by `vaultRouteAbsent`.
+ *
  * Takes an `Error`, not the `unknown` a `catch` hands back: narrowing that
  * happens at the call site, where the throw actually was.
  */
 export function isAbsentVaultSession(error: Error): boolean {
   return error instanceof VaultRequestError && ABSENT_SESSION_CODES.has(error.code);
+}
+
+/**
+ * Whether this build mounts no vault route at all, asked of the build rather
+ * than inferred from one hop's 404.
+ *
+ * `fetchVaultStatus` is the same read the gate makes on boot, so the answer
+ * cannot disagree with what the gate will do next. A mounted vault build answers
+ * `mode: "vault"`, and anything it says other than "no such route" leaves the
+ * question unanswered — an unreachable server or a lock refusal is not an
+ * absent vault, so the caller keeps the failing-closed answer.
+ */
+export async function vaultRouteAbsent(): Promise<boolean> {
+  try {
+    await fetchVaultStatus();
+    return false;
+  } catch (failure) {
+    return failure instanceof VaultRequestError && failure.code === "VAULT_UNSUPPORTED";
+  }
 }
 
 /**

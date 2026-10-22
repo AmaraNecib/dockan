@@ -10,6 +10,18 @@ let revokeHeaders: string | null = null;
 const originalReload = window.location.reload;
 const originalFetch = globalThis.fetch;
 
+/** A locked vault build's status body, as the status route answers it. */
+const vaultStatusBody = {
+  mode: "vault",
+  state: "locked",
+  legacyDatabase: false,
+  recoveryKeyCount: 0,
+  lockedForMs: 0,
+  unlocked: false,
+  session: false,
+  broker: false,
+} as const;
+
 beforeEach(() => {
   reloads = 0;
   revokeCalls = 0;
@@ -92,9 +104,10 @@ describe("logoutAndReload", () => {
 
   it("reloads when this build has no vault route at all (round-4 P1)", async () => {
     // DOKAN_VAULT=disabled: /api/vault/logout is not mounted, so the revoke
-    // answers 404. No vault session exists, which makes the local clear the
-    // WHOLE credential — holding the page here left the legacy app mounted
-    // after a sign-out that had succeeded.
+    // answers 404 — and since round 5 the status route has to agree before that
+    // 404 is read as absence (#319 round 5). No vault session exists, which
+    // makes the local clear the WHOLE credential; holding the page here left
+    // the legacy app mounted after a sign-out that had succeeded.
     globalThis.fetch = Object.assign(async (): Promise<Response> => new Response("not found", { status: 404 }), {
       preconnect: originalFetch.preconnect,
     });
@@ -108,6 +121,61 @@ describe("logoutAndReload", () => {
     expect(readVaultSessionToken()).toBeUndefined();
     expect(reloads).toBe(1);
     // nothing held the page: there is no server credential left to walk back in
+    expect(authLossReason()).toBeUndefined();
+  });
+
+  it("holds the page when a 404 on the logout route is not the whole build (round 5)", async () => {
+    // `VAULT_UNSUPPORTED` is not a statement, it is a GUESS: "a 404 whose body
+    // carried no envelope". Any hop that never forwards the route — a proxy, a
+    // renamed route, a gateway answering `{}`/`null`/HTML — looks identical,
+    // and `absent` RELOADS. With a live cookie that walks the owner straight
+    // back into the app, which is the round-4 defect re-entered through a
+    // guess. So the guess is checked against the build itself: a mounted vault
+    // build answers `mode: "vault"` on the status route, and an absent logout
+    // there is unconfirmed.
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const path = new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname;
+        if (path === "/api/vault/logout") return new Response("<html>not found</html>", { status: 404 });
+        if (path === "/api/vault/status") return Response.json(vaultStatusBody);
+        return new Response("not found", { status: 404 });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    storeVaultSessionToken("vault-session-token");
+    await logoutAndReload(async () => null);
+    // no reload: the cookie may still be live, so the unlock screen holds
+    expect(reloads).toBe(0);
+    expect(authLossReason()).toBe("signed-out");
+  });
+
+  it("reloads when the page has no vault route to walk back into, whatever the logout answered (round 5)", async () => {
+    // The plaintext build again, with a revoke that failed for a reason that is
+    // NOT "no such route": a 5xx from a proxy, a 200 whose body is not an
+    // envelope. There is no vault cookie in this build, so the hold protects
+    // nothing — and holding is not a neutral no-op: `authLost` was read only
+    // inside the vault branch, so the signed-in app stayed mounted with nothing
+    // reloading, which is verbatim the round-4 symptom (round-5 P3). The
+    // credential on this build is the better-auth session, and `signOut` has
+    // already run, so asking the server again is the answer.
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const path = new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname;
+        if (path === "/api/vault/logout") return new Response("gateway error", { status: 502 });
+        return new Response("not found", { status: 404 });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    let signedOut = false;
+    await logoutAndReload(async () => {
+      signedOut = true;
+      return null;
+    });
+    expect(signedOut).toBe(true);
+    expect(reloads).toBe(1);
+    // and nothing is remembered: a flag here would be inert on this build, and
+    // on a machine that later runs a vault build it would hold the gate for no
+    // reason the owner could explain
     expect(authLossReason()).toBeUndefined();
   });
 

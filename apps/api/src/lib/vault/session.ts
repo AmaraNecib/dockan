@@ -6,8 +6,8 @@
  * module decides HOW a request presents that one token, and it is the only
  * place that decides — the vault routes and the RPC guard both ask it.
  *
- * Two transports, told apart by the SERVER's mode and never by what the
- * request happens to carry:
+ * Two transports, told apart by the SERVER's mode. The mode decides what a
+ * request may present:
  *
  * - The browser path carries the token in an `HttpOnly` cookie. A cookie jar
  *   is shared by every window of the browser, so one unlock serves them all,
@@ -20,9 +20,12 @@
  * happens to hold a cookie (the same host, another port — cookies are
  * port-agnostic) must therefore never be able to present itself as the native
  * transport. So a broker-mode server reads the header and ignores the cookie
- * entirely; a browser-mode server reads the cookie and keeps reading the
- * header for the clients that legitimately hold a token (the dev tooling and
- * the e2e helpers).
+ * entirely.
+ *
+ * A browser-mode server reads the cookie AND still reads the header, for the
+ * clients that legitimately hold a token (the dev tooling and the e2e
+ * helpers). The mode picks which transports are readable; the request decides
+ * which of them it actually uses.
  */
 
 /** The cookie the browser path carries the vault session in. */
@@ -37,8 +40,14 @@ export type VaultCredentialCarrier = "cookie" | "header";
 export type VaultCredentialResolution =
   /** The request carries no credential this server accepts. */
   | { kind: "none" }
-  /** The request carries a credential; whether it is LIVE is the caller's call. */
-  | { kind: "credential"; token: string; carrier: VaultCredentialCarrier }
+  /**
+   * The request carries at least one credential; whether it is LIVE is the
+   * caller's call. `tokens` is plural because a jar can present several cookies
+   * of this name, and any one of them may be the live session (see
+   * `readVaultSessionCookies`). The caller tests every one against the single
+   * live token the manager holds — never against a set.
+   */
+  | { kind: "credential"; tokens: readonly string[]; carrier: VaultCredentialCarrier }
   /**
    * The request carries the vault cookie from an origin this server refuses.
    * `SameSite=Strict` already keeps a cross-site request from carrying the
@@ -150,30 +159,38 @@ export function vaultOriginGate(request: Request, options: { broker: boolean }):
 }
 
 /**
- * The vault session cookie a request carries, or undefined.
+ * Every vault session cookie a request carries, in the order the jar presented
+ * them. Empty list when it carries none.
+ *
+ * Plural, deliberately (#319 round 5). Browsers send duplicate-name cookies
+ * LONGEST-PATH-FIRST (RFC 6265 §5.4), so a cookie planted on `Path=/api/vault`
+ * arrives BEFORE the live one on `Path=/` — and any page served under that path
+ * on this loopback host can set one, because cookies ignore ports. Taking the
+ * first match refused a request whose live cookie sat in the same jar, and the
+ * next unlock minted another `Path=/` cookie the planted one shadowed again, so
+ * the owner was shut out until they cleared the jar by hand. The caller tests
+ * every value against the ONE live token, so a planted value costs a comparison
+ * and never access.
+ *
+ * An empty value is skipped rather than returned: `dokan.vault.session=` is a
+ * cookie this server never wrote, and `""` is not a token to test.
  *
  * The token is base64url (`manager.ts` mints it), so it needs no
  * percent-decoding; a jar that carries a percent-encoded value is not one this
- * server wrote.
- *
- * The FIRST match wins, deliberately. A jar can hold two cookies of this name
- * on different paths, and taking the first is the choice that fails CLOSED: the
- * one this server wrote is on `Path=/` and is presented first by every client
- * that orders by path specificity, so a duplicate planted on another path is
- * either ignored or read as the credential it is not — refused either way,
- * never accepted as a second live token.
+ * server wrote, and it simply fails the live-token test.
  */
-export function readVaultSessionCookie(request: Request): string | undefined {
+export function readVaultSessionCookies(request: Request): readonly string[] {
   const header = request.headers.get("cookie");
-  if (header === null || header === "") return undefined;
+  if (header === null || header === "") return [];
+  const values: string[] = [];
   for (const part of header.split(";")) {
     const separator = part.indexOf("=");
     if (separator < 0) continue;
     if (part.slice(0, separator).trim() !== VAULT_SESSION_COOKIE_NAME) continue;
     const value = part.slice(separator + 1).trim();
-    return value === "" ? undefined : value;
+    if (value !== "") values.push(value);
   }
-  return undefined;
+  return values;
 }
 
 /** The attributes every vault session cookie carries. */
@@ -231,11 +248,13 @@ export function vaultSessionPayload(
  *    credential there, so a page holding one cannot act as the native
  *    transport (the packaged desktop's promise is that the credential never
  *    crosses the network).
- * 2. A browser-mode server reads the cookie. A request that presents it from a
- *    foreign origin is refused.
+ * 2. A browser-mode server reads the cookie — every cookie of this name the jar
+ *    presented, because a planted one can arrive first. A request that presents
+ *    a cookie from a foreign origin is refused.
  * 3. The header stays accepted in browser mode for the clients that hold a
- *    token (the dev tooling, the e2e helpers). It carries the same single live
- *    token, so accepting it widens nothing.
+ *    token (the dev tooling, the e2e helpers), but only when the jar carried no
+ *    cookie at all. It carries the same single live token, so accepting it
+ *    widens nothing.
  */
 export function resolveVaultCredential(
   request: Request,
@@ -244,10 +263,10 @@ export function resolveVaultCredential(
   const header = request.headers.get(VAULT_SESSION_HEADER_NAME);
   if (options.broker) {
     if (header === null || header === "") return { kind: "none" };
-    return { kind: "credential", token: header, carrier: "header" };
+    return { kind: "credential", tokens: [header], carrier: "header" };
   }
-  const cookie = readVaultSessionCookie(request);
-  if (cookie === undefined) {
+  const cookies = readVaultSessionCookies(request);
+  if (cookies.length === 0) {
     if (header === null || header === "") return { kind: "none" };
     // This branch does NOT ask the origin gate, deliberately. The clients that
     // hold this token and no cookie are the non-browser ones (curl, the e2e
@@ -257,8 +276,8 @@ export function resolveVaultCredential(
     // open is the local-SERVER replay the ADR records beside #343: a process on
     // this box sets any `Origin` it likes — and it needs the token first. Stated
     // in docs/adr/0013-shared-vault-session.md, in Consequences.
-    return { kind: "credential", token: header, carrier: "header" };
+    return { kind: "credential", tokens: [header], carrier: "header" };
   }
   if (vaultOriginGate(request, options) === "foreign-origin") return { kind: "refused", reason: "foreign-origin" };
-  return { kind: "credential", token: cookie, carrier: "cookie" };
+  return { kind: "credential", tokens: cookies, carrier: "cookie" };
 }

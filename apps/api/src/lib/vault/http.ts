@@ -213,7 +213,9 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   const sessionRefusal = (request: Request): { code: VaultErrorCode; status: number } | undefined => {
     const resolution = resolveVaultCredential(request, { broker: deps.config.vaultBroker });
     if (resolution.kind !== "credential") return { code: "VAULT_NOT_UNLOCKED", status: 401 };
-    if (deps.manager.sessionMatches(resolution.token)) return undefined;
+    // every cookie of this name the jar presented: a planted duplicate can
+    // arrive first, and only one token is live either way (#319 round 5)
+    if (resolution.tokens.some((token) => deps.manager.sessionMatches(token))) return undefined;
     return { code: "VAULT_NOT_UNLOCKED", status: 401 };
   };
 
@@ -226,7 +228,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     // exists to prevent, only shorter. A boolean discloses nothing to a caller
     // that already holds (or lacks) the credential it describes.
     const resolution = resolveVaultCredential(c.req.raw, { broker: deps.config.vaultBroker });
-    const session = resolution.kind === "credential" && deps.manager.sessionMatches(resolution.token);
+    const session =
+      resolution.kind === "credential" && resolution.tokens.some((token) => deps.manager.sessionMatches(token));
     return c.json({
       mode: "vault" as const,
       state: status.state,

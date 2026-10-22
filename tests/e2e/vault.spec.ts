@@ -423,13 +423,39 @@ test("the vault cookie stays on the app's own host (#343)", async ({ page }) => 
   });
   await new Promise<void>((resolve) => sibling.listen(siblingPort, "127.0.0.1", resolve));
   await page.evaluate(async (port) => {
-    // the answer is opaque to the page (a different origin); what matters is
-    // what the listener received
-    await fetch(`http://127.0.0.1:${port}/probe`).catch(() => undefined);
+    // `credentials: "include"` is the whole test: `fetch()` defaults to
+    // "same-origin", so without it the browser sends NO cookie to any other
+    // origin and this case passes whatever the jar holds (#357 test-audit)
+    await fetch(`http://127.0.0.1:${port}/probe`, { credentials: "include" }).catch(() => undefined);
   }, siblingPort);
   await expect.poll(() => seen.length).toBe(1);
   expect(seen[0]).toBeUndefined();
   sibling.close();
+
+  // A POSITIVE CONTROL, so the check above cannot pass by never being able to
+  // detect receipt at all (#357 test-audit): the SAME listener, reached under the
+  // app's own name, DOES receive the cookie. Without this, "seen[0] undefined"
+  // would be satisfied by a browser that sends no cookies to anything.
+  //
+  // It is also the residual this change accepts: cookies ignore ports, so a
+  // service bound under the app's own hostname WOULD receive the jar's cookie.
+  // The change narrows "any loopback service the browser visits" to "any service
+  // under the app's name", which is the difference the issue asked for.
+  const coTenantPort = await freePort();
+  const coTenantSeen: (string | undefined)[] = [];
+  const coTenant = http.createServer((req, res) => {
+    coTenantSeen.push(req.headers.cookie);
+    res.writeHead(200, { "access-control-allow-origin": `http://${APP_HOST}:${WEB_PORT}` });
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => coTenant.listen(coTenantPort, "127.0.0.1", resolve));
+  await page.evaluate(async ({ host, port }) => {
+    await fetch(`http://${host}:${port}/probe`, { credentials: "include" }).catch(() => undefined);
+  }, { host: APP_HOST, port: coTenantPort });
+  await expect.poll(() => coTenantSeen.length).toBe(1);
+  // RECEIVES it: same host name, different port, and cookies ignore ports
+  expect(coTenantSeen[0]).toContain("dokan.vault.session");
+  coTenant.close();
 
   // and the api's own address, which is a sibling like any other, answers a
   // caller with no credential

@@ -105,6 +105,22 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     }
   });
 
+  it("names the origin to open, never the machine the owner is already on (round 4 P2)", () => {
+    // The rule is origin EQUALITY, and the case it closes is a page on this
+    // same device, another port. The copy used to repeat the loopback rule's
+    // remedy ("open Dokan on this machine"), which tells the owner to do what
+    // they just did.
+    const copy = tError("VAULT_ORIGIN_FORBIDDEN", { origin: "http://127.0.0.1:5173" });
+    expect(copy).toContain("http://127.0.0.1:5173");
+    // no unfilled placeholder can reach the owner
+    expect(copy).not.toContain("{{");
+    expect(copy).toMatch(/[\u0600-\u06FF]/);
+    // and it is a different remedy from the peer-address rule one line above
+    expect(copy).not.toBe(tError("VAULT_LOOPBACK_REQUIRED"));
+    // the copied remedy was the loopback rule's own sentence
+    expect(copy).not.toContain("افتح دكان على الجهاز نفسه");
+  });
+
   it("says something honest and calm when the failure is unknown, never 'unexpected'", () => {
     const generic = i18n.t("errorGeneric");
     expect(tError("a sentence no i18n key matches")).toBe(generic);

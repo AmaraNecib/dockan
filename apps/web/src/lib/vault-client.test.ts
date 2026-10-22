@@ -4,6 +4,7 @@ import {
   changeVaultPassphrase,
   clearVaultSessionToken,
   fetchVaultStatus,
+  isAbsentVaultSession,
   isVaultPassphraseLongEnough,
   readVaultSessionToken,
   removeRecoveryKey,
@@ -16,6 +17,9 @@ import {
   vaultUnlock,
   vaultUnlockWithRecovery,
 } from "./vault-client";
+
+/** The reply an unlock crosses the broker bridge with, as this test fakes it. */
+type UnlockReply = { ok: boolean; sessionToken?: string; sessionGeneration?: number };
 
 let routes = new Map<string, (init: RequestInit | undefined) => Response>();
 const originalFetch = globalThis.fetch;
@@ -45,6 +49,38 @@ afterEach(() => {
   clearVaultSessionToken();
   // SAFETY: the broker test installs this exact optional global
   delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+});
+
+describe("a vault route this build does not have (round-4 P1)", () => {
+  it("reads a bodiless 404 as no vault, and keeps the code of a 404 that names one", async () => {
+    // DOKAN_VAULT=disabled mounts no /api/vault/* route: the answer is the
+    // server's own 404 page, and the only honest reading is "this build has no
+    // vault". The generic failure would be indistinguishable from a refused
+    // revoke, which is what left the legacy app mounted after a sign-out.
+    try {
+      await revokeVaultSession();
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VaultRequestError);
+      if (error instanceof VaultRequestError) expect(error.code).toBe("VAULT_UNSUPPORTED");
+      if (error instanceof Error) expect(isAbsentVaultSession(error)).toBe(true);
+    }
+
+    // a vault route that DOES exist can answer 404 with an envelope (a recovery
+    // key id the vault does not hold): that is a refusal with its own code, not
+    // a missing vault
+    routes.set("/api/vault/recovery-keys/gone", () =>
+      Response.json({ error: { code: "VAULT_RECOVERY_NOT_FOUND" } }, { status: 404 }),
+    );
+    try {
+      await removeRecoveryKey("gone");
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VaultRequestError);
+      if (error instanceof VaultRequestError) expect(error.code).toBe("VAULT_RECOVERY_NOT_FOUND");
+      if (error instanceof Error) expect(isAbsentVaultSession(error)).toBe(false);
+    }
+  });
 });
 
 describe("vault passphrase validation", () => {
@@ -252,9 +288,55 @@ describe("the broker path keeps its token across a webview reload (#319 review P
     // the token this page holds is its own, in memory only
     expect(readVaultSessionToken()).toBe("browser-token");
   });
+
+  /**
+   * A storage write that throws must not fail the unlock beside it (#319 round
+   * 4). `brokerStorage()` guards the property getter, not `setItem`: a quota, a
+   * partitioned profile, or a mode that refuses writes threw straight out of
+   * `adoptSession`, and an unlock the server had already ANSWERED (the cookie
+   * or the pipe token existed) was reported to the owner as a failure — whose
+   * retry then rotated the token again.
+   */
+  it("completes an unlock whose storage write throws, and keeps the token in memory", async () => {
+    // SAFETY: the global Tauri injects; here it answers like a real unlock
+    (window as { __TAURI_INTERNALS__?: { invoke: () => Promise<UnlockReply> } }).__TAURI_INTERNALS__ = {
+      invoke: async () => ({ ok: true, sessionToken: "broker-unlock-token", sessionGeneration: 2 }),
+    };
+    const realStorage = window.sessionStorage;
+    const refusing = {
+      ...realStorage,
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem: () => {
+        throw new Error("SecurityError");
+      },
+    };
+    Object.defineProperty(window, "sessionStorage", { configurable: true, get: () => refusing });
+    try {
+      // the unlock RESOLVES: the vault is open, and the token the broker just
+      // minted signs this page's calls for as long as the page lives
+      await vaultUnlock("correct horse battery", true);
+      expect(readVaultSessionToken()).toBe("broker-unlock-token");
+      // clearing must not throw either, or logout fails on a refusing profile
+      expect(() => clearVaultSessionToken()).not.toThrow();
+      expect(readVaultSessionToken()).toBeUndefined();
+    } finally {
+      Object.defineProperty(window, "sessionStorage", { configurable: true, get: () => realStorage });
+    }
+  });
 });
 
 describe("vault status and logout", () => {
+  it("fills the origin refusal's remedy with the address this page is served from (round-4 P2)", () => {
+    // the one place a vault code becomes copy is `vaultErrorCopy`, so it is the
+    // one place that has to supply the address the copy names
+    const copy = vaultErrorCopy(new VaultRequestError("VAULT_ORIGIN_FORBIDDEN"));
+    expect(copy).toContain(window.location.origin);
+    expect(copy).not.toContain("{{");
+  });
+
   it("distinguishes a legacy build (404) from an unreachable server", async () => {
     await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_UNSUPPORTED" });
     routes.set("/api/vault/status", () => {

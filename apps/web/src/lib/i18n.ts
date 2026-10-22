@@ -391,7 +391,7 @@ const resources = {
       VAULT_LOOPBACK_REQUIRED: "لحماية بياناتك، لا يمكن إدخال كلمة المرور أو مفتاح الاسترداد عبر الشبكة. افتح دكان على الجهاز نفسه.",
       // #319: the vault session is ambient (a cookie), so a page this app is not
       // served from is refused outright — not answered as if the vault were shut
-      VAULT_ORIGIN_FORBIDDEN: "لحماية بياناتك، لا تُقبل طلبات الخزنة إلا من نافذة دكان على هذا الجهاز. افتح دكان من الجهاز نفسه.",
+      VAULT_ORIGIN_FORBIDDEN: "لحماية بياناتك، لا تُقبل طلبات الخزنة إلا من العنوان الذي يخدمها دكان. افتح دكان من عنوانه: \u2066{{origin}}\u2069.",
       VAULT_MALFORMED_RESPONSE: "تعذّر تنفيذ العملية: رد غير متوقع من الخادم. أعد المحاولة.",
       VAULT_RESET_FAILED: "تعذّر تعيين كلمة المرور الجديدة. أعد المحاولة.",
       VAULT_SETUP_IN_PROGRESS: "هناك تهيئة جارية بالفعل. انتظر قليلاً ثم أعد المحاولة.",
@@ -1256,9 +1256,17 @@ export function authErrorKey(error: AuthErrorInput): MessageKey {
   return serverErrorKey(error.message);
 }
 
-/** Translate a server key or raw validator sentence to Arabic. */
-export function tError(message: string | undefined): string {
-  return i18n.t(serverErrorKey(message));
+/**
+ * Translate a server key or raw validator sentence to Arabic.
+ *
+ * `values` carries the one substitution any refusal needs: the origin this app
+ * is served from, so the code that names a wrong address can name the right one
+ * instead of telling the owner to "open Dokan on this machine" — which is what
+ * they already did (round-4 P2). Callers that have no value to pass (every
+ * other code) leave it out.
+ */
+export function tError(message: string | undefined, values?: { origin?: string }): string {
+  return i18n.t(serverErrorKey(message), values);
 }
 
 void i18n.use(initReactI18next).init({

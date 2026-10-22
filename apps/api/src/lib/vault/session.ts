@@ -93,6 +93,12 @@ export function secureOrigin(request: Request): boolean {
  * restate in a header of its own. `x-forwarded-host` is deliberately not
  * consulted: that IS a caller-chosen header, and honouring it would let a
  * request declare the origin it wants to be judged against.
+ *
+ * The `undefined` arm is defensive, not reachable through a listener: a
+ * `Request` cannot be built from a URL that does not parse, so the transport
+ * refuses a malformed `Host` (400) before a request exists. It stays because
+ * "a destination we cannot state is not our origin" is the rule, and the gate
+ * must not grow a "no host, so let it through" branch later (#319 round 4).
  */
 function addressedHost(request: Request): string | undefined {
   const url = urlOf(request.url);
@@ -149,6 +155,13 @@ export function vaultOriginGate(request: Request, options: { broker: boolean }):
  * The token is base64url (`manager.ts` mints it), so it needs no
  * percent-decoding; a jar that carries a percent-encoded value is not one this
  * server wrote.
+ *
+ * The FIRST match wins, deliberately. A jar can hold two cookies of this name
+ * on different paths, and taking the first is the choice that fails CLOSED: the
+ * one this server wrote is on `Path=/` and is presented first by every client
+ * that orders by path specificity, so a duplicate planted on another path is
+ * either ignored or read as the credential it is not — refused either way,
+ * never accepted as a second live token.
  */
 export function readVaultSessionCookie(request: Request): string | undefined {
   const header = request.headers.get("cookie");

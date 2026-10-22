@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { logoutAndReload } from "./logout";
-import { authLossReason, clearAuthLost, recoverAuthLost } from "./auth-refusal";
+import { SIGNED_OUT_STORAGE_KEY, authLossReason, clearAuthLost, recoverAuthLost } from "./auth-refusal";
 import { clearVaultSessionToken, readVaultSessionToken, storeVaultSessionToken } from "./vault-client";
 
 let reloads = 0;
@@ -87,6 +87,66 @@ describe("logoutAndReload", () => {
     expect(authLossReason()).toBe("signed-out");
     // an unlock is the owner's own action and DOES clear it
     clearAuthLost();
+    expect(authLossReason()).toBeUndefined();
+  });
+
+  it("reloads when this build has no vault route at all (round-4 P1)", async () => {
+    // DOKAN_VAULT=disabled: /api/vault/logout is not mounted, so the revoke
+    // answers 404. No vault session exists, which makes the local clear the
+    // WHOLE credential — holding the page here left the legacy app mounted
+    // after a sign-out that had succeeded.
+    globalThis.fetch = Object.assign(async (): Promise<Response> => new Response("not found", { status: 404 }), {
+      preconnect: originalFetch.preconnect,
+    });
+    storeVaultSessionToken("vault-session-token");
+    let signedOut = false;
+    await logoutAndReload(async () => {
+      signedOut = true;
+      return null;
+    });
+    expect(signedOut).toBe(true);
+    expect(readVaultSessionToken()).toBeUndefined();
+    expect(reloads).toBe(1);
+    // nothing held the page: there is no server credential left to walk back in
+    expect(authLossReason()).toBeUndefined();
+  });
+
+  it("reloads when the vault has no session to revoke (round-4 P1)", async () => {
+    globalThis.fetch = Object.assign(
+      async (): Promise<Response> => Response.json({ error: { code: "VAULT_NOT_UNLOCKED" } }, { status: 401 }),
+      { preconnect: originalFetch.preconnect },
+    );
+    storeVaultSessionToken("vault-session-token");
+    await logoutAndReload(async () => null);
+    expect(reloads).toBe(1);
+    expect(authLossReason()).toBeUndefined();
+  });
+
+  it("remembers the unconfirmed sign-out across a reload, and remembers nothing else (round-4 P1)", async () => {
+    // the revoke fails, so the HttpOnly cookie is still live; without a flag
+    // that survives the page, the reload asks the status route — which reads
+    // that cookie — and mounts the app (round-4 P1)
+    globalThis.fetch = Object.assign(
+      async (): Promise<Response> => {
+        throw new Error("network down");
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    storeVaultSessionToken("vault-session-token");
+    await logoutAndReload(async () => null);
+    expect(authLossReason()).toBe("signed-out");
+
+    // what a FRESH PAGE finds: the flag alone puts the unlock screen up, with
+    // no markSignedOut call and no memory of this page — which is the reload
+    expect(window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toBe("1");
+    // ... and it is a flag, never a credential: one byte, no token, no
+    // generation, and nothing that could be replayed to the server
+    expect(Object.keys(window.localStorage)).toEqual([SIGNED_OUT_STORAGE_KEY]);
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
+
+    // the owner's unlock is the one thing that ends it, and it ends it for good
+    clearAuthLost();
+    expect(window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toBeNull();
     expect(authLossReason()).toBeUndefined();
   });
 

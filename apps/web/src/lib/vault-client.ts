@@ -121,11 +121,16 @@ export class VaultRequestError extends Error {
  * Copy for a failed vault call. The API returns stable codes and no display
  * copy (locale-neutral guard), so the web translates the code here — no raw
  * code can ever reach the owner.
+ *
+ * The page's own origin rides along because one refusal names it: the origin
+ * rule refuses a page served from another address, and the remedy is to open
+ * the address this app actually answers on, not "this machine" (round-4 P2).
  */
 export function vaultErrorCopy(error: Error | undefined): string {
-  if (error instanceof VaultRequestError) return tError(error.code);
-  if (error !== undefined) return tError(error.message);
-  return tError(undefined);
+  const values = { origin: window.location.origin };
+  if (error instanceof VaultRequestError) return tError(error.code, values);
+  if (error !== undefined) return tError(error.message, values);
+  return tError(undefined, values);
 }
 
 /**
@@ -172,8 +177,46 @@ function brokerStorage(): Storage | undefined {
   }
 }
 
+/**
+ * Read from the broker path's storage, best-effort. `brokerStorage()` guards
+ * the PROPERTY; a profile can also refuse the call — a partitioned store throws
+ * on access. A throw here would fail the read that signs an RPC call, so a
+ * read that cannot happen is simply no value.
+ */
+function readStore(key: string): string | null | undefined {
+  try {
+    return brokerStorage()?.getItem(key);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Write to the broker path's storage, best-effort (round-4 P2). The GETTER was
+ * guarded and the writes were not, so a quota or a partitioned profile threw
+ * straight out of `storeVaultSessionToken` — out of `adoptSession`, inside a
+ * successful unlock — and turned an open vault into a reported failure whose
+ * retry rotated the token. The token is assigned to memory BEFORE this runs, so
+ * a refused write costs the reload survival and nothing else.
+ */
+function writeStore(key: string, value: string): void {
+  try {
+    brokerStorage()?.setItem(key, value);
+  } catch {
+    /* the reload survival is lost; the page's credential is not */
+  }
+}
+
+function removeStore(key: string): void {
+  try {
+    brokerStorage()?.removeItem(key);
+  } catch {
+    /* nothing to remove when nothing could be written */
+  }
+}
+
 function readStoredGeneration(): number | undefined {
-  const raw = brokerStorage()?.getItem(BROKER_GENERATION_KEY);
+  const raw = readStore(BROKER_GENERATION_KEY);
   if (raw === null || raw === undefined || raw === "") return undefined;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
@@ -187,7 +230,7 @@ function knownGeneration(): number | undefined {
 /** The session token this page holds; undefined in the browser path. */
 export function readVaultSessionToken(): string | undefined {
   if (memorySessionToken !== undefined) return memorySessionToken;
-  const stored = brokerStorage()?.getItem(BROKER_TOKEN_KEY);
+  const stored = readStore(BROKER_TOKEN_KEY);
   if (stored === null || stored === undefined || stored === "") return undefined;
   // a reload only keeps the token, never the error state around it
   memorySessionToken = stored;
@@ -205,11 +248,16 @@ export function storeVaultSessionToken(token: string, generation?: number): void
   if (generation !== undefined) {
     const known = knownGeneration();
     if (known !== undefined && generation < known) return;
-    memorySessionGeneration = generation;
-    brokerStorage()?.setItem(BROKER_GENERATION_KEY, String(generation));
   }
+  // MEMORY FIRST: the credential this page uses is decided here, and the
+  // storage write below is a convenience for the next reload. A refused write
+  // must never keep the token out of memory (round-4 P2).
   memorySessionToken = token;
-  brokerStorage()?.setItem(BROKER_TOKEN_KEY, token);
+  if (generation !== undefined) {
+    memorySessionGeneration = generation;
+    writeStore(BROKER_GENERATION_KEY, String(generation));
+  }
+  writeStore(BROKER_TOKEN_KEY, token);
 }
 
 /** Adopt the session a minting response carried, when it carried one. */
@@ -222,8 +270,8 @@ export function clearVaultSessionToken(): void {
   memorySessionToken = undefined;
   memorySessionGeneration = undefined;
   // a cleared session must not survive a reload on the broker path either
-  brokerStorage()?.removeItem(BROKER_TOKEN_KEY);
-  brokerStorage()?.removeItem(BROKER_GENERATION_KEY);
+  removeStore(BROKER_TOKEN_KEY);
+  removeStore(BROKER_GENERATION_KEY);
 }
 
 /** Read the Arabic setup token the desktop shell put in the URL fragment. */
@@ -280,6 +328,13 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
   if (!response.ok) {
     // a body with no envelope (HTML, empty, truncated) is the generic refusal
     const refusal = errorEnvelopeIn(text);
+    // A 404 with no envelope is not a refusal at all: the route is not mounted,
+    // which is the legacy plaintext build (DOKAN_VAULT=disabled). It is the same
+    // answer `fetchVaultStatus` reads, and it must not read as a generic failure
+    // — logout has to tell "this build has no vault" from "the revoke failed"
+    // (round-4 P1). A vault route that answers 404 WITH an envelope (a missing
+    // recovery key) is a real refusal and keeps its own code.
+    if (response.status === 404 && refusal === undefined) throw new VaultRequestError("VAULT_UNSUPPORTED");
     throw new VaultRequestError(refusal?.code ?? "VAULT_UNEXPECTED", refusal?.retryAfterMs, refusal?.staleHeartbeat ?? false);
   }
   const decoded = schema.safeParse(JSON.parse(text));
@@ -465,6 +520,26 @@ export async function fetchVaultSetupWarning(broker: boolean): Promise<VaultClea
 /** Revoke the in-process vault session server-side (logout). */
 export async function revokeVaultSession(): Promise<void> {
   await request("/api/vault/logout", { method: "POST" }, true, z.object({ ok: z.literal(true) }));
+}
+
+/**
+ * The refusals that name the ABSENCE of a vault session rather than an
+ * unconfirmed one: this build has no vault route, or the server holds no
+ * session to revoke. Both mean there is no server credential left behind, so a
+ * caller that must decide whether a reload is safe may treat them as a
+ * successful clear — the local copy was the whole credential (#319 round 4).
+ */
+const ABSENT_SESSION_CODES = new Set<string>(["VAULT_UNSUPPORTED", "VAULT_NOT_UNLOCKED"]);
+
+/**
+ * Whether a failed vault call failed because there is no session, not because
+ * the session could not be reached. Anything else — a network failure, a 403, a
+ * restarting sidecar — is an UNCONFIRMED revoke and must not be read as one.
+ * Takes an `Error`, not the `unknown` a `catch` hands back: narrowing that
+ * happens at the call site, where the throw actually was.
+ */
+export function isAbsentVaultSession(error: Error): boolean {
+  return error instanceof VaultRequestError && ABSENT_SESSION_CODES.has(error.code);
 }
 
 /**

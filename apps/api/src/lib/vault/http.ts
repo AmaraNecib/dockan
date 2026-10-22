@@ -158,11 +158,14 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   app.use("/api/vault/*", async (c, next) => {
     if (deps.config.vaultBroker && requiresBroker(c.req.path)) return errorResponse("VAULT_BROKER_REQUIRED", 403);
     if (requiresLoopback(c.req.path) && !isLoopbackRequest(c)) return errorResponse("VAULT_LOOPBACK_REQUIRED", 403);
-    // Every route that can carry a credential refuses a request from an origin
-    // that is not this app's own — including the routes that run before any
-    // cookie exists (#319). The rule itself lives in `session.ts`, one copy,
-    // and the RPC seam asks the same one. See `vaultOriginGate` for why a
-    // loopback origin is not enough and why broker mode is exempt.
+    // Every LOOPBACK-REQUIRED route refuses a request from an origin that is
+    // not this app's own — including the routes that run before any cookie
+    // exists (#319). The scope is `requiresLoopback`, not "every vault route":
+    // `/api/vault/status` reads the credential (to answer `session`) and is not
+    // gated, so a status read from a foreign page is answered rather than
+    // refused. The rule itself lives in `session.ts`, one copy, and the RPC
+    // seam asks the same one. See `vaultOriginGate` for why a loopback origin is
+    // not enough and why broker mode is exempt.
     //
     // The code is the seam's code, not the peer's (#319 round 3): a foreign
     // origin is `VAULT_ORIGIN_FORBIDDEN`, the same string the RPC seam throws,

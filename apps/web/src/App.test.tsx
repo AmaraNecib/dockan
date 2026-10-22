@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
 import { storeVaultSessionToken } from "./lib/vault-client";
-import { clearAuthLost, markAuthLost, markSignedOut } from "./lib/auth-refusal";
+import { clearAuthLost, markAuthLost, markSignedOut, SIGNED_OUT_STORAGE_KEY } from "./lib/auth-refusal";
 import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
@@ -575,6 +575,98 @@ describe("a session that died under a live window (#319)", () => {
     });
     expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
+  });
+
+  it("recovers on a live answer that was built before a lock, and the next refusal puts the gate back (round 4)", async () => {
+    // The bound the probe cannot cross: its answer is true when it was BUILT,
+    // and a lock has no local `setStatus` for `appliedRef` to race. So a reply
+    // built while the session was live and delivered after the lock DOES clear
+    // the refusal. What must hold is the other half — the app's next refused
+    // call raises the gate again, so the window is one refused query and never
+    // an open vault.
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+
+    let releaseProbe: (() => void) | undefined;
+    const probeGate = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
+    });
+    let probeReads = 0;
+    vaultStatusResponse = async () => {
+      probeReads += 1;
+      // built NOW, while this request's credential is still the live session
+      const builtWhileLive = Response.json({
+        mode: "vault",
+        state: "unlocked",
+        legacyDatabase: false,
+        recoveryKeyCount: 1,
+        lockedForMs: 0,
+        unlocked: true,
+        session: true,
+      });
+      await probeGate;
+      return builtWhileLive;
+    };
+
+    await act(async () => {
+      markAuthLost();
+    });
+    for (let attempt = 0; attempt < 50 && probeReads === 0; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(probeReads).toBe(1);
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+
+    // the vault locks while that reply is in flight, and the reply lands anyway
+    vaultStatusResponse = deadSession;
+    releaseProbe?.();
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector('[data-testid="owner-content"]') !== null) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+
+    // and then a dead session refuses a call — which is what `markAuthLost`
+    // records, the same way `rpc-link.ts` does for AUTH_REQUIRED. The gate comes
+    // back on a fresh, held answer that says the credential is dead.
+    await act(async () => {
+      markAuthLost();
+    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector('[data-testid="vault-passphrase"]') !== null) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+  });
+
+  it("a reload after an unconfirmed sign-out lands on the gate, not the app (round-4 P1)", async () => {
+    // The state a reload creates after `logout.ts` could not confirm the revoke:
+    // the flag survives the page, and the vault cookie survives with it — so the
+    // status route answers `session: true` for a machine that was just signed
+    // out. Without the persisted flag this mount reaches the app, which is the
+    // shared-machine failure the hold exists to prevent.
+    window.localStorage.setItem(SIGNED_OUT_STORAGE_KEY, "1");
+    vaultStatusResponse = async () =>
+      Response.json({
+        mode: "vault",
+        state: "unlocked",
+        legacyDatabase: false,
+        recoveryKeyCount: 1,
+        lockedForMs: 0,
+        unlocked: true,
+        session: true,
+      });
+    storeVaultSessionToken("session-token");
+    const host = await mountAuthGateFor('[data-testid="vault-passphrase"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
   });
 
   it("keeps the unlock screen for a sign-out the server never confirmed (#319 round 3)", async () => {

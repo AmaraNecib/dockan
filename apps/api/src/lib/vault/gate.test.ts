@@ -10,6 +10,7 @@ import { serve } from "@hono/node-server";
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { DokanClient } from "@dokan/contracts";
+import { AUTH_REFUSAL } from "@dokan/contracts";
 
 import { createApp } from "../../app";
 import { createAuth } from "../../auth/auth";
@@ -945,6 +946,54 @@ describe("vault gate hardening (review supplement)", () => {
     expect(changed.status).toBe(200);
   });
 
+  /**
+   * Two windows changing the passphrase at once (round-4 test-audit). The
+   * sequential rotation above pins the ORDER; nothing pinned what two CONCURRENT
+   * rewrites do, and a passphrase rewrite is not the same mutation as a mint:
+   * the second one's `currentPassphrase` is the one the first just replaced.
+   *
+   * What must hold: exactly one rewrite lands, the other is refused rather than
+   * applied to a vault it no longer describes, and the vault afterwards accepts
+   * exactly ONE of the two new passphrases — never both, never neither.
+   */
+  itHeavy("authorises exactly one of two racing passphrase rewrites, and leaves one passphrase working", async () => {
+    const h = harness(tempDir("dokan-vault-racing-change-"));
+    const setup = await setupVault(h);
+    const token = sessionTokenFrom(setup);
+    const rewrite = async (newPassphrase: string): Promise<Response> =>
+      await h.gate.request("/api/vault/change-passphrase", {
+        method: "POST",
+        headers: { ...jsonHeaders, "x-vault-session": token },
+        body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase }),
+      });
+
+    const [first, second] = await Promise.all([rewrite("window one passphrase"), rewrite("window two passphrase")]);
+    const replies = [first, second];
+    expect(replies.filter((reply) => reply.status === 200)).toHaveLength(1);
+    const refused = replies.filter((reply) => reply.status !== 200);
+    expect(refused).toHaveLength(1);
+    // Either the loser's CURRENT passphrase was already gone, or its session
+    // token was: both are the same answer to "this world moved under you", and
+    // neither applies the rewrite.
+    // SAFETY: the error contract is { error: { code } }
+    const code = (await json<{ error: { code: string } }>(refused[0] as Response)).error.code;
+    expect(["VAULT_NOT_UNLOCKED", "VAULT_WRONG_PASSPHRASE"]).toContain(code);
+
+    // the vault accepts exactly one of the two new passphrases
+    h.manager.close();
+    const accepts = async (passphrase: string): Promise<boolean> =>
+      (
+        await h.gate.request("/api/vault/unlock", {
+          method: "POST",
+          headers: jsonHeaders,
+          body: JSON.stringify({ passphrase }),
+        })
+      ).status === 200;
+    const one = await accepts("window one passphrase");
+    const two = await accepts("window two passphrase");
+    expect([one, two].filter(Boolean)).toHaveLength(1);
+  });
+
   itHeavy("returns an increasing session generation on credential rotations (round-7 finding 5)", async () => {
     const h = harness(tempDir("dokan-vault-generation-"));
     const setup = await setupVault(h);
@@ -1143,9 +1192,10 @@ describe("one unlocked vault shared between windows (#319)", () => {
     expect((await json<{ error: { code: string } }>(none)).error.code).toBe("VAULT_NOT_UNLOCKED");
 
     // and the RPC guard says the same thing in its own dialect, which is what
-    // the web maps back to the unlock screen
+    // the web maps back to the unlock screen. Read from the contract, not a
+    // copy: the pair is exported precisely so a rename cannot pass here
     const stranger = h.linkWith(jarWith("not-the-live-token"));
-    await expect(stranger.categoriesList()).rejects.toThrow("AUTH_REQUIRED");
+    await expect(stranger.categoriesList()).rejects.toThrow(AUTH_REFUSAL.message);
   });
 
   itHeavy("refuses a foreign-origin request: it neither reads nor unlocks", async () => {
@@ -1292,8 +1342,58 @@ describe("the origin gate at both seams (#319 round 2)", () => {
     ).rejects.toThrow("VAULT_ORIGIN_FORBIDDEN");
   });
 
-  itHeavy("names the RPC-seam origin refusal instead of calling it a missing session (P3)", async () => {
-    const h = harness(tempDir("dokan-vault-rpc-origin-"));
+  /**
+   * The three shapes a future normalisation could quietly widen the gate into
+   * accepting (round-4 test-audit). All three are refused today by accident of a
+   * plain `host` comparison, and none of them had a test: a trailing dot is the
+   * same DNS name and a different URL host, `null` is what a sandboxed iframe
+   * sends, and case is the one direction that must NOT be refused for our own
+   * origin. Pinned so a "helpful" normalisation has to argue with a test.
+   */
+  itHeavy("refuses a trailing-dot host, a null Origin, and a mixed-case host that is not ours", async () => {
+    const h = harness(tempDir("dokan-vault-origin-edges-"));
+    const setup = await h.gate.request("http://127.0.0.1:4399/api/vault/setup", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(setup.status).toBe(200);
+    const token = sessionTokenFrom(setup);
+
+    // the positive control: our own origin, spelled exactly, is accepted
+    const own = await h.gate.request("http://127.0.0.1:4399/api/vault/recovery-keys", {
+      headers: { ...jarWith(token), origin: OWN_ORIGIN },
+    });
+    expect(own.status).toBe(200);
+
+    for (const origin of [
+      // "localhost." is the same DNS name as "localhost" and a different URL
+      // host: accepting it would be a normalisation nobody asked for
+      "http://localhost.:4399",
+      // a sandboxed iframe sends the literal string "null"; it is no origin at
+      // all and must never read as ours
+      "null",
+      // a different host name entirely — case can never make two hosts equal
+      "http://LOCALHOST:4399",
+    ]) {
+      const reply = await h.gate.request("http://127.0.0.1:4399/api/vault/recovery-keys", {
+        headers: { ...jarWith(token), origin },
+      });
+      expect(reply.status, origin).toBe(403);
+      // SAFETY: the error contract is { error: { code } }
+      expect((await json<{ error: { code: string } }>(reply)).error.code, origin).toBe("VAULT_ORIGIN_FORBIDDEN");
+    }
+
+    // ... and the case-folding that IS meant to happen: a browser lowercases the
+    // host in `Origin`, and a request ADDRESSED as `localhost` is the same
+    // origin as `http://LOCALHOST:4399`
+    const mixedCaseOwn = await h.gate.request("http://localhost:4399/api/vault/recovery-keys", {
+      headers: { ...jarWith(token), origin: "http://LOCALHOST:4399" },
+    });
+    expect(mixedCaseOwn.status).toBe(200);
+  });
+
+  itHeavy("names the RPC-seam origin refusal instead of calling it a missing session (P3)", async () => {    const h = harness(tempDir("dokan-vault-rpc-origin-"));
     const setup = await h.gate.request("http://127.0.0.1:4399/api/vault/setup", {
       method: "POST",
       headers: jsonHeaders,
@@ -1334,6 +1434,14 @@ describe("the origin gate at both seams (#319 round 2)", () => {
  * origin against our own port, a Host the transport cannot parse (or none at
  * all), and the INERT direction of `x-forwarded-host` — the header must be
  * ignored, not merely tolerated while absent.
+ *
+ * What the malformed-Host case proves is the TRANSPORT, not the gate: both
+ * requests answer 400 from `@hono/node-server` before the app runs, so the
+ * gate's own `addressedHost() === undefined` arm is never reached through a
+ * listener (a `Request` cannot be constructed with a URL that does not parse,
+ * so that arm is defensive, not testable from here). The test is kept because
+ * "an unstateable destination is not same-origin" is the promise the arm exists
+ * for, and the name now says whose refusal it is (round-4 test-audit).
  */
 describe("the origin gate with Host as the input (#319 round 3)", () => {
   type Listener = { port: number; close: () => void };
@@ -1410,13 +1518,13 @@ describe("the origin gate with Host as the input (#319 round 3)", () => {
     }
   });
 
-  itHeavy("fails closed on a Host the transport cannot parse, and on none at all", async () => {
+  itHeavy("the transport refuses an absent or unparseable Host before the gate sees it", async () => {
     const h = harness(tempDir("dokan-vault-origin-host-malformed-"));
     const listener = await listen(h);
     try {
-      // No Host header at all: HTTP/1.1 has no destination to judge, and the
-      // transport refuses it before the gate — 400 and no vault envelope. A
-      // request whose destination is unstateable must never read as same-origin.
+      // No Host header at all: HTTP/1.1 has no destination to judge, and
+      // `@hono/node-server` refuses it itself — 400 and no vault envelope. This
+      // is the transport's refusal, not the gate's (see the describe above).
       const absent = await raw(listener.port, { origin: `http://127.0.0.1:${listener.port}` }, true);
       expect(absent.status).toBe(400);
       expect(refusalCode(absent.body)).toBeUndefined();
@@ -1655,7 +1763,7 @@ describe("the server arbitrates the one live session (#319 round 2)", () => {
     // packaged desktop's promise is that the secret never crosses the network,
     // so a page holding a cookie of the same name cannot act as the shell
     await expect(h.linkWith({ cookie: `dokan.vault.session=${session.token}` }).categoriesList()).rejects.toThrow(
-      "AUTH_REQUIRED",
+      AUTH_REFUSAL.message,
     );
   });
 });

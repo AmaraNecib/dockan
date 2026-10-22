@@ -66,6 +66,16 @@ export function RequireSession({ children }: { children: ReactNode }) {
    * recoverable by asking — its token lives in this page, and a token the server
    * refused cannot become live again — so recovery there stays a reload or a
    * passphrase.
+   *
+   * What this can NOT promise, and does not pretend to: the answer is true at the
+   * moment it was BUILT. `appliedRef` discards a read a local unlock overtook,
+   * but a lock has no local `setStatus` to race — so a reply built while the
+   * session was live and delivered after the lock clears the refusal and mounts
+   * the app for as long as it takes the first query to come back refused, which
+   * raises the gate again. Closing that window needs a value the refusal itself
+   * carries (a session epoch) for the page to compare the answer against, and
+   * that is a contract change, not a guard. It is not a way in: every route
+   * behind the mounted app refuses on the dead session (#319 round 4).
    */
   const reprobedRef = useRef(false);
   useEffect(() => {

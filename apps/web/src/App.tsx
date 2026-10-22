@@ -173,7 +173,6 @@ export function RequireSession({ children }: { children: ReactNode }) {
     };
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", recheck);
-    document.addEventListener("visibilitychange", recheck);
     // Look ONCE the moment a CREDENTIAL gate appears: the owner may be looking at
     // the window already, so no focus event will ever come. Not for a refusal —
     // that path already probed once, and a second read per episode is the thing

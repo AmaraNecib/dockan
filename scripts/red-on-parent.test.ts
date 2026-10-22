@@ -40,6 +40,7 @@ import * as gateModule from "./red-on-parent";
 import {
   augmentModuleSource,
   bunOnlyRefusal,
+  cannotHollowVerdict,
   changeSideResults,
   changeSideVerdicts,
   classifyFileRun,
@@ -65,6 +66,7 @@ import {
   runFinished,
   runGate,
   skipReason,
+  topLevelBindingNames,
   unregisteredVerdicts,
   unusedWaiverVerdicts,
   verdictPasses,
@@ -4188,6 +4190,46 @@ describe("red-on-parent round 24 — CANNOT HOLLOW fails closed", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Round 26 — only the documented spelling clears a whole file.
+//
+// The matcher tested the waiver regex against BOTH `(whole file)` and
+// `whole file`, so any pattern matching either cleared the file: `"file"`,
+// `"whole"`, `"."`, `".*"`. The documented spelling is `"whole file"`, and the
+// docs say a pattern broad enough to cover a whole multi-test file is a failure
+// — so a one-character waiver overrode the one rule the verdict is supposed to
+// be an exception to.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 26 — only the documented spelling waives a whole file", () => {
+  const refusal = "scripts/mod.ts: the module exports an enum, which a hollow cannot mirror";
+  const waiverFor = (pattern: string): Waiver => ({
+    pattern,
+    reason: "the parent cannot run this file",
+    line: 3,
+  });
+
+  test("the documented spelling clears the file", () => {
+    const verdict = cannotHollowVerdict("scripts/mod.test.ts", refusal, [waiverFor("whole file")]);
+    expect(verdict.waiver?.pattern).toBe("whole file");
+  });
+
+  test("a pattern that merely matches the words does not", () => {
+    // Each of these matched under the old two-string probe. `.` and `.*` are the
+    // broad-file waiver the design forbids; `file` and `whole` are shorter
+    // spellings that used to be enough.
+    for (const pattern of ["file", "whole", ".", ".*", "hole fi", "^whole", "file$"]) {
+      const verdict = cannotHollowVerdict("scripts/mod.test.ts", refusal, [waiverFor(pattern)]);
+      expect({ pattern, waived: verdict.waiver !== null }).toEqual({ pattern, waived: false });
+    }
+  });
+
+  test("the parenthesised spelling is not required, because the docs do not advertise it", () => {
+    const verdict = cannotHollowVerdict("scripts/mod.test.ts", refusal, [waiverFor("(whole file)")]);
+    expect({ waived: verdict.waiver !== null }).toEqual({ waived: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Round 24, end to end: the plant pair the lens asked for, as fixtures.
 //
 // A vacuous test and a real one that import a module the same diff adds are
@@ -4244,6 +4286,45 @@ test("real", () => {
     try {
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a vacuous assertion against a CONST stand-in is accepted — by design, not a defect", () => {
+    // ACCEPTED BY DESIGN. The second of the two shapes that pass on a stand-in
+    // that asserts nothing. A const stand-in's VALUE is `undefined`, so
+    // `expect(NEW_LIMIT).toBeDefined()` is false on the parent and true on the
+    // change: an AssertionError, which the gate cannot tell from a real
+    // assertion red. `expect(NEW_LIMIT).toBe(7)` would also pass, for the same
+    // reason and with the same limitation.
+    //
+    // The asymmetry this produces is worth writing down, because it looks like a
+    // bug and is not one: `expect(brandNew).toBeDefined()` on a FUNCTION export is
+    // GREEN on the parent (a hollow function exists) and rejected, while the same
+    // shape on a CONST export is accepted. What separates them is not the gate
+    // being inconsistent, it is what a hollow can stand in for — a function whose
+    // value exists, versus a const whose value cannot.
+    const fixture = createFixture([PKG], [
+      {
+        path: "packages/core/src/limits.ts",
+        text: `export const NEW_LIMIT = 7;\nexport function readLimit(): number {\n  return NEW_LIMIT;\n}\n`,
+      },
+      {
+        path: "packages/core/src/limits.test.ts",
+        text: `import { expect, test } from "bun:test";
+import { NEW_LIMIT } from "./limits";
+test("only checks the export exists", () => {
+  expect(NEW_LIMIT).toBeDefined();
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("GREEN-ON-PARENT");
       expect(status).toBe(0);
     } finally {
       fixture.cleanup();
@@ -4449,11 +4530,15 @@ describe("red-on-parent round 24 — an export the parent's copy of an edited mo
   });
 
   test("an added module is not reported this way, because the hollow path owns it", () => {
-    // `added` and `touched` are disjoint by construction; this pins the contract
-    // the caller relies on rather than the set arithmetic.
-    const added = new Set(["scripts/e2e-selection.ts"]);
-    const touched = new Set(["scripts/other.ts"]);
-    expect([...added].some((path) => touched.has(path))).toBe(false);
+    // The caller passes `touched`, which is the changed set minus `added`, so an
+    // added module never reaches this function. The contract is asserted by
+    // CALLING it: a Set built only in the test proves nothing about the gate.
+    // `touched` here is empty, which is what the caller's set arithmetic yields
+    // for a module the diff adds.
+    expect(editedModuleExportRefusal(TRANSCRIPT, new Set<string>())).toBeNull();
+    // And the helper really does read the set it is given, so the `null` above is
+    // the empty set's answer rather than a function that always returns null.
+    expect(editedModuleExportRefusal(TRANSCRIPT, new Set(["scripts/e2e-selection.ts"]))).not.toBeNull();
   });
 });
 
@@ -4580,6 +4665,178 @@ export function brandNew(n: number): number {
   test("a module with nothing missing is left byte-identical", () => {
     const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", []);
     expect(augmented).toEqual({ ok: true, text: PARENT });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 26 — the clash set is every top-level binding, not only the exports.
+//
+// The check used to ask whether the appended statement redeclares a name the
+// parent EXPORTS, which is not the question. A declaration collides with any
+// binding in the parent's module scope, exported or not, and the ordinary way a
+// module gains an export is to promote a module-local binding to one:
+//
+//   parent  const specPaths = ["a"];
+//   change  export const specPaths = ["a"];
+//
+// The old check saw no clash (`specPaths` is not exported on the parent), wrote
+// `export const specPaths = undefined;` after the parent's own declaration, and
+// passed its self-check — which re-parses the text and compares EXPORT names, so
+// it saw exactly the names it wanted. `syntaxErrorCount` did not save it either:
+// it reads `transpileModule` diagnostics, and a duplicate declaration is not a
+// syntax error.
+//
+// The consequence was worse than one bad row: the augmented module cannot load,
+// so every test in the file reads as a load failure, and the remedy the report
+// prints is "point the gate at a parent that already has it" or "waive it" —
+// both wrong, because the parent does have it.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 26 — an appended stand-in clashes with every parent binding", () => {
+  // The local binding the change exports. Nothing about `specPaths` changed; the
+  // parent simply cannot re-export a name it never exported.
+  const PARENT = `const specPaths = ["a"];\nexport function select(): string[] {\n  return specPaths;\n}\n`;
+  const CHANGE = `export const specPaths = ["a"];\nexport function select(): string[] {\n  return specPaths;\n}\n`;
+
+  test("a module-local const the change promotes to an export is refused, not appended twice", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["specPaths"]);
+    // Refused, because the parent's own `const specPaths` is already there and a
+    // second declaration of it would not load.
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("scripts/mod.ts");
+    expect(augmented.refusal).toContain("specPaths");
+  });
+
+  test("a module-local function, class and type the change exports are refused the same way", () => {
+    // One shape per declaration kind, because the clash set is built by kind too:
+    // a fix that only widened the variable branch would leave these three open.
+    const cases: Array<{ kind: string; parent: string; change: string; name: string }> = [
+      {
+        kind: "function",
+        parent: `function helper(): number {\n  return 1;\n}\nexport const n = helper();\n`,
+        change: `export function helper(): number {\n  return 1;\n}\nexport const n = helper();\n`,
+        name: "helper",
+      },
+      {
+        kind: "class",
+        parent: `class Box {\n  value = 1;\n}\nexport const boxes = [new Box()];\n`,
+        change: `export class Box {\n  value = 1;\n}\nexport const boxes = [new Box()];\n`,
+        name: "Box",
+      },
+      {
+        kind: "type",
+        parent: `type Mode = "a";\nexport function mode(): Mode {\n  return "a";\n}\n`,
+        change: `export type Mode = "a";\nexport function mode(): Mode {\n  return "a";\n}\n`,
+        name: "Mode",
+      },
+    ];
+    for (const entry of cases) {
+      const augmented = augmentModuleSource(entry.parent, entry.change, "scripts/mod.ts", [entry.name]);
+      expect({ kind: entry.kind, ok: augmented.ok }).toEqual({ kind: entry.kind, ok: false });
+      if (augmented.ok) continue;
+      expect({ kind: entry.kind, refusal: augmented.refusal }).toEqual({
+        kind: entry.kind,
+        refusal: expect.stringContaining(entry.name),
+      });
+    }
+  });
+
+  test("an imported binding the change tries to redeclare is refused too", () => {
+    // An import binding is as much a top-level binding as a `const`. Appending a
+    // declaration of it is a duplicate declaration, and the parent's import is
+    // the one that would win or lose depending on hoisting — which is not a
+    // question the gate may leave to chance.
+    const parent = `import { readFileSync } from "node:fs";\nexport function read(p: string): string {\n  return readFileSync(p, "utf8");\n}\n`;
+    const change = `export function readFileSync(p: string): string {\n  return p;\n}\nexport function read(p: string): string {\n  return p;\n}\n`;
+    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["readFileSync"]);
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("readFileSync");
+  });
+
+  test("exportedNameSet and topLevelBindingSet disagree on exactly the local bindings", () => {
+    // The two readers, side by side: the fix is only correct if the binding
+    // reader is a strict superset of the export reader on the same source. A
+    // future edit that narrowed either one breaks this before it breaks the gate.
+    const bindings = topLevelBindingNames("scripts/mod.ts", PARENT);
+    const exports = declaredExportNames("scripts/mod.ts", PARENT);
+    expect(bindings).toContain("specPaths");
+    expect(bindings).toContain("select");
+    expect(exports).toEqual(["select"]);
+    for (const name of exports) expect(bindings).toContain(name);
+  });
+
+  test("a parent binding of a different name does not block the stand-in", () => {
+    // The fix must not be "refuse everything": a same-named binding is the only
+    // thing a declaration collides with, so a module-local name the change did
+    // not export leaves the append available.
+    const parent = `const internal = 3;\nexport function read(): number {\n  return internal;\n}\n`;
+    const change = `const internal = 3;\nexport function read(): number {\n  return internal;\n}\nexport function brandNew(): number {\n  return internal + 1;\n}\n`;
+    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["brandNew"]);
+    expect({ ok: augmented.ok }).toEqual({ ok: true });
+    if (!augmented.ok) return;
+    expect(augmented.text.startsWith(parent)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 26 — one statement declaring two names is appended once.
+//
+// `export const b = 2, c = 3;` answers the lookup for both `b` and `c`, so a
+// request for both used to append the same statement twice and declare each name
+// twice. And when the parent already binds only `c`, a request for `b` alone was
+// refused with "`b` is declared beside `c`" — correct refusal, message that reads
+// like a gate bug, because `b` is not the problem.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 26 — a shared variable statement is appended once, and the refusal names it", () => {
+  const PARENT = `export function read(): number {\n  return 1;\n}\n`;
+  const CHANGE = `export function read(): number {\n  return 1;\n}\nexport const b = 2, c = 3;\n`;
+
+  test("both names in one statement are appended once, and the module still loads", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["b", "c"]);
+    expect({ ok: augmented.ok }).toEqual({ ok: true });
+    if (!augmented.ok) return;
+    // One appended statement, so each name is declared once: two copies would be
+    // a duplicate declaration and the file would not load at all.
+    expect(augmented.text.match(/export const b/gu)?.length).toBe(1);
+    expect(augmented.text.match(/export const c/gu)?.length).toBe(1);
+    expect(topLevelBindingNames("scripts/mod.ts", augmented.text)).toEqual(["b", "c", "read"]);
+    expect(declaredExportNames("scripts/mod.ts", augmented.text)).toEqual(["b", "c", "read"]);
+  });
+
+  test("a clash on a sibling name says the statement is what cannot be appended", () => {
+    // The parent binds `c`; the change declares `b` and `c` in one statement. `b`
+    // itself is free, so a message about `b` is misleading: the appended text is
+    // the whole statement, and that statement cannot go in.
+    const parent = `export function read(): number {\n  return 1;\n}\nexport const c = 30;\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"]);
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    // Names the declaration, and the sibling that blocks it, and the consequence.
+    expect(augmented.refusal).toContain("export const b = 2, c = 3;");
+    expect(augmented.refusal).toContain("`c`");
+    expect(augmented.refusal).toContain("no stand-in");
+    // And it does not claim `b` is the one the parent already has.
+    expect(augmented.refusal).not.toContain("already binds `b`");
+  });
+
+  test("a clash on the requested name itself says the parent already binds it", () => {
+    const parent = `const b = 20;\nexport function read(): number {\n  return b;\n}\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"]);
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("already binds `b`");
+    expect(augmented.refusal).toContain("declaring it twice");
+  });
+
+  test("a destructured parent binding is in the clash set too", () => {
+    // `const { b } = obj` is a top-level binding of `b` with no simple name node,
+    // so a clash reader that only walked identifiers would miss it.
+    const parent = `const source = { b: 20 };\nconst { b } = source;\nexport function read(): number {\n  return b;\n}\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"]);
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
   });
 });
 
@@ -4768,6 +5025,47 @@ test("existing behaviour", () => {
       expect(stdout).toContain("GREEN-ON-PARENT");
       expect(stdout).not.toContain("RIGHT-REASON-RED");
       expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a TypeError on an AUGMENTED file is accepted, and that is by design, not a defect", () => {
+    // ACCEPTED BY DESIGN. This fixture exists so the next reader does not
+    // rediscover it as a bug, and so a change to the behaviour is deliberate.
+    //
+    // The test dereferences the value the appended stand-in produces. On the
+    // parent the stand-in returns `undefined`, so `undefined.mode` is a TypeError
+    // before any assertion runs; on the change the real export returns the object
+    // and the assertion passes. The gate reads that TypeError as the test's own
+    // red, because in a HOLLOWED file nothing but the gate's fake could have
+    // produced it.
+    //
+    // In an AUGMENTED file the parent's real code is still there and still runs,
+    // so a TypeError has a second possible cause the gate cannot see: the parent's
+    // own code. This is the residual hole, stated rather than hidden. Closing it
+    // needs a stronger discrimination than junit's failure type can carry, which
+    // is a design change, not a fix.
+    const fixture = createFixture([PKG, HELPER], [
+      {
+        path: "packages/core/src/helper.ts",
+        text: `export function guard(n: number): number {\n  if (n <= 0) throw new Error("ZERO");\n  return n;\n}\nexport function brandNew(): { mode: string } {\n  return { mode: "affected" };\n}\n`,
+      },
+      {
+        path: "apps/api/src/dereferences-a-standin.test.ts",
+        text: `import { expect, test } from "bun:test";
+import { brandNew } from "../../../packages/core/src/helper";
+test("dereferences the appended stand-in", () => {
+  expect(brandNew().mode).toBe("affected");
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
     } finally {
       fixture.cleanup();
     }

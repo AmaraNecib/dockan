@@ -38,6 +38,8 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseFlags, usageFailure, type FlagSpec } from "./lib/args";
+
 export const BASE_REF = "origin/develop";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -46,7 +48,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // file exists to avoid.
 const TURBO_BIN = join(ROOT, "node_modules", "turbo", "bin", "turbo");
 
-const USAGE = "usage: bun scripts/test-affected.ts [--base <ref>] [--dry-run]";
+const USAGE =
+  "usage: bun scripts/test-affected.ts [--base <ref>] [--dry-run]";
+
+const FLAGS: FlagSpec[] = [
+  { name: "--base", kind: "value" },
+  { name: "--dry-run", kind: "switch" },
+];
 
 // A workspace package is a directory with a name under `apps/` or `packages/`.
 // The trailing slash matters: `apps`, `apps/`, `apps/web` and
@@ -90,11 +98,33 @@ export function changedSince(base: string, cwd: string): string[] | null {
     .filter((line) => line !== "");
 }
 
+/**
+ * The commit this branch forked from `ref`, or `null` when git cannot name one.
+ *
+ * The diff and turbo's filter both use this, not `ref` itself. `git diff
+ * origin/develop` compares the other branch's TIP against the working tree, so a
+ * lane a few hours old picks up everything merged since it started, widens to
+ * every package, and blames a file the lane never touched. Measured on one such
+ * branch: the tip diff was 27 paths, the merge-base diff 12.
+ */
+export type MergeBaseReader = (ref: string, cwd: string) => string | null;
+
+export function mergeBaseOf(ref: string, cwd: string): string | null {
+  const run = spawnSync("git", ["merge-base", ref, "HEAD"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (run.error || run.status !== 0) return null;
+  const sha = (run.stdout ?? "").trim();
+  return sha === "" ? null : sha;
+}
+
 // The argv decision, as a pure function of the diff. It returns the reason with
 // the args rather than exposing a second helper that recomputes it: the stderr
 // line and the argv it explains are the same decision, and two functions is how
 // they drift.
-export function turboArgs(changedPaths: string[], base: string): TurboPlan {
+export function turboArgs(changedPaths: string[], ref: string, baseLabel: string = ref): TurboPlan {
   // Git Bash reports `apps\web\src\...`; a backslash is a separator here too.
   const paths = changedPaths
     .map((path) => path.trim().replace(/\\/gu, "/"))
@@ -110,10 +140,13 @@ export function turboArgs(changedPaths: string[], base: string): TurboPlan {
 
   const outside = paths.find((path) => !WORKSPACE_PATH.test(path));
   if (outside === undefined) {
+    // The filter takes the COMMIT both sides share, and the sentence names the ref
+    // a human typed: the sha is what turbo resolves, the ref is what they re-run.
+    const mergeBaseNote = baseLabel === ref ? "" : ` (merge-base ${ref.slice(0, 12)})`;
     return {
-      args: [`--filter=...[${base}]`],
+      args: [`--filter=...[${ref}]`],
       scope: "filtered",
-      reason: `packages changed since ${base}, plus the packages that depend on them`,
+      reason: `packages changed since ${baseLabel}${mergeBaseNote}, plus the packages that depend on them`,
     };
   }
 
@@ -124,26 +157,81 @@ export function turboArgs(changedPaths: string[], base: string): TurboPlan {
   };
 }
 
-export function planAffected(base: string, cwd: string, readChanged: DiffReader = changedSince): Plan {
+/** What turbo answers about a step's argv, in the shape the guard reads. */
+export type PackageSelector = (step: Step, cwd: string) => TurboSelection;
+
+/** The seams the guard and the merge-base rule need, injected so they can be asserted. */
+export type PlanSources = {
+  select?: PackageSelector;
+  hasRef?: (ref: string, cwd: string) => boolean;
+  mergeBase?: MergeBaseReader;
+};
+
+/**
+ * The plan for this diff, with three ways to fall back to every package.
+ *
+ * The FILTER IS NOT TRUSTED on its own. turbo.json declares `test` for the
+ * workspace packages and nothing for the root `//` package, so a filter that
+ * selects only `//` runs zero tasks and **exits 0** — measured on this branch,
+ * where `...[origin/develop]` really does answer `["//"]`. A plan that hands
+ * turbo that argv reports a pass while testing nothing, which is the one failure
+ * mode this tier exists to prevent. So a filtered plan asks turbo what the filter
+ * selects (`--dry-run=json`, ~0.6 s, runs no suite) and widens — with the reason
+ * spelled out — when the answer is empty, is only `//`, or could not be read.
+ * That is the same fail-closed rule `changedSince -> null` already had.
+ */
+export function planAffected(
+  base: string,
+  cwd: string,
+  readChanged: DiffReader = changedSince,
+  sources: PlanSources = {},
+): Plan {
   const turbo = ["turbo", "run", "test", "--concurrency=2"];
   const scripts = ["bun", "test", "./scripts/"];
-  if (!hasRef(base, cwd)) {
-    return {
-      steps: [turbo, scripts],
-      scope: "full",
-      note: `${base} does not resolve in this checkout, so every package runs (an impacted filter needs the ref)`,
-    };
+  const select = sources.select ?? enumeratePackages;
+  const probeRef = sources.hasRef ?? hasRef;
+  const readMergeBase = sources.mergeBase ?? mergeBaseOf;
+  const wide = (note: string): Plan => ({ steps: [turbo, scripts], scope: "full", note });
+
+  if (!probeRef(base, cwd)) {
+    return wide(
+      `${base} does not resolve in this checkout, so every package runs (an impacted filter needs the ref)`,
+    );
   }
-  const changed = readChanged(base, cwd);
+  const mergeBase = readMergeBase(base, cwd);
+  if (mergeBase === null) {
+    return wide(
+      `cannot find the merge-base of ${base} and HEAD, so every package runs (an impacted filter needs a commit both sides share)`,
+    );
+  }
+  const changed = readChanged(mergeBase, cwd);
   if (changed === null) {
-    return {
-      steps: [turbo, scripts],
-      scope: "full",
-      note: `cannot read the diff against ${base}, so every package runs (an impacted filter would select nothing and exit 0)`,
-    };
+    return wide(
+      `cannot read the diff against ${base}, so every package runs (an impacted filter would select nothing and exit 0)`,
+    );
   }
-  const decision = turboArgs(changed, base);
-  return { steps: [[...turbo, ...decision.args], scripts], scope: decision.scope, note: decision.reason };
+  const decision = turboArgs(changed, mergeBase, base);
+  const steps: Step[] = [[...turbo, ...decision.args], scripts];
+  if (decision.scope !== "filtered") {
+    return { steps, scope: "full", note: decision.reason };
+  }
+
+  // The filter names a commit both sides share, so turbo's answer describes this
+  // diff rather than other people's merged work.
+  const selection = select(steps[0] ?? [], cwd);
+  if (selection.refusal !== null) {
+    return wide(
+      `${base} would narrow to a package set, but turbo could not confirm it (${selection.refusal}) — an unproven selection is not a narrowing, so every package runs`,
+    );
+  }
+  const selected = selection.packages.filter((name) => name !== "//");
+  if (selected.length === 0) {
+    const what = selection.packages.length === 0 ? "nothing" : selection.packages.map((name) => `\`${name}\``).join(", ");
+    return wide(
+      `the impacted filter against ${base} selects no package (${what}), which turbo would run as zero tasks and exit 0, so every package runs`,
+    );
+  }
+  return { steps, scope: "filtered", note: decision.reason };
 }
 
 /**
@@ -154,6 +242,11 @@ export function planAffected(base: string, cwd: string, readChanged: DiffReader 
  * runs are the same one. `--dry-run=json` costs about half a second and runs no
  * suite, which is what makes a behaviour assertion affordable at all — the string
  * pin in the tests cannot see turbo changing what `...` MEANS across a bump.
+ *
+ * That claim is only true because `dryRunArgs` is PINNED: the flag is appended to
+ * the step's own argv, nothing else changes, and the program name is dropped
+ * because `turbo` is what receives it. Left unasserted, inverting this function
+ * left every live test spawning a real suite.
  */
 export type TurboOutput = { status: number | null; stdout: string; stderr: string; error: string };
 export type TurboRunner = (args: string[], cwd: string) => TurboOutput;
@@ -252,7 +345,13 @@ export type StepRunner = (step: Step, cwd: string) => Promise<number>;
  * no quoting to get wrong per platform.
  *
  * `Bun.spawn` rather than `spawnSync`: the two steps have nothing in common, so
- * they run at once and the tier costs the longer step instead of the sum.
+ * they run at once. That is one pass carrying both verdicts, not a faster run —
+ * measured warm at 178 s against 173 s for the serial shape, which is noise on a
+ * three-minute tier.
+ *
+ * Both suites write to inherited stdio, so their output interleaves and a line
+ * cannot be attributed to a step from the transcript alone. The per-step exit
+ * codes printed by `runSteps` are what say which one failed.
  */
 async function runStepAsync(step: Step, cwd: string): Promise<number> {
   const [program = "", ...args] = step;
@@ -277,6 +376,11 @@ async function runStepAsync(step: Step, cwd: string): Promise<number> {
  * fail-fast branch itself had no test that could tell it from a pass. Every step
  * starts, every step is awaited, and the code is the first failure in plan order
  * so it does not depend on which child finished first.
+ *
+ * The per-step codes are printed AFTER both finish, in plan order, because
+ * `Promise.all` is what makes the two runs concurrent. Their output is
+ * interleaved on inherited stdio and cannot be attributed to a step; these lines
+ * are the only place a reader can tell which step exited how.
  */
 export async function runSteps(
   steps: Step[],
@@ -306,37 +410,30 @@ export async function runSteps(
   return { results, status };
 }
 
-export async function main(argv: string[], cwd: string = ROOT): Promise<number> {
-  let base = BASE_REF;
-  let dryRun = false;
+/** The seams `main` needs to be assertable without a suite. */
+export type MainDeps = {
+  /** What the plan would be. Injected so no test asks git or turbo. */
+  plan?: (base: string, cwd: string) => Plan;
+  /** How a step runs. Injected so no test spawns a suite. */
+  run?: StepRunner;
+};
+
+export async function main(
+  argv: string[],
+  cwd: string = ROOT,
+  deps: MainDeps = {},
+): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(USAGE);
     return 0;
   }
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === "--dry-run") {
-      dryRun = true;
-      continue;
-    }
-    if (arg === "--base") {
-      const value = argv[i + 1]?.trim();
-      // A flag is not a base: `--base --dry-run` used to take the flag as the
-      // ref, drop the dry run, and run every package.
-      if (!value || value.startsWith("-")) {
-        console.error(USAGE);
-        return 2;
-      }
-      base = value;
-      i += 1;
-      continue;
-    }
-    console.error(arg?.startsWith("-") ? `unknown flag: ${arg}` : `unexpected argument: ${arg}`);
-    console.error(USAGE);
-    return 2;
-  }
+  const parsed = parseFlags(argv, FLAGS);
+  if (!parsed.ok) return usageFailure(parsed.message, USAGE);
 
-  const plan = planAffected(base, cwd);
+  const base = parsed.values.get("--base")?.[0] ?? BASE_REF;
+  const dryRun = parsed.switches.has("--dry-run");
+
+  const plan = (deps.plan ?? planAffected)(base, cwd);
   if (dryRun) {
     // The same shape the e2e selector prints: a decision, its reason, and the
     // argv each step would use. Pinned by the tests, so the decision can be
@@ -349,7 +446,7 @@ export async function main(argv: string[], cwd: string = ROOT): Promise<number> 
   // On stderr: a narrowed run must state its scope and the cause of a fallback,
   // and `bun run` shows both without polluting a step's stdout.
   console.error(`test:affected: ${plan.note}`);
-  const outcome = await runSteps(plan.steps, cwd);
+  const outcome = await runSteps(plan.steps, cwd, deps.run);
   return outcome.status;
 }
 

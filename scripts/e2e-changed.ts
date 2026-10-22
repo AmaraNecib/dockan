@@ -38,6 +38,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { contractLines, selectSpecs, specPaths, type Scope } from "./e2e-selection";
+import { parseFlags, usageFailure, type FlagSpec } from "./lib/args";
 
 export const DEFAULT_BASE = "origin/develop";
 
@@ -45,6 +46,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const USAGE =
   "usage: bun run test:e2e:changed [--base <ref>] [--files <path>[,<path>...]] [--dry-run|--help]";
+
+const FLAGS: FlagSpec[] = [
+  { name: "--base", kind: "value" },
+  { name: "--files", kind: "value" },
+  { name: "--dry-run", kind: "switch" },
+];
 
 export type ParsedArgs =
   | { ok: true; base: string; files: string[] | null; dryRun: boolean }
@@ -56,56 +63,33 @@ export type ParsedArgs =
 const normalisePath = (path: string) => path.trim().replace(/\\/gu, "/");
 
 export function parseArgs(argv: string[]): ParsedArgs {
-  let base = DEFAULT_BASE;
-  let files: string[] | null = null;
-  let dryRun = false;
+  // The flag grammar is `scripts/lib/args.ts`, shared with test-affected.ts. The
+  // two used to be hand-rolled, and `--base=origin/develop` worked on this tier
+  // and exited 2 on the other.
+  const parsed = parseFlags(argv, FLAGS);
+  if (!parsed.ok) return { ok: false, error: parsed.message };
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i] ?? "";
-    const eq = arg.startsWith("--") ? arg.indexOf("=") : -1;
-    const flag = eq === -1 ? arg : arg.slice(0, eq);
-    const inline = eq === -1 ? null : arg.slice(eq + 1);
-    const takeValue = (): string | null => {
-      if (inline !== null) return inline;
-      const next = argv[i + 1];
-      // A flag is not a value. `--files --dry-run` used to parse as
-      // files: ["--dry-run"] with dryRun false, decide `full`, and SPAWN the
-      // 35-spec suite from an invocation that asked only for a decision.
-      if (next === undefined || next.startsWith("-")) return null;
-      i += 1;
-      return next;
-    };
+  const base = parsed.values.get("--base")?.[0] ?? DEFAULT_BASE;
+  const list = parsed.values.get("--files")?.[0];
 
-    if (flag === "--dry-run") {
-      if (inline !== null) return { ok: false, error: "--dry-run takes no value" };
-      dryRun = true;
-      continue;
-    }
-    if (flag === "--base") {
-      const value = takeValue()?.trim();
-      if (!value) return { ok: false, error: "--base needs a git ref" };
-      base = value;
-      continue;
-    }
-    if (flag === "--files") {
-      // Twice would silently keep the last one, and which list wins is not
-      // something a caller should have to guess.
-      if (files !== null) return { ok: false, error: "--files may only be given once" };
-      const list = (takeValue() ?? "")
-        .split(",")
-        .map(normalisePath)
-        .filter((path) => path !== "");
-      if (list.length === 0) return { ok: false, error: "--files needs at least one path" };
-      files = list;
-      continue;
-    }
-    return {
-      ok: false,
-      error: flag.startsWith("-") ? `unknown flag: ${flag}` : `unexpected argument: ${arg}`,
-    };
+  // `--files` decides from the list it is given and never reads git, so a `--base`
+  // beside it was parsed and thrown away: `--dry-run --base origin/nope --files
+  // apps/web/src/pages/items.tsx` exited 0, printed `source=files`, and never said
+  // the base was discarded. A caller who typed both meant one of them, and
+  // guessing which is how a decision ends up describing a base nobody used.
+  if (list !== undefined && parsed.values.has("--base")) {
+    return { ok: false, error: "--files and --base cannot be combined: --files decides from the paths you give it, so --base would be ignored" };
   }
 
-  return { ok: true, base, files, dryRun };
+  if (list === undefined) {
+    return { ok: true, base, files: null, dryRun: parsed.switches.has("--dry-run") };
+  }
+  const files = list
+    .split(",")
+    .map(normalisePath)
+    .filter((path) => path !== "");
+  if (files.length === 0) return { ok: false, error: "--files needs at least one path" };
+  return { ok: true, base, files, dryRun: parsed.switches.has("--dry-run") };
 }
 
 // A git call answers with a result instead of throwing: the reason a diff is
@@ -180,6 +164,32 @@ function dirtyNote(dirty: string[]): string {
   return `${dirty.length} tracked file(s) have uncommitted edits this decision does not see (${named}${more}) — commit first, or pass --files`;
 }
 
+/** What a `git status` outcome means: a caveat, and whether the decision came from it. */
+export type DirtyReading = { source: "git" | "dirty"; note: string | null };
+
+/**
+ * Reads a `git status` outcome into the caveat `decide` prints.
+ *
+ * `null` is "git could not answer", and it is NOT clean. The helper
+ * (`dirtyTracked`) says so in its own comment, and this call site collapsed `null`
+ * and `[]` into "no caveat": a lane whose status call failed got a narrowed or
+ * skip answer with no warning that uncommitted edits were invisible to it.
+ *
+ * `source` is `dirty` only when there ARE uncommitted edits, because it reports
+ * where the decision came from and the decision came from the committed tree in
+ * both other cases.
+ */
+function classifyDirty(dirty: string[] | null): DirtyReading {
+  if (dirty === null) {
+    return {
+      source: "git",
+      note: "git could not read the working tree, so whether tracked files have uncommitted edits this decision does not see is unknown — the answer covers HEAD only",
+    };
+  }
+  if (dirty.length === 0) return { source: "git", note: null };
+  return { source: "dirty", note: dirtyNote(dirty) };
+}
+
 export function decide(
   input: { base: string; files: string[] | null },
   cwd: string,
@@ -191,38 +201,35 @@ export function decide(
   const readDirty: DirtyReader = sources.dirty ?? ((dir) => dirtyTracked(dir));
 
   const diff = readDiff(input.base, cwd);
-  const dirty = readDirty(cwd);
-  const note = dirty && dirty.length > 0 ? dirtyNote(dirty) : null;
+  const { source, note } = classifyDirty(readDirty(cwd));
 
   if (!diff.ok) {
+    // `git`, never `dirty`: the decision came from git failing, and the dirty
+    // check is a caveat on the answer. Reporting `dirty` here said the event came
+    // from a check that had decided nothing.
     return {
       scope: {
         mode: "full",
         specs: [],
         reason: `cannot diff against ${input.base}: ${diff.reason} — running the full suite${note ? ` | ${note}` : ""}`,
       },
-      source: note ? "dirty" : "git",
+      source: "git",
     };
   }
 
   const scope = selectSpecs(diff.files);
   if (!note) return { scope, source: "git" };
-  return { scope: { ...scope, reason: `${scope.reason} | ${note}` }, source: "dirty" };
+  return { scope: { ...scope, reason: `${scope.reason} | ${note}` }, source };
 }
 
-// Kept separate from `decide` for the callers that only want the scope; it is
-// the same decision with the provenance dropped.
-export function scopeFor(input: { base: string; files: string[] | null }, cwd: string, sources: DecisionSources = {}): Scope {
-  return decide(input, cwd, sources).scope;
-}
-
-// The pure spawn decision. No filters means the whole suite, so every path but
+// The pure spawn decision: no filters means the whole suite, so every path but
 // `affected` — including a mode this build does not know — widens instead of
 // narrowing. An `affected` scope that names no specs falls back to the same
 // empty list on purpose: filters would be a claim it cannot back.
-export function playwrightArgs(scope: Scope): string[] {
-  return specPaths(scope);
-}
+//
+// `specPaths` IS that decision, called directly rather than through a one-line
+// passthrough. A passthrough defeated the drift protection the prefix exists for:
+// two functions that must agree, one of which nobody reads.
 
 export function shouldSpawn(scope: Scope): boolean {
   return scope.mode !== "skip";
@@ -240,11 +247,7 @@ export function main(argv: string[], cwd = process.cwd(), spawn: Spawn = spawnPr
   }
 
   const parsed = parseArgs(argv);
-  if (!parsed.ok) {
-    console.error(parsed.error);
-    console.error(USAGE);
-    return 2;
-  }
+  if (!parsed.ok) return usageFailure(parsed.error, USAGE);
 
   const decision = decide({ base: parsed.base, files: parsed.files }, cwd);
   for (const line of contractLines(decision.scope)) console.log(line);
@@ -263,7 +266,7 @@ export function main(argv: string[], cwd = process.cwd(), spawn: Spawn = spawnPr
   if (decision.source === "dirty") {
     console.error(`e2e-changed: WARNING tracked files have uncommitted edits; this decision covers HEAD only`);
   }
-  const run = spawn(process.execPath, ["run", "test:e2e", ...playwrightArgs(decision.scope)], {
+  const run = spawn(process.execPath, ["run", "test:e2e", ...specPaths(decision.scope)], {
     cwd,
     stdio: "inherit",
   });

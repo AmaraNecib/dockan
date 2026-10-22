@@ -10,7 +10,6 @@ import {
   dirtyTracked,
   main,
   parseArgs,
-  playwrightArgs,
   shouldSpawn,
   type GitRunner,
   type Spawn,
@@ -42,22 +41,22 @@ describe("e2e-changed spawn decision", () => {
   test("an affected scope becomes positional tests/e2e/ filters", () => {
     // The `tests/e2e/` prefix and the spec names are the argument shape
     // `playwright test` accepts; the same shape the CI selector emits.
-    expect(playwrightArgs(affected(["backups.spec.ts"]))).toEqual(["tests/e2e/backups.spec.ts"]);
+    expect(specPaths(affected(["backups.spec.ts"]))).toEqual(["tests/e2e/backups.spec.ts"]);
   });
 
   test("an affected scope keeps the selector's order and count", () => {
-    expect(playwrightArgs(affected(["activity.spec.ts", "backups.spec.ts"]))).toEqual([
+    expect(specPaths(affected(["activity.spec.ts", "backups.spec.ts"]))).toEqual([
       "tests/e2e/activity.spec.ts",
       "tests/e2e/backups.spec.ts",
     ]);
   });
 
   test("full hands Playwright no filters, which is the whole suite", () => {
-    expect(playwrightArgs(full)).toEqual([]);
+    expect(specPaths(full)).toEqual([]);
   });
 
   test("skip hands Playwright no filters either; the caller is what stops the spawn", () => {
-    expect(playwrightArgs(skip)).toEqual([]);
+    expect(specPaths(skip)).toEqual([]);
     expect(shouldSpawn(skip)).toBe(false);
   });
 
@@ -66,7 +65,7 @@ describe("e2e-changed spawn decision", () => {
     // Playwright with no filters, which is exactly the full suite, so the argv
     // must be empty rather than a bogus empty filter.
     const scope = affected([]);
-    expect(playwrightArgs(scope)).toEqual([]);
+    expect(specPaths(scope)).toEqual([]);
     expect(shouldSpawn(scope)).toBe(true);
   });
 
@@ -77,7 +76,7 @@ describe("e2e-changed spawn decision", () => {
     // fourth mode must widen the run, never silence it.
     const rogue = JSON.parse('{"mode":"later","specs":[],"reason":"unknown mode"}') as Scope;
     expect(shouldSpawn(rogue)).toBe(true);
-    expect(playwrightArgs(rogue)).toEqual([]);
+    expect(specPaths(rogue)).toEqual([]);
   });
 
   test("full and affected both spawn", () => {
@@ -86,16 +85,11 @@ describe("e2e-changed spawn decision", () => {
   });
 
   test("the argv handed to Playwright is specPaths, for every mode", () => {
-    // The prefix used to be built in two files, so a change to one of them left
-    // `--dry-run` printing one path set and the spawn passing another. The two
-    // are the same function now, and this is the assertion that says so.
-    //
-    // The concrete list is asserted beside the identity on purpose. Comparing
-    // only `playwrightArgs(scope)` with `specPaths(scope)` is two calls into one
-    // module, so on a parent carrying neither of them both sides are the gate's
-    // undefined stand-ins and the equality holds — a red-on-parent gate reads that
-    // as a test that pins nothing. The expected paths are what the spawn is really
-    // for, and they cannot both be a stand-in.
+    // The concrete list, not an identity between two functions: comparing
+    // `f(scope)` with `g(scope)` is two calls into one module, so on a parent
+    // carrying neither of them both sides are the gate's undefined stand-ins and
+    // the equality holds — which a red-on-parent gate reads as a test that pins
+    // nothing. The expected paths are what the spawn is really for.
     const expected: Array<{ scope: Scope; argv: string[] }> = [
       {
         scope: affected(["backups.spec.ts", "items-flow.spec.ts"]),
@@ -106,13 +100,9 @@ describe("e2e-changed spawn decision", () => {
       { scope: skip, argv: [] },
     ];
     for (const entry of expected) {
-      expect({ mode: entry.scope.mode, argv: playwrightArgs(entry.scope) }).toEqual({
+      expect({ mode: entry.scope.mode, argv: specPaths(entry.scope) }).toEqual({
         mode: entry.scope.mode,
         argv: entry.argv,
-      });
-      expect({ mode: entry.scope.mode, argv: playwrightArgs(entry.scope) }).toEqual({
-        mode: entry.scope.mode,
-        argv: specPaths(entry.scope),
       });
     }
   });
@@ -121,6 +111,25 @@ describe("e2e-changed spawn decision", () => {
 describe("e2e-changed arguments", () => {
   test("defaults to origin/develop, a real diff and a real run", () => {
     expect(parseArgs([])).toEqual({ ok: true, base: "origin/develop", files: null, dryRun: false });
+  });
+
+  test("--base and --files together is a usage failure, not a silent discard", () => {
+    // `--files` decides from the list you give it and never reads git, so a
+    // `--base` beside it was parsed and then thrown away. Verified before the
+    // fix: `--dry-run --base origin/nope --files apps/web/src/pages/items.tsx`
+    // exited 0, printed `source=files`, and never said the base was ignored.
+    // A caller who typed both meant one of them, and guessing which is how a
+    // decision ends up describing a base nobody used.
+    const parsed = parseArgs(["--base", "origin/nope", "--files", "apps/web/src/pages/items.tsx"]);
+    expect({ ok: parsed.ok }).toEqual({ ok: false });
+    if (parsed.ok) return;
+    expect(parsed.error).toContain("--files");
+    expect(parsed.error).toContain("--base");
+    // The attached spelling is the same mistake, so it is refused the same way.
+    expect(parseArgs(["--files=a.ts", "--base=develop"]).ok).toBe(false);
+    // And either flag alone still works.
+    expect(parseArgs(["--files", "a.ts"]).ok).toBe(true);
+    expect(parseArgs(["--base", "develop"]).ok).toBe(true);
   });
 
   test("--files splits on commas and skips git", () => {
@@ -133,19 +142,33 @@ describe("e2e-changed arguments", () => {
   });
 
   test("--base, --files and --dry-run combine", () => {
-    expect(parseArgs(["--base", "develop", "--files", "docs/ci.md", "--dry-run"])).toEqual({
+    // `--dry-run` is a switch and decides nothing, so it composes with either
+    // source; it is the base/files pair that cannot.
+    expect(parseArgs(["--dry-run", "--files", "docs/ci.md"])).toEqual({
+      ok: true,
+      base: "origin/develop",
+      files: ["docs/ci.md"],
+      dryRun: true,
+    });
+    expect(parseArgs(["--base", "develop", "--dry-run"])).toEqual({
       ok: true,
       base: "develop",
-      files: ["docs/ci.md"],
+      files: null,
       dryRun: true,
     });
   });
 
   test("--flag=value is the same as --flag value", () => {
-    expect(parseArgs(["--base=develop", "--files=a.ts"])).toEqual({
+    expect(parseArgs(["--files=a.ts"])).toEqual({
+      ok: true,
+      base: "origin/develop",
+      files: ["a.ts"],
+      dryRun: false,
+    });
+    expect(parseArgs(["--base=develop"])).toEqual({
       ok: true,
       base: "develop",
-      files: ["a.ts"],
+      files: null,
       dryRun: false,
     });
   });
@@ -327,8 +350,9 @@ describe("e2e-changed git", () => {
 
   test("a dirty working tree is reported as such, so a stale answer is not silent", () => {
     // turbo's `[ref]` filter diffs the working tree; this driver diffs
-    // merge-base..HEAD. A lane that edits, runs tier 0 (which sees the edit),
-    // then tier 1 gets a narrowed or skip answer for the stale committed set —
+    // merge-base..HEAD. A lane that edits, runs tier 1 (whose turbo filter reads
+    // the working tree), then runs tier 2 and gets a narrowed or skip answer for
+    // the stale committed set —
     // and `skip` exits 0, indistinguishable from a real decision.
     const decision = decide({ base: "origin/develop", files: null }, ROOT, {
       diff: () => ({ ok: true, files: ["apps/web/src/pages/backups.tsx"] }),
@@ -346,6 +370,7 @@ describe("e2e-changed git", () => {
     });
     expect(decision).toEqual({ scope: affected(["backups.spec.ts"]), source: "git" });
   });
+
 
   test("--files is its own provenance: it never claims to be the branch", () => {
     // `--files apps/web/src/pages/backups.tsx` prints a contract byte-shaped
@@ -369,6 +394,36 @@ describe("e2e-changed git", () => {
     expect(decision.scope.mode).toBe("full");
     expect(decision.scope.reason).toContain("cannot diff against origin/develop");
     expect(decision.scope.reason).toContain("uncommitted");
+    // A dirty tree beside a failed diff used to report `source=dirty`, which said
+    // the decision came from the dirty check. It did not: the decision came from
+    // git failing, and the dirty check is a caveat on the answer. `dirty` is a
+    // provenance value, so it may only describe where the decision came from.
+    expect(decision.source).toBe("git");
+  });
+
+  test("a git status that cannot answer gets its own caveat, not silence", () => {
+    // `dirtyTracked` answers `null` for "git could not say", and the call site
+    // collapsed `null` and `[]` into "no caveat". Unknown is not clean: a lane
+    // whose status call failed got a narrowed or skip answer with no warning that
+    // uncommitted edits were invisible to it.
+    const decision = decide({ base: "origin/develop", files: null }, ROOT, {
+      diff: () => ({ ok: true, files: ["apps/web/src/pages/backups.tsx"] }),
+      dirty: () => null,
+    });
+    expect(decision.scope.mode).toBe("affected");
+    expect(decision.scope.reason).toContain("could not read the working tree");
+    // Still a git decision: nothing about it came from the dirty check.
+    expect(decision.source).toBe("git");
+  });
+
+  test("an unreadable diff AND an unreadable status say both", () => {
+    const decision = decide({ base: "origin/develop", files: null }, ROOT, {
+      diff: () => ({ ok: false, reason: "fatal: bad revision" }),
+      dirty: () => null,
+    });
+    expect(decision.scope.mode).toBe("full");
+    expect(decision.scope.reason).toContain("cannot diff against origin/develop");
+    expect(decision.scope.reason).toContain("could not read the working tree");
   });
 
   test("git status is read with untracked files excluded", () => {

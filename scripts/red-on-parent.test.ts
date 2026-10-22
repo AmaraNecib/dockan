@@ -5643,3 +5643,245 @@ test("uses both modules", () => {
     }
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// Round 29 — the gaps a review lens found in the round 28 fold.
+//
+// Each case here pins one half of the fold that the round 28 tests reached only
+// through the shape it was found in: a type-only export beside a direct one, a
+// refusal seen at plan level only, the collapse to `refusals[0]`, and the two
+// runtime-name readers nothing asserted directly.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 29 — a star target that only type-exports the name", () => {
+  // `starExportNames` asks each star target for its RUNTIME export names, and
+  // nothing fed it a target whose only mention of the requested name is a
+  // `export type`. Counting that name as supplied appends no stand-in, the
+  // parent's own `import { value }` fails to resolve, and a file the gate could
+  // judge as a right-reason red becomes CANNOT-HOLLOW plus a whole-file waiver.
+  const PATH = "scripts/mod.ts";
+  const PARENT = `export * from "./types";\nexport function stable(): number {\n  return 3;\n}\n`;
+  const CHANGE = `${PARENT}export function value(): number {\n  return 7;\n}\n`;
+  const TYPES = `export type { value } from "./real";\n`;
+  const REAL = `export function value(): number {\n  return 70;\n}\n`;
+
+  function planFor() {
+    return planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { value } from "./mod";\n`,
+      new Set([PATH]),
+      (path) => (path === PATH ? CHANGE : null),
+      (path) =>
+        path === PATH
+          ? PARENT
+          : path === "scripts/types.ts"
+            ? TYPES
+            : path === "scripts/real.ts"
+              ? REAL
+              : null,
+    );
+  }
+
+  test("a name the star target only type-exports is still missing from the parent's runtime", () => {
+    const plan = planFor();
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+    // The parent's `export *` line survives verbatim and the stand-in is appended
+    // beside it, so the parent's own `stable` still works and `value` now binds.
+    const text = plan.modules[0]?.text ?? "";
+    expect(text.startsWith(PARENT)).toBe(true);
+    expect(runtimeExportNames(PATH, text)).toEqual(["stable", "value"]);
+  });
+});
+
+describe("red-on-parent round 29 — a type-only star target, end to end", () => {
+  // Regression guard 1 (a test of the parent's real behaviour is GREEN-ON-PARENT,
+  // not accepted on a shadow) reached through an `export *` whose target only
+  // type-exports the name. The stand-in has to be written for `value`, and the
+  // file still has to be REJECTED for the test that pins what the parent already
+  // does — a whole-file refusal for `value` would hide that test behind a waiver
+  // instead.
+  const TYPES = `export type { value } from "./real";\n`;
+  const REAL = `export function value(): number {\n  return 70;\n}\n`;
+  const PARENT = `export * from "./types";\nexport function stable(): number {\n  return 3;\n}\n`;
+  const CHANGE = `${PARENT}export function value(): number {\n  return 7;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { stable, value } from "./star-typed";
+test("uses the runtime export the change adds", () => {
+  expect(value()).toBe(7);
+});
+test("pins the behaviour the parent already has", () => {
+  expect(stable()).toBe(3);
+});
+`;
+
+  test("the stand-in is written, and the parent-behaviour test is rejected, not waived", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/types.ts", text: TYPES },
+        { path: "packages/core/src/real.ts", text: REAL },
+        { path: "packages/core/src/star-typed.ts", text: PARENT },
+      ],
+      [
+        { path: "packages/core/src/star-typed.ts", text: CHANGE },
+        { path: "packages/core/src/star-typed.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // `value` got its stand-in, so the file loads on the parent at all.
+      expect(stdout).toContain("packages/core/src/star-typed.ts — appended value");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      // The test that pins the parent's own `stable` is green there.
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("red-on-parent: PASS");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 29 — a refusal beside a sibling's stand-in, end to end", () => {
+  // Round 28 proved the pair at plan level. This is the whole gate: one module it
+  // must refuse, one it can still stand in for, and the run has to do both — write
+  // the sibling's stand-in AND report the refusal — instead of trading one for the
+  // other.
+  const REFUSER = `export * from "nowhere-pkg";\nexport function existingR(): number {\n  return 1;\n}\n`;
+  const REFUSER_AFTER = `${REFUSER}export function gainedR(): number {\n  return 2;\n}\n`;
+  const SIBLING = `export const other = 1;\n`;
+  const SIBLING_AFTER = `${SIBLING}export function brandNewS(): number {\n  return 4;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { gainedR } from "./refuser";
+import { brandNewS } from "./sibling";
+test("uses both modules", () => {
+  expect(gainedR()).toBe(2);
+  expect(brandNewS()).toBe(4);
+});
+`;
+
+  test("the refusal is reported and the sibling's stand-in is still written", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/refuser.ts", text: REFUSER },
+        { path: "packages/core/src/sibling.ts", text: SIBLING },
+      ],
+      [
+        { path: "packages/core/src/refuser.ts", text: REFUSER_AFTER },
+        { path: "packages/core/src/sibling.ts", text: SIBLING_AFTER },
+        { path: "packages/core/src/refused-sibling.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // The refusal, about the module it is about.
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("packages/core/src/refuser.ts");
+      expect(stdout).toContain("nowhere-pkg");
+      // The sibling's stand-in, in the report and in what the run actually wrote.
+      expect(stdout).toContain("packages/core/src/sibling.ts — appended brandNewS");
+      const written = readFileSync(
+        join(fixture.cache, `wt-${fixture.base}`, "packages/core/src/sibling.ts"),
+        "utf8",
+      );
+      expect(written.startsWith(SIBLING)).toBe(true);
+      expect(written).toContain("Appended stand-in");
+      expect(written).toContain("export function brandNewS");
+      // And the verdict is not an accept: the file never loaded on the parent.
+      expect(stdout).toContain("red-on-parent: FAIL");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 29 — several refusals collapse to the first in import order", () => {
+  // The plan returns `refusals[0]`, and the report prints one refusal as one row's
+  // detail. Which refusal an author sees is therefore a choice, not an accident:
+  // it is the first in the file's own import order. Pinning it means a refactor
+  // cannot silently change the module an author is told to fix without failing
+  // here, and reversing the imports proves the order is the file's and not the
+  // modules' sort order.
+  const PARENT_A = `export * from "./nowhere-a";\n`;
+  const PARENT_B = `export * from "./nowhere-b";\n`;
+  const CHANGE_A = `${PARENT_A}export function nameA(): number {\n  return 1;\n}\n`;
+  const CHANGE_B = `${PARENT_B}export function nameB(): number {\n  return 2;\n}\n`;
+  const TOUCHED = new Set(["scripts/a.ts", "scripts/b.ts"]);
+
+  const readChange = (path: string): string | null =>
+    path === "scripts/a.ts" ? CHANGE_A : path === "scripts/b.ts" ? CHANGE_B : null;
+  const readParent = (path: string): string | null =>
+    path === "scripts/a.ts" ? PARENT_A : path === "scripts/b.ts" ? PARENT_B : null;
+
+  test("two refusable modules report the first one the file imports", () => {
+    const plan = planAugmentedModules(
+      "scripts/two-refusals.test.ts",
+      `import { nameA } from "./a";\nimport { nameB } from "./b";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/a.ts");
+    expect(plan.refusal).toContain("./nowhere-a");
+    expect(plan.refusal).not.toContain("scripts/b.ts");
+    expect(plan.refusal).not.toContain("./nowhere-b");
+  });
+
+  test("the reported refusal follows the file's order, not the modules' sort order", () => {
+    const plan = planAugmentedModules(
+      "scripts/two-refusals-reversed.test.ts",
+      `import { nameB } from "./b";\nimport { nameA } from "./a";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/b.ts");
+    expect(plan.refusal).toContain("./nowhere-b");
+    expect(plan.refusal).not.toContain("scripts/a.ts");
+    expect(plan.refusal).not.toContain("./nowhere-a");
+  });
+});
+
+describe("red-on-parent round 29 — a JavaScript module's runtime names", () => {
+  // `runtimeExportNames` takes `scriptKindFor(path)`, so the extension decides how
+  // the source is parsed: `.js`, `.mjs` and `.cjs` are read as JavaScript. What is
+  // pinned here is the export SET a JavaScript module produces through that path.
+  // The two parsers do not disagree about an export name in any case found so far
+  // (TypeScript's parser recovers from JS-valid input, and a JS reading drops the
+  // same type-only shapes), so this is coverage of the JavaScript branch rather
+  // than a differential test — said plainly, because a reader should not take it
+  // as proof that the script kind changes the answer.
+  const JS = `export function twice(n) {\n  return n * 2;\n}\nexport const FLAG = 1;\nexport class Box {}\n`;
+  const JS_TYPE_ONLY = `export type { value } from "./types";\nexport interface Port {\n  b: string;\n}\n`;
+
+  test("a .js module's runtime names are read from JavaScript source", () => {
+    expect(runtimeExportNames("scripts/mod.js", JS)).toEqual(["Box", "FLAG", "twice"]);
+    // A JS file may carry the same type-only shapes a TS one does, and they name
+    // nothing the runtime has either way.
+    expect(runtimeExportNames("scripts/mod.js", JS_TYPE_ONLY)).toEqual([]);
+  });
+
+  test("the same holds for a .mjs module", () => {
+    expect(runtimeExportNames("scripts/mod.mjs", JS)).toEqual(["Box", "FLAG", "twice"]);
+    expect(runtimeExportNames("scripts/mod.mjs", JS_TYPE_ONLY)).toEqual([]);
+  });
+});
+
+describe("red-on-parent round 29 — a class and a namespace bind runtime values", () => {
+  // Both are in the kept list and neither was asserted directly: the round 28 test
+  // pinned a function, a const and an enum, so a change that started dropping
+  // classes or namespaces would have passed it.
+  test("a class and a namespace count; a type alias and an interface do not", () => {
+    expect(
+      runtimeExportNames(
+        "scripts/mod.ts",
+        `export class Box {\n  static empty = true;\n}\nexport namespace Registry {\n  export const size = 0;\n}\nexport type Shape = { a: number };\nexport interface Port {\n  b: string;\n}\n`,
+      ),
+    ).toEqual(["Box", "Registry"]);
+  });
+});

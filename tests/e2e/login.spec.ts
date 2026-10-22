@@ -156,7 +156,7 @@ test("a sign-out through the dev proxy ends the session", async ({ page }) => {
 
   const liveBefore = await page.request.get("/api/auth/get-session");
   expect(liveBefore.status()).toBe(200);
-  expect(await liveBefore.text()).toContain(OWNER_PHONE.replace(/^213/, ""));
+  expect(await liveBefore.text()).toContain(`"username":"${OWNER_PHONE}"`);
 
   // the session cookie is saved BEFORE the sign-out so it can be replayed after:
   // the jar dropping a cookie would make the check below return null on its own,
@@ -168,6 +168,9 @@ test("a sign-out through the dev proxy ends the session", async ({ page }) => {
   // the same request shape the app sends, with the page's own origin
   const signedOut = await page.request.post("/api/auth/sign-out", {
     headers: { origin, "content-type": "application/json" },
+    // the empty object the app's own client sends: without a body better-auth
+    // answers 400 before the origin check, and a 400 would prove nothing
+    data: {},
   });
   expect(signedOut.status()).toBe(200);
 
@@ -188,6 +191,7 @@ test("a foreign origin is refused with the session cookie present", async ({ pag
   await signIn(page);
   const refused = await page.request.post("/api/auth/sign-out", {
     headers: { origin: "https://evil.example", "content-type": "application/json" },
+    data: {},
   });
   expect(refused.status()).toBe(403);
 
@@ -195,5 +199,5 @@ test("a foreign origin is refused with the session cookie present", async ({ pag
   // rejected for some other reason: the session is still live afterwards
   const stillLive = await page.request.get("/api/auth/get-session");
   expect(stillLive.status()).toBe(200);
-  expect(await stillLive.text()).toContain(OWNER_PHONE.replace(/^213/, ""));
+  expect(await stillLive.text()).toContain(`"username":"${OWNER_PHONE}"`);
 });

@@ -5071,3 +5071,101 @@ test("dereferences the appended stand-in", () => {
     }
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// Round 27 — the Greptile P1s at b9f9cc4e.
+//
+// Three findings, none of them about a verdict class: a stand-in that cannot
+// load, a stand-in that shadows a name the parent really supplies (a false
+// pass), and a waiver that excuses a parent run that never finished.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 27 — a JavaScript module's stand-in loads", () => {
+  /**
+   * Load the hollow in a real bun process.
+   *
+   * The property under test is "this text parses and runs", and no amount of
+   * string inspection answers it: `..._args: unknown[]` looks perfectly
+   * reasonable in a template literal and is a syntax error in a `.js` file.
+   */
+  function loadHollow(name: string, hollowText: string) {
+    const dir = mkdtempSync(join(tmpdir(), "ronp-hollow-"));
+    try {
+      writeFileSync(join(dir, "package.json"), `{ "type": "module" }\n`);
+      writeFileSync(join(dir, name), hollowText);
+      writeFileSync(
+        join(dir, "run.mjs"),
+        `import * as mod from "./${name}";\n` +
+          `if (typeof mod.twice !== "function") throw new Error("twice is not a function");\n` +
+          `if (mod.twice(2) !== undefined) throw new Error("the stand-in carries behaviour");\n` +
+          `console.log("LOADED");\n`,
+      );
+      const result = spawnSync(process.execPath, [join(dir, "run.mjs")], { encoding: "utf8" });
+      return {
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        status: result.status,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a .js module's stand-in is JavaScript, so the parent can load it", () => {
+    const hollow = hollowModuleSource(
+      `export function twice(n) {\n  return n * 2;\n}\n`,
+      "scripts/mod.js",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    // No parameter or return annotation: the file is JavaScript, and bun does
+    // not type-check, so an annotation here is a load error rather than a
+    // harmless extra.
+    expect(hollow.text).not.toContain(": unknown");
+    expect(hollow.text).not.toContain("unknown[]");
+    const run = loadHollow("mod.js", hollow.text);
+    expect({ stdout: run.stdout, status: run.status }).toEqual({ stdout: "LOADED\n", status: 0 });
+  });
+
+  test("a .mjs module's stand-in is JavaScript too", () => {
+    const hollow = hollowModuleSource(
+      `export function twice(n) {\n  return n * 2;\n}\n`,
+      "scripts/mod.mjs",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    const run = loadHollow("mod.mjs", hollow.text);
+    expect({ stdout: run.stdout, status: run.status }).toEqual({ stdout: "LOADED\n", status: 0 });
+  });
+});
+
+describe("red-on-parent round 27 — a test importing a new .js module, end to end", () => {
+  // The fixture Greptile named: an added test imports a `.js` module the same
+  // change adds. The stand-in for it is written into the parent worktree, and a
+  // TypeScript annotation in that stand-in is a load error rather than a red.
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { twice } from "./doubles.js";
+test("doubles", () => {
+  expect(twice(2)).toBe(4);
+});
+`;
+
+  test("the parent loads the JavaScript stand-in and judges the test on its assertion", () => {
+    const fixture = createFixture(
+      [PKG],
+      [
+        { path: "packages/core/src/doubles.js", text: `export function twice(n) {\n  return n * 2;\n}\n` },
+        { path: "packages/core/src/doubles.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});

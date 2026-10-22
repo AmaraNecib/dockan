@@ -1718,10 +1718,17 @@ export function hollowModuleSource(
     if (ts.isFunctionDeclaration(statement)) {
       const name = statement.name;
       if (name === undefined) return refuse("it exports a function with no name");
-      // `..._args: unknown[]` rather than the real signature: the parent's copy
-      // is never type-checked, and a test that calls it with anything must reach
-      // its own assertion instead of a load error.
-      lines.push(`export function ${name.text}(..._args: unknown[]): unknown {\n  return undefined;\n}`);
+      // `..._args` rather than the real signature: the parent's copy is never
+      // type-checked, and a test that calls it with anything must reach its own
+      // assertion instead of a load error. No annotation, and no return
+      // annotation either — this is the one body for every language, because
+      // `scriptKindFor` parses `.js`, `.mjs` and `.cjs` as JavaScript and bun
+      // does not type-check. A TypeScript signature emitted into a JavaScript
+      // file is a syntax error: bun answers `Expected ")" but found ":"`, the
+      // stand-in never loads, and a valid test is scored WRONG_REASON_RED
+      // instead of being judged against a runnable parent. One shape that loads
+      // everywhere, rather than two shapes chosen by extension.
+      lines.push(`export function ${name.text}(..._args) {\n  return undefined;\n}`);
       continue;
     }
     if (ts.isClassDeclaration(statement)) {

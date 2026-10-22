@@ -9,7 +9,7 @@ import { SIGNED_OUT_STORAGE_KEY, authLossReason, clearAuthLost, markSignedOut } 
  * The unconfirmed sign-out's fallback, tested where the hold lives (#319
  * round-6 finding 1).
  *
- * The finding was that `markSignedOut()` wrote to `localStorage` and nowhere
+ * The finding was that `markSignedOut()` wrote to storage and nowhere
  * else: `rememberSignedOut()` swallowed a throwing `setItem`, so
  * `authLostState()` still answered `false` and `logoutAndReload()` returned
  * without reloading and without hiding the still-authenticated app — on a
@@ -19,13 +19,17 @@ import { SIGNED_OUT_STORAGE_KEY, authLossReason, clearAuthLost, markSignedOut } 
  * because the mount only ever SEES the module's answer; `App.test.tsx` proves
  * the screen for the screen's sake.
  *
- * happy-dom's `localStorage` is a Proxy whose instance methods cannot be
+ * The hold lives in `sessionStorage` (#341 round 7), so that is the store these
+ * cases block: blocking `localStorage` made the write succeed and left the
+ * memory-fallback claim untested — which is exactly what Greptile caught.
+ *
+ * happy-dom's `sessionStorage` is a Proxy whose instance methods cannot be
  * shadowed and whose writes never throw, so a dead storage is installed by
  * replacing the window property — the same way the platform hands a page a
  * storage that refuses it.
  */
 
-const originalDescriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+const originalDescriptor = Object.getOwnPropertyDescriptor(window, "sessionStorage");
 
 /** A storage that refuses every call: a full quota, or a store the profile blocks. */
 const deadStorage: Storage = {
@@ -50,18 +54,18 @@ const deadStorage: Storage = {
 };
 
 function installDeadStorage(): void {
-  Object.defineProperty(window, "localStorage", { configurable: true, value: deadStorage });
+  Object.defineProperty(window, "sessionStorage", { configurable: true, value: deadStorage });
 }
 
 beforeEach(() => {
   // a failed test must not leave the next one with a storage it cannot read
-  if (originalDescriptor !== undefined) Object.defineProperty(window, "localStorage", originalDescriptor);
-  window.localStorage.removeItem(SIGNED_OUT_STORAGE_KEY);
+  if (originalDescriptor !== undefined) Object.defineProperty(window, "sessionStorage", originalDescriptor);
+  window.sessionStorage.removeItem(SIGNED_OUT_STORAGE_KEY);
   clearAuthLost();
 });
 
 afterEach(() => {
-  if (originalDescriptor !== undefined) Object.defineProperty(window, "localStorage", originalDescriptor);
+  if (originalDescriptor !== undefined) Object.defineProperty(window, "sessionStorage", originalDescriptor);
   clearAuthLost();
 });
 
@@ -69,7 +73,7 @@ describe("an unconfirmed sign-out on a profile that refuses storage (#319 round 
   it("the memory hold raises the gate when every storage call throws", () => {
     installDeadStorage();
     // the fixture is the finding: this is a profile where the write CANNOT land
-    expect(() => window.localStorage.setItem(SIGNED_OUT_STORAGE_KEY, "1")).toThrow("storage is blocked");
+    expect(() => window.sessionStorage.setItem(SIGNED_OUT_STORAGE_KEY, "1")).toThrow("storage is blocked");
 
     markSignedOut();
 
@@ -77,7 +81,7 @@ describe("an unconfirmed sign-out on a profile that refuses storage (#319 round 
     // up anyway. Before the fix this answered `undefined` — the app stayed
     // mounted on a cookie the server never dropped.
     expect(authLossReason()).toBe("signed-out");
-    expect(() => window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toThrow("storage is blocked");
+    expect(() => window.sessionStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toThrow("storage is blocked");
   });
 
   it("a cleared hold is really gone, so the next sign-out is its own episode", () => {

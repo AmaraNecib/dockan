@@ -90,7 +90,7 @@ export function VaultSettings() {
 
   const recoveryReset = useMutation({
     // broker mode refuses the HTTP reset route: route it over the pipe
-    mutationFn: () => resetVaultPassphrase(resetRecoveryKey, resetNewPassphrase, status.data?.broker === true),
+    mutationFn: () => resetVaultPassphrase(resetRecoveryKey, resetNewPassphrase, status.data?.mode === "vault" && status.data.broker === true),
     onSuccess: () => {
       setMessage(t("vaultChanged"));
       setFailure(null);

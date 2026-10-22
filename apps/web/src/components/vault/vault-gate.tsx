@@ -17,6 +17,7 @@ import {
   vaultUnlock,
   vaultUnlockWithRecovery,
   type VaultCleanupOutcome,
+  type VaultBootStatus,
   type VaultStatus,
 } from "@/lib/vault-client";
 /**
@@ -57,7 +58,7 @@ const VAULT_STATUS_FAILURES = new Map<string, VaultFailure>([
 const VAULT_REFUSAL_POLL_MS = 5_000;
 
 type VaultHook = {
-  status: VaultStatus | undefined;
+  status: VaultBootStatus | undefined;
   /** "unsupported" = legacy build; "unreachable" = show retry, never login;
    *  "in-use" = another copy holds the folder (#276); "stale-lock" = the lock's
    *  pid stopped beating and may be recycled (#283) */
@@ -68,7 +69,7 @@ type VaultHook = {
    * to DECIDE on the fresh answer (the refusal re-probe in `App.tsx`) does not
    * have to guess from the render that triggered it.
    */
-  refresh: () => Promise<VaultStatus | undefined>;
+  refresh: () => Promise<VaultBootStatus | undefined>;
 };
 
 /** The input a gate refusal points at; null means the form-level alert. */
@@ -80,7 +81,7 @@ type VaultGateField = "passphrase" | "confirm" | "recovery" | null;
  * sessionStorage before the first RPC call.
  */
 export function useVaultStatus(): VaultHook {
-  const [status, setStatus] = useState<VaultStatus | undefined>(undefined);
+  const [status, setStatus] = useState<VaultBootStatus | undefined>(undefined);
   const [failure, setFailure] = useState<VaultFailure | undefined>(undefined);
   const aliveRef = useRef(true);
   /**
@@ -95,7 +96,7 @@ export function useVaultStatus(): VaultHook {
   const appliedRef = useRef(0);
 
   /** Apply an answer, and mark it the newest one this hook knows. */
-  const settle = useCallback((next: VaultStatus): void => {
+  const settle = useCallback((next: VaultBootStatus): void => {
     appliedRef.current += 1;
     setStatus(next);
   }, []);
@@ -115,7 +116,7 @@ export function useVaultStatus(): VaultHook {
    * to DECIDE on the answer (the refusal re-probe) must not decide on one the
    * page has already moved past.
    */
-  const load = useCallback(async (): Promise<VaultStatus | undefined> => {
+  const load = useCallback(async (): Promise<VaultBootStatus | undefined> => {
     const appliedAtStart = appliedRef.current;
     try {
       const result = await fetchVaultStatus();

@@ -8,7 +8,7 @@ import { AuthErrorAlert, authFieldKey, useAuthReporter } from "./lib/auth-errors
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
-import { readVaultSessionToken, requestVaultReclaim, type VaultStatus } from "./lib/vault-client";
+import { readVaultSessionToken, requestVaultReclaim, type VaultBootStatus } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
 import { clearAuthLost, recoverAuthLost, useAuthLossReason } from "./lib/auth-refusal";
@@ -27,7 +27,10 @@ const PHONE_MAX_LENGTH = 13;
  * Broker mode is never a live answer here: its token lives in this page, and a
  * token the server refused cannot become live again by being asked.
  */
-function isLiveSessionAnswer(fresh: VaultStatus | undefined): boolean {
+function isLiveSessionAnswer(fresh: VaultBootStatus | undefined): boolean {
+  // a build with no vault has no vault session to be live: the legacy gate is
+  // the session there
+  if (fresh === undefined || fresh.mode === "disabled") return false;
   return fresh !== undefined && fresh.mode === "vault" && !fresh.broker && fresh.session;
 }
 
@@ -76,11 +79,22 @@ export function RequireSession({ children }: { children: ReactNode }) {
    * not the live one".
    */
   const vaultStatusNow = vault.status;
-  const waitingOnCredential =
+  /**
+   * Is the gate up for a reason a LIVE session could clear? That covers the boot
+   * race ("unlocked, but this page's credential is not the live one") AND the
+   * waiting windows (#341 round 7 P1): two windows opened before any unlock both
+   * read `locked`/`unconfigured`, so a window that is still waiting had no listener
+   * and never noticed the other window's unlock — it kept asking for a passphrase
+   * over a vault that was already open.
+   *
+   * A sign-out is the one reason a live session must NOT clear, so it is the one
+   * reason this is false.
+   */
+  const gateOpenForSession =
     vaultStatusNow !== undefined &&
     vaultStatusNow.mode === "vault" &&
-    vaultStatusNow.state === "unlocked" &&
-    (vaultStatusNow.broker ? readVaultSessionToken() !== undefined : vaultStatusNow.session) === false;
+    (vaultStatusNow.state !== "unlocked" ||
+      (vaultStatusNow.broker ? readVaultSessionToken() !== undefined : vaultStatusNow.session) === false);
   /**
    * The in-use screen's retry asks the refused instance to re-check the folder
    * before it re-reads the status (#277). Only the button does this: a poll is
@@ -159,7 +173,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
   const recheckInFlightRef = useRef(false);
   useEffect(() => {
     // a refusal, or the boot race above — the two reasons a LIVE session clears
-    if (authLoss !== "refusal" && !waitingOnCredential) return;
+    if (authLoss === "signed-out" || !gateOpenForSession) return;
     const recheck = (): void => {
       // `visibilitychange` fires for a hidden page too, and a page nobody is
       // looking at is not where a refusal gets resolved
@@ -177,12 +191,12 @@ export function RequireSession({ children }: { children: ReactNode }) {
     // the window already, so no focus event will ever come. Not for a refusal —
     // that path already probed once, and a second read per episode is the thing
     // the ref exists to bound.
-    if (waitingOnCredential) recheck();
+    recheck();
     return () => {
       window.removeEventListener("focus", recheck);
       document.removeEventListener("visibilitychange", recheck);
     };
-  }, [authLoss, waitingOnCredential, vault.refresh]);
+  }, [authLoss, gateOpenForSession, vault.refresh]);
   // The vault gate owns the first paint: no app route exists until the
   // encrypted store is open (ADR-0008 §4.6).
   if (vault.status !== undefined && vault.status.mode === "vault") {

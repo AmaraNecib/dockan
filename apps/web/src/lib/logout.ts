@@ -1,4 +1,4 @@
-import { clearVaultSessionToken, revokeVaultSession, vaultRouteAbsent } from "./vault-client";
+import { clearVaultSessionToken, revokeVaultSession, vaultBuildMode, VaultRequestError } from "./vault-client";
 import { markSignedOut } from "./auth-refusal";
 import { brokerAvailable, brokerCommands, invokeBrokerVoid } from "./vault-broker";
 
@@ -18,7 +18,15 @@ export type SignOutResult = { data: unknown } | null | undefined;
  */
 type RevokeOutcome = "revoked" | "absent" | "unconfirmed";
 
-async function revokeOutcome(): Promise<RevokeOutcome> {
+async function revokeOutcome(vaultEnabled: boolean): Promise<RevokeOutcome> {
+  // NO VAULT IN THIS BUILD means no vault cookie for a reload to walk back in
+  // with: the credential is the better-auth session, and `signOut()` ends it.
+  // Asking the vault-status route here was wrong twice over (#341 round 7 P1):
+  // that route can fail on a plaintext build (a proxy, a sidecar restart), and a
+  // failed probe held the page while the shop stayed on screen — the exact
+  // shared-machine failure the hold exists to prevent, inverted. The page already
+  // knows what kind of build it is, so the decision does not need a probe.
+  if (!vaultEnabled) return "absent";
   try {
     await revokeVaultSession();
     return "revoked";
@@ -37,7 +45,18 @@ async function revokeOutcome(): Promise<RevokeOutcome> {
     // shared jar and landed the page back in the app. So the revoke hop's own
     // code decides nothing; whether a vault cookie can walk back in is the
     // status route's answer, and it is the same read the gate makes on boot.
-    return (await vaultRouteAbsent()) ? "absent" : "unconfirmed";
+    //
+    // Three answers, because two of them are not the same question (#341 round 7
+    // P1). `disabled` — no vault in this build, so there is no vault cookie to
+    // walk back in with and the local clear was the whole credential: reload.
+    // `vault` — a vault exists, so hold. `unknown` — the probe itself failed (a
+    // proxy, a restarting sidecar): fall back to the revoke's own answer, whose
+    // bodiless 404 is the one signal a vault-less build gives when the status
+    // route cannot be reached at all.
+    const build = await vaultBuildMode();
+    if (build === "disabled") return "absent";
+    if (build === "vault") return "unconfirmed";
+    return error instanceof VaultRequestError && error.code === "VAULT_UNSUPPORTED" ? "absent" : "unconfirmed";
   }
 }
 
@@ -56,8 +75,11 @@ async function revokeOutcome(): Promise<RevokeOutcome> {
  * origin — would arrive with the cookie still live and put the owner back in
  * the app; that case shows the unlock screen instead of reloading.
  */
-export async function logoutAndReload(signOut: () => Promise<SignOutResult>): Promise<void> {
-  const revoked = await revokeOutcome();
+export async function logoutAndReload(
+  signOut: () => Promise<SignOutResult>,
+  options: { vaultEnabled: boolean } = { vaultEnabled: true },
+): Promise<void> {
+  const revoked = await revokeOutcome(options.vaultEnabled);
   clearVaultSessionToken();
   // Broker mode: the serving sidecar is one-shot, so replace it with a freshly
   // verified sibling before the reload; otherwise the reloaded gate could

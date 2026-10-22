@@ -19,6 +19,9 @@ import { brokerAvailable, brokerCommands, invokeBroker, invokeBrokerVoid, type B
 
 export type VaultState = "unconfigured" | "locked" | "unlocked" | "invalid";
 
+/** what the BOOT reader may get: a vault status, or a build that has none */
+export type VaultBootStatus = VaultStatus | { mode: "disabled" };
+
 export type VaultStatus = {
   mode: "vault" | "disabled";
   state: VaultState;
@@ -40,8 +43,8 @@ export type VaultRecoveryKey = {
 };
 
 /** External JSON is decoded at the boundary; no raw cast reaches a caller. */
-const statusSchema = z.object({
-  mode: z.enum(["vault", "disabled"]),
+const vaultStatusSchema = z.object({
+  mode: z.literal("vault"),
   state: z.enum(["unconfigured", "locked", "unlocked", "invalid"]),
   legacyDatabase: z.boolean(),
   recoveryKeyCount: z.number(),
@@ -54,6 +57,14 @@ const statusSchema = z.object({
   // absent on a build older than issue #141: those keep the HTTP transport
   broker: z.boolean().default(false),
 });
+
+/**
+ * Both honest answers. A build with no vault says so in one field (#341 round 7),
+ * and the boot reader has to accept that answer rather than fail its own boot on
+ * it — which is what a full-status schema did, turning a plaintext build into a
+ * retry screen.
+ */
+const statusSchema = z.union([vaultStatusSchema, z.object({ mode: z.literal("disabled") })]);
 const setupResponseSchema = z.object({
   recoveryKey: z.string().min(1),
   // the browser path carries no token in the body: the cookie is the
@@ -428,7 +439,7 @@ export async function requestVaultReclaim(): Promise<void> {
   }
 }
 
-export async function fetchVaultStatus(): Promise<VaultStatus> {
+export async function fetchVaultStatus(): Promise<VaultBootStatus> {
   // Inside the desktop shell the broker is the authoritative gate transport:
   // try it first (no secret involved) and fall back to HTTP when the shell has
   // no sidecar (dev window) or the bridge is absent (browser)
@@ -584,23 +595,38 @@ export async function revokeVaultSession(): Promise<void> {
 /** the one field a vault-less build answers, and the only one this probe reads */
 const vaultModeSchema = z.object({ mode: z.enum(["vault", "disabled"]) });
 
-export async function vaultRouteAbsent(): Promise<boolean> {
-  // A POSITIVE answer, never an inference (#341 fresh-eyes P2). A build with no
-  // vault ANSWERS `{ mode: "disabled" }`; a 404 is not evidence of one — a proxy,
-  // a renamed route and a gateway answering `{}`/`null`/HTML all produce the same
-  // bytes, and reading that as absence reloads with a live cookie.
-  //
-  // It reads the mode alone rather than through `fetchVaultStatus`, which decodes
-  // a whole vault status: a build without one has no state to report, and asking
-  // it for one would turn its honest answer into a decode failure.
+export type VaultBuildMode = "vault" | "disabled" | "unknown";
+
+/**
+ * Which kind of build is answering: one with a vault, one without, or one that
+ * could not say.
+ *
+ * A POSITIVE answer, never an inference (#341 round 7). A build with no vault
+ * ANSWERS `{ mode: "disabled" }`, and a 404 is not evidence of one — a proxy, a
+ * renamed route and a gateway answering `{}`/`null`/HTML all produce the same
+ * bytes. The third answer is new and it matters: a probe that FAILED is not the
+ * same as one that said "vault", and the sign-out has to tell them apart — it
+ * holds the page for a vault, and must not hold it for a build that has none.
+ *
+ * It reads the mode alone rather than through `fetchVaultStatus`, which decodes a
+ * whole vault status: a build without one has no state to report, and asking it
+ * for one would turn its honest answer into a decode failure.
+ */
+export async function vaultBuildMode(): Promise<VaultBuildMode> {
   try {
     const response = await fetch("/api/vault/status", { signal: AbortSignal.timeout(STATUS_PROBE_TIMEOUT_MS) });
-    if (!response.ok) return false;
+    if (!response.ok) return "unknown";
     const decoded = vaultModeSchema.safeParse(JSON.parse(await response.text()));
-    return decoded.success && decoded.data.mode === "disabled";
+    if (!decoded.success) return "unknown";
+    return decoded.data.mode === "disabled" ? "disabled" : "vault";
   } catch {
-    return false;
+    return "unknown";
   }
+}
+
+/** Whether this build has no vault at all; see `vaultBuildMode` for the thirds. */
+export async function vaultRouteAbsent(): Promise<boolean> {
+  return (await vaultBuildMode()) === "disabled";
 }
 
 /**

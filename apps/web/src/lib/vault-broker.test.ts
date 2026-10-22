@@ -274,7 +274,9 @@ describe("desktop stdin broker transport (issue #141)", () => {
     installTauri();
     responder = () => ({ ok: true, status: statusJson(true) });
     const status = await fetchVaultStatus();
-    expect(status.broker).toBe(true);
+    // a broker answer is a VAULT status: the disabled arm carries no broker flag
+    expect(status.mode).toBe("vault");
+    if (status.mode === "vault") expect(status.broker).toBe(true);
     expect(calls[0]?.command).toBe("vault_status");
     expect(httpCalls).toBe(0);
   });
@@ -285,7 +287,8 @@ describe("desktop stdin broker transport (issue #141)", () => {
       throw new Error("the sidecar was never started");
     };
     const status = await fetchVaultStatus();
-    expect(status.broker).toBe(false);
+    expect(status.mode).toBe("vault");
+    if (status.mode === "vault") expect(status.broker).toBe(false);
     expect(httpCalls).toBe(1);
   });
 });

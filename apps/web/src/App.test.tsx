@@ -514,8 +514,10 @@ describe("a session that died under a live window (#319)", () => {
     // the sign-out in storage at all. `markSignedOut()` used to write there and
     // nowhere else, swallow the throw, and leave `authLostState()` false — so a
     // mount would have reached the app for anyone at the keyboard.
-    const originalStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
-    Object.defineProperty(window, "localStorage", { configurable: true, value: blockedStorage });
+    // block the store the hold uses, or the write succeeds and the memory
+    // fallback is never exercised (#341 round 7 P2)
+    const originalStorage = Object.getOwnPropertyDescriptor(window, "sessionStorage");
+    Object.defineProperty(window, "sessionStorage", { configurable: true, value: blockedStorage });
     try {
       vaultStatusResponse = liveSession;
       storeVaultSessionToken("session-token");
@@ -526,7 +528,7 @@ describe("a session that died under a live window (#319)", () => {
       expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
       expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
     } finally {
-      if (originalStorage !== undefined) Object.defineProperty(window, "localStorage", originalStorage);
+      if (originalStorage !== undefined) Object.defineProperty(window, "sessionStorage", originalStorage);
     }
   });
 

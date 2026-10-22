@@ -1541,6 +1541,39 @@ function hasKeyword(node: ts.Node, keyword: ts.SyntaxKind): boolean {
 }
 
 /**
+ * The names one variable declaration binds, in source order.
+ *
+ * An identifier is the ordinary `const x = 1`. Everything else is a binding
+ * pattern, and a pattern binds one name per element: `const { a, b: c } = x`
+ * binds `a` and `c` — the BINDING name, not the property name —
+ * `const [first, , third] = y` binds `first` and `third` (the hole binds
+ * nothing), and `const { outer: { inner } } = z` binds `inner` because a nested
+ * pattern recurses.
+ *
+ * The pattern is the one shape whose name node is not an identifier, and reading
+ * only identifiers contributed NOTHING for it. That is how the parent's own
+ * `export const { value } = { value: 7 }` read as exporting no `value`: a stand-in
+ * was appended over the real export, and a test of the parent's behaviour failed
+ * against the shadow and was scored RIGHT-REASON-RED — a false pass.
+ *
+ * Three readers share this walk — `declaredExportNames`, `runtimeExportNames` and
+ * `topLevelBindingNames` — because they have to agree about which names a variable
+ * statement declares. The reader that decides "the parent already supplies this"
+ * and the reader that checks the mirror declares exactly that are the two halves
+ * whose disagreement is the bug, so one walk feeds all of them and they cannot
+ * drift again.
+ */
+function variableBindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  const names: string[] = [];
+  for (const element of name.elements) {
+    if (ts.isOmittedExpression(element)) continue;
+    names.push(...variableBindingNames(element.name));
+  }
+  return names;
+}
+
+/**
  * The names a module exports, sorted.
  *
  * Read from the tree twice: once for the real module and once for the mirror the
@@ -1585,7 +1618,7 @@ export function declaredExportNames(path: string, source: string): string[] {
     if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
     if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text);
+        names.push(...variableBindingNames(declaration.name));
       }
       continue;
     }
@@ -1665,7 +1698,7 @@ export function runtimeExportNames(path: string, source: string): string[] {
     if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) continue;
     if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text);
+        names.push(...variableBindingNames(declaration.name));
       }
       continue;
     }
@@ -1707,21 +1740,15 @@ export function topLevelBindingNames(path: string, source: string): string[] {
     scriptKindFor(path),
   );
   const names: string[] = [];
-  const add = (name: ts.BindingName): void => {
-    // A destructured binding (`const { a, b } = x`, `const [c] = y`) declares one
-    // name per element, and those names are top-level bindings too.
-    if (ts.isIdentifier(name)) {
-      names.push(name.text);
-      return;
-    }
-    for (const element of name.elements) {
-      if (ts.isOmittedExpression(element)) continue;
-      add(element.name);
-    }
-  };
   for (const statement of file.statements) {
     if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) add(declaration.name);
+      // A destructured binding (`const { a, b } = x`, `const [c] = y`) declares
+      // one name per element, and those names are top-level bindings too. One
+      // walk, shared with the two export readers, so the clash set and the
+      // export sets cannot disagree about what a statement declares.
+      for (const declaration of statement.declarationList.declarations) {
+        names.push(...variableBindingNames(declaration.name));
+      }
       continue;
     }
     if (ts.isImportDeclaration(statement)) {

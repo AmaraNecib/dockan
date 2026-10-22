@@ -5885,3 +5885,112 @@ describe("red-on-parent round 29 — a class and a namespace bind runtime values
     ).toEqual(["Box", "Registry"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 30 — a destructured export is a runtime name.
+//
+// A name a module exports through a DESTRUCTURING binding is a runtime export
+// like any other. Both export readers walked
+// `if (ts.isIdentifier(declaration.name))` and contributed nothing for it, so
+// the parent's own `value` read as absent, a stand-in was appended over the
+// real export, and a test of the parent's behaviour failed against the
+// stand-in — scored RIGHT-REASON-RED, a false pass.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 30 — a destructured export is a runtime name", () => {
+  const PATH = "scripts/mod.ts";
+  const BASE = `export const { value } = { value: 7 };\n`;
+
+  test("the runtime reader names an object-pattern binding's BINDING name", () => {
+    expect(runtimeExportNames(PATH, BASE)).toEqual(["value"]);
+    // The binding name, not the property name: `{ a: b }` puts `b` on the module.
+    expect(runtimeExportNames(PATH, `export const { a: b } = { a: 1 };\n`)).toEqual(["b"]);
+    // A shorthand and a rename in one pattern.
+    expect(runtimeExportNames(PATH, `export const { a, c: d } = { a: 1, c: 2 };\n`)).toEqual([
+      "a",
+      "d",
+    ]);
+  });
+
+  test("an array pattern contributes every element, and an elision contributes none", () => {
+    expect(
+      runtimeExportNames(PATH, `export const [first, , third] = [1, 2, 3] as number[];\n`),
+    ).toEqual(["first", "third"]);
+    // A nested pattern recurses: `{ outer: { inner } }` binds `inner` alone.
+    expect(
+      runtimeExportNames(PATH, `export const { outer: { inner } } = { outer: { inner: 1 } };\n`),
+    ).toEqual(["inner"]);
+  });
+
+  test("the declared reader names it too, because the hollow compares declared shapes", () => {
+    // `declaredExportNames` answers a different question — what shape the module
+    // declares — and a destructured binding declares a name on both readings. The
+    // hole was in both readers, and `hollowModuleSource` compares two answers from
+    // this one, so a divergence here is how the class of bug returns.
+    expect(declaredExportNames(PATH, BASE)).toEqual(["value"]);
+    expect(declaredExportNames(PATH, `export const { a: b } = { a: 1 };\n`)).toEqual(["b"]);
+  });
+
+  test("the binding reader and the export reader still agree on the same names", () => {
+    expect(topLevelBindingNames(PATH, BASE)).toEqual(["value"]);
+  });
+
+  test("a name the parent's star target destructures is present, so no stand-in is appended", () => {
+    // The Greptile shape at plan level. The parent's `mod.ts` re-exports `base.ts`,
+    // and `base.ts` exports `value` by destructuring; the change replaces the
+    // re-export with a plain declaration. Reading `base.ts` as exporting nothing
+    // made the planner append a stand-in over the parent's working export.
+    const plan = planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { value } from "./mod";\n`,
+      new Set([PATH]),
+      (path) => (path === PATH ? `export const value = 7;\n` : null),
+      (path) =>
+        path === PATH ? `export * from "./base";\n` : path === "scripts/base.ts" ? BASE : null,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+});
+
+describe("red-on-parent round 30 — a destructured export, end to end", () => {
+  // The false pass Greptile named. On the parent, `destr.ts` re-exports `value`
+  // from `destr-base.ts`, which exports it by destructuring. The test asserts the
+  // parent's own value, so it pins nothing the change adds and must be scored
+  // GREEN-ON-PARENT. Before the fix a stand-in was appended over the re-export,
+  // the test read `undefined`, and the gate accepted the assertion failure as a
+  // right-reason red — a test that pins nothing, scored as one that pins
+  // something.
+  const PARENT_BASE = `export const { value } = { value: 7 };\n`;
+  const PARENT = `export * from "./destr-base";\n`;
+  const CHANGE = `export const value = 7;\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { value } from "./destr";
+test("the parent's own destructured export", () => {
+  expect(value).toBe(7);
+});
+`;
+
+  test("the parent's real behaviour is rejected, not accepted on a shadow", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/destr-base.ts", text: PARENT_BASE },
+        { path: "packages/core/src/destr.ts", text: PARENT },
+      ],
+      [
+        { path: "packages/core/src/destr.ts", text: CHANGE },
+        { path: "packages/core/src/destr-shadow.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("appended stand-in");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});

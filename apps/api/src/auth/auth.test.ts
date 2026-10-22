@@ -216,8 +216,16 @@ describe("authTrustedOrigins (#347)", () => {
   // the loopback gate is the whole safety property: a remote API must not gain an
   // origin because a dev variable happens to be set
   it("adds the dev origin only for a loopback API", () => {
-    expect(authTrustedOrigins(configWithHost("127.0.0.1"), { DOKAN_WEB_PORT: "5173" })).toEqual(["http://127.0.0.1:5173"]);
-    expect(authTrustedOrigins(configWithHost("localhost"), { DOKAN_WEB_PORT: "5173" })).toEqual(["http://localhost:5173"]);
+    // BOTH loopback spellings: the dev webview loads `localhost` while the API
+    // defaults to `127.0.0.1`, and a single spelling refused the desktop window
+    expect(authTrustedOrigins(configWithHost("127.0.0.1"), { DOKAN_WEB_PORT: "5173" })).toEqual([
+      "http://127.0.0.1:5173",
+      "http://localhost:5173",
+    ]);
+    expect(authTrustedOrigins(configWithHost("localhost"), { DOKAN_WEB_PORT: "5173" })).toEqual([
+      "http://127.0.0.1:5173",
+      "http://localhost:5173",
+    ]);
     // a remote API adds nothing, whatever the env says
     expect(authTrustedOrigins(configWithHost("10.0.0.5"), { DOKAN_WEB_PORT: "5173" })).toEqual([]);
   });
@@ -237,6 +245,6 @@ describe("authTrustedOrigins (#347)", () => {
         DOKAN_TRUSTED_ORIGINS: "https://shop.example",
         DOKAN_WEB_PORT: "5471",
       }),
-    ).toEqual(["https://shop.example", "http://127.0.0.1:5471"]);
+    ).toEqual(["https://shop.example", "http://127.0.0.1:5471", "http://localhost:5471"]);
   });
 });

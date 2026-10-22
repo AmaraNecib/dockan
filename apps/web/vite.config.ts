@@ -49,7 +49,11 @@ export default defineConfig({
     // so the waiting client is not left pointing at a port nobody listens on.
     host: "127.0.0.1",
     port: Number(process.env.DOKAN_WEB_PORT ?? 5173),
-    strictPort: process.env.DOKAN_WEB_PORT !== undefined,
+    // A trusted origin names ONE port (#347): better-auth accepts cookie-bearing
+    // writes only from it, so a silent fallback to 5174 would let a developer sign
+    // in and not out. Fail loudly instead — an occupied port is a thing to fix,
+    // not a thing to move around.
+    strictPort: true,
     // same-origin API: the webview never talks to the Bun api directly,
     // so auth cookies stay same-origin and no CORS config is needed
     proxy: {

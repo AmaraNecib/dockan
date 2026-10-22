@@ -44,12 +44,18 @@ export function authTrustedOrigins(config: AppConfig, env: Record<string, string
 
   // The dev server's origin, and only on a loopback API: a packaged sidecar is
   // same-origin with the web it serves, so it needs nothing here. When it IS a
-  // loopback API, the entry is inert for access — both ends are 127.0.0.1 — and
-  // it is what lets a developer sign out through the vite proxy at all.
+  // loopback API the entry is inert for access — every spelling below is loopback
+  // — and it is what lets a developer sign out through the vite proxy at all.
+  //
+  // EVERY loopback spelling, not just the API's own (#356 review): the webview
+  // loads `http://localhost:5173` while the API defaults to `127.0.0.1`, and a
+  // trusted list that only carried the API's spelling still refused the desktop
+  // window's sign-out. These are the same machine twice, never a wider trust.
   if (!isLoopbackHostname(config.host)) return configured;
   const webPort = Number(env.DOKAN_WEB_PORT ?? 5173);
   if (!Number.isInteger(webPort) || webPort <= 0) return configured;
-  return [...configured, `http://${config.host}:${webPort}`];
+  const loopbackSpellings = ["127.0.0.1", "localhost"];
+  return [...configured, ...loopbackSpellings.map((host) => `http://${host}:${webPort}`)];
 }
 
 /** loopback by literal address, not by name resolution: no DNS in an auth check */

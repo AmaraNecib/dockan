@@ -158,15 +158,25 @@ test("a sign-out through the dev proxy ends the session", async ({ page }) => {
   expect(liveBefore.status()).toBe(200);
   expect(await liveBefore.text()).toContain(OWNER_PHONE.replace(/^213/, ""));
 
+  // the session cookie is saved BEFORE the sign-out so it can be replayed after:
+  // the jar dropping a cookie would make the check below return null on its own,
+  // even if the server still honoured the old session (#356 review P2)
+  const sessionCookie = (await page.context().cookies()).find((cookie) => cookie.name.includes("session"));
+  expect(sessionCookie).toBeDefined();
+  if (sessionCookie === undefined) throw new Error("no session cookie after sign-in");
+
   // the same request shape the app sends, with the page's own origin
   const signedOut = await page.request.post("/api/auth/sign-out", {
     headers: { origin, "content-type": "application/json" },
   });
   expect(signedOut.status()).toBe(200);
 
-  const deadAfter = await page.request.get("/api/auth/get-session");
-  expect(deadAfter.status()).toBe(200);
-  expect((await deadAfter.text()).trim()).toBe("null");
+  // replayed with the OLD cookie and no jar: the server must refuse it
+  const replay = await page.request.get("/api/auth/get-session", {
+    headers: { cookie: `${sessionCookie.name}=${sessionCookie.value}` },
+  });
+  expect(replay.status()).toBe(200);
+  expect((await replay.text()).trim()).toBe("null");
 });
 
 /**

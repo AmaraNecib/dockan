@@ -281,6 +281,9 @@ console.log(secret);
     // the same cookie is still valid on the copy, because the secret travelled
     const copyAuth = createAuth(copyConn.db, copyConfig, copiedSecret);
     const session = await copyAuth.api.getSession({ headers: new Headers({ cookie }) });
-    expect(session?.user.username).toBe("213550123123");
+    // SAFETY: the username plugin adds `username` to the user row at runtime, but
+    // better-auth 1.7.12's session response type carries only the core fields
+    // (id/name/email/emailVerified/image), so the compiler cannot see it
+    expect((session?.user as { username?: string } | undefined)?.username).toBe("213550123123");
   });
 });

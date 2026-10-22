@@ -998,6 +998,60 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
   };
 
   /**
+   * #362 / better-auth 1.7.12 — the `user` table gains `email` and
+   * `emailVerified`, the two columns that version's schema check requires before
+   * it will serve one request. SCHEMA_DDL creates a fresh vault in that shape;
+   * this adds them to a vault created before the bump, so an existing file keeps
+   * working instead of failing its first auth call with SCHEMA_MISMATCH.
+   *
+   * Additive and idempotent, like every other column step here: PRAGMA-guarded
+   * ALTERs, no row rewritten, no version restamp (setup() stamps once at the
+   * end). The UNIQUE index is separate because `ALTER TABLE ... ADD COLUMN` in
+   * SQLite cannot carry a table constraint.
+   */
+  const ensureUserAuthColumns = (): void => {
+    // The probe and the ALTERs run inside ONE write-locked unit, so two processes
+    // booting the same file cannot both see "column missing" and the loser cannot
+    // abort setup on "duplicate column name" (the dedup_key pattern above). Every
+    // existing v6 vault hits this on its first v7 boot, so the window is hot.
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+      const rows = conn.raw.query("PRAGMA table_info(user)").all() as Array<{ name: string }>;
+      if (rows.length === 0) {
+        conn.raw.exec("COMMIT"); // fresh db: SCHEMA_DDL creates the whole shape
+        return;
+      }
+      const names = new Set(rows.map((row) => row.name));
+      let upgraded = false;
+      if (!names.has("email")) {
+        conn.raw.exec("ALTER TABLE user ADD COLUMN email TEXT");
+        upgraded = true;
+      }
+      if (!names.has("emailVerified")) {
+        conn.raw.exec("ALTER TABLE user ADD COLUMN emailVerified INTEGER NOT NULL DEFAULT 0");
+        upgraded = true;
+      }
+      // Only a table we just upgraded needs the standalone index: SCHEMA_DDL
+      // declares `email TEXT UNIQUE`, whose auto-index SQLite creates itself, so
+      // creating this one as well would leave a fresh vault with two unique
+      // indexes on the same column after its second boot.
+      //
+      // SQLite treats NULLs as distinct in a unique index, so email-less owner
+      // rows do not collide while a repeated non-null email is refused.
+      if (upgraded) conn.raw.exec("CREATE UNIQUE INDEX IF NOT EXISTS user_email_unique ON user(email)");
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      try {
+        conn.raw.exec("ROLLBACK");
+      } catch {
+        /* the unit never opened a write */
+      }
+      throw error;
+    }
+  };
+
+  /**
    * Ticket 01 created auth tables with snake_case columns. Those tables were
    * empty before Better Auth was introduced, so rebuild that legacy shape
    * before the current DDL runs; CREATE TABLE IF NOT EXISTS cannot rename or
@@ -1301,6 +1355,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    */
   async function setup(): Promise<void> {
     rebuildLegacyAuthTables();
+    ensureUserAuthColumns();
     ensureItemsBarcodeColumn();
     ensureStockMovementsReturnMarkColumn();
     ensureSupplierAdjustmentDirectionColumn();

@@ -46,6 +46,8 @@ they no longer have to be serialized across lanes (#202).
 
 ## Lanes
 
+**Heavy work goes through the queue.** A full test suite, `test:e2e`, a build or a browser agent takes a slot: `bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`. Light work — one test file, lint, typecheck — runs directly and does not take a slot.
+
 **Mechanism: a child agent with its own worktree, by default.** `delegate_task` with
 `isolation: "worktree"` checks out the work from the parent's local commit, runs project setup,
 and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,

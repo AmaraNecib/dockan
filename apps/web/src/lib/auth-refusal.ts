@@ -13,10 +13,11 @@ import { AUTH_REFUSAL } from "@dokan/contracts";
  * - a REFUSAL is a moment. It is module state, it can be transient (a query in
  *   flight across another window's rotation), and a live session is allowed to
  *   take it back.
- * - a SIGN-OUT the server could not confirm is a decision. It is persisted, so
- *   a reload cannot undo it (round-4 P1): the revoke failed, the `HttpOnly`
- *   cookie is still live, and the next page load would otherwise find
- *   `status.session` true and mount the app — the shared-machine failure
+ * - a SIGN-OUT the server could not confirm is a decision. It is held in this
+ *   page's memory AND persisted, so neither a reload nor a storage that refuses
+ *   every call can undo it (round-4 P1, round-6 finding 1): the revoke failed,
+ *   the `HttpOnly` cookie is still live, and the next page load would otherwise
+ *   find `status.session` true and mount the app — the shared-machine failure
  *   `logout.ts` exists to prevent.
  */
 
@@ -40,13 +41,30 @@ export { AUTH_REFUSAL };
  */
 export const SIGNED_OUT_STORAGE_KEY = "dokan.auth.signed-out";
 
+/**
+ * The unconfirmed sign-out held in THIS page's memory, beside the persisted
+ * one and not a cache of it.
+ *
+ * It is the half that a profile with a full quota, a blocked storage or a
+ * partitioned store still gets (round-6 finding 1). Without it the hold existed
+ * only in `localStorage`, so on such a profile `markSignedOut()` threw, the
+ * throw was swallowed as best-effort, and `authLostState()` answered `false`
+ * while the revoke had never been confirmed — `logoutAndReload()` returned
+ * without reloading and without hiding the still-authenticated app. A comment
+ * here claimed this flag existed; now it does.
+ *
+ * Set BEFORE the storage write and cleared only by `clearAuthLost()`, so the
+ * hold cannot be lost between the two.
+ */
+let signedOutLost = false;
+
 /** Whether the last sign-out could not be confirmed, read fresh every time. */
 function signedOutRemembered(): boolean {
   try {
     return window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY) === "1";
   } catch {
-    // a profile that refuses storage cannot persist the hold; the module keeps
-    // the refusal in memory either way, and a throw here would take the app down
+    // a profile that refuses storage cannot persist the hold; `signedOutLost`
+    // holds it for this page either way, and a throw here would take the app down
     return false;
   }
 }
@@ -81,7 +99,9 @@ function notify(): void {
  * its very first render — the whole point of persisting it.
  */
 function authLostState(): false | "refusal" | "signed-out" {
-  if (signedOutRemembered()) return "signed-out";
+  // memory first: it is the only copy on a profile whose storage throws, and it
+  // is never absent when the persisted one is present
+  if (signedOutLost || signedOutRemembered()) return "signed-out";
   return refusalLost ? "refusal" : false;
 }
 
@@ -117,6 +137,11 @@ export function markAuthLost(): void {
  */
 export function markSignedOut(): void {
   const alreadyHeld = authLostState() === "signed-out";
+  // MEMORY BEFORE STORAGE: `rememberSignedOut` is best-effort by design, so a
+  // storage that throws must cost the reload survival and nothing else. Held the
+  // other way round, a refused write left the gate down on a cookie the server
+  // never dropped (round-6 finding 1).
+  signedOutLost = true;
   rememberSignedOut();
   if (alreadyHeld) return;
   notify();
@@ -140,6 +165,7 @@ export function recoverAuthLost(): void {
 export function clearAuthLost(): void {
   const wasHeld = authLostState() !== false;
   refusalLost = false;
+  signedOutLost = false;
   forgetSignedOut();
   if (wasHeld) notify();
 }
@@ -149,10 +175,6 @@ function subscribe(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
-}
-
-function getSnapshot(): boolean {
-  return authLostState() !== false;
 }
 
 /**
@@ -165,7 +187,16 @@ export function authLossReason(): "refusal" | "signed-out" | undefined {
   return reason === false ? undefined : reason;
 }
 
-/** Whether the session is gone and the unlock screen must take over. */
-export function useAuthLost(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+/**
+ * Whether the session is gone and the unlock screen must take over, and why.
+ *
+ * One hook rather than a boolean plus a separate read, because every caller that
+ * needs the screen also needs the REASON (round-6 finding 3): only a refusal may
+ * be taken back by a live session, so a listener that re-reads the shared
+ * session has to know which reason is up, not merely that one is. Adding a
+ * second `useAuthLost()` beside it invited exactly that bug, so it was removed
+ * rather than left as a wider way to ask the same question.
+ */
+export function useAuthLossReason(): "refusal" | "signed-out" | undefined {
+  return useSyncExternalStore(subscribe, authLossReason, authLossReason);
 }

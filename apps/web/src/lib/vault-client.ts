@@ -559,40 +559,6 @@ export async function revokeVaultSession(): Promise<void> {
 }
 
 /**
- * The refusals that name the ABSENCE of a vault session in the code itself, in
- * the one case a code can say it: the API's own envelope, stating there is no
- * live session to revoke (#319 round 4).
- *
- * `VAULT_UNSUPPORTED` is deliberately NOT here (#319 round 5). The web infers
- * it from "a 404 whose body carried no envelope", which is a guess about the
- * route rather than a statement from it; see `vaultRouteAbsent`.
- */
-const ABSENT_SESSION_CODES = new Set<string>(["VAULT_NOT_UNLOCKED"]);
-
-/**
- * Whether a failed vault call said, in its own code, that the server holds no
- * session to revoke — the one condition under which the page's own clear is the
- * whole credential and a reload is safe.
- *
- * `VAULT_NOT_UNLOCKED` says so by itself: it is the API's envelope and it
- * states that there is nothing there to revoke.
- *
- * `VAULT_UNSUPPORTED` does NOT, and that is the round-5 finding. The code means
- * "a 404 whose body did not parse into an envelope", and any hop can produce
- * that: a proxy that never forwards `/api/vault/logout`, a renamed route, a
- * gateway answering `{}`, `null` or an HTML error page. Reading it as absence
- * RELOADS, and with a live cookie that walks the owner straight back into the
- * app — the round-4 defect re-entering through a guess. So the absence question
- * is asked of the build instead, by `vaultRouteAbsent`.
- *
- * Takes an `Error`, not the `unknown` a `catch` hands back: narrowing that
- * happens at the call site, where the throw actually was.
- */
-export function isAbsentVaultSession(error: Error): boolean {
-  return error instanceof VaultRequestError && ABSENT_SESSION_CODES.has(error.code);
-}
-
-/**
  * Whether this build mounts no vault route at all, asked of the build rather
  * than inferred from one hop's 404.
  *
@@ -601,6 +567,19 @@ export function isAbsentVaultSession(error: Error): boolean {
  * `mode: "vault"`, and anything it says other than "no such route" leaves the
  * question unanswered — an unreachable server or a lock refusal is not an
  * absent vault, so the caller keeps the failing-closed answer.
+ *
+ * This is the ONLY absence the sign-out accepts, and both halves of that are
+ * deliberate (#319 round 5, round 6):
+ *
+ * - `VAULT_UNSUPPORTED` — "a 404 whose body did not parse into an envelope" —
+ *   is a guess about one hop, and any proxy, renamed route or gateway answering
+ *   `{}`/`null`/HTML produces it. Reading it as absence RELOADS, and with a live
+ *   cookie that walks the owner straight back into the app.
+ * - `VAULT_NOT_UNLOCKED` is not a proof either: the API answers it for an OLD
+ *   token as readily as for no session at all, so a logout carrying a cookie
+ *   another window already rotated reads as "nothing to revoke" while a live
+ *   session exists. `isAbsentVaultSession` read exactly that way and was
+ *   deleted with the round-6 finding rather than left as a trap.
  */
 export async function vaultRouteAbsent(): Promise<boolean> {
   try {

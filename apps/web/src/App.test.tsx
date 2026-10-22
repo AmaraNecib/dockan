@@ -463,6 +463,164 @@ describe("a session that died under a live window (#319)", () => {
     expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
   });
 
+  /** A status answer from a live server: THIS request's credential is the session. */
+  const liveSession = async (): Promise<Response> =>
+    Response.json({
+      mode: "vault",
+      state: "unlocked",
+      legacyDatabase: false,
+      recoveryKeyCount: 1,
+      lockedForMs: 0,
+      unlocked: true,
+      session: true,
+    });
+
+  /** A profile whose storage refuses every call: a full quota, or a blocked store. */
+  const blockedStorage: Storage = {
+    get length(): number {
+      throw new Error("storage is blocked");
+    },
+    clear: () => {
+      throw new Error("storage is blocked");
+    },
+    getItem: () => {
+      throw new Error("storage is blocked");
+    },
+    key: () => {
+      throw new Error("storage is blocked");
+    },
+    removeItem: () => {
+      throw new Error("storage is blocked");
+    },
+    setItem: () => {
+      throw new Error("storage is blocked");
+    },
+  };
+
+  /** Poll the host until `selector` renders, the way every mount here does. */
+  async function waitForSelector(host: HTMLElement, selector: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (host.querySelector(selector) !== null) return true;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    return host.querySelector(selector) !== null;
+  }
+
+  it("holds the gate on a profile whose storage refuses every call (round-6 finding 1)", async () => {
+    // The dangerous case, exactly: the revoke was never confirmed, so the vault
+    // cookie is still live (`session: true`), and this profile cannot remember
+    // the sign-out in storage at all. `markSignedOut()` used to write there and
+    // nowhere else, swallow the throw, and leave `authLostState()` false — so a
+    // mount would have reached the app for anyone at the keyboard.
+    const originalStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", { configurable: true, value: blockedStorage });
+    try {
+      vaultStatusResponse = liveSession;
+      storeVaultSessionToken("session-token");
+      await act(async () => {
+        markSignedOut();
+      });
+      const host = await mountAuthGateFor('[data-testid="vault-passphrase"]', <div data-testid="owner-content" />);
+      expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+    } finally {
+      if (originalStorage !== undefined) Object.defineProperty(window, "localStorage", originalStorage);
+    }
+  });
+
+  it("re-checks the shared session when the window comes back, so a sibling's unlock frees it (round-6 finding 3)", async () => {
+    // Two windows share one cookie. Here window A is gated after a refusal; the
+    // one probe answered "not this credential"; then window B unlocks (a
+    // rotation) and the jar holds a live cookie for both. Nothing else looks:
+    // the flag clears only through THIS window's `onUnlocked`, which is a
+    // passphrase the owner does not owe.
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+    const statusReads = (): number => vaultCalls.filter((call) => call === "GET /api/vault/status").length;
+
+    vaultStatusResponse = deadSession;
+    const readsBefore = statusReads();
+    await act(async () => {
+      markAuthLost();
+    });
+    expect(await waitForSelector(host, '[data-testid="vault-passphrase"]')).toBe(true);
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+    // the one probe ran, and its answer was dead: the gate is where this stalls
+    for (let attempt = 0; attempt < 50 && statusReads() === readsBefore; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(statusReads()).toBeGreaterThan(readsBefore);
+
+    // the sibling unlocked, which replaced the cookie in the shared jar
+    vaultStatusResponse = liveSession;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(await waitForSelector(host, '[data-testid="owner-content"]')).toBe(true);
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
+    // and nothing rotated it: the recovery is a status read, never an unlock
+    expect(vaultCalls).not.toContain("POST /api/vault/unlock");
+  });
+
+  it("closes the probe/cookie race: a false answer, then the replaced cookie, then focus (round-6 finding 4)", async () => {
+    // The ordering is the finding, so the test holds it one step at a time.
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+
+    // 1. refused: another window rotated the token while this one carried the old
+    //    cookie, and the probe that follows left with that same old cookie
+    vaultStatusResponse = deadSession;
+    await act(async () => {
+      markAuthLost();
+    });
+    expect(await waitForSelector(host, '[data-testid="vault-passphrase"]')).toBe(true);
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+
+    // 2. and only NOW does the sibling's reply install the replacement cookie.
+    //    The gate stays up because nothing looks again — that is the whole
+    //    defect — so a wait longer than any probe interval must not move it.
+    vaultStatusResponse = liveSession;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+
+    // 3. the owner comes back to this window: the re-check reads the live cookie
+    //    and the gate comes down. One read per focus, and never a poll — the
+    //    step above is what proves the timer does not exist.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(await waitForSelector(host, '[data-testid="owner-content"]')).toBe(true);
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).toBeNull();
+  });
+
+  it("a sign-out the server never confirmed is not demoted by the focus re-check (round-6 finding 3)", async () => {
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    await act(async () => {
+      markSignedOut();
+    });
+    expect(await waitForSelector(host, '[data-testid="vault-passphrase"]')).toBe(true);
+
+    // the server still reports this request's credential as LIVE (the mount
+    // fixture is `session: true`), and the owner now looks at the window again
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
+    // a live cookie does not undo a logout: only the owner's own unlock may
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-content"]')).toBeNull();
+  });
+
   it("lands on the unlock screen, and the owner's unlock comes back into the app", async () => {
     const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
     expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();

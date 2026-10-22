@@ -8,16 +8,28 @@ import { AuthErrorAlert, authFieldKey, useAuthReporter } from "./lib/auth-errors
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
-import { readVaultSessionToken, requestVaultReclaim } from "./lib/vault-client";
+import { readVaultSessionToken, requestVaultReclaim, type VaultStatus } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
-import { clearAuthLost, recoverAuthLost, useAuthLost } from "./lib/auth-refusal";
+import { clearAuthLost, recoverAuthLost, useAuthLossReason } from "./lib/auth-refusal";
 import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY, onPreferenceWriteSettled } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
 /** The longest accepted login name: "+213550123123". */
 const PHONE_MAX_LENGTH = 13;
+
+/**
+ * Whether a status answer says THIS request's credential is the live session.
+ *
+ * One predicate for both readers of the answer — the one probe after a refusal
+ * and the re-check on focus — so they cannot disagree about what "live" means.
+ * Broker mode is never a live answer here: its token lives in this page, and a
+ * token the server refused cannot become live again by being asked.
+ */
+function isLiveSessionAnswer(fresh: VaultStatus | undefined): boolean {
+  return fresh !== undefined && fresh.mode === "vault" && !fresh.broker && fresh.session;
+}
 
 /**
  * The setup name rules (`firstTimeSetupInputSchema`: `z.string().trim().min(1)`),
@@ -46,7 +58,8 @@ export function RequireSession({ children }: { children: ReactNode }) {
    * no vault route, `logout.ts` treats the local clear as the whole credential
    * and reloads (#319 round 5 P3).
    */
-  const authLost = useAuthLost();
+  const authLoss = useAuthLossReason();
+  const authLost = authLoss !== undefined;
   /**
    * The in-use screen's retry asks the refused instance to re-check the folder
    * before it re-reads the status (#277). Only the button does this: a poll is
@@ -96,9 +109,51 @@ export function RequireSession({ children }: { children: ReactNode }) {
     void vault.refresh().then((fresh) => {
       // `recoverAuthLost`, not `clearAuthLost`: a sign-out the server never
       // confirmed is not undone by a live cookie (see auth-refusal.ts).
-      if (fresh !== undefined && fresh.mode === "vault" && !fresh.broker && fresh.session) recoverAuthLost();
+      if (isLiveSessionAnswer(fresh)) recoverAuthLost();
     });
   }, [authLost, vault.refresh]);
+  /**
+   * The ONE probe per episode above is answered once, and that is the round-6
+   * finding (3 and 4): two windows share one cookie, and the probe can lose the
+   * race for it. Window B rotates the token; window A's next call is refused; A's
+   * probe leaves with the OLD cookie and reads `session: false` — and only then
+   * does B's reply install the replacement in the shared jar. A holds a working
+   * credential and sits on the gate, because nothing looks again.
+   *
+   * So while the screen is up for a REFUSAL, re-check when the window becomes
+   * visible again (focus, or a tab switch back). That is the cheapest shared
+   * signal a browser gives two windows, it needs no channel of our own, and the
+   * ordering above is exactly what it closes: probe said false, cookie was then
+   * replaced, the owner comes back to this window, the next read says live.
+   *
+   * Bounded, and by construction rather than by a counter: a listener is not a
+   * timer, so a real refusal costs one read per time the owner looks at the
+   * window and never a poll — the app is not the caller's rate (the same rule
+   * greptile P2 on #298 set for the reclaim tick). A read already in flight is
+   * not stacked on. And it cannot demote a sign-out: the effect is attached only
+   * for `"refusal"`, and `recoverAuthLost()` refuses every other reason anyway.
+   */
+  const recheckInFlightRef = useRef(false);
+  useEffect(() => {
+    if (authLoss !== "refusal") return;
+    const recheck = (): void => {
+      // `visibilitychange` fires for a hidden page too, and a page nobody is
+      // looking at is not where a refusal gets resolved
+      if (document.visibilityState === "hidden") return;
+      if (recheckInFlightRef.current) return;
+      recheckInFlightRef.current = true;
+      void vault.refresh().then((fresh) => {
+        recheckInFlightRef.current = false;
+        if (isLiveSessionAnswer(fresh)) recoverAuthLost();
+      });
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [authLoss, vault.refresh]);
   // The vault gate owns the first paint: no app route exists until the
   // encrypted store is open (ADR-0008 §4.6).
   if (vault.status !== undefined && vault.status.mode === "vault") {

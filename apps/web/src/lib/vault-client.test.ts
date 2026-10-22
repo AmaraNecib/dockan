@@ -4,7 +4,6 @@ import {
   changeVaultPassphrase,
   clearVaultSessionToken,
   fetchVaultStatus,
-  isAbsentVaultSession,
   isVaultPassphraseLongEnough,
   readVaultSessionToken,
   removeRecoveryKey,
@@ -78,7 +77,6 @@ describe("a vault route this build does not have (round-4 P1)", () => {
       if (error instanceof VaultRequestError) expect(error.code).toBe("VAULT_UNSUPPORTED");
       // ... and the code alone is a GUESS about one hop, not a statement about
       // the build: the absence question is asked of the status route
-      if (error instanceof Error) expect(isAbsentVaultSession(error)).toBe(false);
       expect(await vaultRouteAbsent()).toBe(true);
     }
 
@@ -108,7 +106,10 @@ describe("a vault route this build does not have (round-4 P1)", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(VaultRequestError);
       if (error instanceof VaultRequestError) expect(error.code).toBe("VAULT_RECOVERY_NOT_FOUND");
-      if (error instanceof Error) expect(isAbsentVaultSession(error)).toBe(false);
+      // the build answers the status route, so it is not absent either: a 404
+      // that names its own cause is a refusal, never a missing vault
+      routes.set("/api/vault/status", () => Response.json(vaultStatusBody));
+      expect(await vaultRouteAbsent()).toBe(false);
     }
   });
 
@@ -126,7 +127,26 @@ describe("a vault route this build does not have (round-4 P1)", () => {
     }
     expect(failure).toBeInstanceOf(VaultRequestError);
     if (failure === undefined) throw new Error("expected a refusal");
-    expect(isAbsentVaultSession(failure)).toBe(false);
+    expect(await vaultRouteAbsent()).toBe(false);
+  });
+
+  it("a revoke that says VAULT_NOT_UNLOCKED is not absence, because the build is what answers (round 6)", async () => {
+    // The API answers `VAULT_NOT_UNLOCKED` for an OLD token as readily as for no
+    // session at all, so a revoke carrying that code proves nothing about whether
+    // a live cookie exists — and an old token is what logout carries the moment
+    // another window rotates the cookie. There is therefore no code-level
+    // absence any more (`isAbsentVaultSession` was deleted with the finding); the
+    // only absence is `vaultRouteAbsent`, and a mounted build never has it.
+    routes.set("/api/vault/logout", () => Response.json({ error: { code: "VAULT_NOT_UNLOCKED" } }, { status: 401 }));
+    routes.set("/api/vault/status", () => Response.json(vaultStatusBody));
+    let failure: Error | undefined;
+    try {
+      await revokeVaultSession();
+    } catch (error) {
+      if (error instanceof Error) failure = error;
+    }
+    expect(failure).toBeInstanceOf(VaultRequestError);
+    if (failure instanceof VaultRequestError) expect(failure.code).toBe("VAULT_NOT_UNLOCKED");
     expect(await vaultRouteAbsent()).toBe(false);
   });
 
@@ -141,7 +161,6 @@ describe("a vault route this build does not have (round-4 P1)", () => {
       if (error instanceof Error) failure = error;
     }
     if (failure === undefined) throw new Error("expected a refusal");
-    expect(isAbsentVaultSession(failure)).toBe(false);
     // a status route that refuses is not "no vault route": the answer that
     // cannot log anyone back in stands
     expect(await vaultRouteAbsent()).toBe(false);

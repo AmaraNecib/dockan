@@ -179,15 +179,28 @@ describe("logoutAndReload", () => {
     expect(authLossReason()).toBeUndefined();
   });
 
-  it("reloads when the vault has no session to revoke (round-4 P1)", async () => {
+  it("holds the page when the revoke says VAULT_NOT_UNLOCKED and the vault is mounted (round 6)", async () => {
+    // `VAULT_NOT_UNLOCKED` is NOT proof that there is nothing to revoke: the API
+    // answers it for an OLD token as readily as for no session at all, and an
+    // old token is exactly what logout carries after another window rotated the
+    // cookie. The earlier version read that 401 as `absent` and RELOADED, which
+    // put the replacement cookie into the shared jar and landed the page back in
+    // the app — the round-4 defect, still open under a code that looked like a
+    // statement. So the revoke hop's own code decides nothing; the build does.
     globalThis.fetch = Object.assign(
-      async (): Promise<Response> => Response.json({ error: { code: "VAULT_NOT_UNLOCKED" } }, { status: 401 }),
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const path = new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname;
+        if (path === "/api/vault/logout") return Response.json({ error: { code: "VAULT_NOT_UNLOCKED" } }, { status: 401 });
+        if (path === "/api/vault/status") return Response.json(vaultStatusBody);
+        return new Response("not found", { status: 404 });
+      },
       { preconnect: originalFetch.preconnect },
     );
     storeVaultSessionToken("vault-session-token");
     await logoutAndReload(async () => null);
-    expect(reloads).toBe(1);
-    expect(authLossReason()).toBeUndefined();
+    // no reload, and the hold is its own reason: a live cookie must not undo it
+    expect(reloads).toBe(0);
+    expect(authLossReason()).toBe("signed-out");
   });
 
   it("remembers the unconfirmed sign-out across a reload, and remembers nothing else (round-4 P1)", async () => {

@@ -1,4 +1,4 @@
-import { clearVaultSessionToken, isAbsentVaultSession, revokeVaultSession, vaultRouteAbsent } from "./vault-client";
+import { clearVaultSessionToken, revokeVaultSession, vaultRouteAbsent } from "./vault-client";
 import { markSignedOut } from "./auth-refusal";
 import { brokerAvailable, brokerCommands, invokeBrokerVoid } from "./vault-broker";
 
@@ -9,8 +9,10 @@ export type SignOutResult = { data: unknown } | null | undefined;
  * What the revoke established about the server's copy of the credential.
  *
  * - `revoked` — the server confirmed it dropped the session.
- * - `absent` — there was nothing to revoke: the server holds no session, or this
- *   build has no vault routes at all. The local clear WAS the whole credential.
+ * - `absent` — there is no vault credential for a reload to walk back in with:
+ *   this build mounts no vault route at all. The local clear WAS the whole
+ *   credential. NOTE the narrowness: absence is not "the revoke said there was
+ *   nothing to revoke" (see `revokeOutcome`).
  * - `unconfirmed` — a vault may still accept a live cookie. Only this one means
  *   the reload would walk back into the app.
  */
@@ -26,15 +28,15 @@ async function revokeOutcome(): Promise<RevokeOutcome> {
     // route at all, so a sign-out the server never even saw held the page and
     // left the app mounted on a session that was already gone.
     if (!(error instanceof Error)) return "unconfirmed";
-    // the API's own envelope: there is no live session to revoke
-    if (isAbsentVaultSession(error)) return "absent";
-    // Everything else is a revoke the server never confirmed — a 404 a proxy
-    // produced, a 5xx, a 200 whose body is not an envelope. Whether that may
-    // hold the page depends on whether a VAULT COOKIE exists to walk back in
-    // with, so ask the build rather than guess from the failing hop (#319 round
-    // 5, both halves): a mounted vault build answers the status route, and the
-    // hold stands; a build with no vault route has no vault cookie, so the local
-    // clear was the whole credential and the page reloads.
+    // ABSENCE IS ASKED OF THE BUILD, NEVER READ OFF THIS CALL (round-6 finding
+    // 2). `VAULT_NOT_UNLOCKED` used to count as "nothing to revoke" here, and it
+    // is not that: the API answers it for an OLD token as readily as for no
+    // session at all. Another window rotating the token is exactly how logout
+    // comes to carry the old cookie — and reading that 401 as absence skipped
+    // `markSignedOut()` and RELOADED, which put the replacement cookie into the
+    // shared jar and landed the page back in the app. So the revoke hop's own
+    // code decides nothing; whether a vault cookie can walk back in is the
+    // status route's answer, and it is the same read the gate makes on boot.
     return (await vaultRouteAbsent()) ? "absent" : "unconfirmed";
   }
 }

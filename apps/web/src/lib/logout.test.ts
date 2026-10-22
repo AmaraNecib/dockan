@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { logoutAndReload } from "./logout";
 import { SIGNED_OUT_STORAGE_KEY, authLossReason, clearAuthLost, recoverAuthLost } from "./auth-refusal";
-import { clearVaultSessionToken, readVaultSessionToken, storeVaultSessionToken } from "./vault-client";
+import { clearVaultSessionToken, noteVaultMode, readVaultSessionToken, storeVaultSessionToken } from "./vault-client";
 
 let reloads = 0;
 let revokeCalls = 0;
@@ -23,6 +23,8 @@ const vaultStatusBody = {
 } as const;
 
 beforeEach(() => {
+  // `observedVaultMode` is module state: a previous case must not decide this one
+  noteVaultMode("vault");
   reloads = 0;
   revokeCalls = 0;
   revokeHeaders = null;
@@ -74,6 +76,41 @@ describe("logoutAndReload", () => {
     expect(tokenWhenSignOutRan).toBeUndefined();
     expect(readVaultSessionToken()).toBeUndefined();
     expect(reloads).toBe(1);
+  });
+
+  it("holds when the build probe cannot answer, because a failed probe is not absence (#341 round 8)", async () => {
+    // A logout 404 plus a status hop that FAILS is indistinguishable from a proxy
+    // dying mid-sign-out. Reading it as absence reloaded with a live cookie and
+    // reopened the app (#341 round 8 P1), so `unknown` is unconfirmed now.
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const path = new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname;
+        if (path === "/api/vault/logout") return new Response("not found", { status: 404 });
+        throw new Error("the status hop is gone");
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    storeVaultSessionToken("vault-session-token");
+    await logoutAndReload(async () => null);
+    expect(reloads).toBe(0);
+    expect(authLossReason()).toBe("signed-out");
+  });
+
+  it("reloads a build the page has already SEEN has no vault, without probing (#341 round 8)", async () => {
+    // the mode was learned at boot; asking again at sign-out only adds a way to fail
+    noteVaultMode("disabled");
+    let probed = false;
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const path = new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname;
+        if (path === "/api/vault/status") probed = true;
+        return new Response("not found", { status: 404 });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    await logoutAndReload(async () => null);
+    expect(reloads).toBe(1);
+    expect(probed).toBe(false);
   });
 
   it("does NOT reload when the revoke failed: the cookie would walk back in (#319 review)", async () => {

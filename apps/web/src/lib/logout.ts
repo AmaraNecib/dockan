@@ -1,4 +1,4 @@
-import { clearVaultSessionToken, revokeVaultSession, vaultBuildMode, VaultRequestError } from "./vault-client";
+import { clearVaultSessionToken, observedVaultModeNow, revokeVaultSession, vaultBuildMode } from "./vault-client";
 import { markSignedOut } from "./auth-refusal";
 import { brokerAvailable, brokerCommands, invokeBrokerVoid } from "./vault-broker";
 
@@ -53,10 +53,18 @@ async function revokeOutcome(vaultEnabled: boolean): Promise<RevokeOutcome> {
     // proxy, a restarting sidecar): fall back to the revoke's own answer, whose
     // bodiless 404 is the one signal a vault-less build gives when the status
     // route cannot be reached at all.
+    // A build the page has already SEEN to have no vault needs no probe at all:
+    // there is no vault cookie, and asking at sign-out only adds a way to fail.
+    if (observedVaultModeNow() === "disabled") return "absent";
     const build = await vaultBuildMode();
     if (build === "disabled") return "absent";
-    if (build === "vault") return "unconfirmed";
-    return error instanceof VaultRequestError && error.code === "VAULT_UNSUPPORTED" ? "absent" : "unconfirmed";
+    // `unknown` is NOT absence (#341 round 8 P1): a probe that failed cannot tell
+    // "no vault here" from "the proxy died", and reading it as absence reloads
+    // with a live cookie — the defect this whole branch exists to prevent.
+    // `unknown` is NOT absence (#341 round 8 P1): a probe that failed cannot tell
+    // "no vault here" from "the proxy died", and reading it as absence reloads
+    // with a live cookie — the defect this whole branch exists to prevent.
+    return "unconfirmed";
   }
 }
 

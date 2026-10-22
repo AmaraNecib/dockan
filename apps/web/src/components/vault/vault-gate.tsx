@@ -6,6 +6,7 @@ import {
   VaultRequestError,
   acknowledgeVaultSetup,
   fetchVaultStatus,
+  noteVaultMode,
   fetchVaultSetupWarning,
   isVaultPassphraseLongEnough,
   readSessionTokenFromHash,
@@ -80,6 +81,26 @@ type VaultGateField = "passphrase" | "confirm" | "recovery" | null;
  * token the desktop shell minted at unlock, which always lands in
  * sessionStorage before the first RPC call.
  */
+/**
+ * Whether THIS window is showing a recovery key it has not yet had confirmed.
+ *
+ * A setup installs the live cookie before the owner confirms having saved the key
+ * (#341 round 8 P1). If a background status read then lands — the focus re-check
+ * that lets a waiting sibling window recover — the gate unmounts and the key is
+ * gone before it was written down, with the confirmation and the cleanup warning
+ * skipped. So the re-check asks this before it refreshes: recovery of a sibling
+ * must not cost this window its only copy of the key.
+ */
+let setupKeyOnScreen = false;
+
+export function noteSetupKeyOnScreen(shown: boolean): void {
+  setupKeyOnScreen = shown;
+}
+
+export function isSetupKeyOnScreen(): boolean {
+  return setupKeyOnScreen;
+}
+
 export function useVaultStatus(): VaultHook {
   const [status, setStatus] = useState<VaultBootStatus | undefined>(undefined);
   const [failure, setFailure] = useState<VaultFailure | undefined>(undefined);
@@ -97,6 +118,8 @@ export function useVaultStatus(): VaultHook {
 
   /** Apply an answer, and mark it the newest one this hook knows. */
   const settle = useCallback((next: VaultBootStatus): void => {
+    // what kind of build this is, remembered for the sign-out (#341 round 8)
+    noteVaultMode(next.mode === "disabled" ? "disabled" : "vault");
     appliedRef.current += 1;
     setStatus(next);
   }, []);
@@ -202,6 +225,12 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [savedConfirmed, setSavedConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
+  // the key screen owns the window only while it is the current screen
+  useEffect(() => {
+    noteSetupKeyOnScreen(screen === "recovery-show" && recoveryKey !== null);
+  }, [screen, recoveryKey]);
+  useEffect(() => () => noteSetupKeyOnScreen(false), []);
+
   // A failure and the field it blames are ONE value: setting one always sets
   // the other, so a server error that names no field can never strand a stale
   // field blame (and edit-clear can never swallow an unrelated message).

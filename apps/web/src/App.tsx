@@ -6,7 +6,7 @@ import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
 import { AuthErrorAlert, authFieldKey, useAuthReporter } from "./lib/auth-errors";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
-import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
+import { isSetupKeyOnScreen, VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
 import { readVaultSessionToken, requestVaultReclaim, type VaultBootStatus } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
@@ -178,6 +178,11 @@ export function RequireSession({ children }: { children: ReactNode }) {
       // `visibilitychange` fires for a hidden page too, and a page nobody is
       // looking at is not where a refusal gets resolved
       if (document.visibilityState === "hidden") return;
+      // ... and never while this window is showing a recovery key it has not had
+      // confirmed: a setup installs the live cookie BEFORE the owner writes the
+      // key down, so applying the now-unlocked status would unmount the screen and
+      // destroy the only copy of it (#341 round 8 P1)
+      if (isSetupKeyOnScreen()) return;
       if (recheckInFlightRef.current) return;
       recheckInFlightRef.current = true;
       void vault.refresh().then((fresh) => {

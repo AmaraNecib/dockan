@@ -598,6 +598,24 @@ const vaultModeSchema = z.object({ mode: z.enum(["vault", "disabled"]) });
 export type VaultBuildMode = "vault" | "disabled" | "unknown";
 
 /**
+ * The build kind this page has already OBSERVED, so a sign-out does not have to
+ * ask again at the worst moment (#341 round 8 P1).
+ *
+ * A probe that fails during sign-out cannot distinguish "no vault here" from "the
+ * proxy just died", and guessing reloads with a live cookie. The page learned the
+ * answer at boot; this remembers it, and `null` means "not looked yet".
+ */
+let observedVaultMode: VaultBuildMode | null = null;
+
+export function noteVaultMode(mode: VaultBuildMode): void {
+  observedVaultMode = mode;
+}
+
+export function observedVaultModeNow(): VaultBuildMode | null {
+  return observedVaultMode;
+}
+
+/**
  * Which kind of build is answering: one with a vault, one without, or one that
  * could not say.
  *

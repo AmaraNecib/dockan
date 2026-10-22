@@ -2452,9 +2452,17 @@ export type AugmentedModule = { path: string; importedBy: string; names: string[
  */
 export type ParentSupply = { kind: "own" } | { kind: "star"; specifier: string };
 
+/**
+ * One module the plan could not mirror, and the sentence the report prints for it.
+ *
+ * `path` is the module the refusal is about, so a report can attribute a row to it
+ * without re-reading the prose; `reason` is the message, unchanged.
+ */
+export type Refusal = { path: string; reason: string };
+
 export type AugmentPlan = {
   modules: Array<AugmentedModule & { text: string }>;
-  refusal: string | null;
+  refusals: Refusal[];
 };
 
 /**
@@ -2494,7 +2502,7 @@ export function planAugmentedModules(
   // Per-module, and never a reason to drop a sibling's stand-in. A refusal is
   // about one module's source; the modules this function *can* mirror are
   // still returned, so the report says what the gate actually wrote.
-  const refusals: string[] = [];
+  const refusals: Refusal[] = [];
   const seen = new Set<string>();
   for (const binding of importedModuleBindings(testSource, testFile)) {
     const path = resolveModuleIn(testFile, binding.specifier, touched);
@@ -2502,16 +2510,18 @@ export function planAugmentedModules(
     seen.add(path);
     const changeSource = readChange(path);
     if (changeSource === null) {
-      refusals.push(
-        `${path}: the gate cannot read this module at the change's commit, so it cannot tell which exports the change adds to the parent's copy`,
-      );
+      refusals.push({
+        path,
+        reason: `${path}: the gate cannot read this module at the change's commit, so it cannot tell which exports the change adds to the parent's copy`,
+      });
       continue;
     }
     const parentSource = readParent(path);
     if (parentSource === null) {
-      refusals.push(
-        `${path}: the diff edits this module and the parent checkout has no copy of it, so there is nothing to augment`,
-      );
+      refusals.push({
+        path,
+        reason: `${path}: the diff edits this module and the parent checkout has no copy of it, so there is nothing to augment`,
+      });
       continue;
     }
     // The parent's RUNTIME export set, not its declared one: this answers "can a
@@ -2553,7 +2563,7 @@ export function planAugmentedModules(
         // mirrored does not make another one unmirrorable. The file will not load
         // either way, so the refusal still stands and is still reported — this
         // only keeps the report from claiming the gate did less than it did.
-        refusals.push(starred.refusal);
+        refusals.push({ path, reason: starred.refusal });
         continue;
       }
       // Attributed to the specifier that reaches it, so the refusal below can
@@ -2570,17 +2580,17 @@ export function planAugmentedModules(
     if (missing.length === 0) continue;
     const augmented = augmentModuleSource(parentSource, changeSource, path, missing, supplied);
     if (!augmented.ok) {
-      refusals.push(augmented.refusal);
+      refusals.push({ path, reason: augmented.refusal });
       continue;
     }
     modules.push({ path, importedBy: testFile, names: missing, text: augmented.text });
   }
   modules.sort((left, right) => (left.path < right.path ? -1 : 1));
-  // The first refusal in the file's own import order, and only one: the report
-  // prints a refusal as one row's detail, and an author who fixes the first
-  // re-runs and sees the next. Reporting the last would be arbitrary; reporting
-  // all of them in one row buries each path behind the previous one.
-  return { modules, refusal: refusals[0] ?? null };
+  // Every refusal, in the file's own import order, because a refused module has
+  // its own cause and its own fix. Returning one of them hid the second until the
+  // author fixed the first and re-ran, and nothing pinned which one surfaced:
+  // `refusals[0]` and `refusals[last]` both passed the suite.
+  return { modules, refusals };
 }
 
 // ---------------------------------------------------------------------------
@@ -3344,7 +3354,7 @@ function gateBaseWorktree(input: {
                 }
               },
             )
-          : { modules: [], refusal: null };
+          : { modules: [], refusals: [] };
       for (const module of augment.modules) {
         copyIntoBaseWorktree(manifest, worktree, module.path, module.text, copied);
         augmented.push({ path: module.path, importedBy: module.importedBy, names: module.names });
@@ -3392,8 +3402,25 @@ function gateBaseWorktree(input: {
       const changeSideRan = enumerateChange && problems.length === problemsBeforeChange;
       // A module the parent has but the change extends with a new export is not
       // something a mirror can stand in for, and bun names it in the transcript.
-      const refusal =
-        hollow.refusal ?? augment.refusal ?? editedModuleExportRefusal(fileRun.stdout, touched);
+      //
+      // One string per module that could not be mirrored, in the file's import
+      // order: the augment planner reports a refusal for EACH module it refused,
+      // and each one is its own cause with its own fix.
+      const refusals: string[] =
+        hollow.refusal !== null
+          ? [hollow.refusal]
+          : augment.refusals.length > 0
+            ? augment.refusals.map((refusal) =>
+                // The row has to name the module it is about; a reason written for
+                // a future refusal shape may not carry the path, so it is composed
+                // from the field when it does not.
+                refusal.reason.startsWith(`${refusal.path}: `)
+                  ? refusal.reason
+                  : `${refusal.path}: ${refusal.reason}`,
+              )
+            : [editedModuleExportRefusal(fileRun.stdout, touched)].filter(
+                (refusal): refusal is string => refusal !== null,
+              );
       const classified = classifyFileRun(fileRun, parsed.waivers, changeResults, {
         // Both stand-in kinds answer the same question for `isOwnRed`: did the
         // gate's own fake turn a property read into `undefined`? A test that
@@ -3420,10 +3447,13 @@ function gateBaseWorktree(input: {
         ? notRegisteredOnChange(file, parentResults, changeResults)
         : [];
       // A module the gate could not mirror replaces the parent's verdicts with
-      // one row, because the parent's run never judged the file: it read a parent
+      // one row per refused module, because the parent's run never judged the file: it read a parent
       // that is missing the module, and every row it produced says so. Keeping
       // those rows would print "the parent could not load the file" once per test
       // and leave the real reason — an unfaithful mirror — nowhere in the report.
+      //
+      // One row per refusal, not one row per file: two refused modules are two
+      // causes and two fixes, and a single row named the first one only.
       //
       // That justification holds only for a file the parent could not LOAD, so
       // the replacement is bounded at both ends:
@@ -3441,14 +3471,14 @@ function gateBaseWorktree(input: {
       //     the honest report there, and dropping a refusal is not a false pass —
       //     a test that passes on the parent is GREEN_ON_PARENT and rejected.
       const unfinished = classified.verdicts.some((verdict) => verdict.name === "RUN_INCOMPLETE");
-      const replacedByRefusal: Verdict | null =
-        refusal !== null && !unfinished && parentResults.length === 0
-          ? cannotHollowVerdict(file, refusal, parsed.waivers)
-          : null;
+      const replacedByRefusal: Verdict[] =
+        refusals.length > 0 && !unfinished && parentResults.length === 0
+          ? refusals.map((refusal) => cannotHollowVerdict(file, refusal, parsed.waivers))
+          : [];
       const parentVerdicts: Verdict[] =
-        replacedByRefusal === null
+        replacedByRefusal.length === 0
           ? [...classified.verdicts, ...unregistered.verdicts, ...notOnChange]
-          : [replacedByRefusal];
+          : replacedByRefusal;
       verdicts.push(...parentVerdicts);
       // The change's own run is already made, so its statuses cost nothing to
       // read. They are read independently of the parent's waivers: a waiver says
@@ -3460,7 +3490,7 @@ function gateBaseWorktree(input: {
       // used would hide the per-test waiver as accepted when the run says the file
       // was never judged. So only the rows that reach the report mark waivers used.
       const usedLines = new Set<number>(
-        replacedByRefusal === null
+        replacedByRefusal.length === 0
           ? [...classified.usedWaiverLines, ...unregistered.usedWaiverLines]
           : [],
       );

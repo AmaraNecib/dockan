@@ -96,6 +96,17 @@ const PROBE_TS = "apps/api/src/probe.test.ts";
 /** The same, for a probe whose source is JSX and has to be parsed as `.tsx`. */
 const PROBE_TSX = "apps/web/src/probe.test.tsx";
 
+/**
+ * The reasons an augment plan refused, one per refused module.
+ *
+ * The plan reports a refusal per module, so a pin that read the old single
+ * `refusal` string reads the list here. Joined where a pin is about the text of
+ * one refusal, and read as a list where it is about how many there are.
+ */
+function refusalReasons(plan: { refusals: ReadonlyArray<{ reason: string }> }): string[] {
+  return plan.refusals.map((refusal) => refusal.reason);
+}
+
 // ---------------------------------------------------------------------------
 // Fixture plumbing
 // ---------------------------------------------------------------------------
@@ -4861,7 +4872,7 @@ describe("red-on-parent round 25 — which module the gate augments, and with wh
       readChange,
       readParent,
     );
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules.map((module) => module.path)).toEqual(["scripts/e2e-selection.ts"]);
     expect(plan.modules[0]?.names).toEqual(["specPaths"]);
     expect(plan.modules[0]?.importedBy).toBe("scripts/e2e-changed.test.ts");
@@ -4877,7 +4888,7 @@ describe("red-on-parent round 25 — which module the gate augments, and with wh
       readChange,
       readParent,
     );
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules[0]?.names).toEqual(["specPaths"]);
   });
 
@@ -4890,7 +4901,7 @@ describe("red-on-parent round 25 — which module the gate augments, and with wh
       readParent,
     );
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
   });
 
   test("a module the test imports only names the parent already has is not written", () => {
@@ -4902,7 +4913,7 @@ describe("red-on-parent round 25 — which module the gate augments, and with wh
       readParent,
     );
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
   });
 
   test("a parent copy the gate cannot read is a refusal, not a silent skip", () => {
@@ -4914,7 +4925,7 @@ describe("red-on-parent round 25 — which module the gate augments, and with wh
       () => null,
     );
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toContain("scripts/e2e-selection.ts");
+    expect(refusalReasons(plan).join("\n")).toContain("scripts/e2e-selection.ts");
   });
 
   test("a change copy the gate cannot read is a refusal too", () => {
@@ -4926,7 +4937,7 @@ describe("red-on-parent round 25 — which module the gate augments, and with wh
       readParent,
     );
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toContain("scripts/e2e-selection.ts");
+    expect(refusalReasons(plan).join("\n")).toContain("scripts/e2e-selection.ts");
   });
 });
 
@@ -5202,7 +5213,7 @@ describe("red-on-parent round 27 — a stand-in never shadows a name the parent 
 
   test("a name the parent supplies through an export list is not appended", () => {
     const plan = planFor(`const value = (): number => 1;\nexport { value };\n`);
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules).toEqual([]);
   });
 
@@ -5210,7 +5221,7 @@ describe("red-on-parent round 27 — a stand-in never shadows a name the parent 
     const plan = planFor(`export { value } from "./base";\n`, {
       "scripts/base.ts": `export function value(): number {\n  return 1;\n}\n`,
     });
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules).toEqual([]);
   });
 
@@ -5220,7 +5231,7 @@ describe("red-on-parent round 27 — a stand-in never shadows a name the parent 
       "scripts/base.ts": `export * from "./deep";\n`,
       "scripts/deep.ts": `export function value(): number {\n  return 1;\n}\n`,
     });
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules).toEqual([]);
   });
 
@@ -5231,15 +5242,15 @@ describe("red-on-parent round 27 — a stand-in never shadows a name the parent 
     // closed instead.
     const plan = planFor(`export * from "./nowhere";\n`);
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toContain("scripts/mod.ts");
-    expect(plan.refusal).toContain("./nowhere");
+    expect(refusalReasons(plan).join("\n")).toContain("scripts/mod.ts");
+    expect(refusalReasons(plan).join("\n")).toContain("./nowhere");
   });
 
   test("a resolvable star that does not supply the name still gets the stand-in", () => {
     const plan = planFor(`export * from "./base";\n`, {
       "scripts/base.ts": `export function other(): number {\n  return 0;\n}\n`,
     });
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
   });
 });
@@ -5462,7 +5473,7 @@ describe("red-on-parent round 28 — a type-only export does not hide a runtime 
 
   test("a runtime name the parent only declares as a type still gets its stand-in", () => {
     const plan = planFor(PARENT, CHANGE);
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
   });
 
@@ -5478,7 +5489,7 @@ describe("red-on-parent round 28 — a type-only export does not hide a runtime 
     // The sibling case, so the fix cannot be read as "append every type-only name
     // too": an `import { type Shape }` clause is erased and needs no stand-in.
     const plan = planFor(PARENT, CHANGE, `import { type Shape, value } from "./mod";\n`);
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
   });
 });
@@ -5507,7 +5518,7 @@ describe("red-on-parent round 28 — an unrelated re-export does not refuse anot
       readChange,
       readParent,
     );
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules.map((module) => module.path)).toEqual(["scripts/b.ts"]);
     expect(plan.modules[0]?.names).toEqual(["brandNew"]);
     // B's stand-in, not a refusal about A's package specifier.
@@ -5522,7 +5533,7 @@ describe("red-on-parent round 28 — an unrelated re-export does not refuse anot
       readChange,
       readParent,
     );
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules).toEqual([]);
   });
 
@@ -5540,8 +5551,8 @@ describe("red-on-parent round 28 — an unrelated re-export does not refuse anot
       (path) => (path === "scripts/b.ts" ? PARENT_B : path === "scripts/c.ts" ? parentC : null),
     );
     expect(plan.modules.map((module) => module.path)).toEqual(["scripts/b.ts"]);
-    expect(plan.refusal).toContain("scripts/c.ts");
-    expect(plan.refusal).toContain("./nowhere");
+    expect(refusalReasons(plan).join("\n")).toContain("scripts/c.ts");
+    expect(refusalReasons(plan).join("\n")).toContain("./nowhere");
   });
 
   test("a star chain is still followed for a module that is missing a name", () => {
@@ -5556,7 +5567,7 @@ describe("red-on-parent round 28 — an unrelated re-export does not refuse anot
       (path) =>
         path === "scripts/b.ts" ? `export * from "./base";\n` : path === "scripts/base.ts" ? base : null,
     );
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules).toEqual([]);
   });
 });
@@ -5685,7 +5696,7 @@ describe("red-on-parent round 29 — a star target that only type-exports the na
 
   test("a name the star target only type-exports is still missing from the parent's runtime", () => {
     const plan = planFor();
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
     // The parent's `export *` line survives verbatim and the stand-in is appended
     // beside it, so the parent's own `stable` still works and `value` now binds.
@@ -5799,13 +5810,14 @@ test("uses both modules", () => {
   }, 60_000);
 });
 
-describe("red-on-parent round 29 — several refusals collapse to the first in import order", () => {
-  // The plan returns `refusals[0]`, and the report prints one refusal as one row's
-  // detail. Which refusal an author sees is therefore a choice, not an accident:
-  // it is the first in the file's own import order. Pinning it means a refactor
-  // cannot silently change the module an author is told to fix without failing
-  // here, and reversing the imports proves the order is the file's and not the
-  // modules' sort order.
+describe("red-on-parent round 29 — several refusals are all reported, in import order", () => {
+  // The plan used to return `refusals[0]` behind an interface that claims one
+  // refusal, so a second refused module stayed invisible until the author fixed
+  // the first and re-ran. It now reports every one, and the order is the file's
+  // own import order — reversing the imports reverses the list, which sorting by
+  // path could not do. `plan-refusals.test.ts` is this round's home; the pair
+  // below is the fixture this file already had, kept because it is the only pin
+  // that separates the file's order from the modules' sort order.
   const PARENT_A = `export * from "./nowhere-a";\n`;
   const PARENT_B = `export * from "./nowhere-b";\n`;
   const CHANGE_A = `${PARENT_A}export function nameA(): number {\n  return 1;\n}\n`;
@@ -5817,7 +5829,7 @@ describe("red-on-parent round 29 — several refusals collapse to the first in i
   const readParent = (path: string): string | null =>
     path === "scripts/a.ts" ? PARENT_A : path === "scripts/b.ts" ? PARENT_B : null;
 
-  test("two refusable modules report the first one the file imports", () => {
+  test("two refusable modules report both, in the order the file imports them", () => {
     const plan = planAugmentedModules(
       "scripts/two-refusals.test.ts",
       `import { nameA } from "./a";\nimport { nameB } from "./b";\n`,
@@ -5826,13 +5838,18 @@ describe("red-on-parent round 29 — several refusals collapse to the first in i
       readParent,
     );
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toContain("scripts/a.ts");
-    expect(plan.refusal).toContain("./nowhere-a");
-    expect(plan.refusal).not.toContain("scripts/b.ts");
-    expect(plan.refusal).not.toContain("./nowhere-b");
+    expect(refusalReasons(plan)).toEqual([
+      expect.stringContaining("scripts/a.ts"),
+      expect.stringContaining("scripts/b.ts"),
+    ]);
+    // Each row is about its own module: a reason that named both specifiers
+    // would be one refusal printed twice rather than two refusals.
+    expect(refusalReasons(plan)[0]).toContain("./nowhere-a");
+    expect(refusalReasons(plan)[0]).not.toContain("./nowhere-b");
+    expect(refusalReasons(plan)[1]).toContain("./nowhere-b");
   });
 
-  test("the reported refusal follows the file's order, not the modules' sort order", () => {
+  test("the order follows the file's imports, not the modules' sort order", () => {
     const plan = planAugmentedModules(
       "scripts/two-refusals-reversed.test.ts",
       `import { nameB } from "./b";\nimport { nameA } from "./a";\n`,
@@ -5841,10 +5858,11 @@ describe("red-on-parent round 29 — several refusals collapse to the first in i
       readParent,
     );
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toContain("scripts/b.ts");
-    expect(plan.refusal).toContain("./nowhere-b");
-    expect(plan.refusal).not.toContain("scripts/a.ts");
-    expect(plan.refusal).not.toContain("./nowhere-a");
+    expect(refusalReasons(plan)).toEqual([
+      expect.stringContaining("scripts/b.ts"),
+      expect.stringContaining("scripts/a.ts"),
+    ]);
+    expect(refusalReasons(plan)[0]).toContain("./nowhere-b");
   });
 });
 
@@ -5949,7 +5967,7 @@ describe("red-on-parent round 30 — a destructured export is a runtime name", (
       (path) =>
         path === PATH ? `export * from "./base";\n` : path === "scripts/base.ts" ? BASE : null,
     );
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules).toEqual([]);
   });
 });
@@ -6046,7 +6064,7 @@ describe("red-on-parent round 30 — a shared variable statement does not force 
         path === "scripts/mod.ts" ? `export const base = 0;\nexport const b = 20;\n` : null,
     );
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toContain("`b`");
+    expect(refusalReasons(plan).join("\n")).toContain("`b`");
   });
 });
 
@@ -6122,9 +6140,9 @@ describe("red-on-parent round 31 — a mirrored sibling cannot shadow a name the
     // A refusal, not a stand-in: the alternative is a module that loads and
     // answers `b` with the fake's `undefined`.
     expect(plan.modules).toEqual([]);
-    expect(plan.refusal).toContain("`b`");
-    expect(plan.refusal).toContain("./base");
-    expect(plan.refusal).toContain(MODULE);
+    expect(refusalReasons(plan).join("\n")).toContain("`b`");
+    expect(refusalReasons(plan).join("\n")).toContain("./base");
+    expect(refusalReasons(plan).join("\n")).toContain(MODULE);
   });
 
   test("an ordinary shared statement whose sibling the parent does NOT supply is still accepted", () => {
@@ -6139,7 +6157,7 @@ describe("red-on-parent round 31 — a mirrored sibling cannot shadow a name the
       (path) => (path === "scripts/mod.ts" ? change : null),
       (path) => (path === "scripts/mod.ts" ? parent : null),
     );
-    expect(plan.refusal).toBeNull();
+    expect(plan.refusals).toEqual([]);
     expect(plan.modules.map((module) => module.names)).toEqual([["a"]]);
   });
 

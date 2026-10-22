@@ -19,7 +19,7 @@
     "build": "turbo build",
     "lint": "oxlint",
     "typecheck": "turbo typecheck && tsc -p scripts/tsconfig.json && tsc -p tests/tsconfig.json",
-    "test": "turbo test --concurrency=2 && bun test ./scripts/",
+    "test": "turbo test --concurrency=2 && bun test ./scripts/ tools/",
     "test:affected": "bun scripts/test-affected.ts",
     "test:e2e:changed": "bun scripts/e2e-changed.ts",
     "skills:sync": "bun scripts/sync-claude-skills.ts",

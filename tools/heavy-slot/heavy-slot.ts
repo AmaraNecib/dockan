@@ -13,12 +13,13 @@
  * file - the port is the lock.
  *
  * Exits with the child's exit code; 75 if it gave up waiting without running anything; 76 when
- * no port range is usable (reserved on this machine) - refused loudly, never reported as
+ * the port range cannot serve work (every candidate reserved, or part of the range refuses to
+ * bind even after a re-decide) - refused loudly, never reported as
  * "the queue is full", because waiting will never help.
  */
 
 import net from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { homedir, freemem, totalmem, cpus } from "node:os";
 import { join } from "node:path";
@@ -93,31 +94,39 @@ export async function cpuLoadPercent(): Promise<number> {
 
 export function capacityFor(freeGb: number, cpuLoad: number, urgent: boolean): number {
   const byRam = Math.floor((freeGb - reserveGb()) / perJobGb());
+  // The floor of 1 is policy, not the measurement ("never starve the caller"):
+  // a measured capacity of 0 still admits one job instead of refusing forever.
   let capacity = Math.max(1, Math.min(maxSlots(), byRam < 1 ? 1 : byRam));
   if (cpuLoad > 85) capacity = Math.max(1, capacity - 2);
   else if (cpuLoad > 70) capacity = Math.max(1, capacity - 1);
   else if (cpuLoad < 35 && freeGb > reserveGb()) capacity = Math.min(maxSlots(), capacity + 1);
-  if (urgent && freeGb > reserveGb() && cpuLoad < 80) capacity = maxSlots();
+  // urgent takes the ceiling, but the RAM measurement still gates it: MAX_SLOTS
+  // heavy jobs must actually fit above the reserve, or urgent waits like everyone.
+  if (urgent && freeGb >= reserveGb() + maxSlots() * perJobGb() && cpuLoad < 80) capacity = maxSlots();
   return capacity;
 }
 
 // ---------------------------------------------------------------------------
-// Binding a port. The only error family that means "the slot is held by
-// someone, so wait" is EADDRINUSE. EACCES, EADDRNOTAVAIL, EPERM and friends
-// mean "this port is not ours to use at all" - on Windows, TCP port ranges the
-// OS has reserved (they move across reboots and Hyper-V changes). Waiting never
-// fixes the second family, so the two must never be confused.
+// Binding a port. Only EADDRINUSE means "the slot is held by someone, so wait".
+// EACCES, EADDRNOTAVAIL and EPERM mean "this port is not ours to use at all" -
+// on Windows, TCP port ranges the OS has reserved (they move across reboots and
+// Hyper-V changes). Waiting never fixes those, so they are the "unusable" family.
+// Every other error (EMFILE, a transient refusal, resource exhaustion) is
+// retryable: it reads as busy and keeps its code in every message so it is not
+// silently misread as "this whole range is reserved".
 // ---------------------------------------------------------------------------
 
 export type OpenResult = { server: net.Server } | { error: "busy" | "unusable"; code: string };
 export type OpenServer = (port: number) => Promise<OpenResult>;
+
+export const UNUSABLE_BIND_CODES: ReadonlySet<string> = new Set(["EACCES", "EADDRNOTAVAIL", "EPERM"]);
 
 export function realOpenServer(port: number): Promise<OpenResult> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once("error", (err: NodeJS.ErrnoException | undefined) => {
       const code = err?.code ?? "UNKNOWN";
-      resolve({ error: code === "EADDRINUSE" ? "busy" : "unusable", code });
+      resolve({ error: code !== "EADDRINUSE" && UNUSABLE_BIND_CODES.has(code) ? "unusable" : "busy", code });
       try {
         server.removeAllListeners();
         server.close();
@@ -145,7 +154,7 @@ export async function probePort(port: number): Promise<PortProbe> {
   return "free";
 }
 
-function closeServer(server: net.Server): Promise<void> {
+export function closeServer(server: net.Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
@@ -190,11 +199,43 @@ function activate(base: number): number {
 }
 
 /**
+ * Try to record `base` as the shared base through the state dir, exactly like every
+ * other candidate - the preferred base includes itself, so two processes with
+ * different environments never each activate a private choice. Losing the
+ * first-writer race never ends in a private choice either: follow the winner. A
+ * winner whose range no longer binds is a stale record: replace it and retry the
+ * claim once, so a working range can still be written; if that claim also loses,
+ * follow the winner anyway and let the acquisition loop's re-decide speak (refusal
+ * with exit 76) - two queues disagreeing is worse than one queue refusing loudly.
+ */
+async function claimOrFollow(base: number): Promise<number> {
+  if (claimBase(base)) return base;
+  let winner = readPersistedBase();
+  if (winner !== null && (await probePort(winner)) === "unusable") {
+    try {
+      rmSync(baseFilePath(), { force: true });
+    } catch {
+      /* fall through with the record still visible */
+    }
+    if (readPersistedBase() === null && claimBase(base)) return base;
+    winner = readPersistedBase();
+  }
+  // No record anywhere and one failed claim means this process is the only one
+  // that picked a range at all - own it; otherwise the winner owns the decision.
+  return winner ?? base;
+}
+
+/**
  * Decide the base for this process, once. Order of authority:
  * 1. a base a previous process recorded, while it still binds (every process agrees with it);
- * 2. the preferred base (HEAVY_SLOT_BASE or the default), while it binds;
+ * 2. the preferred base (HEAVY_SLOT_BASE or the default), while it binds - but it is
+ *    claimed through the shared state dir like any candidate, never activated privately;
  * 3. the preferred base shifted by BASE_STRIDE at a time, bounded; the first process to find
  *    a working candidate records it, a concurrent one reads the winner.
+ *
+ * A recorded base that no longer binds (a reboot re-reserved its range) is removed
+ * before the walk, so a working range can be claimed again instead of the stale
+ * record freezing every later process into re-probing it forever.
  *
  * Returns null when every candidate is excluded - the caller must refuse loudly, never
  * report the queue as full.
@@ -203,18 +244,25 @@ export async function resolveBase(): Promise<number | null> {
   if (agreedBase !== null) return agreedBase;
   const preferred = preferredBase();
   const persisted = readPersistedBase();
-  if (persisted !== null && (await probePort(persisted)) !== "unusable") return activate(persisted);
-  if ((await probePort(portOf(preferred, 1))) !== "unusable") return activate(preferred);
+  if (persisted !== null) {
+    if ((await probePort(persisted)) !== "unusable") return activate(persisted);
+    // Stale record: rm it before walking candidates, so a working range can be
+    // claimed again - a persisted base that only ever reads as unusable would
+    // otherwise keep every claim failing forever.
+    try {
+      rmSync(baseFilePath(), { force: true });
+    } catch {
+      /* another process is replacing it right now; the claims below decide */
+    }
+  }
+  if ((await probePort(portOf(preferred, 1))) !== "unusable") {
+    return activate(await claimOrFollow(preferred));
+  }
   for (let attempt = 1; attempt <= BASE_MAX_ATTEMPTS; attempt++) {
     const candidate = preferred + attempt * BASE_STRIDE;
     if (candidate >= 65536) continue;
     if ((await probePort(portOf(candidate, 1))) === "unusable") continue;
-    if (!claimBase(candidate)) {
-      // Lost the first-writer race: use whatever the first process recorded, never overwrite.
-      const winner = readPersistedBase();
-      if (winner !== null && (await probePort(winner)) !== "unusable") return activate(winner);
-    }
-    return activate(candidate);
+    return activate(await claimOrFollow(candidate));
   }
   return null;
 }
@@ -364,7 +412,9 @@ export type AcquireResult = { slot: Slot } | { refused: "unusable" } | null;
 /**
  * Wait for a slot. null = the wait budget ran out while slots were genuinely held
  * (the queue is full; the caller exits 75). { refused: "unusable" } = the port
- * range itself is broken - refused immediately, never counted as "busy".
+ * range itself is broken - all candidates excluded, or part of the current range
+ * refuses to bind and a re-decide of the base lands back on it - refused
+ * immediately, never counted as "busy", never reported as "the queue is full".
  */
 export async function acquireSlot(label: string): Promise<AcquireResult> {
   const started = Date.now();
@@ -377,21 +427,34 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
     const freeGb = freemem() / 1e9;
     const cpuLoad = await cpuLoadPercent();
     const capacity = capacityFor(freeGb, cpuLoad, urgent);
-    let busySeen = false;
-    let unusableSeen = false;
+    const unusablePorts: number[] = [];
+    let unusableCode: string | null = null;
     for (let i = 1; i <= capacity; i++) {
       const taken = await tryTake(i, label);
       if (taken.ok) return { slot: taken.slot };
-      if (taken.reason === "busy") busySeen = true;
-      else unusableSeen = true;
+      if (taken.reason !== "busy") { // busy = a slot is held; not a reason to re-decide or refuse
+        unusablePorts.push(taken.port);
+        unusableCode ??= taken.code;
+      }
     }
-    if (unusableSeen && !busySeen) {
-      // No slot was held and every port refused: the range quietly broke (e.g. a reboot
-      // re-reserved it). Re-decide the base once, then refuse - waiting never helps.
+    if (unusableCode !== null) {
+      // Some slot ports refuse to bind outright: part of the range is reserved or
+      // broken. Name the ports and the code - a partly reserved range must be
+      // visible, never silent. Note a held slot does not excuse this: waiting for
+      // the usable slot is fine, hiding the failure is not.
+      console.error(
+        `[heavy-slot] slot ports ${unusablePorts.join(", ")} refuse to bind (${unusableCode}) - the range is partly reserved; re-deciding the base because waiting will not fix it`,
+      );
+      const before = agreedBase;
       if (redecided) return { refused: "unusable" };
       redecided = true;
       agreedBase = null;
-      if ((await resolveBase()) === null) return { refused: "unusable" };
+      const next = await resolveBase();
+      // The walk is deterministic, so landing on the same base means the range is
+      // genuinely unusable for everyone: refuse 76 now instead of burning the
+      // whole wait budget on a machine that is broken and reporting exit 75 -
+      // "the queue is full" - afterwards.
+      if (next === null || next === before) return { refused: "unusable" };
       continue;
     }
     if (Date.now() - started > waitMs()) return null;
@@ -400,6 +463,59 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
       `[heavy-slot] queued ${Math.round((Date.now() - started) / 1000)}s - free ${gb(freeGb * 1e9)} GB, cpu ${cpuLoad}%, capacity ${capacity}, busy [${busy.join(", ")}]`,
     );
     await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ending a run. `shell: true` makes child.pid the wrapper shell, so "did the
+// command stop" and "did the machine get freed" are different questions - a
+// cancelled run must answer the second one before its slot is released.
+// ---------------------------------------------------------------------------
+
+const STOP_GRACE_MS = 10_000;
+
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * End the whole tree behind the wrapper shell, not only the shell. OS-specific
+ * branch: Windows has no signalable process group, so `taskkill /T /F` walks the
+ * descendants (a signal to the shell alone can leave the build or the full suite
+ * running while the slot is already released - exactly the double load the queue
+ * exists to prevent); on POSIX the child was spawned detached, so the negative pid
+ * signals the group the shell and its children share. Exported for the cancellation
+ * test - it pins the kill-then-confirm promise the SIGINT/SIGTERM hook makes.
+ */
+export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      /* the tree is already gone */
+    }
+  }
+}
+
+/**
+ * True while any member of the child's tree can still be reached. The same final
+ * crash counts on both platforms: POSIX probes the group with a 0-signal, which
+ * throws when nobody is left; on Windows `taskkill` exits non-zero once the pid
+ * and its tree no longer exist (so the same call doubles as a re-kill).
+ */
+export function treeAlive(child: ChildProcess): boolean {
+  const pid = child.pid;
+  if (pid === undefined) return false;
+  if (process.platform === "win32") {
+    return spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).status === 0;
+  }
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -424,13 +540,41 @@ export async function run(label: string, command: string): Promise<void> {
     `[heavy-slot] ${waited >= 5 ? `got slot ${slot.index} after ${waited}s` : `got slot ${slot.index}`} (port ${slot.port}), running: ${command}`,
   );
 
+  let child: ChildProcess | undefined;
+  let cancelled = false;
   const code = await new Promise<number>((resolve) => {
-    const child = spawn(command, { shell: true, stdio: "inherit" });
-    const stop = () => child.kill();
+    // detached on POSIX: the command leads its own process group, so the kill below
+    // reaches every descendant and not only the wrapper shell that `shell: true`
+    // makes child.pid point at. Windows has no signalable group - taskkill walks
+    // the tree instead.
+    child = spawn(command, {
+      shell: true,
+      stdio: "inherit",
+      detached: process.platform !== "win32",
+    });
+    const stop = () => {
+      cancelled = true;
+      if (child) killTree(child, "SIGTERM");
+    };
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
-    child.on("close", (c) => resolve(c ?? 1));
+    if (child) child.on("close", (c) => resolve(c ?? 1));
   });
+
+  if (cancelled && child) {
+    // The close event fires as soon as the wrapper shell dies, and the rest of the
+    // tree can outlive it - on Windows a tree can survive a SIGTERM to the shell
+    // outright. The slot is released only once the tree is really gone: re-kill
+    // and re-probe on a bounded budget, so a wedged machine cannot hold a slot
+    // hostage forever. A descendant that made its own process group is out of
+    // reach of both the signal and the probe; the same bound releases the slot
+    // when that happens too.
+    const deadline = Date.now() + STOP_GRACE_MS;
+    while (Date.now() < deadline && treeAlive(child)) {
+      killTree(child, "SIGKILL");
+      await wait(100);
+    }
+  }
 
   release(slot);
   console.error(`[heavy-slot] slot ${slot.index} released, exit ${code}`);

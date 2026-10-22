@@ -315,6 +315,16 @@ function errorEnvelopeIn(text: string): VaultErrorBody["error"] {
   }
 }
 
+/**
+ * How long the absence probe may take before the caller treats it as a refusal.
+ *
+ * `logout` awaits this probe before it clears the local token and calls
+ * `signOut()`, so a stalled status hop would leave a sign-out that never
+ * finishes: no clear, no sign-out, no reload, no gate. A timeout throws a
+ * non-`UNSUPPORTED` error, which the caller holds on — the safe side.
+ */
+const STATUS_PROBE_TIMEOUT_MS = 3_000;
+
 async function request<T>(path: string, init: RequestInit, authenticated: boolean, schema: z.ZodType<T>): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
@@ -433,17 +443,27 @@ export async function fetchVaultStatus(): Promise<VaultStatus> {
   }
   let response: Response;
   try {
-    response = await fetch("/api/vault/status");
+    // A bounded probe: `logout` awaits this before clearing the local token and
+    // signing out, so a status hop that stalls must resolve into a refusal the
+    // caller holds on, never into a sign-out that never finishes (#341 round 5).
+    response = await fetch("/api/vault/status", { signal: AbortSignal.timeout(STATUS_PROBE_TIMEOUT_MS) });
   } catch {
     // the server is unreachable (booting, proxy blip): the caller shows RETRY,
     // never the legacy login screen
     throw new VaultRequestError("VAULT_UNREACHABLE");
   }
-  if (response.status === 404) {
-    // no vault route at all: this is the legacy plaintext build
-    throw new VaultRequestError("VAULT_UNSUPPORTED");
-  }
   const text = await response.text();
+  if (response.status === 404) {
+    // The SAME rule `request()` applies: a 404 with an envelope is a real refusal
+    // (a gateway that answers unknown paths with {"error":{"code":"NOT_FOUND"}}),
+    // and only a 404 with no envelope at all means the route is not mounted — the
+    // legacy plaintext build. Reading the status alone here re-opened the round-4
+    // defect one hop over: `absent` reloads, and a live cookie then walks the
+    // owner back into the app.
+    const refusal = errorEnvelopeIn(text);
+    if (refusal === undefined) throw new VaultRequestError("VAULT_UNSUPPORTED");
+    throw new VaultRequestError(refusal.code ?? "VAULT_UNEXPECTED", refusal.retryAfterMs, refusal.staleHeartbeat ?? false);
+  }
   if (!response.ok) {
     // A refusal that names its cause arrives as JSON with the API's stable
     // code: the other-instance lock answers 503 + VAULT_LOCKED_BY_OTHER_INSTANCE

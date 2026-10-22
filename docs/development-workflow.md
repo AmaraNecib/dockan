@@ -239,8 +239,9 @@ neither is queued under that spelling. Run them through `heavy_run` when the
 queue matters, or you have taken the slot yourself.
 
 Tier 1 is also not "seconds": the scripts step alone measured about two minutes
-here (446 pass, 1 skip, 8 files), and `turbo.json` gives `test` a
-`dependsOn: ["^build"]`, so a cold run builds every package first.
+here (445 pass, 1 skip, 8 files — the count moves with every suite that touches
+`scripts/`), and `turbo.json` gives `test` a `dependsOn: ["^build"]`, so a cold
+run builds every package first.
 
 Tier 1 is `bun run test:affected`: turbo's impacted filter **and** the scripts
 suite that carries the e2e map's drift guard, started together. They cannot reach

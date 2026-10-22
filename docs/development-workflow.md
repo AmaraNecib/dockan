@@ -300,6 +300,12 @@ appended declaration that would redeclare a name the parent's scope already bind
 `// red-on-parent-waive: "whole file" — <why the parent cannot run this file>` in
 the added test file, spelled exactly that way.
 
+The waiver grammar is the same in all three places that describe it: this
+section, `docs/verification-and-merge-gate.md` and `VERDICT_GUIDE` in
+`scripts/red-on-parent.ts`. Four verdicts can be waived and no others —
+`GREEN_ON_PARENT`, `WRONG_REASON_RED`, `NOT_ON_PARENT` and `CANNOT_HOLLOW` — and
+only `CANNOT_HOLLOW` takes the whole-file spelling.
+
 What the gate proves is narrower than "this test asserts a behaviour": it proves
 the file **reaches** the change and **fails there**. Two shapes assert nothing and
 are accepted by design — a TypeError from dereferencing a stand-in, and an

@@ -26,18 +26,18 @@ cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warni
 ## Environment paths a fresh machine must set
 
 Agents and collaborators lose about an hour to each of these, because the defaults put
-heavy artifacts on the wrong drive and every new checkout pays the cost again. Set them
-once (user environment variables are enough) and every worktree, lane and CI lane runs
-faster and stays on the same drives:
+heavy artifacts on the wrong drive. Set them once (user environment variables are enough)
+and every worktree, lane and CI lane puts its artifacts on the drive you chose:
 
 | Variable | What it moves | Effect |
 | --- | --- | --- |
-| `PLAYWRIGHT_BROWSERS_PATH` | the Playwright browser download (~1.8 GB) | Without it, every checkout re-downloads the browsers into the OS temp area; with it, each worktree reuses one shared download. |
+| `PLAYWRIGHT_BROWSERS_PATH` | the Playwright browser download (~1.8 GB) | The browsers already live in one **per-user** directory, so checkouts share them — no re-download per checkout. The variable decides **where** that directory is, which is what moves the 1.8 GB off the system drive. |
 | `RED_ON_PARENT_CACHE` | the cached worktrees `scripts/red-on-parent.ts` makes | Without it, those throwaway worktrees land in the OS temp folder and quietly fill the system drive. |
 | `BUN_INSTALL_CACHE_DIR` | bun's install cache | Keeping the cache on the same drive as the checkout means installs stay warm instead of re-copying every package into a fresh worktree. |
 
-Turbo's own cache needs no variable — it already lives inside the repository (`.turbo/`), so
-every worktree in the repository root's tree only warms it once.
+Turbo's cache needs no variable: a worktree shares the **main** checkout's `.turbo/cache`
+(measured — a `--force` run started inside a worktree wrote its entry into the main checkout's
+cache directory and created no `.turbo` of its own), so a lane warms the cache the parent filled.
 
 ## Feature lifecycle
 

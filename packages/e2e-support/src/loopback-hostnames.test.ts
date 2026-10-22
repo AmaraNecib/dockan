@@ -3,8 +3,7 @@ import dns from "node:dns";
 
 import { installLoopbackHostnames, isLoopbackHostname, type LookupResult } from "./loopback-hostnames";
 
-// red-on-parent-waive: "isLoopbackHostname" — the module under test (./loopback-hostnames) is introduced by this change; the parent cannot load the file, so no run of it there can be red for its own reason
-// red-on-parent-waive: "installLoopbackHostnames" — the module under test (./loopback-hostnames) is introduced by this change; the parent cannot load the file, so no run of it there can be red for its own reason
+// red-on-parent-waive: "leaves a name that is not a loopback name" — the parent has no patch at all, so `localhost` resolves exactly as it always did: this pin is about the patch NOT changing that, and the parent cannot show it
 
 /**
  * The one address of a lookup result.
@@ -23,12 +22,20 @@ function firstAddress(found: LookupResult): string {
  * The callback form is the one node and bun agree on: the promise form
  * differs between them (bun answers with an object), so the shape both
  * agree on is the one this reads.
+ *
+ * A name the resolver does not know answers with its error code rather than
+ * a rejection: the failure is a value the test can assert on, which is what
+ * keeps the difference between "resolved to something else" and "did not
+ * resolve at all" visible.
  */
 function lookupAddress(hostname: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     dns.lookup(hostname, (error, found) => {
-      if (error !== null && error !== undefined) reject(error);
-      else resolve(firstAddress(found));
+      if (error !== null && error !== undefined) {
+        resolve(`error:${error.code ?? "unknown"}`);
+        return;
+      }
+      resolve(firstAddress(found));
     });
   });
 }

@@ -414,4 +414,45 @@ describe("one party, one cache identity (#323)", () => {
     // one the server itself groups under
     expect(partyReads).toEqual([{ counterpartyId: null, counterpartyName: "زبون" }]);
   });
+
+  // #337 review (Greptile P2 on #360) — the deleted #323 refusal test guarded
+  // the money path this PR reopened: a PAID invoice, a padded typed name, debt
+  // on ANOTHER invoice. #337 removes the refusal because the server returns one
+  // identity per party, so the read RESOLVES now — and once it resolves, the
+  // refund must offset that other invoice's debt, not offer cash. That is the
+  // path with money in it, and the replacement DebtsPage test does not render it.
+  // The padding here is NBSP, the trim-set character plain spaces could not
+  // prove (sqlite's own TRIM(U+0020) already read those).
+  it("offsets the other invoice's debt once the padded name's read resolves (#337)", async () => {
+    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
+    renderScreens(
+      <ReturnsPanel
+        invoice={invoiceDetail({ counterpartyId: null, counterpartyName: "زبون\u00A0", remainingAmount: 0 })}
+      />,
+    );
+    // no flush before the typing: the padded name's read fired on mount and no
+    // microtask has drained since, so it is deterministically still in flight —
+    // the split cannot be priced from a read that has not landed
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+
+    // while the read is pending the split stays UNKNOWN — the projection block
+    // (which holds the cash line) is not rendered at all, so cash is never
+    // promised before the answer arrives
+    expect(host.querySelector('[data-testid="returns-split-unknown"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="returns-cash-now"]')).toBeNull();
+
+    await flushAsync();
+    // resolved: the tab covers the 900 return, so the refund comes off the
+    // OTHER invoice's debt and the cash line settles at 0 — the server offsets,
+    // it does not pay
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("900");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("0");
+    // (the cash element exists at 0, unlike the old refusal where it vanished:
+    // #337 resolves the read instead of refusing it, so the settled answer is
+    // "no cash" rather than "no answer")
+
+    // and the read went out under the trimmed name — the identity the server
+    // itself groups under, which is why the resolution covers both spellings
+    expect(partyReads).toEqual([{ counterpartyId: null, counterpartyName: "زبون" }]);
+  });
 });

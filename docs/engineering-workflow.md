@@ -11,7 +11,7 @@ mandatory orchestrator; this document is its reference.
 
 ```bash
 bun run lint        # oxlint (with anti-slop plugin config)
-bun run typecheck   # turbo typecheck across workspaces
+bun run typecheck   # turbo typecheck across workspaces, plus the scripts/ and tests/ projects
 bun run test        # turbo test across workspaces
 bun run test:e2e    # Playwright
 ```
@@ -22,6 +22,22 @@ Rust changes (`apps/desktop/src-tauri/`) additionally require:
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warnings
 ```
+
+## Environment paths a fresh machine must set
+
+Agents and collaborators lose about an hour to each of these, because the defaults put
+heavy artifacts on the wrong drive. Set them once (user environment variables are enough)
+and every worktree, lane and CI lane puts its artifacts on the drive you chose:
+
+| Variable | What it moves | Effect |
+| --- | --- | --- |
+| `PLAYWRIGHT_BROWSERS_PATH` | the Playwright browser download (~1.8 GB) | The browsers already live in one **per-user** directory, so checkouts share them — no re-download per checkout. The variable decides **where** that directory is, which is what moves the 1.8 GB off the system drive. |
+| `RED_ON_PARENT_CACHE` | the cached worktrees `scripts/red-on-parent.ts` makes | Without it, those throwaway worktrees land in the OS temp folder and quietly fill the system drive. |
+| `BUN_INSTALL_CACHE_DIR` | bun's install cache | Keeping the cache on the same drive as the checkout means installs stay warm instead of re-copying every package into a fresh worktree. |
+
+Turbo's cache needs no variable: a worktree shares the **main** checkout's `.turbo/cache`
+(measured — a `--force` run started inside a worktree wrote its entry into the main checkout's
+cache directory and created no `.turbo` of its own), so a lane warms the cache the parent filled.
 
 ## Feature lifecycle
 

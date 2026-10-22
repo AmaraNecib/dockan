@@ -82,18 +82,23 @@ async function nativeVisibility(page: Page): Promise<string> {
   });
 }
 
+// The reader page installs these counters on its own window (openReader) and
+// reads them back in the same test (readCounters); the globals live only while
+// those windows are alive, so they belong to this spec alone.
+declare global {
+  interface Window {
+    __focusEvents: number;
+    __visibilityEvents: number;
+    __visibleFlips: number;
+    __nativeStates: string[];
+  }
+}
+
 type ReaderCounters = {
   focusEvents: number;
   visibilityEvents: number;
   visibleFlips: number;
   nativeStates: string[];
-};
-
-type CounterWindow = Window & {
-  __focusEvents: number;
-  __visibilityEvents: number;
-  __visibleFlips: number;
-  __nativeStates: string[];
 };
 
 /**
@@ -140,8 +145,8 @@ async function openReader(context: BrowserContext, opts: { pretendHidden: boolea
       return getter?.call(document) ?? "unknown";
     };
     // SAFETY: the page installs these counters on its own window and reads
-    // them back later in the same test; the cast names the properties it added
-    const counter = window as CounterWindow;
+    // them back later in the same test; the globals above name them
+    const counter = window;
     counter.__focusEvents = 0;
     counter.__visibilityEvents = 0;
     counter.__visibleFlips = 0;
@@ -170,7 +175,7 @@ async function openReader(context: BrowserContext, opts: { pretendHidden: boolea
 async function readCounters(reader: Page): Promise<ReaderCounters> {
   return reader.evaluate(() => {
     // SAFETY: see openReader — the page installed the counters before the test read them
-    const counter = window as CounterWindow;
+    const counter = window;
     return {
       focusEvents: counter.__focusEvents,
       visibilityEvents: counter.__visibilityEvents,

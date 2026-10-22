@@ -272,7 +272,9 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
         if (rule.cssText.startsWith("@page")) {
           // SAFETY: only an @page rule's cssText starts with "@page"
           const pageRule = rule as CSSPageRule;
-          rules.push({ margin: pageRule.style.margin, size: pageRule.style.size });
+          // SAFETY: the DOM lib does not carry `size` as a property name
+          const style = pageRule.style as CSSStyleDeclaration & { size: string };
+          rules.push({ margin: style.margin, size: style.size });
         }
       }
     }

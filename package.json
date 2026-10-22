@@ -18,7 +18,7 @@
     "desktop:installer": "bun run --filter @dokan/desktop installer",
     "build": "turbo build",
     "lint": "oxlint",
-    "typecheck": "turbo typecheck && tsc -p scripts/tsconfig.json",
+    "typecheck": "turbo typecheck && tsc -p scripts/tsconfig.json && tsc -p tests/tsconfig.json",
     "test": "turbo test --concurrency=2 && bun test ./scripts/",
     "test:affected": "bun scripts/test-affected.ts",
     "test:e2e:changed": "bun scripts/e2e-changed.ts",

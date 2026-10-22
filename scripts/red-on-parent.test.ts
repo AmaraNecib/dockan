@@ -5994,3 +5994,90 @@ test("the parent's own destructured export", () => {
     }
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// Round 30 — a shared variable statement does not force a waiver.
+//
+// A variable statement is mirrored whole, while the self-check expected only the
+// requested names. `export const a = 1, b = 2` added by the change, with a test
+// importing only `a`, emitted both names and was refused, so a valid stand-in
+// became CANNOT-HOLLOW plus a whole-file waiver.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 30 — a shared variable statement does not force a waiver", () => {
+  const PARENT = `export const base = 0;\n`;
+  // One statement, two names; the test below imports only `a`.
+  const CHANGE = `export const base = 0;\nexport const a = 1, b = 2;\n`;
+
+  test("a stand-in asked for one name in a shared statement is written, not refused", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["a"]);
+    expect(augmented.ok).toBe(true);
+    if (!augmented.ok) return;
+    // The parent's own source verbatim, then the stand-ins.
+    expect(augmented.text.startsWith(PARENT)).toBe(true);
+    // The statement's sibling is mirrored with it, because that is what the
+    // statement declares — and neither name may be declared twice.
+    expect(runtimeExportNames("scripts/mod.ts", augmented.text)).toEqual(["a", "b", "base"]);
+    expect(topLevelBindingNames("scripts/mod.ts", augmented.text)).toEqual(["a", "b", "base"]);
+  });
+
+  test("a sibling the parent already supplies still refuses, so a duplicate is still caught", () => {
+    // The invariant that must not move: a stand-in may never be appended over a
+    // name the parent supplies. Pinned as behaviour — it holds before this round's
+    // change too, because the clash check runs first; the binding-multiset
+    // comparison behind it is the backstop, not the first line.
+    const parent = `export const base = 0;\nexport const b = 20;\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["a"]);
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("export const a = 1, b = 2;");
+    expect(augmented.refusal).toContain("`b`");
+    expect(augmented.refusal).toContain("no stand-in");
+  });
+
+  test("the same refusal reaches the plan as a refusal, not a stand-in", () => {
+    const plan = planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { a } from "./mod";\n`,
+      new Set(["scripts/mod.ts"]),
+      (path) => (path === "scripts/mod.ts" ? CHANGE : null),
+      (path) =>
+        path === "scripts/mod.ts" ? `export const base = 0;\nexport const b = 20;\n` : null,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("`b`");
+  });
+});
+
+describe("red-on-parent round 30 — a shared variable statement, end to end", () => {
+  // Before this round's change the mirror emitted `a` and `b` while the check
+  // expected only `a`, so the augmentation was refused and the file needed a
+  // whole-file waiver to pass.
+  const PARENT = `export const base = 0;\n`;
+  const CHANGE = `export const base = 0;\nexport const a = 1, b = 2;\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { a } from "./shared-names";
+test("uses the name the shared statement adds", () => {
+  expect(a).toBe(1);
+});
+`;
+
+  test("the stand-in is written and the test is judged, not waived", () => {
+    const fixture = createFixture(
+      [PKG, { path: "packages/core/src/shared-names.ts", text: PARENT }],
+      [
+        { path: "packages/core/src/shared-names.ts", text: CHANGE },
+        { path: "packages/core/src/shared-names.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("packages/core/src/shared-names.ts — appended a");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});

@@ -2089,6 +2089,12 @@ export function augmentModuleSource(
   // so a request for both resolves to the same statement twice; appending it
   // twice would declare each name twice.
   const mirroredStatements = new Set<string>();
+  // Every name the mirrored statements really declare, which is a superset of
+  // `names` whenever a statement declares more than the one requested. The
+  // self-check below asks what the appended text is meant to declare rather than
+  // what the test happened to import. See the block comment on the comparison for
+  // why that is the shape and not a hole.
+  const appendedNames: string[] = [];
   for (const name of names) {
     if (name === "default") {
       return refuse(
@@ -2126,6 +2132,7 @@ export function augmentModuleSource(
     }
     if (mirroredStatements.has(statementText)) continue;
     mirroredStatements.add(statementText);
+    appendedNames.push(...declared);
     const mirrored = hollowModuleSource(statementText, path, "augment");
     if (!mirrored.ok) {
       // The hollow writer's reason, with the name this iteration is for. A file can
@@ -2148,6 +2155,22 @@ export function augmentModuleSource(
   // invented a name is a lie about the module's shape, and refusing is always
   // available.
   //
+  // What is EXPECTED is read from the change's own declarations — the requested
+  // names plus every sibling the mirrored statements declare — never from the
+  // emitted text, so a mirror that drops or invents a name still fails here. The
+  // expectation used to be the requested names alone, and a request for one name
+  // of a shared statement (`export const a = 1, b = 2`, test imports only `a`)
+  // then compared `a, base` against a faithful `a, b, base` and refused a valid
+  // stand-in: CANNOT-HOLLOW plus a whole-file waiver, for a file the gate could
+  // judge. Splitting the statement instead was the alternative; it would have
+  // meant a second emitter beside `hollowModuleSource` deciding what one
+  // declaration looks like, and two emitters that disagree is the bug this
+  // function's reading helpers exist to stop.
+  //
+  // The invariant that does not move: a stand-in is never appended over a name
+  // the parent already supplies. The clash check above refuses that first, and the
+  // BINDING comparison below is the backstop under it.
+  //
   // Two checks, not one. The export set is what the importing file picks up; the
   // BINDING list is what makes the file load at all. The two compare differently,
   // on purpose. The export side is a SET, because one name can legitimately be
@@ -2158,8 +2181,12 @@ export function augmentModuleSource(
   // duplicate must fail the comparison instead of sitting in the parent worktree
   // as a file that cannot load — which is the blocker round 25 closed.
   const wantedNames = [...new Set(names)];
-  const wantedExports = [...new Set([...parentExports, ...wantedNames])].sort();
-  const wantedBindings = [...new Set([...parentBindings, ...wantedNames])].sort();
+  const appendedDeclared = [...new Set(appendedNames)];
+  // What the appended text is meant to add, for the refusal messages as well as
+  // the comparison: the request plus the siblings it dragged in with it.
+  const appendedLabel = [...new Set([...wantedNames, ...appendedDeclared])];
+  const wantedExports = [...new Set([...parentExports, ...appendedLabel])].sort();
+  const wantedBindings = [...new Set([...parentBindings, ...appendedLabel])].sort();
   // A set on the export side, and only there. `export type { value } from
   // "./types"` beside an appended `export function value()` names `value` twice
   // in the declared export list and loads fine — that pair is the shape this
@@ -2170,12 +2197,12 @@ export function augmentModuleSource(
   const mirroredBindings = topLevelBindingNames(path, text);
   if (wantedExports.join("\u0000") !== mirroredExports.join("\u0000")) {
     return refuse(
-      `an augmentation would export ${mirroredExports.join(", ") || "nothing"} where the parent's module plus \`${wantedNames.join("`, `")}\` is ${wantedExports.join(", ") || "nothing"}`,
+      `an augmentation would export ${mirroredExports.join(", ") || "nothing"} where the parent's module plus \`${appendedLabel.join("`, `")}\` is ${wantedExports.join(", ") || "nothing"}`,
     );
   }
   if (wantedBindings.join("\u0000") !== mirroredBindings.join("\u0000")) {
     return refuse(
-      `an augmentation would declare ${mirroredBindings.join(", ") || "nothing"} at the top level where the parent's module plus \`${wantedNames.join("`, `")}\` is ${wantedBindings.join(", ") || "nothing"} — the augmented file would not load`,
+      `an augmentation would declare ${mirroredBindings.join(", ") || "nothing"} at the top level where the parent's module plus \`${appendedLabel.join("`, `")}\` is ${wantedBindings.join(", ") || "nothing"} — the augmented file would not load`,
     );
   }
   return { ok: true, text };

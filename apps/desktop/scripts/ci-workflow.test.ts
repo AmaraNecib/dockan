@@ -17,6 +17,10 @@
  * #231 added the review-round guards: `--no-renames` (both sides of a rename),
  * the `labeled` trigger, the decision step reaching `full` for a labeled PR, and
  * the root-`test`-script wiring assertion moved out of the scripts suite.
+ *
+ * #349 pinned the shell two of these tests execute a `run:` block with: it is
+ * resolved to an absolute POSIX path by `./posix-shell` instead of trusting the
+ * `bash` PATH lookup, which on Windows can land on the WSL launcher.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -32,6 +36,12 @@ import {
   parseSteps,
   stepNamed,
 } from "./workflow-utils";
+// The shell is resolved to an absolute path rather than left to the PATH lookup
+// (issue 349): on Windows the first `bash` on PATH can be the WSL launcher in
+// `C:\Windows\System32`, which sees a different filesystem and fails the two
+// tests that execute a `run:` block (`sed: can't read scope.txt`, then `EBUSY`
+// on cleanup). Whichever of System32 and Git bash came first decided the result.
+import { absentShellTitleSuffix, resolvePosixShell } from "./posix-shell";
 // The gate's own budget, read from the script rather than copied here: the
 // step timeout has to cover what the script can spend, and a copy of the two
 // numbers in two files is a pair that drifts.
@@ -42,6 +52,38 @@ const WORKFLOW_SOURCE = readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n?/gu, "
 
 const RUST_JOB = "rust";
 const CRATE_DIR = "apps/desktop/src-tauri";
+
+/**
+ * The POSIX shell the executed-step tests run with. Resolved once, at import
+ * time, so the skip decision and the executable are the same value.
+ */
+const POSIX_SHELL = resolvePosixShell();
+if (POSIX_SHELL.kind === "absent") {
+  // A skip with no reason is a silent pass. Bun prints console output above the
+  // results, and the skip's own name carries the reason too.
+  console.warn(POSIX_SHELL.reason);
+}
+
+/**
+ * The resolved shell, or a failure that names everything that was looked for —
+ * the loud form, for a path that should be unreachable behind `itShell`.
+ */
+function shellPath(): string {
+  if (POSIX_SHELL.kind !== "resolved") throw new Error(POSIX_SHELL.reason);
+  return POSIX_SHELL.path;
+}
+
+/**
+ * `it` for a test that shells out: skipped, with the reason in its name, when
+ * this host has no POSIX shell. Those two tests cannot fake the shell they
+ * need — the whole point is that `run:` really works — so skipping loudly is
+ * the only honest outcome when nothing can run it.
+ */
+const itShell: (name: string, body: () => void) => void =
+  POSIX_SHELL.kind === "resolved"
+    ? it
+    : (name, body) => it.skip(`${name}${absentShellTitleSuffix(POSIX_SHELL)}`, body);
+
 /**
  * Minutes the e2e job must keep beyond the run step's own limit, covering SETUP
  * (checkout + two installs; ~30s warm, minutes cold — `playwright install
@@ -153,7 +195,7 @@ function runDecide(
     // the decision step's rust grep reads changed.txt; an empty file keeps it
     // quiet and yields rust=false in the branches that do not run the selector
     writeFileSync(path.join(dir, "changed.txt"), "");
-    const scope = execFileSync("bash", ["-euo", "pipefail", "-c", script], {
+    const scope = execFileSync(shellPath(), ["-euo", "pipefail", "-c", script], {
       cwd: dir,
       encoding: "utf8",
       env: shellEnv({ GITHUB_OUTPUT: outputFile }),
@@ -566,7 +608,7 @@ describe("PR CI workflow", () => {
     expect(triggers).toMatch(/^\s{4}types:\s*\[opened, synchronize, reopened, labeled\]$/mu);
   });
 
-  it("reaches `full` for a labeled pull_request event (#231)", () => {
+  itShell("reaches `full` for a labeled pull_request event (#231)", () => {
     // The trigger (pinned by the `types:` test above) is what makes GitHub
     // dispatch; this proves the decision then classifies the event as full. The
     // two tests are the proof together: the `types:` assertion fails if the
@@ -581,7 +623,7 @@ describe("PR CI workflow", () => {
     expect(pushed.scope).toContain("reason=merge to develop");
   });
 
-  it("publishes the skip explanation from the always-running changes job (#231)", () => {
+  itShell("publishes the skip explanation from the always-running changes job (#231)", () => {
     // Finding 4: the summary used to live in the `e2e` job, which a `skip`
     // decision does not run, so nothing explained the skip. Pin the home (it
     // must be a `changes` step, so a revert to `e2e` fails `stepNamed`) and the
@@ -598,7 +640,7 @@ describe("PR CI workflow", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "ci-summary-"));
     try {
       const summaryFile = path.join(dir, "step-summary");
-      execFileSync("bash", ["-euo", "pipefail", "-c", summary.run], {
+      execFileSync(shellPath(), ["-euo", "pipefail", "-c", summary.run], {
         cwd: dir,
         encoding: "utf8",
         env: shellEnv({

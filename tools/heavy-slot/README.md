@@ -26,10 +26,11 @@ Light work runs directly. A queue on everything is a queue nobody respects.
 
 ## How the bound is measured
 
-Capacity is recomputed on every acquire from free RAM and CPU load. `HEAVY_SLOT_MAX` is a safety
-ceiling, not the value you get: a tight machine narrows itself, an idle machine widens. A wait
-budget (`HEAVY_SLOT_WAIT_MS`, default 30 minutes) exits `75` having run nothing, so a caller can
-fall back to focused tests.
+Capacity is recomputed on every acquire from free RAM and CPU load. Why `HEAVY_SLOT_MAX` is a
+ceiling and not the number anyone gets is stated once, in `docs/development-workflow.md` §7
+(Local verification tiers); this file does not restate it. A wait budget
+(`HEAVY_SLOT_WAIT_MS`, default 30 minutes) exits `75` having run nothing, so a caller can fall
+back to focused tests.
 
 ## Port ranges: EACCES is not "busy"
 
@@ -42,8 +43,9 @@ Hyper-V changes. Waiting never fixes a reserved range, so the two error families
   refuses immediately with exit `76` and names `HEAVY_SLOT_BASE` and the `netsh` command;
   `status` prints a one-line diagnostic instead of "the queue is empty".
 - When the preferred base's first slot refuses with `EACCES`, the base shifts by a stride
-  (+1000) at a time, up to 8 candidates. The first process that finds a working base
-  records it in `HEAVY_SLOT_STATE_DIR/base` with flag `wx` - first writer wins, and a concurrent
+  (+1000) at a time: the preferred base is probed first, then up to 8 shifts, so nine
+  candidates in all. The first process that finds a working base records it in
+  `HEAVY_SLOT_STATE_DIR/base` with flag `wx` - first writer wins, and a concurrent
   process reads the winner instead of overwriting it, so two processes never disagree.
 - A base that worked yesterday can be reserved today: a persisted base that no longer binds is
   re-decided the same way. If every candidate is excluded, the process refuses loudly (exit 76)

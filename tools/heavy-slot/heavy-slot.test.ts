@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +10,6 @@ import {
   capacityFor,
   chooseFreeBase,
   claimBase,
-  closeServer,
   DEFAULT_BASE,
   killTree,
   maxSlots,
@@ -18,6 +17,7 @@ import {
   realOpenServer,
   release,
   resetBase,
+  run,
   setBinderForTest,
   status,
   treeAlive,
@@ -34,11 +34,6 @@ const TOOL_IMPORT = new URL("./heavy-slot.ts", import.meta.url).href;
 // The base is picked at runtime with the tool's own probe helper - no hardcoded
 // port, no hardcoded C:/ path. The state lives under the system temp dir.
 const ROOT = mkdtempSync(join(tmpdir(), "heavy-slot-test-"));
-process.env.HEAVY_SLOT_MAX = "1";
-process.env.HEAVY_SLOT_PER_JOB_GB = "0.1";
-process.env.HEAVY_SLOT_RESERVE_GB = "0";
-process.env.HEAVY_SLOT_WAIT_MS = "400";
-process.env.HEAVY_SLOT_STATE_DIR = ROOT;
 
 // F10: chooseFreeBase releases every port it probes, so two test runs started
 // together can settle on the same "free" base and steal each other's range when
@@ -63,14 +58,51 @@ async function pickTestBase(): Promise<number> {
     if (candidate === null) continue;
     const canary = await realOpenServer(candidate);
     if ("error" in canary) continue; // a sibling run took it between probe and canary
-    await closeServer(canary.server);
+    await new Promise<void>((resolve) => canary.server.close(() => resolve()));
     return candidate;
   }
   throw new Error("no free base found near the default; the probe window is too narrow");
 }
 
 const TEST_BASE = await pickTestBase();
-process.env.HEAVY_SLOT_BASE = String(TEST_BASE);
+
+// F14: the scenario env is written from a hook, not at module scope, so when it
+// applies is visible instead of implied. Two facts make that possible, and both
+// are load-bearing: the tool reads every config value lazily (preferredBase(),
+// maxSlots(), stateDir() all touch process.env at call time, never at import time),
+// and resetBase() re-reads the base into the module's cached decision. Note what
+// was never true: a static import is evaluated before any statement in this file,
+// so "the env must be set before the module is imported" cannot be arranged here -
+// the hook plus the lazy reads are what make the scenario real.
+const SCENARIO_ENV = {
+  HEAVY_SLOT_MAX: "1",
+  HEAVY_SLOT_PER_JOB_GB: "0.1",
+  HEAVY_SLOT_RESERVE_GB: "0",
+  HEAVY_SLOT_WAIT_MS: "400",
+  HEAVY_SLOT_STATE_DIR: ROOT,
+  HEAVY_SLOT_BASE: String(TEST_BASE),
+} as const;
+
+const previousEnv = new Map<string, string | undefined>();
+
+function enterScenario(): void {
+  for (const [key, value] of Object.entries(SCENARIO_ENV)) {
+    previousEnv.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  resetBase(); // the base decided at import time came from the caller's env, not this one
+}
+
+function leaveScenario(): void {
+  for (const [key, value] of previousEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  previousEnv.clear();
+}
+
+beforeAll(() => enterScenario());
+afterAll(() => leaveScenario());
 
 console.log(`[heavy-slot-test] chosen base: ${TEST_BASE} (probed free at runtime), state root: ${ROOT}`);
 
@@ -156,7 +188,7 @@ describe("heavy-slot", () => {
     const script = [
       `const mod = await import(${JSON.stringify(TOOL_IMPORT)});`,
       "mod.setBinderForTest(() => Promise.resolve({ error: 'unusable', code: 'EACCES' }));",
-      'await mod.run("extra", "echo hi");',
+      'process.exit(await mod.run("extra", "echo hi"));',
     ].join("\n");
     const t0 = Date.now();
     const r = await childOutput(spawn("bun", ["-e", script], { cwd: process.cwd(), env: childEnv(dir), stdio: ["ignore", "pipe", "pipe"] }));
@@ -170,6 +202,30 @@ describe("heavy-slot", () => {
     expect(Date.now() - t0).toBeLessThan(5000);
   }, 15000);
 
+  test("run hands its outcome back as a code instead of exiting", async () => {
+    resetBase();
+    setBinderForTest(async () => ({ error: "unusable", code: "EACCES" }));
+    try {
+      // The same refusal the CLI turns into exit 76 - but here it is a return
+      // value, and this test process is still alive to read it. That is what makes
+      // the queue callable from a library, and it is the property the old
+      // process.exit(76) inside run() could not have.
+      expect(await run("library-caller", "echo hi")).toBe(76);
+    } finally {
+      setBinderForTest(null);
+    }
+
+    // The other half of "safe to call from a library": a run that does reach the
+    // command leaves no SIGINT/SIGTERM listener behind for the next call to collide
+    // with. Counted around the call, not assumed.
+    resetBase();
+    const sigint = process.listenerCount("SIGINT");
+    const sigterm = process.listenerCount("SIGTERM");
+    expect(await run("library-caller", "echo library-run-ok")).toBe(0);
+    expect(process.listenerCount("SIGINT")).toBe(sigint);
+    expect(process.listenerCount("SIGTERM")).toBe(sigterm);
+  }, 20000);
+
   test("an EACCES on the range's first slot shifts the base by the stride and records it", async () => {
     resetBase();
     const dir = freshDir();
@@ -178,9 +234,10 @@ describe("heavy-slot", () => {
     stubUnusable((port) => port === TEST_BASE);
     try {
       const r = await acquireSlot("shifter");
-      expect(r).not.toBeNull();
-      expect(r && "slot" in r ? r.slot.port : null).toBe(TEST_BASE + BASE_STRIDE);
-      if (r && "slot" in r) release(r.slot);
+      expect(r.status).toBe("acquired");
+      const slot = r.status === "acquired" ? r.slot : null;
+      expect(slot?.port).toBe(TEST_BASE + BASE_STRIDE);
+      if (slot) release(slot);
       // "wx" record: the first process to find a working base writes it once.
       expect(readPersistedBase(dir)).toBe(TEST_BASE + BASE_STRIDE);
       expect(readFileSync(join(dir, "base"), "utf8")).toBe(`${TEST_BASE + BASE_STRIDE}\n`);
@@ -204,9 +261,11 @@ describe("heavy-slot", () => {
       const r = await acquireSlot("stale-replace");
       // The walk replaced the stale record with the shifted candidate instead of
       // keeping every later process frozen on it.
-      expect(r && "slot" in r ? r.slot.port : null).toBe(TEST_BASE + BASE_STRIDE);
+      expect(r.status).toBe("acquired");
+      const slot = r.status === "acquired" ? r.slot : null;
+      expect(slot?.port).toBe(TEST_BASE + BASE_STRIDE);
       expect(readPersistedBase(dir)).toBe(TEST_BASE + BASE_STRIDE);
-      if (r && "slot" in r) release(r.slot);
+      if (slot) release(slot);
     } finally {
       setBinderForTest(null);
       if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
@@ -259,7 +318,7 @@ describe("heavy-slot", () => {
         `mod.setBinderForTest(async (port) => port === ${preferred} || port === ${stale}`,
         "  ? { error: 'unusable', code: 'EACCES' }",
         "  : await mod.realOpenServer(port));",
-        'await mod.run("racer", "echo hi");',
+        'process.exit(await mod.run("racer", "echo hi"));',
       ].join("\n");
     // Both children start at the same moment on the same state dir. The raised
     // wait budget keeps a child patient while the other briefly holds the agreed

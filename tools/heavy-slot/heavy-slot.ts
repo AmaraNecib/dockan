@@ -15,7 +15,8 @@
  * Exits with the child's exit code; 75 if it gave up waiting without running anything; 76 when
  * the port range cannot serve work (every candidate reserved, or part of the range refuses to
  * bind even after a re-decide) - refused loudly, never reported as
- * "the queue is full", because waiting will never help.
+ * "the queue is full", because waiting will never help. `run` returns that code and the CLI
+ * dispatch applies it, so the queue is callable from a library too.
  */
 
 import net from "node:net";
@@ -25,42 +26,65 @@ import { homedir, freemem, totalmem, cpus } from "node:os";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
+// The interface, and everything else. A caller gets the queue (`acquireSlot`,
+// `run`), the status readout (`status`, `unusableBanner`), the admission policy and
+// its constants (`capacityFor`, `maxSlots`, `BASE_SHIFT_ATTEMPTS`,
+// `BASE_PROBE_WINDOW`, `DEFAULT_BASE`, `BASE_STRIDE`), the slot primitives a test
+// needs to hold a port from outside (`tryTake`, `release`) and the cancellation pair
+// (`killTree`, `treeAlive`), the bind seam tests inject through (`setBinderForTest`,
+// `realOpenServer` and its two types), and the base helpers a test uses to point the
+// queue at a scenario (`claimBase`, `readPersistedBase`, `chooseFreeBase`,
+// `resetBase`). Config getters, measurement, base resolution and the holders scan are
+// private on purpose: they are how this module works, not what it is for, and an
+// export is a promise to keep them.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Config. Every value is read lazily from the environment, so a caller (and a
 // test) can point env at a scenario even after importing the module.
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_BASE = 45700;
 export const BASE_STRIDE = 1000; // shift step when the preferred base's range is reserved
-export const BASE_MAX_ATTEMPTS = 8; // bound on the shift walk, counting the preferred base
 
-export function preferredBase(): number {
+/**
+ * Two counts, two names, because one name for both was an off-by-one waiting to be
+ * written down: this is the number of SHIFTS the walk takes after the preferred
+ * base, so a walk visits `BASE_PROBE_WINDOW` bases - the preferred one at shift 0
+ * plus shifts 1..8 - and a reader never has to guess whether the preferred base is
+ * inside the bound.
+ */
+export const BASE_SHIFT_ATTEMPTS = 8;
+/** Candidates a walk from any `preferred` can visit, preferred base included. */
+export const BASE_PROBE_WINDOW = BASE_SHIFT_ATTEMPTS + 1;
+
+function preferredBase(): number {
   return Number(process.env.HEAVY_SLOT_BASE ?? DEFAULT_BASE);
 }
 export function maxSlots(): number {
   return Math.max(1, Number(process.env.HEAVY_SLOT_MAX ?? 5));
 }
-export function perJobGb(): number {
+function perJobGb(): number {
   return Number(process.env.HEAVY_SLOT_PER_JOB_GB ?? 2.5);
 }
-export function reserveGb(): number {
+function reserveGb(): number {
   return Number(process.env.HEAVY_SLOT_RESERVE_GB ?? 4);
 }
-export function waitMs(): number {
+function waitMs(): number {
   return Number(process.env.HEAVY_SLOT_WAIT_MS ?? 30 * 60 * 1000);
 }
-export function stateDir(): string {
+function stateDir(): string {
   return process.env.HEAVY_SLOT_STATE_DIR ?? join(homedir(), ".pi", "heavy-slots");
 }
 
 // The base this process has agreed on: the recorded one, the preferred one, or a
-// shifted one - see resolveBase. Until a decision, ports come from the preferred base.
+// shifted one - see resolveBase. Until a decision, ports come from the preferred
+// base. The read here is only this module's starting value: resetBase() re-reads
+// the environment, which is what lets a test set env after import.
 let activeBase = preferredBase();
 let agreedBase: number | null = null;
 
-export function currentBase(): number {
-  return activeBase;
-}
-export function portFor(index: number): number {
+function portFor(index: number): number {
   return activeBase + index - 1;
 }
 /** Re-read the environment and forget this process's base decision. Mainly for tests. */
@@ -69,11 +93,11 @@ export function resetBase(): void {
   agreedBase = null;
 }
 
-export function gb(n: number): number {
+function gb(n: number): number {
   return Math.round((n / 1e9) * 10) / 10;
 }
 
-export async function cpuLoadPercent(): Promise<number> {
+async function cpuLoadPercent(): Promise<number> {
   const snap = () => cpus().map((c) => c.times);
   const a = snap();
   await new Promise((r) => setTimeout(r, 250));
@@ -119,7 +143,7 @@ export function capacityFor(freeGb: number, cpuLoad: number, urgent: boolean): n
 export type OpenResult = { server: net.Server } | { error: "busy" | "unusable"; code: string };
 export type OpenServer = (port: number) => Promise<OpenResult>;
 
-export const UNUSABLE_BIND_CODES: ReadonlySet<string> = new Set(["EACCES", "EADDRNOTAVAIL", "EPERM"]);
+const UNUSABLE_BIND_CODES: ReadonlySet<string> = new Set(["EACCES", "EADDRNOTAVAIL", "EPERM"]);
 
 export function realOpenServer(port: number): Promise<OpenResult> {
   return new Promise((resolve) => {
@@ -145,16 +169,16 @@ export function setBinderForTest(impl: OpenServer | null): void {
   openServerImpl = impl ?? realOpenServer;
 }
 
-export type PortProbe = "free" | "busy" | "unusable";
+type PortProbe = "free" | "busy" | "unusable";
 
-export async function probePort(port: number): Promise<PortProbe> {
+async function probePort(port: number): Promise<PortProbe> {
   const opened = await openServerImpl(port);
   if ("error" in opened) return opened.error;
   await closeServer(opened.server);
   return "free";
 }
 
-export function closeServer(server: net.Server): Promise<void> {
+function closeServer(server: net.Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
@@ -164,7 +188,7 @@ export function closeServer(server: net.Server): Promise<void> {
 
 const BASE_FILE_NAME = "base";
 
-export function baseFilePath(dir: string = stateDir()): string {
+function baseFilePath(dir: string = stateDir()): string {
   return join(dir, BASE_FILE_NAME);
 }
 
@@ -240,7 +264,7 @@ async function claimOrFollow(base: number): Promise<number> {
  * Returns null when every candidate is excluded - the caller must refuse loudly, never
  * report the queue as full.
  */
-export async function resolveBase(): Promise<number | null> {
+async function resolveBase(): Promise<number | null> {
   if (agreedBase !== null) return agreedBase;
   const preferred = preferredBase();
   const persisted = readPersistedBase();
@@ -255,11 +279,14 @@ export async function resolveBase(): Promise<number | null> {
       /* another process is replacing it right now; the claims below decide */
     }
   }
+  // The preferred base is candidate 0 of the walk (BASE_PROBE_WINDOW counts it);
+  // the loop takes the shifts 1..BASE_SHIFT_ATTEMPTS, so the two counts meet
+  // exactly and nothing is skipped or probed twice.
   if ((await probePort(portOf(preferred, 1))) !== "unusable") {
     return activate(await claimOrFollow(preferred));
   }
-  for (let attempt = 1; attempt <= BASE_MAX_ATTEMPTS; attempt++) {
-    const candidate = preferred + attempt * BASE_STRIDE;
+  for (let shift = 1; shift <= BASE_SHIFT_ATTEMPTS; shift++) {
+    const candidate = preferred + shift * BASE_STRIDE;
     if (candidate >= 65536) continue;
     if ((await probePort(portOf(candidate, 1))) === "unusable") continue;
     return activate(await claimOrFollow(candidate));
@@ -270,7 +297,7 @@ export async function resolveBase(): Promise<number | null> {
 /** Helper for callers that need an actually free port region (tests pick their base with this): probe candidate slot-1 ports until one binds cleanly. */
 export async function chooseFreeBase(
   preferred: number = preferredBase(),
-  attempts: number = BASE_MAX_ATTEMPTS,
+  attempts: number = BASE_PROBE_WINDOW,
 ): Promise<number | null> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     const candidate = preferred + attempt * BASE_STRIDE;
@@ -280,10 +307,13 @@ export async function chooseFreeBase(
   return null;
 }
 
+/** The largest base the walk can reach, named once so the banner and the walk cannot disagree. */
+const LAST_PROBED_BASE_SPAN = BASE_SHIFT_ATTEMPTS * BASE_STRIDE;
+
 export function unusableBanner(): string {
   return (
     `[heavy-slot] no usable port range on this machine: candidates ${preferredBase()}..` +
-    `${preferredBase() + BASE_MAX_ATTEMPTS * BASE_STRIDE} (stride ${BASE_STRIDE}, ${BASE_MAX_ATTEMPTS + 1} probes) all fail to bind with EACCES. ` +
+    `${preferredBase() + LAST_PROBED_BASE_SPAN} (stride ${BASE_STRIDE}, ${BASE_PROBE_WINDOW} probes) all fail to bind with EACCES. ` +
     `HEAVY_SLOT_BASE=${preferredBase()} points into a range this machine has reserved. ` +
     `List the excluded ranges with: netsh int ipv4 show excludedportrange protocol=tcp - then set HEAVY_SLOT_BASE outside every range. ` +
     `Refusing loudly: this is not "the queue is full", and waiting will never help (exit 76).`
@@ -330,9 +360,9 @@ export function release(slot: Slot): void {
   }
 }
 
-export type Holder = { slot: number; port: number; label: string; pid?: number; startedAt?: string; stale: boolean };
+type Holder = { slot: number; port: number; label: string; pid?: number; startedAt?: string; stale: boolean };
 
-export async function holders(): Promise<Holder[]> {
+async function holders(): Promise<Holder[]> {
   return (await scanSlots()).list;
 }
 
@@ -407,20 +437,26 @@ export async function status(): Promise<void> {
 // Acquiring and running.
 // ---------------------------------------------------------------------------
 
-export type AcquireResult = { slot: Slot } | { refused: "unusable" } | null;
-
 /**
- * Wait for a slot. null = the wait budget ran out while slots were genuinely held
- * (the queue is full; the caller exits 75). { refused: "unusable" } = the port
- * range itself is broken - all candidates excluded, or part of the current range
- * refuses to bind and a re-decide of the base lands back on it - refused
- * immediately, never counted as "busy", never reported as "the queue is full".
+ * The queue's answer, as a value: `acquired` carries the slot, `full` means the
+ * wait budget ran out while slots were genuinely held (waiting would still be the
+ * right call, later), `refused` means the port range itself is broken - every
+ * candidate excluded, or part of the current range refuses to bind and a re-decide
+ * of the base lands back on it. A bare null used to stand for "full", which read as
+ * "no slot at all" next to the object forms; every caller now names the outcome it
+ * got. Exit codes are the CLI dispatch's business, not the queue's.
  */
+export type AcquireResult =
+  | { status: "acquired"; slot: Slot }
+  | { status: "full" }
+  | { status: "refused"; reason: "unusable" };
+
+/** Wait for a slot until the queue admits one, the range is refused, or the wait budget runs out. */
 export async function acquireSlot(label: string): Promise<AcquireResult> {
   const started = Date.now();
   const urgent = process.env.HEAVY_PRIORITY === "high";
 
-  if ((await resolveBase()) === null) return { refused: "unusable" };
+  if ((await resolveBase()) === null) return { status: "refused", reason: "unusable" };
   let redecided = false;
 
   while (true) {
@@ -431,7 +467,7 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
     let unusableCode: string | null = null;
     for (let i = 1; i <= capacity; i++) {
       const taken = await tryTake(i, label);
-      if (taken.ok) return { slot: taken.slot };
+      if (taken.ok) return { status: "acquired", slot: taken.slot };
       if (taken.reason !== "busy") { // busy = a slot is held; not a reason to re-decide or refuse
         unusablePorts.push(taken.port);
         unusableCode ??= taken.code;
@@ -446,7 +482,7 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
         `[heavy-slot] slot ports ${unusablePorts.join(", ")} refuse to bind (${unusableCode}) - the range is partly reserved; re-deciding the base because waiting will not fix it`,
       );
       const before = agreedBase;
-      if (redecided) return { refused: "unusable" };
+      if (redecided) return { status: "refused", reason: "unusable" };
       redecided = true;
       agreedBase = null;
       const next = await resolveBase();
@@ -454,10 +490,10 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
       // genuinely unusable for everyone: refuse 76 now instead of burning the
       // whole wait budget on a machine that is broken and reporting exit 75 -
       // "the queue is full" - afterwards.
-      if (next === null || next === before) return { refused: "unusable" };
+      if (next === null || next === before) return { status: "refused", reason: "unusable" };
       continue;
     }
-    if (Date.now() - started > waitMs()) return null;
+    if (Date.now() - started > waitMs()) return { status: "full" };
     const busy = (await holders()).map((h) => `${h.label}(${h.slot})`);
     console.error(
       `[heavy-slot] queued ${Math.round((Date.now() - started) / 1000)}s - free ${gb(freeGb * 1e9)} GB, cpu ${cpuLoad}%, capacity ${capacity}, busy [${busy.join(", ")}]`,
@@ -519,19 +555,35 @@ export function treeAlive(child: ChildProcess): boolean {
   }
 }
 
-export async function run(label: string, command: string): Promise<void> {
+/**
+ * Exit codes this tool answers a CLI caller with, kept in one place because they
+ * are a contract: 75 = the queue stayed full for the whole wait budget (nothing
+ * ran), 76 = the port range is unusable (waiting cannot help), 2 = usage.
+ */
+const EXIT_FULL = 75;
+const EXIT_REFUSED = 76;
+const EXIT_USAGE = 2;
+
+/**
+ * Run `command` behind a slot, returning the exit code the caller should use: the
+ * child's own code, or the queue's 75 (gave up waiting, nothing was run) / 76
+ * (port range unusable). This function never exits - the CLI dispatch below is the
+ * single place that maps a code to `process.exit`, so the queue stays callable as a
+ * library function from a script or a test.
+ */
+export async function run(label: string, command: string): Promise<number> {
   const started = Date.now();
   const acquired = await acquireSlot(label);
 
-  if (acquired === null) {
+  if (acquired.status === "full") {
     console.error(
       `[heavy-slot] gave up after ${Math.round((Date.now() - started) / 1000)}s waiting for a slot. Nothing was run.`,
     );
-    process.exit(75);
+    return EXIT_FULL;
   }
-  if ("refused" in acquired) {
+  if (acquired.status === "refused") {
     console.error(unusableBanner());
-    process.exit(76);
+    return EXIT_REFUSED;
   }
   const slot = acquired.slot;
 
@@ -542,6 +594,13 @@ export async function run(label: string, command: string): Promise<void> {
 
   let child: ChildProcess | undefined;
   let cancelled = false;
+  // Hoisted out of the promise so the handlers can be removed once the child is
+  // gone: a library caller running several commands through run() would otherwise
+  // accumulate one SIGINT/SIGTERM listener per call.
+  const stop = (): void => {
+    cancelled = true;
+    if (child) killTree(child, "SIGTERM");
+  };
   const code = await new Promise<number>((resolve) => {
     // detached on POSIX: the command leads its own process group, so the kill below
     // reaches every descendant and not only the wrapper shell that `shell: true`
@@ -552,14 +611,16 @@ export async function run(label: string, command: string): Promise<void> {
       stdio: "inherit",
       detached: process.platform !== "win32",
     });
-    const stop = () => {
-      cancelled = true;
-      if (child) killTree(child, "SIGTERM");
-    };
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
     if (child) child.on("close", (c) => resolve(c ?? 1));
   });
+  // SAFETY: process is an EventEmitter at runtime; bun's NodeJS.Process augmentation
+  // declares off() only for its own "memoryPressure" event, which is what narrows the
+  // call away from the EventEmitter signature. The cast names the interface in use.
+  const emitter = process as NodeJS.EventEmitter;
+  emitter.off("SIGINT", stop);
+  emitter.off("SIGTERM", stop);
 
   if (cancelled && child) {
     // The close event fires as soon as the wrapper shell dies, and the rest of the
@@ -578,8 +639,12 @@ export async function run(label: string, command: string): Promise<void> {
 
   release(slot);
   console.error(`[heavy-slot] slot ${slot.index} released, exit ${code}`);
-  process.exit(code);
+  return code;
 }
+
+// ---------------------------------------------------------------------------
+// CLI dispatch. The only layer that turns an outcome into an exit code.
+// ---------------------------------------------------------------------------
 
 if (import.meta.main) {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -590,16 +655,15 @@ if (import.meta.main) {
   if (cmd === "run") {
     if (rest.length < 2) {
       console.error('usage: bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"');
-      process.exit(2);
+      process.exit(EXIT_USAGE);
     }
     const label = rest[0];
     if (!label) {
       console.error('usage: bun tools/heavy-slot/heavy-slot.ts status | run "<label>" "<command>"');
-      process.exit(2);
+      process.exit(EXIT_USAGE);
     }
-    await run(label, rest.slice(1).join(" "));
-    process.exit(0);
+    process.exit(await run(label, rest.slice(1).join(" ")));
   }
   console.error('usage: bun tools/heavy-slot/heavy-slot.ts status | run "<label>" "<command>"');
-  process.exit(2);
+  process.exit(EXIT_USAGE);
 }

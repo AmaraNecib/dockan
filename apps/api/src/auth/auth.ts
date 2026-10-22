@@ -55,7 +55,13 @@ export function authTrustedOrigins(config: AppConfig, env: Record<string, string
   const webPort = Number(env.DOKAN_WEB_PORT ?? 5173);
   if (!Number.isInteger(webPort) || webPort <= 0) return configured;
   const loopbackSpellings = ["127.0.0.1", "localhost"];
-  return [...configured, ...loopbackSpellings.map((host) => `http://${host}:${webPort}`)];
+  // ...and the app's OWN name (#343). The browser now talks to
+  // `http://dokan.localhost:<port>`, which is neither of the spellings above, so
+  // a list without it refuses the app's own sign-in behind the proxy — the same
+  // defect #347 fixed, one rename later. It is derived from config, so a
+  // deployment that renames the app moves this with it.
+  const appOrigin = config.appOrigin;
+  return [...configured, ...loopbackSpellings.map((host) => `http://${host}:${webPort}`), ...(appOrigin === undefined ? [] : [appOrigin])];
 }
 
 /** loopback by literal address, not by name resolution: no DNS in an auth check */

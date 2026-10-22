@@ -206,10 +206,15 @@ describe("auth seam", () => {
 });
 
 /** a config with only the field the origin list reads */
-function configWithHost(host: string): Parameters<typeof authTrustedOrigins>[0] {
-  // SAFETY: `authTrustedOrigins` reads `config.host` and nothing else, which is
-  // the whole input this helper is about.
-  return { host } as Parameters<typeof authTrustedOrigins>[0];
+interface OriginInputs {
+  host: string;
+  appOrigin?: string;
+}
+
+function configWithHost(inputs: OriginInputs): Parameters<typeof authTrustedOrigins>[0] {
+  // SAFETY: `authTrustedOrigins` reads `config.host` and `config.appOrigin` and
+  // nothing else — the two fields this helper exists to supply.
+  return inputs as Parameters<typeof authTrustedOrigins>[0];
 }
 
 describe("authTrustedOrigins (#347)", () => {
@@ -218,20 +223,20 @@ describe("authTrustedOrigins (#347)", () => {
   it("adds the dev origin only for a loopback API", () => {
     // BOTH loopback spellings: the dev webview loads `localhost` while the API
     // defaults to `127.0.0.1`, and a single spelling refused the desktop window
-    expect(authTrustedOrigins(configWithHost("127.0.0.1"), { DOKAN_WEB_PORT: "5173" })).toEqual([
+    expect(authTrustedOrigins(configWithHost({ host: "127.0.0.1" }), { DOKAN_WEB_PORT: "5173" })).toEqual([
       "http://127.0.0.1:5173",
       "http://localhost:5173",
     ]);
-    expect(authTrustedOrigins(configWithHost("localhost"), { DOKAN_WEB_PORT: "5173" })).toEqual([
+    expect(authTrustedOrigins(configWithHost({ host: "localhost" }), { DOKAN_WEB_PORT: "5173" })).toEqual([
       "http://127.0.0.1:5173",
       "http://localhost:5173",
     ]);
     // a remote API adds nothing, whatever the env says
-    expect(authTrustedOrigins(configWithHost("10.0.0.5"), { DOKAN_WEB_PORT: "5173" })).toEqual([]);
+    expect(authTrustedOrigins(configWithHost({ host: "10.0.0.5" }), { DOKAN_WEB_PORT: "5173" })).toEqual([]);
   });
 
   it("keeps only absolute http(s) origins from the environment", () => {
-    const configured = authTrustedOrigins(configWithHost("10.0.0.5"), {
+    const configured = authTrustedOrigins(configWithHost({ host: "10.0.0.5" }), {
       DOKAN_TRUSTED_ORIGINS: "https://shop.example, http://10.0.0.5:8080, not-a-url, ftp://x.example, javascript:alert(1)",
     });
     // a bare host, a non-http scheme and a URL that does not parse are all dropped:
@@ -239,9 +244,18 @@ describe("authTrustedOrigins (#347)", () => {
     expect(configured).toEqual(["https://shop.example", "http://10.0.0.5:8080"]);
   });
 
+  it("trusts the app's own name, which is neither loopback spelling (#343)", () => {
+    // the browser talks to `http://dokan.localhost:<port>`; a list of spellings
+    // alone refused the app's own sign-in behind the proxy
+    const origins = authTrustedOrigins(configWithHost({ host: "127.0.0.1", appOrigin: "http://dokan.localhost:5173" }), {
+      DOKAN_WEB_PORT: "5173",
+    });
+    expect(origins).toContain("http://dokan.localhost:5173");
+  });
+
   it("keeps a configured origin AND the dev origin on a loopback API", () => {
     expect(
-      authTrustedOrigins(configWithHost("127.0.0.1"), {
+      authTrustedOrigins(configWithHost({ host: "127.0.0.1" }), {
         DOKAN_TRUSTED_ORIGINS: "https://shop.example",
         DOKAN_WEB_PORT: "5471",
       }),

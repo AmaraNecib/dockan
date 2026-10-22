@@ -63,6 +63,7 @@ import {
   reclaimClaimName,
   renderReport,
   runPasses,
+  runtimeExportNames,
   runFinished,
   runGate,
   skipReason,
@@ -5385,3 +5386,129 @@ test("rejects zero", () => {
     }
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// Round 28 — the fail-closed refusal that c56ecd73 added fires too eagerly.
+//
+// Both findings are side effects of closing the star-shadow false pass, and both
+// push in the same direction: a file the gate could judge with a stand-in became
+// a whole-file waiver instead. That direction degrades a gate into noise, so it
+// is fixed by narrowing the question, not by widening the refusal.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 28 — a runtime export set excludes the shapes the runtime erases", () => {
+  const PATH = "scripts/mod.ts";
+
+  test("a type-only re-export list names nothing the runtime has", () => {
+    expect(runtimeExportNames(PATH, `export type { value } from "./types";\n`)).toEqual([]);
+  });
+
+  test("a type-only specifier inside an export list is dropped, its sibling kept", () => {
+    expect(runtimeExportNames(PATH, `export { type a, b } from "./other";\n`)).toEqual(["b"]);
+    expect(runtimeExportNames(PATH, `const a = 1;\nconst b = 2;\nexport { type a, b };\n`)).toEqual([
+      "b",
+    ]);
+  });
+
+  test("a type alias and an interface are erased; a function, a const and an enum are not", () => {
+    expect(
+      runtimeExportNames(
+        PATH,
+        `export type Shape = { a: number };\nexport interface Port {\n  b: string;\n}\nexport function run(): void {}\nexport const FLAG = 1;\nexport enum Mode {\n  One,\n}\n`,
+      ),
+    ).toEqual(["FLAG", "Mode", "run"]);
+  });
+
+  test("a type-only star supplies nothing, and `export * as ns` supplies the namespace object", () => {
+    expect(
+      runtimeExportNames(PATH, `export type * from "./types";\nexport * as ns from "./other";\n`),
+    ).toEqual(["ns"]);
+  });
+
+  test("an ambient declare export emits no runtime value, so it is not in the set", () => {
+    expect(runtimeExportNames(PATH, `export declare const table: number;\n`)).toEqual([]);
+  });
+
+  test("declaredExportNames is unchanged: it answers the declared shape, not the runtime one", () => {
+    // The reader the type-only fix must NOT rewrite. `hollowModuleSource` compares
+    // a module's declared shape against its mirror, and a mirror of an interface
+    // is the only honest mirror of an interface. Widening this set to the runtime
+    // answer would make a faithful hollow look like an unfaithful one.
+    expect(declaredExportNames(PATH, `export type { value } from "./types";\n`)).toEqual(["value"]);
+    expect(declaredExportNames(PATH, `export interface Port {}\n`)).toEqual(["Port"]);
+  });
+});
+
+describe("red-on-parent round 28 — a type-only export does not hide a runtime name", () => {
+  // The parent re-exports `value` as a TYPE and the change makes it a runtime
+  // export. Counting the type-only name as present appended nothing, so the
+  // parent's `import { value }` failed to resolve and a file that could be judged
+  // with a stand-in became CANNOT-HOLLOW plus a whole-file waiver.
+  const TOUCHED = new Set(["scripts/mod.ts"]);
+  const PARENT = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\n`;
+  const CHANGE = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\nexport function value(): number {\n  return 7;\n}\n`;
+  const TEST_FILE = `import { value } from "./mod";\n`;
+
+  function planFor(parent: string, change: string, testFile = TEST_FILE) {
+    return planAugmentedModules(
+      "scripts/mod.test.ts",
+      testFile,
+      TOUCHED,
+      (path) => (path === "scripts/mod.ts" ? change : null),
+      (path) => (path === "scripts/mod.ts" ? parent : null),
+    );
+  }
+
+  test("a runtime name the parent only declares as a type still gets its stand-in", () => {
+    const plan = planFor(PARENT, CHANGE);
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+  });
+
+  test("the augmented text keeps the parent's type-only export and appends the runtime one", () => {
+    const plan = planFor(PARENT, CHANGE);
+    const text = plan.modules[0]?.text ?? "";
+    expect(text.startsWith(PARENT)).toBe(true);
+    expect(runtimeExportNames("scripts/mod.ts", text)).toEqual(["twice", "value"]);
+    expect(declaredExportNames("scripts/mod.ts", text)).toEqual(["twice", "value", "value"]);
+  });
+
+  test("a type-only name the test imports as a type is still never appended", () => {
+    // The sibling case, so the fix cannot be read as "append every type-only name
+    // too": an `import { type Shape }` clause is erased and needs no stand-in.
+    const plan = planFor(PARENT, CHANGE, `import { type Shape, value } from "./mod";\n`);
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+  });
+});
+
+describe("red-on-parent round 28 — a type-only export, end to end", () => {
+  const PARENT = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\n`;
+  const CHANGE = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\nexport function value(): number {\n  return 7;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { value } from "./typed";
+test("uses the new runtime export", () => {
+  expect(value()).toBe(7);
+});
+`;
+
+  test("the parent's type-only name does not turn the file into a whole-file waiver", () => {
+    const fixture = createFixture(
+      [PKG, { path: "packages/core/src/typed.ts", text: PARENT }],
+      [
+        { path: "packages/core/src/typed.ts", text: CHANGE },
+        { path: "packages/core/src/typed-only.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+

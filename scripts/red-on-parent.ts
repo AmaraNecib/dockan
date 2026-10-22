@@ -1605,6 +1605,85 @@ export function declaredExportNames(path: string, source: string): string[] {
 }
 
 /**
+ * The names a module exports that exist **at runtime**, sorted.
+ *
+ * `declaredExportNames` answers "what shape does this module declare"; this one
+ * answers "what can a running import bind". The two differ by every shape
+ * TypeScript erases, and asking the wrong one is a false "the parent already has
+ * it": `export type { value } from "./types"` is gone before the module
+ * executes, so a plan built on the declared list appends no stand-in for the
+ * runtime `value` the change adds, the parent's `import { value }` fails to
+ * resolve, and a file the gate could judge becomes CANNOT-HOLLOW plus a
+ * whole-file waiver.
+ *
+ * Dropped: `export type { … }` (the whole declaration, including
+ * `export type * from`), a `type`-marked specifier inside an export list, a type
+ * alias, an interface, and an ambient `declare` export — the last for the reason
+ * `hollowModuleSource` already refuses to mirror one, that it "emits no runtime
+ * value". Kept: everything else `declaredExportNames` keeps, because a function,
+ * a class, a `const`/`let`/`var`, an enum, a namespace and `export * as ns` all
+ * bind a value.
+ *
+ * `declaredExportNames` itself is deliberately left alone, because its other
+ * callers are not asking a runtime question: `hollowModuleSource` compares the
+ * real module's declared shape against its mirror's and must read both sides the
+ * same way (an interface is mirrored *because* the real file declares one), and
+ * `augmentModuleSource`'s clash check asks which names one statement declares —
+ * a scope question, not a runtime one. `export *` names nothing here either; its
+ * names are the target's and are resolved in the parent worktree by
+ * `starExportNames`.
+ */
+export function runtimeExportNames(path: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const names: string[] = [];
+  for (const statement of file.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      // `export type { … }` and `export type * from …` carry nothing that runs.
+      if (statement.isTypeOnly) continue;
+      const clause = statement.exportClause;
+      // A bare `export *` names nothing here; `starExportNames` resolves it.
+      if (clause === undefined) continue;
+      if (ts.isNamedExports(clause)) {
+        // `export { type a, b }` keeps `b` and drops `a`.
+        for (const element of clause.elements) {
+          if (element.isTypeOnly) continue;
+          names.push(element.name.text);
+        }
+        continue;
+      }
+      // `export * as ns from "./y"` binds the namespace object.
+      names.push(clause.name.text);
+      continue;
+    }
+    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) continue;
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text);
+      }
+      continue;
+    }
+    if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) continue;
+    if (
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      ts.isModuleDeclaration(statement)
+    ) {
+      const name = statement.name;
+      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
+    }
+  }
+  return names.sort();
+}
+
+/**
  * Every name declared in a module's top-level scope, exported or not.
  *
  * This, not `declaredExportNames`, is the set an appended declaration can
@@ -2043,15 +2122,24 @@ export function augmentModuleSource(
   // available.
   //
   // Two checks, not one. The export set is what the importing file picks up; the
-  // BINDING list is what makes the file load at all. Comparing sorted arrays
-  // (rather than sets) is deliberate: a name declared twice appears twice in
-  // `topLevelBindingNames`, so a stray duplicate fails the comparison instead of
-  // sitting in the parent worktree as a file that cannot load — which is the
-  // blocker this round exists to close.
+  // BINDING list is what makes the file load at all. The two compare differently,
+  // on purpose. The export side is a SET, because one name can legitimately be
+  // named twice there and still load: the parent's `export type { value } from
+  // "./types"` beside an appended `export function value()` is exactly the shape
+  // this round exists to accept. The BINDING side stays a sorted ARRAY, because a
+  // name declared twice appears twice in `topLevelBindingNames` and a stray
+  // duplicate must fail the comparison instead of sitting in the parent worktree
+  // as a file that cannot load — which is the blocker round 25 closed.
   const wantedNames = [...new Set(names)];
   const wantedExports = [...new Set([...parentExports, ...wantedNames])].sort();
   const wantedBindings = [...new Set([...parentBindings, ...wantedNames])].sort();
-  const mirroredExports = declaredExportNames(path, text);
+  // A set on the export side, and only there. `export type { value } from
+  // "./types"` beside an appended `export function value()` names `value` twice
+  // in the declared export list and loads fine — that pair is the shape this
+  // round exists to accept — while a genuinely duplicated declaration is caught
+  // by the BINDING comparison below, which stays a multiset for exactly that
+  // reason.
+  const mirroredExports = [...new Set(declaredExportNames(path, text))].sort();
   const mirroredBindings = topLevelBindingNames(path, text);
   if (wantedExports.join("\u0000") !== mirroredExports.join("\u0000")) {
     return refuse(
@@ -2198,7 +2286,7 @@ function starExportNames(
         refusal: `${path}: the parent's copy re-exports everything from \`${specifier}\`, and the gate cannot resolve that inside the parent's checkout — the names it supplies are unknowable from here, and a stand-in for one of them would shadow the parent's real export, so this module cannot be augmented`,
       };
     }
-    names.push(...declaredExportNames(target, targetSource));
+    names.push(...runtimeExportNames(target, targetSource));
     const nested = starExportNames(target, targetSource, read, seen);
     if (!nested.ok) return nested;
     names.push(...nested.names);
@@ -2293,7 +2381,12 @@ export function planAugmentedModules(
         refusal: `${path}: the diff edits this module and the parent checkout has no copy of it, so there is nothing to augment`,
       };
     }
-    const present = new Set(declaredExportNames(path, parentSource));
+    // The parent's RUNTIME export set, not its declared one: this answers "can a
+    // running import of this module bind the name", and a type-only export
+    // cannot. Counting `export type { value } from "./types"` as present appended
+    // no stand-in for the runtime `value` the change adds, so the parent's own
+    // `import { value }` failed to resolve and the file became a whole-file waiver.
+    const present = new Set(runtimeExportNames(path, parentSource));
     // The one shape the parent's own export list cannot answer: a name supplied
     // through `export *`, whose declaration lives in another module. Resolved
     // against the parent's checkout, and refused when it cannot be — the answer

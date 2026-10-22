@@ -70,8 +70,9 @@ behaviour the parent really carries, so a test of that behaviour would fail on t
 as a right-reason red — a false pass. Appending leaves every existing export real, so that test still
 passes on the parent, is scored GREEN-ON-PARENT and is rejected. The append is refused when the stand-in
 would not load: a `default`, a re-export, an export list, an enum, a namespace, an ambient `declare`, a
-destructured binding, a decorator, a parent copy that does not parse, or a name the parent's module
-scope already binds — promoting a module-local `const` to an export is the ordinary way a module gains a
+destructured binding, a decorator, a parent copy that does not parse, a name the parent's module
+scope already binds, or a parent copy that re-exports everything (`export *`) from a module the gate
+cannot resolve — promoting a module-local `const` to an export is the ordinary way a module gains a
 name, and that declaration cannot be appended twice.
 
 `scripts/**` is in scope. The gate judges an added test file under `apps/`, `packages/` **and**

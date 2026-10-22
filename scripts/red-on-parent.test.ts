@@ -5169,3 +5169,120 @@ test("doubles", () => {
     }
   }, 60_000);
 });
+
+describe("red-on-parent round 27 — a stand-in never shadows a name the parent supplies", () => {
+  const TOUCHED = new Set(["scripts/mod.ts"]);
+
+  test("an export list and a re-export list name their exports", () => {
+    // The names are literal, so there is nothing to resolve: `export { a }` and
+    // `export { a } from "./y"` both put `a` on the module.
+    expect(declaredExportNames("scripts/mod.ts", `const a = 1;\nexport { a };\n`)).toEqual(["a"]);
+    expect(
+      declaredExportNames("scripts/mod.ts", `export { a, b as c } from "./other";\n`),
+    ).toEqual(["a", "c"]);
+    expect(declaredExportNames("scripts/mod.ts", `export * as ns from "./other";\n`)).toEqual([
+      "ns",
+    ]);
+  });
+
+  const CHANGE = `export function value(): number {\n  return 1;\n}\n`;
+  const TEST_FILE = `import { value } from "./mod";\n`;
+
+  function planFor(parent: string, parentFiles: Record<string, string> = {}) {
+    return planAugmentedModules(
+      "scripts/mod.test.ts",
+      TEST_FILE,
+      TOUCHED,
+      (path) => (path === "scripts/mod.ts" ? CHANGE : null),
+      (path) => (path === "scripts/mod.ts" ? parent : (parentFiles[path] ?? null)),
+    );
+  }
+
+  test("a name the parent supplies through an export list is not appended", () => {
+    const plan = planFor(`const value = (): number => 1;\nexport { value };\n`);
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("a name the parent supplies by re-export is not appended", () => {
+    const plan = planFor(`export { value } from "./base";\n`, {
+      "scripts/base.ts": `export function value(): number {\n  return 1;\n}\n`,
+    });
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("an export star is followed through the parent worktree to the name it supplies", () => {
+    // Two hops, so a one-level resolution is not enough to pass this.
+    const plan = planFor(`export * from "./base";\n`, {
+      "scripts/base.ts": `export * from "./deep";\n`,
+      "scripts/deep.ts": `export function value(): number {\n  return 1;\n}\n`,
+    });
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("an export star the gate cannot resolve refuses the augmentation", () => {
+    // The names such a module supplies are unknowable from this file, and an
+    // appended stand-in for one of them would shadow the parent's real export —
+    // a test that passes on the parent would be scored a right-reason red. Fail
+    // closed instead.
+    const plan = planFor(`export * from "./nowhere";\n`);
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/mod.ts");
+    expect(plan.refusal).toContain("./nowhere");
+  });
+
+  test("a resolvable star that does not supply the name still gets the stand-in", () => {
+    const plan = planFor(`export * from "./base";\n`, {
+      "scripts/base.ts": `export function other(): number {\n  return 0;\n}\n`,
+    });
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+  });
+});
+
+describe("red-on-parent round 27 — a re-exported name the parent supplies, end to end", () => {
+  // The false pass Greptile named. On the parent, `helper.ts` supplies `value`
+  // through `export *`; the change replaces that with a direct declaration. A
+  // test of the parent's own behaviour passes here — so it pins nothing the
+  // change adds and must be scored GREEN-ON-PARENT.
+  //
+  // Appending an empty `value` stand-in to the parent's copy SHADOWS the real
+  // re-export: the test then reads `undefined`, and the gate accepts its
+  // assertion failure as a right-reason red. A test that pins nothing is scored
+  // as a test that pins something.
+  const PARENT_HELPER = `export * from "./helper-base";\n`;
+  const PARENT_BASE = `export function value(): number {\n  return 1;\n}\n`;
+  const CHANGE_HELPER = `export function value(): number {\n  return 1;\n}\n`;
+  const SHADOW_TEST = `import { expect, test } from "bun:test";
+import { value } from "./helper";
+test("the parent's own export", () => {
+  expect(value()).toBe(1);
+});
+`;
+
+  test("a test of the parent's real behaviour is rejected, not accepted on a shadow", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/helper.ts", text: PARENT_HELPER },
+        { path: "packages/core/src/helper-base.ts", text: PARENT_BASE },
+      ],
+      [
+        { path: "packages/core/src/helper.ts", text: CHANGE_HELPER },
+        { path: "packages/core/src/star-shadow.test.ts", text: SHADOW_TEST },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      // No stand-in is appended, so there is no augmentation to report either.
+      expect(stdout).not.toContain("appended stand-in");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});

@@ -1545,9 +1545,20 @@ function hasKeyword(node: ts.Node, keyword: ts.SyntaxKind): boolean {
  *
  * Read from the tree twice: once for the real module and once for the mirror the
  * gate wrote, so the mirror must declare exactly the export names the module
- * does. A `export {}` list, a re-export or a default export names no declaration
- * here — every one of those is refused before the mirror is written, so the two
- * lists are comparable rather than merely similar.
+ * does.
+ *
+ * Two shapes name an export without declaring one, and both are read here:
+ * `export { a, b as c }` and `export { a } from "./y"` name their names
+ * literally, and `export * as ns from "./y"` names `ns`. A default export names
+ * nothing here — every one of those is refused before a mirror is written, so
+ * the lists the gate compares stay comparable rather than merely similar.
+ *
+ * Reading the literal forms is not a nicety. This set answers "might the parent
+ * already supply this name", and answering "no" for a name the parent really
+ * supplies is how an appended stand-in SHADOWS the parent's working export —
+ * the false pass `planAugmentedModules` refuses to risk. `export *` is the one
+ * shape that names nothing this file can answer: its names are the target's, and
+ * that chain is resolved in the parent worktree (see `starExportNames`).
  */
 export function declaredExportNames(path: string, source: string): string[] {
   const file = ts.createSourceFile(
@@ -1559,6 +1570,18 @@ export function declaredExportNames(path: string, source: string): string[] {
   );
   const names: string[] = [];
   for (const statement of file.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      const clause = statement.exportClause;
+      if (clause === undefined) continue;
+      if (ts.isNamedExports(clause)) {
+        // `propertyName` is the module-local name; `name` is the name the
+        // module exports, so `export { a as b }` contributes `b`.
+        for (const element of clause.elements) names.push(element.name.text);
+        continue;
+      }
+      names.push(clause.name.text);
+      continue;
+    }
     if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
     if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
@@ -1929,6 +1952,11 @@ function exportLookup(source: string, path: string, name: string): ExportLookup 
  * declaration collides with a module-local binding as surely as with an export,
  * and promoting a local binding to an export (`const x = 1` → `export const x =
  * 1`) is the ordinary way a module gains a name. See that function.
+ *
+ * `names` is the planner's answer, and the planner is where a parent's `export *`
+ * chain is resolved (`starExportNames`): this function cannot read another file,
+ * so it cannot know whether appending one of these names would shadow a name the
+ * parent's chain already supplies.
  */
 export function augmentModuleSource(
   parentSource: string,
@@ -2039,6 +2067,30 @@ export function augmentModuleSource(
 }
 
 /**
+ * The paths a relative specifier could name, in bun's probe order, or null when
+ * the specifier is not a relative module inside the repository.
+ *
+ * Two callers probe this list and they have to agree: the diff's own paths ask
+ * which module the change adds or edits, and an `export *` chain asks which
+ * module the parent's copy re-exports from, by reading. Both land on the same
+ * file the loader will, or on nothing.
+ *
+ * The probe order is bun's: the specifier itself (it may carry an extension),
+ * then the bare extensions, then a directory index. A `..` that climbs out of the
+ * repository resolves to nothing.
+ */
+function moduleCandidates(fromFile: string, specifier: string): string[] | null {
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return null;
+  const joined = posix.normalize(posix.join(posix.dirname(fromFile), specifier));
+  if (joined.startsWith("../") || joined === ".." || posix.isAbsolute(joined)) return null;
+  return [
+    joined,
+    ...MODULE_EXTENSIONS.map((extension) => `${joined}${extension}`),
+    ...MODULE_EXTENSIONS.map((extension) => `${joined}/index${extension}`),
+  ];
+}
+
+/**
  * The file a relative specifier names, out of a set of paths the gate already
  * knows.
  *
@@ -2048,23 +2100,110 @@ export function augmentModuleSource(
  * judged.
  *
  * Only an exact hit against the set is accepted, so the gate never guesses at a
- * resolution it cannot confirm. The probe order is bun's: the specifier itself
- * (it may carry an extension), then the bare extensions, then a directory index. A
- * `..` that climbs out of the repository resolves to nothing.
+ * resolution it cannot confirm. See `moduleCandidates` for the probe order.
  */
 function resolveModuleIn(
   fromFile: string,
   specifier: string,
   paths: ReadonlySet<string>,
 ): string | null {
-  const joined = posix.normalize(posix.join(posix.dirname(fromFile), specifier));
-  if (joined.startsWith("../") || joined === ".." || posix.isAbsolute(joined)) return null;
-  const candidates = [
-    joined,
-    ...MODULE_EXTENSIONS.map((extension) => `${joined}${extension}`),
-    ...MODULE_EXTENSIONS.map((extension) => `${joined}/index${extension}`),
-  ];
+  const candidates = moduleCandidates(fromFile, specifier);
+  if (candidates === null) return null;
   return candidates.find((candidate) => paths.has(candidate)) ?? null;
+}
+
+/**
+ * The same resolution, probed by reading: the first candidate the parent's
+ * checkout actually holds.
+ *
+ * `export *` names a target the diff need not have touched, so there is no path
+ * set to look it up in. The read is the probe, and a `null` from every candidate
+ * is the gate's answer that it cannot resolve the chain.
+ */
+function resolveModuleWith(
+  fromFile: string,
+  specifier: string,
+  read: (path: string) => string | null,
+): string | null {
+  const candidates = moduleCandidates(fromFile, specifier);
+  if (candidates === null) return null;
+  return candidates.find((candidate) => read(candidate) !== null) ?? null;
+}
+
+/**
+ * The targets a module re-exports everything from (`export * from "…"`), as
+ * written.
+ *
+ * The names such a module supplies are the target's names, so this file cannot
+ * answer what they are. `export type *` is skipped: its names are types, erased
+ * before the file runs, so they supply no runtime export a stand-in could shadow.
+ */
+function starExportSpecifiers(path: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const specifiers: string[] = [];
+  for (const statement of file.statements) {
+    if (!ts.isExportDeclaration(statement)) continue;
+    // `export { a }` and `export * as ns` name their own exports; only a bare
+    // star hands the naming to another module.
+    if (statement.exportClause !== undefined) continue;
+    if (statement.isTypeOnly) continue;
+    const module = statement.moduleSpecifier;
+    if (module === undefined || !ts.isStringLiteral(module)) continue;
+    specifiers.push(module.text);
+  }
+  return specifiers;
+}
+
+/**
+ * The names a module supplies through its `export *` chain, resolved inside the
+ * parent's checkout, or the reason the gate cannot resolve it.
+ *
+ * A name the parent supplies through `export *` is absent from the parent's own
+ * export list, so asking `declaredExportNames` alone answers "missing" for a name
+ * the parent really has. The appended stand-in then SHADOWS the parent's working
+ * re-export: a test of the parent's own behaviour fails against the fake, and the
+ * gate accepts that as a right-reason red — a test that pins nothing, scored as a
+ * test that pins something.
+ *
+ * Resolving is the only alternative to refusing. A chain the gate cannot read — a
+ * target outside the repository, a package specifier, a file the parent does not
+ * have — refuses the augmentation, because assuming such a chain cannot supply
+ * the name is exactly the shadow this function exists to stop.
+ *
+ * A cycle is followed once: a module that re-exports everything from itself adds
+ * no name the first visit did not already read.
+ */
+function starExportNames(
+  path: string,
+  source: string,
+  read: (path: string) => string | null,
+  seen: Set<string>,
+): { ok: true; names: string[] } | { ok: false; refusal: string } {
+  const specifiers = starExportSpecifiers(path, source);
+  if (specifiers.length === 0 || seen.has(path)) return { ok: true, names: [] };
+  seen.add(path);
+  const names: string[] = [];
+  for (const specifier of specifiers) {
+    const target = resolveModuleWith(path, specifier, read);
+    const targetSource = target === null ? null : read(target);
+    if (target === null || targetSource === null) {
+      return {
+        ok: false,
+        refusal: `${path}: the parent's copy re-exports everything from \`${specifier}\`, and the gate cannot resolve that inside the parent's checkout — the names it supplies are unknowable from here, and a stand-in for one of them would shadow the parent's real export, so this module cannot be augmented`,
+      };
+    }
+    names.push(...declaredExportNames(target, targetSource));
+    const nested = starExportNames(target, targetSource, read, seen);
+    if (!nested.ok) return nested;
+    names.push(...nested.names);
+  }
+  return { ok: true, names };
 }
 
 /**
@@ -2155,6 +2294,13 @@ export function planAugmentedModules(
       };
     }
     const present = new Set(declaredExportNames(path, parentSource));
+    // The one shape the parent's own export list cannot answer: a name supplied
+    // through `export *`, whose declaration lives in another module. Resolved
+    // against the parent's checkout, and refused when it cannot be — the answer
+    // decides whether a stand-in would shadow the parent's real export.
+    const starred = starExportNames(path, parentSource, readParent, new Set());
+    if (!starred.ok) return { modules: [], refusal: starred.refusal };
+    for (const name of starred.names) present.add(name);
     const parentHasDefault = hasDefaultExport(parentSource, path);
     const missing = binding.names.filter((name) =>
       name === "default" ? !parentHasDefault : !present.has(name),

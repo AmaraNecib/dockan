@@ -387,13 +387,18 @@ describe("one party, one cache identity (#323)", () => {
     expect(partyReads).toHaveLength(0);
   });
 
-  // #323 review (Greptile P1) — ordinary-space padding is NOT the unaddressable
-  // case: sqlite's TRIM() strips exactly those, so the store answers the query
-  // correctly and the party must stay readable. Refusing it turned a readable tab
-  // into an anonymous one, and the anonymous fallback promises cash for a refund
-  // the server offsets.
-  it("keeps a space-padded name readable, because sqlite's TRIM strips it", async () => {
-    owedToUs = [summary({ counterpartyId: null, counterpartyName: "زبون " })];
+  // #337 — the server returns ONE identity per party and trims the label with
+  // the same JavaScript set the client trims with (`trimSql` in
+  // `apps/api/src/store/trim-chars.ts` feeds both its group key and its
+  // drill-down WHERE), so no spelling of a readable name has to be refused any
+  // more. Refusing one turned a readable tab into an anonymous one, and the
+  // anonymous fallback promises cash for a refund the server offsets.
+  //
+  // The padding here is deliberately drawn from across the set (space, NBSP,
+  // tab), not just spaces: plain spaces were already readable through sqlite's
+  // own TRIM() and could not prove the rule.
+  it("reads a padded label under its trimmed name, the one identity the server returns (#337)", async () => {
+    owedToUs = [summary({ counterpartyId: null, counterpartyName: " \u00A0زبون\t" })];
     openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
     renderScreens(<DebtsPage />);
     await flushAsync();
@@ -405,49 +410,8 @@ describe("one party, one cache identity (#323)", () => {
 
     expect(host.querySelector('[data-testid="debts-party-unidentified"]')).toBeNull();
     expect(host.querySelector('[data-testid="debts-invoices"]')).not.toBeNull();
-    // and the read went out under the name the wire can express
+    // and the read went out under the name the wire can express — the trimmed
+    // one the server itself groups under
     expect(partyReads).toEqual([{ counterpartyId: null, counterpartyName: "زبون" }]);
-  });
-
-  // #323 review (Greptile P1, the money half) — a name that truly cannot be read
-  // leaves the refund split UNKNOWN. Falling back to the invoice's own remaining
-  // would preview a 900 cash refund on a paid invoice while the server records 900
-  // against the party's other unpaid invoice.
-  it("leaves the refund split unknown, not cash, when the party's name cannot be read", async () => {
-    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
-    renderScreens(
-      <ReturnsPanel
-        invoice={invoiceDetail({ counterpartyId: null, counterpartyName: "زبون ", remainingAmount: 0 })}
-      />,
-    );
-    await flushAsync();
-
-    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
-    await flushAsync();
-
-    expect(host.querySelector('[data-testid="returns-split-unknown"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="returns-cash-now"]')).toBeNull();
-    // nothing was read either: there is no input that could answer for this party
-    expect(partyReads).toHaveLength(0);
-  });
-
-  // #323 review (debate lens P2) — a stored name the trim CHANGED cannot be asked
-  // for: the wire contract trims with JavaScript semantics, so the request leaves
-  // as the trimmed name and the store (sqlite TRIM, U+0020 only) answers with the
-  // UNPADDED party's invoices. Folding it into that party's key would draw one
-  // party's money under another party's label, so it is refused instead.
-  it("refuses a name the trim would change, instead of drawing the unpadded party's invoices under it", async () => {
-    owedToUs = [summary({ counterpartyId: null, counterpartyName: "زبون\u00A0" })];
-    openInvoices = [{ id: OPEN_INVOICE_ID, remainingAmount: 900 }];
-    renderScreens(<DebtsPage />);
-    await flushAsync();
-
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="debts-person"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
-    expect(host.querySelector('[data-testid="debts-party-unidentified"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="debts-invoices"]')).toBeNull();
   });
 });

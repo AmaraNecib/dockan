@@ -1407,13 +1407,47 @@ describe("debts drill-down (ticket 9)", () => {
 
   it("keeps summary and drill-down consistent for padded typed names (test-audit E1)", async () => {
     await insertDebt({ invoiceNumber: "INV-0241", kind: "SALE", counterpartyName: "زبون بحواشي ", totalAmount: 500, paidAmount: 0 });
-    // the summary row groups by the raw stored name; the drill-down matches on
-    // the trimmed name so a padded store-seam insert stays openable in both
-    // spellings (the trimmed query also covers earlier unpadded "زبون مدين"
-    // rows, hence a dedicated name here)
-    expect((await store.debtSummaries()).find((d) => d.counterpartyName === "زبون بحواشي ")?.invoiceCount).toBe(1);
+    // #337 — the read trims the stored name with the same character set, so the
+    // summary's label IS the name the drill-down can ask for: a padded
+    // store-seam insert is neither a second party on the debts screen nor a row
+    // that opens on someone else's tab.
+    expect((await store.debtSummaries()).find((d) => d.counterpartyName === "زبون بحواشي")?.invoiceCount).toBe(1);
     expect(await store.listUnpaidInvoicesByParty("SALE", null, "زبون بحواشي ")).toHaveLength(1);
     expect(await store.listUnpaidInvoicesByParty("SALE", null, "زبون بحواشي")).toHaveLength(1);
+  });
+
+  // #337 — SQLite's one-argument TRIM(X) strips U+0020 only, so a name padded
+  // with anything else used to read as a SECOND party under its own padded
+  // label while the wire contract (and every client .trim()) stripped it. The
+  // group key and the returned label are the same `trimSql` expression now.
+  it("groups stored names that differ only by SQL-visible whitespace as one party (#337)", async () => {
+    await insertDebt({ invoiceNumber: "INV-0281", kind: "SALE", counterpartyName: "Acme", totalAmount: 700, paidAmount: 0 });
+    await insertDebt({ invoiceNumber: "INV-0282", kind: "SALE", counterpartyName: "Acme\u00A0", totalAmount: 300, paidAmount: 0 });
+    // the dangerous direction of a wider trim: a genuinely DIFFERENT name must
+    // stay its own party (over-folding merges two people's debts)
+    await insertDebt({ invoiceNumber: "INV-0283", kind: "SALE", counterpartyName: "Acme Co", totalAmount: 500, paidAmount: 0 });
+
+    const rows = (await store.debtSummaries()).filter(
+      (d) => d.kind === "SALE" && d.counterpartyId === null && (d.counterpartyName ?? "").trim() === "Acme",
+    );
+    // one party, not "Acme" and "Acme\u00A0" side by side
+    expect(rows).toHaveLength(1);
+    // and the label is the trimmed name the drill-down can ask for
+    expect(rows[0]?.counterpartyName).toBe("Acme");
+    expect(rows[0]?.remainingTotal).toBe(1_000);
+    expect(rows[0]?.invoiceCount).toBe(2);
+    // "Acme Co" is not folded in: the trim removes padding, never letters
+    expect((await store.debtSummaries()).find((d) => d.counterpartyName === "Acme Co")?.remainingTotal).toBe(500);
+  });
+
+  // #337 — the same rule on the other read. The padding here is deliberately
+  // NOT plain spaces: sqlite's own TRIM() already stripped those before this
+  // change, so a space-padded query cannot prove the rule. A padded name that
+  // includes a non-breaking space goes red on the old WHERE.
+  it("finds a cleanly stored party by a padded name in the drill-down (#337)", async () => {
+    await insertDebt({ invoiceNumber: "INV-0291", kind: "SALE", counterpartyName: "Bolt", totalAmount: 400, paidAmount: 0 });
+
+    expect((await store.listUnpaidInvoicesByParty("SALE", null, " Bolt\u00A0")).map((i) => i.invoiceNumber)).toEqual(["INV-0291"]);
   });
 
   it("keeps a same-named party's debts scoped per direction (test-audit E2)", async () => {

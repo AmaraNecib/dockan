@@ -17,8 +17,6 @@ import {
 } from "./e2e-changed";
 import { specPaths, type Scope } from "./e2e-selection";
 
-// red-on-parent-waive: "whole file" — the parent's `e2e-selection.ts` has no `specPaths`, so this file cannot load there and there is no test to judge. `specPaths` was added to an existing module, and a hollow cannot stand in for a module the parent already has: the parent runs the real one, or the change is what gets measured.
-
 // The local twin of the CI selector. CI answers "which specs does this PR
 // reach" server-side; this answers the same question on the lane that is about
 // to push, so the wait is the mapped specs instead of all 35.
@@ -91,10 +89,30 @@ describe("e2e-changed spawn decision", () => {
     // The prefix used to be built in two files, so a change to one of them left
     // `--dry-run` printing one path set and the spawn passing another. The two
     // are the same function now, and this is the assertion that says so.
-    for (const scope of [affected(["backups.spec.ts", "items-flow.spec.ts"]), affected([]), full, skip]) {
-      expect({ mode: scope.mode, argv: playwrightArgs(scope) }).toEqual({
-        mode: scope.mode,
-        argv: specPaths(scope),
+    //
+    // The concrete list is asserted beside the identity on purpose. Comparing
+    // only `playwrightArgs(scope)` with `specPaths(scope)` is two calls into one
+    // module, so on a parent carrying neither of them both sides are the gate's
+    // undefined stand-ins and the equality holds — a red-on-parent gate reads that
+    // as a test that pins nothing. The expected paths are what the spawn is really
+    // for, and they cannot both be a stand-in.
+    const expected: Array<{ scope: Scope; argv: string[] }> = [
+      {
+        scope: affected(["backups.spec.ts", "items-flow.spec.ts"]),
+        argv: ["tests/e2e/backups.spec.ts", "tests/e2e/items-flow.spec.ts"],
+      },
+      { scope: affected([]), argv: [] },
+      { scope: full, argv: [] },
+      { scope: skip, argv: [] },
+    ];
+    for (const entry of expected) {
+      expect({ mode: entry.scope.mode, argv: playwrightArgs(entry.scope) }).toEqual({
+        mode: entry.scope.mode,
+        argv: entry.argv,
+      });
+      expect({ mode: entry.scope.mode, argv: playwrightArgs(entry.scope) }).toEqual({
+        mode: entry.scope.mode,
+        argv: specPaths(entry.scope),
       });
     }
   });

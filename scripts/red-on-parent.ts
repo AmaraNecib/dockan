@@ -1556,12 +1556,11 @@ function hasKeyword(node: ts.Node, keyword: ts.SyntaxKind): boolean {
  * was appended over the real export, and a test of the parent's behaviour failed
  * against the shadow and was scored RIGHT-REASON-RED — a false pass.
  *
- * Three readers share this walk — `declaredExportNames`, `runtimeExportNames` and
- * `topLevelBindingNames` — because they have to agree about which names a variable
- * statement declares. The reader that decides "the parent already supplies this"
- * and the reader that checks the mirror declares exactly that are the two halves
- * whose disagreement is the bug, so one walk feeds all of them and they cannot
- * drift again.
+ * One walk feeds every reader of a module's shape — see `readModuleSurface`, which
+ * is the only place this file decides what a statement contributes. The reader
+ * that decides "the parent already supplies this" and the reader that checks the
+ * mirror declares exactly that are the two halves whose disagreement is the bug,
+ * so they cannot be allowed separate rules.
  */
 function variableBindingNames(name: ts.BindingName): string[] {
   if (ts.isIdentifier(name)) return [name.text];
@@ -1574,99 +1573,168 @@ function variableBindingNames(name: ts.BindingName): string[] {
 }
 
 /**
- * The names a module exports, sorted.
+ * What one top-level statement contributes to a module's shape.
  *
- * Read from the tree twice: once for the real module and once for the mirror the
- * gate wrote, so the mirror must declare exactly the export names the module
- * does.
- *
- * Two shapes name an export without declaring one, and both are read here:
- * `export { a, b as c }` and `export { a } from "./y"` name their names
- * literally, and `export * as ns from "./y"` names `ns`. A default export names
- * nothing here — every one of those is refused before a mirror is written, so
- * the lists the gate compares stay comparable rather than merely similar.
- *
- * Reading the literal forms is not a nicety. This set answers "might the parent
- * already supply this name", and answering "no" for a name the parent really
- * supplies is how an appended stand-in SHADOWS the parent's working export —
- * the false pass `planAugmentedModules` refuses to risk. `export *` is the one
- * shape that names nothing this file can answer: its names are the target's, and
- * that chain is resolved in the parent worktree (see `starExportNames`).
+ * `bindings` is every name the statement puts in the module's top-level scope,
+ * `declared` the names it exports, `runtime` the subset of those that survives to
+ * runtime, and `star` the specifier of a bare `export * from "…"`. The lists are
+ * filled by ONE function so that a reader cannot answer differently from the
+ * reader beside it; see `readModuleSurface`.
  */
-export function declaredExportNames(path: string, source: string): string[] {
-  const file = ts.createSourceFile(
-    path,
-    source,
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ true,
-    scriptKindFor(path),
+type StatementContribution = {
+  bindings: string[];
+  declared: string[];
+  runtime: string[];
+  star?: string;
+};
+
+/**
+ * Whether TypeScript erases an exported statement's value before the module runs.
+ *
+ * Three spellings a statement can carry: an ambient `declare` export
+ * (`export declare const x: number`), an interface, and a type alias. Erasure is
+ * the ONE rule that separates `declared` from `runtime`, so both lists are built
+ * from this predicate rather than from a second opinion about the same shape.
+ * `hollowModuleSource` asks it too: an interface is mirrored *because* the real
+ * file declares one, and an ambient export is refused there because a hollow that
+ * emitted a value for it would invent an export the real module does not have.
+ */
+function isErasedExport(statement: ts.Statement): boolean {
+  return (
+    hasKeyword(statement, ts.SyntaxKind.DeclareKeyword) ||
+    ts.isInterfaceDeclaration(statement) ||
+    ts.isTypeAliasDeclaration(statement)
   );
-  const names: string[] = [];
-  for (const statement of file.statements) {
-    if (ts.isExportDeclaration(statement)) {
-      const clause = statement.exportClause;
-      if (clause === undefined) continue;
-      if (ts.isNamedExports(clause)) {
-        // `propertyName` is the module-local name; `name` is the name the
-        // module exports, so `export { a as b }` contributes `b`.
-        for (const element of clause.elements) names.push(element.name.text);
-        continue;
-      }
-      names.push(clause.name.text);
-      continue;
-    }
-    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
-    if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        names.push(...variableBindingNames(declaration.name));
-      }
-      continue;
-    }
-    if (
-      ts.isFunctionDeclaration(statement) ||
-      ts.isClassDeclaration(statement) ||
-      ts.isInterfaceDeclaration(statement) ||
-      ts.isTypeAliasDeclaration(statement) ||
-      ts.isEnumDeclaration(statement) ||
-      ts.isModuleDeclaration(statement)
-    ) {
-      const name = statement.name;
-      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
-    }
-  }
-  return names.sort();
 }
 
 /**
- * The names a module exports that exist **at runtime**, sorted.
+ * One statement's contribution, under the rules this file applies to every
+ * statement it reads.
  *
- * `declaredExportNames` answers "what shape does this module declare"; this one
- * answers "what can a running import bind". The two differ by every shape
- * TypeScript erases, and asking the wrong one is a false "the parent already has
- * it": `export type { value } from "./types"` is gone before the module
- * executes, so a plan built on the declared list appends no stand-in for the
- * runtime `value` the change adds, the parent's `import { value }` fails to
- * resolve, and a file the gate could judge becomes CANNOT-HOLLOW plus a
- * whole-file waiver.
+ * The rules, in the order they are decided:
  *
- * Dropped: `export type { … }` (the whole declaration, including
- * `export type * from`), a `type`-marked specifier inside an export list, a type
- * alias, an interface, and an ambient `declare` export — the last for the reason
- * `hollowModuleSource` already refuses to mirror one, that it "emits no runtime
- * value". Kept: everything else `declaredExportNames` keeps, because a function,
- * a class, a `const`/`let`/`var`, an enum, a namespace and `export * as ns` all
- * bind a value.
+ *   - an `import` binds its clause name, its namespace name, or each named
+ *     element's binding name. It exports nothing;
+ *   - a bare `export * from "…"` names nothing this file can answer: its names
+ *     are the target's, so it reports the SPECIFIER and the chain is resolved in
+ *     the parent worktree (`starExportNames`). `export type * from "…"` carries
+ *     nothing that runs and is not a star to resolve either;
+ *   - `export { a, b as c }` and `export { a } from "./y"` name the names they
+ *     export — `c`, not `b` — and `export * as ns from "./y"` names `ns`. A
+ *     `type`-marked specifier (`export { type A, b }`) and a whole type-only
+ *     declaration (`export type { … }`) are erased, while the rest of the same
+ *     statement still runs;
+ *   - an exported declaration names what it binds: a variable through its binding
+ *     pattern (`variableBindingNames`), everything else through its own
+ *     identifier. A default export names nothing here — every one of those is
+ *     refused before a mirror is written.
  *
- * `declaredExportNames` itself is deliberately left alone, because its other
- * callers are not asking a runtime question: `hollowModuleSource` compares the
- * real module's declared shape against its mirror's and must read both sides the
- * same way (an interface is mirrored *because* the real file declares one), and
- * `augmentModuleSource`'s clash check asks which names one statement declares —
- * a scope question, not a runtime one. `export *` names nothing here either; its
- * names are the target's and are resolved in the parent worktree by
- * `starExportNames`.
+ * Reading the literal forms is not a nicety. `declared` answers "might the parent
+ * already supply this name", and answering "no" for a name the parent really
+ * supplies is how an appended stand-in SHADOWS the parent's working export — the
+ * false pass `planAugmentedModules` refuses to risk.
  */
-export function runtimeExportNames(path: string, source: string): string[] {
+function moduleStatementContribution(statement: ts.Statement): StatementContribution {
+  const contribution: StatementContribution = { bindings: [], declared: [], runtime: [] };
+  if (ts.isImportDeclaration(statement)) {
+    // An import binding occupies the top-level scope exactly as a `const` does.
+    // `import x` / `import * as x` / `import { a as b }` are three spellings of
+    // the same declaration.
+    const clause = statement.importClause;
+    if (clause === undefined) return contribution;
+    if (clause.name !== undefined) contribution.bindings.push(clause.name.text);
+    const bindings = clause.namedBindings;
+    if (bindings === undefined) return contribution;
+    if (ts.isNamespaceImport(bindings)) {
+      contribution.bindings.push(bindings.name.text);
+      return contribution;
+    }
+    for (const element of bindings.elements) contribution.bindings.push(element.name.text);
+    return contribution;
+  }
+  if (ts.isExportDeclaration(statement)) {
+    const clause = statement.exportClause;
+    if (clause === undefined) {
+      // `export type * from "…"` carries nothing that runs, so it is not a star
+      // worth resolving either.
+      if (statement.isTypeOnly) return contribution;
+      const module = statement.moduleSpecifier;
+      if (module !== undefined && ts.isStringLiteral(module)) contribution.star = module.text;
+      return contribution;
+    }
+    if (ts.isNamedExports(clause)) {
+      for (const element of clause.elements) {
+        // `propertyName` is the module-local name; `name` is the name the module
+        // exports, so `export { a as b }` contributes `b`.
+        contribution.declared.push(element.name.text);
+        if (statement.isTypeOnly || element.isTypeOnly) continue;
+        contribution.runtime.push(element.name.text);
+      }
+      return contribution;
+    }
+    // `export * as ns from "…"` binds the namespace object.
+    contribution.declared.push(clause.name.text);
+    if (!statement.isTypeOnly) contribution.runtime.push(clause.name.text);
+    return contribution;
+  }
+  const exported = hasKeyword(statement, ts.SyntaxKind.ExportKeyword);
+  const erased = exported && isErasedExport(statement);
+  if (ts.isVariableStatement(statement)) {
+    for (const declaration of statement.declarationList.declarations) {
+      const names = variableBindingNames(declaration.name);
+      contribution.bindings.push(...names);
+      if (!exported) continue;
+      contribution.declared.push(...names);
+      if (erased) continue;
+      contribution.runtime.push(...names);
+    }
+    return contribution;
+  }
+  if (
+    ts.isFunctionDeclaration(statement) ||
+    ts.isClassDeclaration(statement) ||
+    ts.isInterfaceDeclaration(statement) ||
+    ts.isTypeAliasDeclaration(statement) ||
+    ts.isEnumDeclaration(statement) ||
+    ts.isModuleDeclaration(statement)
+  ) {
+    const name = statement.name;
+    // A namespace or an ambient module can be named by a string literal
+    // (`declare module "x"`), which binds no identifier.
+    if (name === undefined || !ts.isIdentifier(name)) return contribution;
+    contribution.bindings.push(name.text);
+    if (!exported) return contribution;
+    contribution.declared.push(name.text);
+    if (!erased) contribution.runtime.push(name.text);
+  }
+  return contribution;
+}
+
+/**
+ * One module's shape, read once.
+ *
+ * The gate asks four questions about the same AST — which names the module binds,
+ * which it declares, which a running import can bind, and which modules a bare
+ * `export *` hands the naming to — and each used to be answered by its own walk
+ * with its own selection rules. Five readers with four sets of rules is how a
+ * destructured `export const { value } = obj` came to contribute no name to two of
+ * them, which turned a test of the parent's real behaviour into a false pass. The
+ * rules now live in `moduleStatementContribution` and `variableBindingNames`, and
+ * the four sets are projections of this one walk.
+ *
+ * `stars` is deliberately a list of SPECIFIERS in source order, not of resolved
+ * names: resolving a chain means reading other files out of the parent's checkout,
+ * which is `starExportNames`'s job and cannot be done from here. Source order is
+ * kept because the first specifier that reaches a name is the one a refusal names.
+ */
+export type ModuleSurface = {
+  bindings: string[];
+  declared: string[];
+  runtime: string[];
+  stars: string[];
+};
+
+export function readModuleSurface(path: string, source: string): ModuleSurface {
   const file = ts.createSourceFile(
     path,
     source,
@@ -1674,46 +1742,50 @@ export function runtimeExportNames(path: string, source: string): string[] {
     /* setParentNodes */ true,
     scriptKindFor(path),
   );
-  const names: string[] = [];
+  const bindings: string[] = [];
+  const declared: string[] = [];
+  const runtime: string[] = [];
+  const stars: string[] = [];
   for (const statement of file.statements) {
-    if (ts.isExportDeclaration(statement)) {
-      // `export type { … }` and `export type * from …` carry nothing that runs.
-      if (statement.isTypeOnly) continue;
-      const clause = statement.exportClause;
-      // A bare `export *` names nothing here; `starExportNames` resolves it.
-      if (clause === undefined) continue;
-      if (ts.isNamedExports(clause)) {
-        // `export { type a, b }` keeps `b` and drops `a`.
-        for (const element of clause.elements) {
-          if (element.isTypeOnly) continue;
-          names.push(element.name.text);
-        }
-        continue;
-      }
-      // `export * as ns from "./y"` binds the namespace object.
-      names.push(clause.name.text);
-      continue;
-    }
-    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
-    if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) continue;
-    if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        names.push(...variableBindingNames(declaration.name));
-      }
-      continue;
-    }
-    if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) continue;
-    if (
-      ts.isFunctionDeclaration(statement) ||
-      ts.isClassDeclaration(statement) ||
-      ts.isEnumDeclaration(statement) ||
-      ts.isModuleDeclaration(statement)
-    ) {
-      const name = statement.name;
-      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
-    }
+    const contribution = moduleStatementContribution(statement);
+    bindings.push(...contribution.bindings);
+    declared.push(...contribution.declared);
+    runtime.push(...contribution.runtime);
+    if (contribution.star !== undefined) stars.push(contribution.star);
   }
-  return names.sort();
+  return { bindings: bindings.sort(), declared: declared.sort(), runtime: runtime.sort(), stars };
+}
+
+/**
+ * The names a module exports, sorted — `readModuleSurface(path, source).declared`.
+ *
+ * Read for the real module and for the mirror the gate wrote, so the mirror must
+ * declare exactly the export names the module does. Every shape TypeScript erases
+ * is included, because the mirror *declares* an interface in order to match the
+ * real file's shape; `runtimeExportNames` is the subset a running import binds.
+ */
+export function declaredExportNames(path: string, source: string): string[] {
+  return readModuleSurface(path, source).declared;
+}
+
+/**
+ * The names a module exports that exist **at runtime**, sorted — the third
+ * projection of `readModuleSurface`.
+ *
+ * `declaredExportNames` answers "what shape does this module declare"; this one
+ * answers "what can a running import bind". The two differ by every shape
+ * TypeScript erases (`isErasedExport`), and asking the wrong one is a false "the
+ * parent already has it": `export type { value } from "./types"` is gone before
+ * the module executes, so a plan built on the declared list appends no stand-in
+ * for the runtime `value` the change adds, the parent's `import { value }` fails
+ * to resolve, and a file the gate could judge becomes CANNOT-HOLLOW plus a
+ * whole-file waiver.
+ *
+ * `export *` names nothing here either; its names are the target's and are
+ * resolved in the parent worktree by `starExportNames`.
+ */
+export function runtimeExportNames(path: string, source: string): string[] {
+  return readModuleSurface(path, source).runtime;
 }
 
 /**
@@ -1730,56 +1802,13 @@ export function runtimeExportNames(path: string, source: string): string[] {
  * Import bindings are included for the same reason: `import { readFileSync }`
  * occupies the top-level scope exactly as a `const` does, and appending a
  * declaration of that name is the same duplicate.
+ *
+ * This is the first projection of `readModuleSurface`: the clash set and the export
+ * sets come from one walk, so they cannot disagree about what a statement
+ * declares.
  */
 export function topLevelBindingNames(path: string, source: string): string[] {
-  const file = ts.createSourceFile(
-    path,
-    source,
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ true,
-    scriptKindFor(path),
-  );
-  const names: string[] = [];
-  for (const statement of file.statements) {
-    if (ts.isVariableStatement(statement)) {
-      // A destructured binding (`const { a, b } = x`, `const [c] = y`) declares
-      // one name per element, and those names are top-level bindings too. One
-      // walk, shared with the two export readers, so the clash set and the
-      // export sets cannot disagree about what a statement declares.
-      for (const declaration of statement.declarationList.declarations) {
-        names.push(...variableBindingNames(declaration.name));
-      }
-      continue;
-    }
-    if (ts.isImportDeclaration(statement)) {
-      // An import binding occupies the top-level scope exactly as a `const`
-      // does. `import x` / `import * as x` / `import { a as b }` are three
-      // spellings of the same declaration.
-      const clause = statement.importClause;
-      if (clause === undefined) continue;
-      if (clause.name !== undefined) names.push(clause.name.text);
-      const bindings = clause.namedBindings;
-      if (bindings === undefined) continue;
-      if (ts.isNamespaceImport(bindings)) {
-        names.push(bindings.name.text);
-        continue;
-      }
-      for (const element of bindings.elements) names.push(element.name.text);
-      continue;
-    }
-    if (
-      ts.isFunctionDeclaration(statement) ||
-      ts.isClassDeclaration(statement) ||
-      ts.isInterfaceDeclaration(statement) ||
-      ts.isTypeAliasDeclaration(statement) ||
-      ts.isEnumDeclaration(statement) ||
-      ts.isModuleDeclaration(statement)
-    ) {
-      const name = statement.name;
-      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
-    }
-  }
-  return names.sort();
+  return readModuleSurface(path, source).bindings;
 }
 
 /**
@@ -1835,9 +1864,32 @@ export function hollowModuleSource(
     if (hasKeyword(statement, ts.SyntaxKind.DefaultKeyword)) {
       return refuse("it has an `export default`, whose meaning is the whole module's value");
     }
-    if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) {
+    // The three shapes TypeScript erases are decided once, in `isErasedExport`,
+    // and a hollow answers each of them rather than re-testing the shape. An
+    // ambient export has nothing a hollow could faithfully emit, and emitting a
+    // value for one would invent an export the real module does not have. An
+    // interface and a type alias are erased too, so an empty one is not a lie —
+    // the mirror *declares* them only because the real module does, and
+    // `readModuleSurface` counts them in `declared` for that reason.
+    if (isErasedExport(statement)) {
+      if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) {
+        return refuse(
+          "it declares an ambient (`declare`) export, which emits no runtime value — mirroring it would invent an export the real module does not have",
+        );
+      }
+      if (ts.isInterfaceDeclaration(statement)) {
+        lines.push(`export interface ${statement.name.text} {}`);
+        continue;
+      }
+      if (ts.isTypeAliasDeclaration(statement)) {
+        lines.push(`export type ${statement.name.text} = unknown;`);
+        continue;
+      }
+      // Not reachable today, and deliberately not silent: `isErasedExport` is the
+      // rule, so a shape it grows must be answered here rather than dropped from
+      // the mirror.
       return refuse(
-        "it declares an ambient (`declare`) export, which emits no runtime value — mirroring it would invent an export the real module does not have",
+        `it exports a ${ts.SyntaxKind[statement.kind]} declaration, which a hollow does not mirror`,
       );
     }
     const decorators = ts.canHaveDecorators(statement) ? ts.getDecorators(statement) : undefined;
@@ -1882,16 +1934,6 @@ export function hollowModuleSource(
             : `export ${keyword} ${declaration.name.text};`,
         );
       }
-      continue;
-    }
-    if (ts.isInterfaceDeclaration(statement)) {
-      // Erased by the runtime, so an empty one is not a lie — the mirror must
-      // *declare* it only because the real module does.
-      lines.push(`export interface ${statement.name.text} {}`);
-      continue;
-    }
-    if (ts.isTypeAliasDeclaration(statement)) {
-      lines.push(`export type ${statement.name.text} = unknown;`);
       continue;
     }
     if (ts.isEnumDeclaration(statement)) {
@@ -1980,28 +2022,16 @@ function exportLookup(source: string, path: string, name: string): ExportLookup 
   );
   // A direct declaration first: a module can carry `export *` beside the name an
   // appended stand-in is for, and the name it really declares is the one to
-  // mirror.
+  // mirror. Which names a statement declares is `moduleStatementContribution`'s answer,
+  // not a second reading of the same statement — this loop used to match
+  // identifiers only, so `export const { value } = obj` came back as no
+  // declaration at all and was refused as something the gate "cannot read".
   for (const statement of file.statements) {
-    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
-    if (ts.isVariableStatement(statement)) {
-      const declares = statement.declarationList.declarations.some((declaration) =>
-        ts.isIdentifier(declaration.name) ? declaration.name.text === name : false,
-      );
-      if (declares) return { kind: "declaration", statement };
-      continue;
-    }
-    if (
-      ts.isFunctionDeclaration(statement) ||
-      ts.isClassDeclaration(statement) ||
-      ts.isInterfaceDeclaration(statement) ||
-      ts.isTypeAliasDeclaration(statement) ||
-      ts.isEnumDeclaration(statement) ||
-      ts.isModuleDeclaration(statement)
-    ) {
-      const declared = statement.name;
-      if (declared !== undefined && ts.isIdentifier(declared) && declared.text === name) {
-        return { kind: "declaration", statement };
-      }
+    // An export list names a name without declaring one; the loop below refuses
+    // those for the reason an appended stand-in cannot mirror them.
+    if (ts.isExportDeclaration(statement)) continue;
+    if (moduleStatementContribution(statement).declared.includes(name)) {
+      return { kind: "declaration", statement };
     }
   }
   // Then the export statements, which name the export without declaring it.
@@ -2009,7 +2039,7 @@ function exportLookup(source: string, path: string, name: string): ExportLookup 
     if (!ts.isExportDeclaration(statement)) continue;
     const clause = statement.exportClause;
     if (clause !== undefined && ts.isNamedExports(clause)) {
-      if (!clause.elements.some((element) => element.name.text === name)) continue;
+      if (!moduleStatementContribution(statement).declared.includes(name)) continue;
       return {
         kind: "unmirrorable",
         why:
@@ -2317,27 +2347,13 @@ function resolveModuleWith(
  * The names such a module supplies are the target's names, so this file cannot
  * answer what they are. `export type *` is skipped: its names are types, erased
  * before the file runs, so they supply no runtime export a stand-in could shadow.
+ *
+ * The fourth projection of `readModuleSurface`: `export { a }` and `export * as ns`
+ * name their own exports, so only a bare star reaches this list, and the rule for
+ * that lives once with everything else about a module's shape.
  */
 function starExportSpecifiers(path: string, source: string): string[] {
-  const file = ts.createSourceFile(
-    path,
-    source,
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ true,
-    scriptKindFor(path),
-  );
-  const specifiers: string[] = [];
-  for (const statement of file.statements) {
-    if (!ts.isExportDeclaration(statement)) continue;
-    // `export { a }` and `export * as ns` name their own exports; only a bare
-    // star hands the naming to another module.
-    if (statement.exportClause !== undefined) continue;
-    if (statement.isTypeOnly) continue;
-    const module = statement.moduleSpecifier;
-    if (module === undefined || !ts.isStringLiteral(module)) continue;
-    specifiers.push(module.text);
-  }
-  return specifiers;
+  return readModuleSurface(path, source).stars;
 }
 
 /**

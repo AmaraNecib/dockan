@@ -129,3 +129,55 @@ test("signing out on the plaintext build reloads the page", async ({ page }) => 
     )
     .toBeUndefined();
 });
+
+/**
+ * #347 — a sign-out through the dev proxy must actually end the session.
+ *
+ * better-auth compares the request's `Origin` against `baseURL`, but only when
+ * the request carries a cookie (`dist/api/middlewares/origin-check.mjs`:
+ * `if (!(forceValidate || useCookies)) return`). That is exactly why sign-IN
+ * worked through the proxy and sign-OUT did not: by sign-out the browser holds
+ * the session cookie, so the check engages and compares the dev server's origin
+ * against the API's own port:
+ *
+ *     POST /api/auth/sign-out -> 403 Invalid origin: http://127.0.0.1:5173
+ *
+ * The assertion is that the SESSION IS DEAD, not that a page navigated: any
+ * endpoint that 404s would satisfy the latter. `get-session` answers `null` for a
+ * dead session and the owner object for a live one, both with 200.
+ *
+ * `page.request` is the Node-side client bound to this page's cookie jar: it can
+ * set `Origin` (a browser cannot — the header is forbidden), which is what makes
+ * both halves testable at all.
+ */
+test("a sign-out through the dev proxy ends the session", async ({ page }) => {
+  await signIn(page);
+  const origin = new URL(page.url()).origin;
+
+  const liveBefore = await page.request.get("/api/auth/get-session");
+  expect(liveBefore.status()).toBe(200);
+  expect(await liveBefore.text()).toContain(OWNER_PHONE.replace(/^213/, ""));
+
+  // the same request shape the app sends, with the page's own origin
+  const signedOut = await page.request.post("/api/auth/sign-out", {
+    headers: { origin, "content-type": "application/json" },
+  });
+  expect(signedOut.status()).toBe(200);
+
+  const deadAfter = await page.request.get("/api/auth/get-session");
+  expect(deadAfter.status()).toBe(200);
+  expect((await deadAfter.text()).trim()).toBe("null");
+});
+
+/**
+ * ...and the negative: an origin outside the list is still refused WITH the
+ * cookie present. A fix that turned `trustedOrigins` into a blanket allow would
+ * pass every other case in this file.
+ */
+test("a foreign origin is refused with the session cookie present", async ({ page }) => {
+  await signIn(page);
+  const refused = await page.request.post("/api/auth/sign-out", {
+    headers: { origin: "https://evil.example", "content-type": "application/json" },
+  });
+  expect(refused.status()).toBe(403);
+});

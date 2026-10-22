@@ -16,6 +16,25 @@ import { accounts, sessions, users, verifications } from "../db/schema";
  * §4.2): one universal build, generated per install on first run, so copying
  * or restoring the data folder keeps sessions valid.
  */
+/**
+ * The extra origins better-auth must accept, derived from config.
+ *
+ * One entry, and only for a loopback API: the dev server the browser actually
+ * talks to. A packaged app is same-origin with its sidecar, so its `baseURL`
+ * already covers it, and nothing is added there.
+ */
+export function authTrustedOrigins(config: AppConfig): string[] {
+  if (!isLoopbackHostname(config.host)) return [];
+  const webPort = Number(process.env.DOKAN_WEB_PORT ?? 5173);
+  if (!Number.isInteger(webPort) || webPort <= 0) return [];
+  return [`http://${config.host}:${webPort}`];
+}
+
+/** loopback by literal address, not by name resolution: no DNS in an auth check */
+function isLoopbackHostname(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
 export function createAuth(db: DrizzleDb, config: AppConfig, sessionSecret: string) {
   return betterAuth({
     database: drizzleAdapter(db, {
@@ -26,6 +45,25 @@ export function createAuth(db: DrizzleDb, config: AppConfig, sessionSecret: stri
       schema: { user: users, session: sessions, account: accounts, verification: verifications },
     }),
     baseURL: `http://${config.host}:${config.port}`,
+    /**
+     * The origins this API is legitimately reached through (#347).
+     *
+     * better-auth refuses a request whose `Origin` is not `baseURL` — but only
+     * when the request carries a cookie (`api/middlewares/origin-check.mjs`:
+     * `if (!(forceValidate || useCookies)) return`). That is why sign-IN worked
+     * through the dev proxy and sign-OUT did not: by sign-out the browser holds
+     * the session cookie, so the check engages and compares `:5173` against the
+     * API's own `:4317`:
+     *
+     *     POST /api/auth/sign-out -> 403 Invalid origin: http://127.0.0.1:5173
+     *
+     * So the dev server's origin joins the list, derived from the same env var the
+     * dev server itself reads (`DOKAN_WEB_PORT`, default 5173) rather than
+     * hardcoded. It is only ever a loopback origin, and only when the API is
+     * itself on loopback — a deployment serving the app from its own origin needs
+     * nothing here, and nothing is widened for it.
+     */
+    trustedOrigins: authTrustedOrigins(config),
     secret: sessionSecret,
     plugins: [
       username({

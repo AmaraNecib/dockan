@@ -2353,6 +2353,18 @@ export type AugmentPlan = {
  * prints. The static answer is the one that can be checked before the run, and it
  * is the one that can be refused with the name and the shape in the message — a
  * transcript is only read after the fact.
+ *
+ * A refusal is about one module, and it survives beside the stand-ins the other
+ * modules get. Two consequences worth stating, because both were bugs:
+ *
+ *   - the parent's own export list is asked FIRST, and a module whose requested
+ *     names it answers never has its `export *` chain resolved at all. An
+ *     unrelated `export * from "some-package"` used to refuse the plan, dropping
+ *     a sibling module's stand-in for a name the test really needs;
+ *   - a module that cannot be mirrored no longer empties `modules`. Its refusal
+ *     is still reported and the file still will not load, so nothing is accepted
+ *     that was not judged — the sibling's stand-in is simply not thrown away with
+ *     it.
  */
 export function planAugmentedModules(
   testFile: string,
@@ -2362,6 +2374,10 @@ export function planAugmentedModules(
   readParent: (path: string) => string | null,
 ): AugmentPlan {
   const modules: AugmentPlan["modules"] = [];
+  // Per-module, and never a reason to drop a sibling's stand-in. A refusal is
+  // about one module's source; the modules this function *can* mirror are
+  // still returned, so the report says what the gate actually wrote.
+  const refusals: string[] = [];
   const seen = new Set<string>();
   for (const binding of importedModuleBindings(testSource, testFile)) {
     const path = resolveModuleIn(testFile, binding.specifier, touched);
@@ -2369,17 +2385,17 @@ export function planAugmentedModules(
     seen.add(path);
     const changeSource = readChange(path);
     if (changeSource === null) {
-      return {
-        modules: [],
-        refusal: `${path}: the gate cannot read this module at the change's commit, so it cannot tell which exports the change adds to the parent's copy`,
-      };
+      refusals.push(
+        `${path}: the gate cannot read this module at the change's commit, so it cannot tell which exports the change adds to the parent's copy`,
+      );
+      continue;
     }
     const parentSource = readParent(path);
     if (parentSource === null) {
-      return {
-        modules: [],
-        refusal: `${path}: the diff edits this module and the parent checkout has no copy of it, so there is nothing to augment`,
-      };
+      refusals.push(
+        `${path}: the diff edits this module and the parent checkout has no copy of it, so there is nothing to augment`,
+      );
+      continue;
     }
     // The parent's RUNTIME export set, not its declared one: this answers "can a
     // running import of this module bind the name", and a type-only export
@@ -2387,26 +2403,53 @@ export function planAugmentedModules(
     // no stand-in for the runtime `value` the change adds, so the parent's own
     // `import { value }` failed to resolve and the file became a whole-file waiver.
     const present = new Set(runtimeExportNames(path, parentSource));
-    // The one shape the parent's own export list cannot answer: a name supplied
-    // through `export *`, whose declaration lives in another module. Resolved
-    // against the parent's checkout, and refused when it cannot be — the answer
-    // decides whether a stand-in would shadow the parent's real export.
-    const starred = starExportNames(path, parentSource, readParent, new Set());
-    if (!starred.ok) return { modules: [], refusal: starred.refusal };
-    for (const name of starred.names) present.add(name);
     const parentHasDefault = hasDefaultExport(parentSource, path);
-    const missing = binding.names.filter((name) =>
-      name === "default" ? !parentHasDefault : !present.has(name),
-    );
+    const stillMissing = (name: string): boolean =>
+      name === "default" ? !parentHasDefault : !present.has(name);
+    let missing = binding.names.filter(stillMissing);
+    if (missing.length > 0) {
+      // Only now, and only for the names the parent's own export list and literal
+      // export lists did not answer: a name may still arrive through `export *`,
+      // and assuming it cannot is the shadow this gate exists to stop.
+      //
+      // Asking earlier was the Greptile P1. `starExportNames` refuses a chain it
+      // cannot resolve — a package specifier, a target outside the repository —
+      // and a module that merely *carries* an `export * from "some-package"`
+      // beside a name the test really uses then refused the whole plan. A test
+      // file importing an existing name from that module and a new name from a
+      // second module lost the second module's stand-in, so a file the gate could
+      // load and judge became a whole-file waiver. A chain says nothing about a
+      // name the parent's own copy already supplies, so it is not consulted for
+      // one.
+      const starred = starExportNames(path, parentSource, readParent, new Set());
+      if (!starred.ok) {
+        // Scoped, not fatal. The refusal is about THIS module's chain: a sibling
+        // module's stand-in is still written, because one module that cannot be
+        // mirrored does not make another one unmirrorable. The file will not load
+        // either way, so the refusal still stands and is still reported — this
+        // only keeps the report from claiming the gate did less than it did.
+        refusals.push(starred.refusal);
+        continue;
+      }
+      for (const name of starred.names) present.add(name);
+      missing = binding.names.filter(stillMissing);
+    }
     // A test that only uses names the parent's copy really declares says nothing
     // about an augmentation, and the parent's file is left exactly as it is.
     if (missing.length === 0) continue;
     const augmented = augmentModuleSource(parentSource, changeSource, path, missing);
-    if (!augmented.ok) return { modules: [], refusal: augmented.refusal };
+    if (!augmented.ok) {
+      refusals.push(augmented.refusal);
+      continue;
+    }
     modules.push({ path, importedBy: testFile, names: missing, text: augmented.text });
   }
   modules.sort((left, right) => (left.path < right.path ? -1 : 1));
-  return { modules, refusal: null };
+  // The first refusal in the file's own import order, and only one: the report
+  // prints a refusal as one row's detail, and an author who fixes the first
+  // re-runs and sees the next. Reporting the last would be arbitrary; reporting
+  // all of them in one row buries each path behind the previous one.
+  return { modules, refusal: refusals[0] ?? null };
 }
 
 // ---------------------------------------------------------------------------

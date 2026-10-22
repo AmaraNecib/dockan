@@ -5482,6 +5482,84 @@ describe("red-on-parent round 28 — a type-only export does not hide a runtime 
   });
 });
 
+describe("red-on-parent round 28 — an unrelated re-export does not refuse another module", () => {
+  // Module A carries `export * from "some-package"` and the test imports only a
+  // name A declares itself. Module B is where the change adds a name. Following
+  // A's star chain refused the whole plan, so B's stand-in was dropped and the
+  // file became a whole-file waiver over a module the test barely uses.
+  const PARENT_A = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\n`;
+  const CHANGE_A = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\nexport function alsoNew(): number {\n  return 5;\n}\n`;
+  const PARENT_B = `export const other = 1;\n`;
+  const CHANGE_B = `export const other = 1;\nexport function brandNew(): number {\n  return 2;\n}\n`;
+  const TOUCHED = new Set(["scripts/a.ts", "scripts/b.ts"]);
+
+  const readChange = (path: string): string | null =>
+    path === "scripts/a.ts" ? CHANGE_A : path === "scripts/b.ts" ? CHANGE_B : null;
+  const readParent = (path: string): string | null =>
+    path === "scripts/a.ts" ? PARENT_A : path === "scripts/b.ts" ? PARENT_B : null;
+
+  test("a module whose names the parent declares directly never has its star chain consulted", () => {
+    const plan = planAugmentedModules(
+      "scripts/two-modules.test.ts",
+      `import { existing } from "./a";\nimport { brandNew } from "./b";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/b.ts"]);
+    expect(plan.modules[0]?.names).toEqual(["brandNew"]);
+    // B's stand-in, not a refusal about A's package specifier.
+    expect(plan.modules[0]?.text.startsWith(PARENT_B)).toBe(true);
+  });
+
+  test("the same module alone, asked for nothing it lacks, is left alone", () => {
+    const plan = planAugmentedModules(
+      "scripts/a-only.test.ts",
+      `import { existing } from "./a";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("a refusal stays scoped to the module it is about", () => {
+    // C genuinely lacks the name and its star cannot be resolved, so C has no
+    // stand-in and the file will not load — the refusal is honest. B's stand-in
+    // is not C's, and one module's refusal must not delete it.
+    const parentC = `export * from "./nowhere";\n`;
+    const changeC = `export * from "./nowhere";\nexport function brandNewC(): number {\n  return 3;\n}\n`;
+    const plan = planAugmentedModules(
+      "scripts/three-modules.test.ts",
+      `import { brandNew } from "./b";\nimport { brandNewC } from "./c";\n`,
+      new Set(["scripts/b.ts", "scripts/c.ts"]),
+      (path) => (path === "scripts/b.ts" ? CHANGE_B : path === "scripts/c.ts" ? changeC : null),
+      (path) => (path === "scripts/b.ts" ? PARENT_B : path === "scripts/c.ts" ? parentC : null),
+    );
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/b.ts"]);
+    expect(plan.refusal).toContain("scripts/c.ts");
+    expect(plan.refusal).toContain("./nowhere");
+  });
+
+  test("a star chain is still followed for a module that is missing a name", () => {
+    // The regression guard on the narrowing itself: skipping the chain when the
+    // direct exports answer every name must not become skipping it always.
+    const base = `export function value(): number {\n  return 1;\n}\n`;
+    const plan = planAugmentedModules(
+      "scripts/star-supplies.test.ts",
+      `import { value } from "./b";\n`,
+      new Set(["scripts/b.ts"]),
+      () => CHANGE_B,
+      (path) =>
+        path === "scripts/b.ts" ? `export * from "./base";\n` : path === "scripts/base.ts" ? base : null,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+});
+
 describe("red-on-parent round 28 — a type-only export, end to end", () => {
   const PARENT = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\n`;
   const CHANGE = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\nexport function value(): number {\n  return 7;\n}\n`;
@@ -5512,3 +5590,56 @@ test("uses the new runtime export", () => {
   }, 60_000);
 });
 
+describe("red-on-parent round 28 — an unrelated re-export, end to end", () => {
+  // `some-package` is a real package in the fixture's committed `node_modules`,
+  // so the parent LOADS the module that re-exports it — which is what makes this
+  // the Greptile shape rather than a load failure. The gate's star reader only
+  // resolves relative specifiers, so the chain is unresolvable to it and used to
+  // refuse the sibling module's stand-in.
+  const PACKAGE_JSON: File = {
+    path: "node_modules/some-package/package.json",
+    text: `{\n  "name": "some-package",\n  "type": "module",\n  "main": "index.js"\n}\n`,
+  };
+  const PACKAGE_INDEX: File = {
+    path: "node_modules/some-package/index.js",
+    text: `export function fromPackage() {\n  return 0;\n}\n`,
+  };
+  const RE_EXPORTER = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\n`;
+  const RE_EXPORTER_AFTER = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\nexport function alsoNew(): number {\n  return 5;\n}\n`;
+  const EXTENDED = `export const other = 1;\n`;
+  const EXTENDED_AFTER = `export const other = 1;\nexport function brandNew(): number {\n  return 2;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { existing } from "./re-exporter";
+import { brandNew } from "./extended";
+test("uses both modules", () => {
+  expect(existing()).toBe(1);
+  expect(brandNew()).toBe(2);
+});
+`;
+
+  test("the re-exporting module does not refuse the module that gained a name", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        PACKAGE_JSON,
+        PACKAGE_INDEX,
+        { path: "packages/core/src/re-exporter.ts", text: RE_EXPORTER },
+        { path: "packages/core/src/extended.ts", text: EXTENDED },
+      ],
+      [
+        { path: "packages/core/src/re-exporter.ts", text: RE_EXPORTER_AFTER },
+        { path: "packages/core/src/extended.ts", text: EXTENDED_AFTER },
+        { path: "packages/core/src/two-modules.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});

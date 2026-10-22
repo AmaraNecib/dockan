@@ -2,6 +2,23 @@ import { expect, test } from "@playwright/test";
 import { OWNER_PASSWORD, OWNER_PHONE, provisionOwner, signIn } from "./auth-helpers";
 
 /**
+ * A live session, by shape rather than by the username's format.
+ *
+ * This suite depends on `@playwright/test` alone — that is deliberate, so a spec
+ * cannot drift with the app's internals. Comparing a username would mean
+ * duplicating the contract's normalization here (`0550123123` is stored as
+ * `213550123123`), which the review of this PR rightly flagged as a wrong
+ * comparison waiting to happen. What the test needs is only "a session exists and
+ * belongs to a user", and `session.userId` says exactly that.
+ */
+type SessionBody = { session?: { userId?: string } } | null;
+
+async function sessionUserId(response: { json: () => Promise<SessionBody> }): Promise<string | null> {
+  const body = await response.json();
+  return body?.session?.userId ?? null;
+}
+
+/**
  * Auth gate e2e: anonymous visitors never reach the app; the first-run setup
  * (or the login form once provisioned) signs the owner in, and the session
  * survives a reload (cookie persisted). The failure cases pin issue #100: a
@@ -128,4 +145,76 @@ test("signing out on the plaintext build reloads the page", async ({ page }) => 
       { timeout: 10_000 },
     )
     .toBeUndefined();
+});
+
+/**
+ * #347 — a sign-out through the dev proxy must actually end the session.
+ *
+ * better-auth compares the request's `Origin` against `baseURL`, but only when
+ * the request carries a cookie (`dist/api/middlewares/origin-check.mjs`:
+ * `if (!(forceValidate || useCookies)) return`). That is exactly why sign-IN
+ * worked through the proxy and sign-OUT did not: by sign-out the browser holds
+ * the session cookie, so the check engages and compares the dev server's origin
+ * against the API's own port:
+ *
+ *     POST /api/auth/sign-out -> 403 Invalid origin: http://127.0.0.1:5173
+ *
+ * The assertion is that the SESSION IS DEAD, not that a page navigated: any
+ * endpoint that 404s would satisfy the latter. `get-session` answers `null` for a
+ * dead session and the owner object for a live one, both with 200.
+ *
+ * `page.request` is the Node-side client bound to this page's cookie jar: it can
+ * set `Origin` (a browser cannot — the header is forbidden), which is what makes
+ * both halves testable at all.
+ */
+test("a sign-out through the dev proxy ends the session", async ({ page }) => {
+  await signIn(page);
+  const origin = new URL(page.url()).origin;
+
+  const liveBefore = await page.request.get("/api/auth/get-session");
+  expect(liveBefore.status()).toBe(200);
+  expect(await sessionUserId(liveBefore)).not.toBeNull();
+
+  // the session cookie is saved BEFORE the sign-out so it can be replayed after:
+  // the jar dropping a cookie would make the check below return null on its own,
+  // even if the server still honoured the old session (#356 review P2)
+  const sessionCookie = (await page.context().cookies()).find((cookie) => cookie.name.includes("session"));
+  expect(sessionCookie).toBeDefined();
+  if (sessionCookie === undefined) throw new Error("no session cookie after sign-in");
+
+  // the same request shape the app sends, with the page's own origin
+  const signedOut = await page.request.post("/api/auth/sign-out", {
+    headers: { origin, "content-type": "application/json" },
+    // the empty object the app's own client sends: without a body better-auth
+    // answers 400 before the origin check, and a 400 would prove nothing
+    data: {},
+  });
+  expect(signedOut.status()).toBe(200);
+
+  // replayed with the OLD cookie and no jar: the server must refuse it
+  const replay = await page.request.get("/api/auth/get-session", {
+    headers: { cookie: `${sessionCookie.name}=${sessionCookie.value}` },
+  });
+  expect(replay.status()).toBe(200);
+  expect((await replay.text()).trim()).toBe("null");
+});
+
+/**
+ * ...and the negative: an origin outside the list is still refused WITH the
+ * cookie present. A fix that turned `trustedOrigins` into a blanket allow would
+ * pass every other case in this file.
+ */
+test("a foreign origin is refused with the session cookie present", async ({ page }) => {
+  await signIn(page);
+  const refused = await page.request.post("/api/auth/sign-out", {
+    headers: { origin: "https://evil.example", "content-type": "application/json" },
+    data: {},
+  });
+  expect(refused.status()).toBe(403);
+
+  // ...and the refusal was about the ORIGIN, not about the request being
+  // rejected for some other reason: the session is still live afterwards
+  const stillLive = await page.request.get("/api/auth/get-session");
+  expect(stillLive.status()).toBe(200);
+  expect(await sessionUserId(stillLive)).not.toBeNull();
 });

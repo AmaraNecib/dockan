@@ -178,6 +178,23 @@ describe("better-auth schema pin", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("the column better-auth writes but first-run provisioning omits stays insertable", () => {
+    // router.ts provisions the single owner without an email (ADR-0001: no email
+    // identity). better-auth declares `email` required and WRITES it, so arm 2
+    // skips it and arm 1 only asks that it exists — nothing would say a word if
+    // it became NOT NULL and provisioning started failing at runtime.
+    // SAFETY: PRAGMA table_info returns rows shaped { name, notnull, dflt_value }
+    const columns = conn.raw.query("PRAGMA table_info(user)").all() as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const email = columns.find((column) => column.name === "email");
+    if (!email) throw new Error("user.email is missing from the schema this build creates");
+    const insertable = email.notnull === 0 || email.dflt_value !== null;
+    expect({ column: "user.email", insertable }).toEqual({ column: "user.email", insertable: true });
+  });
+
   // red-on-parent-waive: "better-auth serves a request against this schema \(no SCHEMA_MISMATCH\)" — the parent's adapter (1.7.1) does not run the check at all, so the same request answers 401 there; discrimination is the mutation proof (the request throws SCHEMA_MISMATCH naming the removed columns), not a parent run
   it("better-auth serves a request against this schema (no SCHEMA_MISMATCH)", async () => {
     // The adapter's own runtime check, reached through the real handler. A

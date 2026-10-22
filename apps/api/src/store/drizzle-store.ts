@@ -1003,6 +1003,30 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    * before the current DDL runs; CREATE TABLE IF NOT EXISTS cannot rename or
    * remove the old NOT NULL columns.
    */
+  /**
+   * #362 / better-auth 1.7.12 — the `user` table gains `email` and
+   * `emailVerified`, the two columns that version's schema check requires before
+   * it will serve one request. SCHEMA_DDL creates a fresh vault in that shape;
+   * this adds them to a vault created before the bump, so an existing file keeps
+   * working instead of failing its first auth call with SCHEMA_MISMATCH.
+   *
+   * Additive and idempotent, like every other column step here: PRAGMA-guarded
+   * ALTERs, no row rewritten, no version restamp (setup() stamps once at the
+   * end). The UNIQUE index is separate because `ALTER TABLE ... ADD COLUMN` in
+   * SQLite cannot carry a table constraint.
+   */
+  const ensureUserAuthColumns = (): void => {
+    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+    const rows = conn.raw.query("PRAGMA table_info(user)").all() as Array<{ name: string }>;
+    if (rows.length === 0) return; // fresh db: SCHEMA_DDL creates it whole
+    const names = new Set(rows.map((row) => row.name));
+    if (!names.has("email")) conn.raw.exec("ALTER TABLE user ADD COLUMN email TEXT");
+    if (!names.has("emailVerified")) conn.raw.exec("ALTER TABLE user ADD COLUMN emailVerified INTEGER NOT NULL DEFAULT 0");
+    // SQLite treats NULLs as distinct in a unique index, so email-less owner rows
+    // do not collide while a repeated non-null email is refused.
+    conn.raw.exec("CREATE UNIQUE INDEX IF NOT EXISTS user_email_unique ON user(email)");
+  };
+
   const rebuildLegacyAuthTables = (): void => {
     const tables = ["user", "session", "account", "verification"] as const;
     const looksLegacy = (table: string): boolean => {
@@ -1301,6 +1325,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    */
   async function setup(): Promise<void> {
     rebuildLegacyAuthTables();
+    ensureUserAuthColumns();
     ensureItemsBarcodeColumn();
     ensureStockMovementsReturnMarkColumn();
     ensureSupplierAdjustmentDirectionColumn();

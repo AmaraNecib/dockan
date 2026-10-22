@@ -1,18 +1,22 @@
 import { expect, test } from "@playwright/test";
-import { normalizeAlgerianPhone, phoneToUsername } from "@dokan/contracts";
-
 import { OWNER_PASSWORD, OWNER_PHONE, provisionOwner, signIn } from "./auth-helpers";
 
 /**
- * The username better-auth stores and returns: the local `OWNER_PHONE` is not it.
- * Setup normalizes to E.164 and better-auth keys the username off that, so the
- * comparison has to go through the same two functions (#356 review P1).
+ * A live session, by shape rather than by the username's format.
+ *
+ * This suite depends on `@playwright/test` alone — that is deliberate, so a spec
+ * cannot drift with the app's internals. Comparing a username would mean
+ * duplicating the contract's normalization here (`0550123123` is stored as
+ * `213550123123`), which the review of this PR rightly flagged as a wrong
+ * comparison waiting to happen. What the test needs is only "a session exists and
+ * belongs to a user", and `session.userId` says exactly that.
  */
-const OWNER_USERNAME = (() => {
-  const normalized = normalizeAlgerianPhone(OWNER_PHONE);
-  if (normalized === null) throw new Error(`OWNER_PHONE is not a phone number: ${OWNER_PHONE}`);
-  return phoneToUsername(normalized);
-})();
+type SessionBody = { session?: { userId?: string } } | null;
+
+async function sessionUserId(response: { json: () => Promise<SessionBody> }): Promise<string | null> {
+  const body = await response.json();
+  return body?.session?.userId ?? null;
+}
 
 /**
  * Auth gate e2e: anonymous visitors never reach the app; the first-run setup
@@ -169,7 +173,7 @@ test("a sign-out through the dev proxy ends the session", async ({ page }) => {
 
   const liveBefore = await page.request.get("/api/auth/get-session");
   expect(liveBefore.status()).toBe(200);
-  expect(await liveBefore.text()).toContain(`"username":"${OWNER_USERNAME}"`);
+  expect(await sessionUserId(liveBefore)).not.toBeNull();
 
   // the session cookie is saved BEFORE the sign-out so it can be replayed after:
   // the jar dropping a cookie would make the check below return null on its own,
@@ -212,5 +216,5 @@ test("a foreign origin is refused with the session cookie present", async ({ pag
   // rejected for some other reason: the session is still live afterwards
   const stillLive = await page.request.get("/api/auth/get-session");
   expect(stillLive.status()).toBe(200);
-  expect(await stillLive.text()).toContain(`"username":"${OWNER_USERNAME}"`);
+  expect(await sessionUserId(stillLive)).not.toBeNull();
 });

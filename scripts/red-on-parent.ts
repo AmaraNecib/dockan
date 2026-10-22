@@ -3157,10 +3157,31 @@ function gateBaseWorktree(input: {
       // that is missing the module, and every row it produced says so. Keeping
       // those rows would print "the parent could not load the file" once per test
       // and leave the real reason — an unfaithful mirror — nowhere in the report.
-      const parentVerdicts =
-        refusal === null
+      //
+      // That justification holds only for a file the parent could not LOAD, so
+      // the replacement is bounded at both ends:
+      //
+      //   - a run that did not finish is never replaced. RUN_INCOMPLETE is not a
+      //     load failure — the file may never have been read — and no waiver covers
+      //     it. Replacing it handed the whole file to a waiver, so a module
+      //     refusal (made from the source, before the run) excused a parent run
+      //     that timed out;
+      //   - a run that FINISHED and registered testcases is never replaced. The
+      //     file loaded, so a refusal cannot explain anything about this run: the
+      //     planner sees every specifier in the source, including a lazy
+      //     `await import()` inside a function body that no load reaches, and can
+      //     refuse a module the parent never asked for. The parent's own rows are
+      //     the honest report there, and dropping a refusal is not a false pass —
+      //     a test that passes on the parent is GREEN_ON_PARENT and rejected.
+      const unfinished = classified.verdicts.some((verdict) => verdict.name === "RUN_INCOMPLETE");
+      const replacedByRefusal: Verdict | null =
+        refusal !== null && !unfinished && parentResults.length === 0
+          ? cannotHollowVerdict(file, refusal, parsed.waivers)
+          : null;
+      const parentVerdicts: Verdict[] =
+        replacedByRefusal === null
           ? [...classified.verdicts, ...unregistered.verdicts, ...notOnChange]
-          : [cannotHollowVerdict(file, refusal, parsed.waivers)];
+          : [replacedByRefusal];
       verdicts.push(...parentVerdicts);
       // The change's own run is already made, so its statuses cost nothing to
       // read. They are read independently of the parent's waivers: a waiver says
@@ -3172,7 +3193,9 @@ function gateBaseWorktree(input: {
       // used would hide the per-test waiver as accepted when the run says the file
       // was never judged. So only the rows that reach the report mark waivers used.
       const usedLines = new Set<number>(
-        refusal === null ? [...classified.usedWaiverLines, ...unregistered.usedWaiverLines] : [],
+        replacedByRefusal === null
+          ? [...classified.usedWaiverLines, ...unregistered.usedWaiverLines]
+          : [],
       );
       for (const verdict of parentVerdicts) for (const waiver of verdict.waivers) usedLines.add(waiver.line);
       // A waiver can only be judged against tests the run actually enumerated.

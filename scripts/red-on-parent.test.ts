@@ -5286,3 +5286,102 @@ test("the parent's own export", () => {
     }
   }, 60_000);
 });
+
+describe("red-on-parent round 27 — a waiver cannot excuse an unfinished parent run", () => {
+  // Two defects in one ordering. A refusal replaces EVERY parent verdict with a
+  // waivable CANNOT_HOLLOW row, and the planner can refuse on an import no load
+  // takes — a lazy `import()` inside a function body — so the parent's real run
+  // is discarded for a claim about a file it did load.
+  const MODE = `export enum Mode {\n  One,\n}\n`;
+
+  test("a whole-file waiver does not clear a parent run that never finished", () => {
+    // The hang is on the parent only: `PHASE` is "parent" there, so the parent's
+    // run times out while the change's run finishes and passes. The added module
+    // with the enum is reached only through a lazy import, so the file still
+    // loads and the hang is the only thing the parent's run has to say.
+    const fixture = createFixture(
+      [
+        PKG,
+        {
+          path: "packages/core/src/helper.ts",
+          text: `export const PHASE = "parent";\nexport function guard(n: number): number {\n  if (n <= 0) throw new Error("zero");\n  return n;\n}\n`,
+        },
+      ],
+      [
+        {
+          path: "packages/core/src/helper.ts",
+          text: `export const PHASE = "change";\nexport function guard(n: number): number {\n  if (n <= 0) throw new Error("ZERO");\n  return n;\n}\n`,
+        },
+        { path: "packages/core/src/mode.ts", text: MODE },
+        {
+          path: "packages/core/src/refused-and-hung.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { PHASE, guard } from "./helper";
+
+async function later() {
+  const { Mode } = await import("./mode.ts");
+  return Mode;
+}
+
+test("hangs on the parent only", async () => {
+  if (PHASE === "parent") await new Promise(() => {});
+  expect(() => guard(0)).toThrow("ZERO");
+  expect(await later()).toBeDefined();
+});
+// red-on-parent-waive: "whole file" — the module this file needs has no faithful hollow
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(
+        fixture,
+        { RED_ON_PARENT_TEST_TIMEOUT_MS: "1500" },
+        [],
+        20_000,
+      );
+      expect(stdout).toContain("RUN-INCOMPLETE");
+      expect(stdout).toContain("did not complete");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a refusal about a lazily imported module does not replace the parent's own verdicts", () => {
+    // `mode.ts` is added and imported only inside `later()`, which the test never
+    // calls. The parent loads the file and runs the test, so its verdict is the
+    // test's own assertion red — not a whole-file refusal about a module the
+    // parent never asked for.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        { path: "packages/core/src/mode.ts", text: MODE },
+        {
+          path: "packages/core/src/lazy-import.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+
+async function later() {
+  const { Mode } = await import("./mode.ts");
+  return Mode;
+}
+
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});

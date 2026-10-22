@@ -53,7 +53,7 @@ import { localDateTime } from "../lib/logger";
 import { CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
-import { trimSql } from "./trim-chars";
+import { sameParty, trimSql } from "./trim-chars";
 
 /** bun:sqlite surfaces the adjustment partial unique-index violation as
  * `UNIQUE constraint failed: supplier_account_entries.dedup_key`. Scoped to
@@ -2816,7 +2816,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         sql`${invoices.remainingAmount} > 0`,
         counterpartyId !== null
           ? sql`${invoices.counterpartyId} = ${counterpartyId}`
-          : sql`${invoices.counterpartyId} IS NULL AND ${trimSql(invoices.counterpartyName)} = ${trimSql(counterpartyName)}`,
+          : sql`${invoices.counterpartyId} IS NULL AND ${sameParty(invoices.counterpartyName, counterpartyName)}`,
       ];
       const rows = await db
         .select(invoiceCols)
@@ -2854,7 +2854,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         LEFT JOIN customers ON invoices.counterparty_id = customers.id
         LEFT JOIN suppliers ON invoices.counterparty_id = suppliers.id
         WHERE invoices.remaining_amount > 0 AND (invoices.counterparty_id IS NOT NULL OR invoices.counterparty_name IS NOT NULL)
-        GROUP BY invoices.kind, COALESCE(invoices.counterparty_id, ${trimSql(invoices.counterpartyName)})
+        GROUP BY invoices.kind, COALESCE(invoices.counterparty_id, ${trimSql(invoices.counterpartyName)}) -- canonical key; listUnpaidInvoicesByParty's sameParty must match this
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
       const summaries = aggregated.map((r) => {
         const kind =

@@ -31,3 +31,10 @@ export const TRIM_CHARS = "\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u
 export function trimSql(target: SQLWrapper | string | null): SQL {
   return sql`TRIM(${target}, ${TRIM_CHARS})`;
 }
+
+/**
+ * The one party comparison: both operands trimmed with the same set. A statement
+ * that trims one side only re-splits a padded party, and no type or test would
+ * say so. Use this everywhere a party's typed name is compared.
+ */
+export const sameParty = (a: SQLWrapper | string | null, b: SQLWrapper | string | null): SQL => sql`${trimSql(a)} = ${trimSql(b)}`;

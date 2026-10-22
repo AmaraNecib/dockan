@@ -1450,6 +1450,23 @@ describe("debts drill-down (ticket 9)", () => {
     expect((await store.listUnpaidInvoicesByParty("SALE", null, " Bolt\u00A0")).map((i) => i.invoiceNumber)).toEqual(["INV-0291"]);
   });
 
+  // #361 — a half-trim cannot pass: debtSummaries collapses the padded pair
+  // into one row (existing #337 behaviour), AND the drill-down returns BOTH
+  // invoices. Trimming only one side would keep the summary collapsed while
+  // losing one invoice in the WHERE.
+  it("returns every invoice of a padded party in the drill-down (#361)", async () => {
+    await insertDebt({ invoiceNumber: "INV-0361A", kind: "SALE", counterpartyName: "Acme", totalAmount: 700, paidAmount: 0 });
+    await insertDebt({ invoiceNumber: "INV-0361B", kind: "SALE", counterpartyName: "Acme\u00A0", totalAmount: 300, paidAmount: 0 });
+
+    const rows = (await store.debtSummaries()).filter(
+      (d) => d.kind === "SALE" && d.counterpartyId === null && (d.counterpartyName ?? "").trim() === "Acme",
+    );
+    expect(rows).toHaveLength(1);
+
+    const invoices = await store.listUnpaidInvoicesByParty("SALE", null, "Acme");
+    expect(invoices.map((i) => i.invoiceNumber)).toEqual(expect.arrayContaining(["INV-0361A", "INV-0361B"]));
+  });
+
   it("keeps a same-named party's debts scoped per direction (test-audit E2)", async () => {
     await insertDebt({ invoiceNumber: "INV-0251", kind: "SALE", counterpartyName: "الطرف المشترك", totalAmount: 1_000, paidAmount: 0 });
     await insertDebt({ invoiceNumber: "INV-0252", kind: "PURCHASE", counterpartyName: "الطرف المشترك", totalAmount: 2_000, paidAmount: 500 });

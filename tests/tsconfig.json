@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "typeRoots": ["../apps/api/node_modules/@types"],
+    // specs drive the app through page.evaluate, so DOM is the ambient lib;
+    // and they run under the Playwright runner (Node, not Bun) — loading
+    // bun-types here replaced `process.on("unhandledRejection")` with the
+    // Bun-only "memoryPressure" signature (its NodeJS.Process augmentation)
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}

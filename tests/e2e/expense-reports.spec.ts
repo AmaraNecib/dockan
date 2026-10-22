@@ -406,7 +406,9 @@ test("custom range controls stack and stay inside their column on a narrow windo
     const spill = await from.evaluate((el) => {
       const row = el.closest("div.flex");
       const column = row?.parentElement;
-      if (row === null || column === null) return null;
+      // row?.parentElement is undefined too when closest() missed, and the
+      // null-only guard would fall through and throw on the read below
+      if (row == null || column == null) return null;
       const columnRect = column.getBoundingClientRect();
       const children = Array.from(row.children).map((child) => child.getBoundingClientRect());
       return {

@@ -2,10 +2,28 @@ import path from "node:path";
 
 import { defineConfig } from "@playwright/test";
 
+// #343 — the app is served from a loopback hostname of its own, so the vault
+// cookie is scoped to this app alone (a cookie for 127.0.0.1 is handed to
+// every other local service, because cookies ignore ports).
+//
+// Imported by path: the Playwright config is loaded by Node, which cannot
+// follow the workspace packages' extensionless imports.
+import { resolveAppHost } from "./packages/contracts/src/app-host";
+import { installLoopbackHostnames } from "./packages/e2e-support/src/loopback-hostnames";
+
+// A browser maps every `*.localhost` name to the loopback address (RFC 6761);
+// Node's resolver does not, and the harness runs on Node. The mapping goes in
+// before any spec runs, so a request addressed to the app's own name reaches
+// the same server the browser reaches — without it, the specs would have to
+// address 127.0.0.1, which is the sharing this change exists to end.
+installLoopbackHostnames();
+
 // Defaults honoured; env wins so parallel CI lanes can run side by side.
 // The api and web servers themselves fall back to a free port if taken.
 const API_PORT = Number(process.env.DOKAN_PORT ?? 4317);
 const WEB_PORT = Number(process.env.DOKAN_WEB_PORT ?? 5173);
+/** the name the app answers on — the same one the api and the dev server use */
+const APP_HOST = resolveAppHost(process.env);
 
 // The API resolves DOKAN_DATA_DIR itself and may run from any workspace cwd,
 // so the e2e database path must be absolute. This is also the path the
@@ -23,7 +41,10 @@ export default defineConfig({
   // files must run sequentially; parallel workers would race first-time setup
   workers: 1,
   use: {
-    baseURL: `http://127.0.0.1:${WEB_PORT}`,
+    // the app's own name, not 127.0.0.1: the vault cookie is scoped to the
+    // host it was written for, and the specs must exercise the host the
+    // owner actually uses (#343)
+    baseURL: `http://${APP_HOST}:${WEB_PORT}`,
     locale: "ar-DZ",
     // Failure evidence for CI (#197): the e2e job uploads test-results/ when a
     // step fails. retain-on-failure, not on-first-retry: retries are 0 above, so
@@ -51,6 +72,10 @@ export default defineConfig({
         DOKAN_PORT: String(API_PORT),
         DOKAN_DATA_DIR: e2eData,
         E2E_DATA_DIR: e2eData,
+        // The web server's port, so the api knows the origin the browser
+        // reaches the app at (#343) — the origin its own-origin checks and
+        // better-auth's trusted origins are written against.
+        DOKAN_WEB_PORT: String(WEB_PORT),
         // The shared suite covers the legacy plaintext flows (setup with a
         // password, login, session cookies). The unified vault has its own
         // isolated pair in tests/e2e/vault.spec.ts with DOKAN_VAULT unset.
@@ -66,6 +91,9 @@ export default defineConfig({
       env: {
         DOKAN_WEB_PORT: String(WEB_PORT),
         DOKAN_PORT: String(API_PORT),
+        // the app's name, so the dev server and the harness agree on the
+        // origin the app answers on (#343)
+        DOKAN_APP_HOST: APP_HOST,
         // enlarge the scanner's duplicate-suppression window under e2e so
         // "rescan same code" is deterministically suppressed (typing takes
         // ~150 ms) while "new scan after the window" stays provable

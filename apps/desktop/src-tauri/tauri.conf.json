@@ -5,7 +5,7 @@
   "identifier": "dz.dokan.app",
   "build": {
     "beforeDevCommand": "bun run --filter @dokan/web dev",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://dokan.localhost:5173",
     "beforeBuildCommand": "bun run --filter @dokan/web build",
     "frontendDist": "../../../apps/web/dist"
   },

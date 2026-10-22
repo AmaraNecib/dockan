@@ -149,3 +149,42 @@ describe("vault opt-out policy (finding D12)", () => {
     expect(config.vaultOptOutIgnored).toBe(false);
   });
 });
+
+/**
+ * The app host (#343) — the NAME the app is reached at, which is what scopes
+ * the vault cookie to this app alone. The api keeps binding 127.0.0.1; the
+ * host is a different question and it has its own variable.
+ */
+describe("createAppConfig app host", () => {
+  it("defaults to a name of its own, not 127.0.0.1 and not localhost", () => {
+    const config = createAppConfig({});
+    expect(config.appHost).toBe("dokan.localhost");
+    // the bind address is untouched: nothing but this machine reaches the api
+    expect(config.host).toBe("127.0.0.1");
+  });
+
+  it("treats a blank DOKAN_APP_HOST as unset", () => {
+    expect(createAppConfig({ DOKAN_APP_HOST: "" }).appHost).toBe("dokan.localhost");
+    expect(createAppConfig({ DOKAN_APP_HOST: "   " }).appHost).toBe("dokan.localhost");
+  });
+
+  it("reads an explicit host, and a deployment that must keep 127.0.0.1 still works", () => {
+    expect(createAppConfig({ DOKAN_APP_HOST: "shop.internal" }).appHost).toBe("shop.internal");
+    expect(createAppConfig({ DOKAN_APP_HOST: "127.0.0.1" }).appHost).toBe("127.0.0.1");
+  });
+
+  it("refuses a host that is not a bare hostname (fail loudly at boot)", () => {
+    for (const raw of ["http://dokan.localhost:5173", "dokan.localhost:5173", "dokan..localhost"]) {
+      expect(() => createAppConfig({ DOKAN_APP_HOST: raw })).toThrow(/bare hostname/);
+    }
+  });
+
+  it("knows the browser-facing origin only when a web server is in front", () => {
+    expect(createAppConfig({}).appOrigin).toBeUndefined();
+    expect(createAppConfig({ DOKAN_WEB_PORT: "" }).appOrigin).toBeUndefined();
+    expect(createAppConfig({ DOKAN_WEB_PORT: "5173" }).appOrigin).toBe("http://dokan.localhost:5173");
+    expect(
+      createAppConfig({ DOKAN_WEB_PORT: "5174", DOKAN_APP_HOST: "shop.internal" }).appOrigin,
+    ).toBe("http://shop.internal:5174");
+  });
+});

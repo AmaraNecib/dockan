@@ -122,7 +122,7 @@ test("an empty login field shows Arabic copy, never the browser bubble", async (
  * What is asserted is the reload, because only a fresh document can prove the
  * page did not merely unmount a subtree. The browser session itself does not
  * die here: better-auth's origin check refuses the sign-out POST behind the vite
- * proxy (`Invalid origin: http://127.0.0.1:5173` — its baseURL is the api's own
+ * proxy (`Invalid origin: http://dokan.localhost:5173` — its baseURL is the api's own
  * origin), so the session cookie survives and the reloaded page can sign back
  * in. That refusal predates this change and is not what this case is about.
  */
@@ -141,7 +141,18 @@ test("signing out on the plaintext build reloads the page", async ({ page }) => 
   await expect
     .poll(
       // SAFETY: the same probe, read back from whatever document is on screen now
-      async () => await page.evaluate(() => (window as { signedOutReloadProbe?: number }).signedOutReloadProbe),
+      async () => {
+        try {
+          // SAFETY: the probe property this test sets on the page's own window
+          return await page.evaluate(() => (window as { signedOutReloadProbe?: number }).signedOutReloadProbe);
+        } catch {
+          // the reload tears the context the probe lives in, and the read
+          // lands in the middle of it. That IS the reload this case waits
+          // for, so keep polling — a document that never reloaded keeps
+          // answering with the probe's value and fails the assertion.
+          return "reloading";
+        }
+      },
       { timeout: 10_000 },
     )
     .toBeUndefined();

@@ -1,11 +1,31 @@
 import path from "node:path";
 
+import { appOriginFor, resolveAppHost } from "@dokan/contracts";
+
 import { isWildcardBindHost, probeHostFor } from "./lib/port-record";
 
 export type AppConfig = {
   host: string;
   /** host that liveness probes CONNECT to (loopback for wildcard binds) */
   probeHost: string;
+  /**
+   * The hostname the app is REACHED at — not where the api binds (`host`,
+   * which stays 127.0.0.1 so nothing but this machine can reach it).
+   *
+   * The vault session cookie is host-scoped and cookies ignore ports, so an
+   * app served from `127.0.0.1` hands that cookie to every other local
+   * service on the machine, which can then replay it from its own process
+   * (#343). The dev server and the e2e therefore serve the app under a name
+   * of its own (`dokan.localhost`), and the cookie stays scoped to it.
+   */
+  appHost: string;
+  /**
+   * The origin the browser reaches the app at, when a web server sits in front
+   * of the api (dev, e2e): `http://<appHost>:<DOKAN_WEB_PORT>`. Undefined when
+   * no web server is in front — a packaged build, where the api serves the ui
+   * itself and the browser's origin IS the api's own.
+   */
+  appOrigin: string | undefined;
   port: number;
   /** true when DOKAN_PORT was set explicitly: that port is authoritative, so
    * the api must NOT silently fall back to another one (greptile P1) */
@@ -109,9 +129,12 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   const portEnv = env.DOKAN_PORT ?? "";
   const parsedPort = portEnv === "" ? NaN : Number(portEnv);
   const portIsValid = Number.isFinite(parsedPort) && parsedPort > 0;
+  const appHost = resolveAppHost(env);
   return {
     host: requestedHost,
     probeHost: probeHostFor(requestedHost),
+    appHost,
+    appOrigin: webOrigin(env, appHost),
     port: portIsValid ? parsedPort : 4317,
     portExplicit: portIsValid, 
     dataDir,
@@ -127,4 +150,22 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
       path: env.DOKAN_DB_PATH ?? path.join(dataDir, "dokan.db"),
     },
   };
+}
+
+/**
+ * The origin the browser reaches the app at, when a web server sits in front
+ * of the api.
+ *
+ * `DOKAN_WEB_PORT` is the vite dev server's own variable — the same one the
+ * dev server reads — so the two cannot disagree about which origin the app
+ * answers on. Blank or nonsense means "no web server in front" (a packaged
+ * build), not a guess: there the api serves the ui itself and the browser's
+ * origin IS the api's own.
+ */
+function webOrigin(env: NodeJS.ProcessEnv, appHost: string): string | undefined {
+  const raw = env.DOKAN_WEB_PORT ?? "";
+  if (raw.trim() === "") return undefined;
+  const port = Number(raw);
+  if (!Number.isFinite(port) || port <= 0) return undefined;
+  return appOriginFor(appHost, port);
 }

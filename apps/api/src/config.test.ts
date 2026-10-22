@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { isSharedLoopbackAddress } from "@dokan/contracts";
+
 import { createAppConfig } from "./config";
 
 /**
@@ -186,5 +188,20 @@ describe("createAppConfig app host", () => {
     expect(
       createAppConfig({ DOKAN_WEB_PORT: "5174", DOKAN_APP_HOST: "shop.internal" }).appOrigin,
     ).toBe("http://shop.internal:5174");
+  });
+});
+
+describe("isSharedLoopbackAddress", () => {
+  it("names the addresses every local service shares, and only those", () => {
+    // the two names of one loopback address, plus the IPv6 spelling
+    expect(isSharedLoopbackAddress("127.0.0.1")).toBe(true);
+    expect(isSharedLoopbackAddress("localhost")).toBe(true);
+    expect(isSharedLoopbackAddress("LOCALHOST")).toBe(true);
+    expect(isSharedLoopbackAddress("::1")).toBe(true);
+    expect(isSharedLoopbackAddress("[::1]")).toBe(true);
+    // a name of its own is not shared, and neither is another machine
+    expect(isSharedLoopbackAddress("dokan.localhost")).toBe(false);
+    expect(isSharedLoopbackAddress("shop.internal")).toBe(false);
+    expect(isSharedLoopbackAddress("127.0.0.2")).toBe(false);
   });
 });

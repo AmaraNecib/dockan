@@ -62,6 +62,24 @@ export function appOriginFor(host: string, port: number | string): string {
 }
 
 /**
+ * True for the loopback addresses every service on the machine shares.
+ *
+ * `127.0.0.1` and `localhost` are one address under two names, and cookies
+ * ignore ports — so a cookie written for either of them is handed to every
+ * other local service (#343). A dedicated name such as `dokan.localhost` is
+ * not shared, and neither is any other name that is not one of these.
+ */
+export function isSharedLoopbackAddress(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
+}
+
+/**
  * A hostname: dot-separated labels of letters, digits and hyphens, each label
  * starting and ending with a letter or a digit. An IP literal passes — it is
  * the escape hatch for a machine that cannot resolve a name — and a trailing

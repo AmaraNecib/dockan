@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { resolveAppHost } from "../../packages/contracts/src/app-host";
+import { isSharedLoopbackAddress, resolveAppHost } from "../../packages/contracts/src/app-host";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
@@ -85,8 +85,15 @@ export default defineConfig({
           // server really took — is known.
           const url = server.resolvedUrls?.local[0];
           const port = url === undefined ? server.config.server.port : portOf(url);
+          // The advice depends on the host: a name of its own scopes the
+          // vault cookie to this app, while a shared loopback address hands
+          // that cookie to every other local service (cookies ignore ports).
+          const scoped = !isSharedLoopbackAddress(APP_HOST);
           server.config.logger.info(
-            `\n  Dokan: http://${APP_HOST}:${port}\n  Open that name, not 127.0.0.1 — the vault cookie is scoped to it.\n`,
+            `\n  Dokan: http://${APP_HOST}:${port}\n` +
+              (scoped
+                ? "  Open that name, not 127.0.0.1 — the vault cookie is scoped to it.\n"
+                : "  WARNING: this host is shared with every other local service — the vault cookie is not scoped to this app (#343).\n"),
           );
         });
       },

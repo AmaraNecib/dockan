@@ -148,6 +148,16 @@ Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
   change to it cannot move CI's coverage. `scripts/test-affected.ts` used to be
   unmapped and fell through to a full run for that reason alone.
 
+  **This is a deliberate coverage change, and it is worth reading as one.** Before
+  the `scripts/**` row, a PR whose diff was only under `scripts/` selected `full`,
+  because at least one of its files matched nothing and the map fails closed. It
+  now selects `skip`: no spec renders differently because a lane's own tooling
+  changed, and the `checks` job — which does run `bun test ./scripts/` and the
+  gate's suite — is where that diff is judged. Two rows that were listed
+  individually above `scripts/**` (`scripts/sync-claude-skills.ts` and its test)
+  are gone: `skip_e2e` is OR'd, so the pattern row already covered them and the
+  two entries were dead.
+
 Selecting fewer specs changes which tests run, not how the servers start: a
 subset run still boots the config's shared API+web pair and is wiped/reseeded
 from `E2E_DATA_DIR` (see the vault section below).
@@ -156,12 +166,14 @@ from `E2E_DATA_DIR` (see the vault section below).
 
 `scripts/e2e-changed.ts` (`bun run test:e2e:changed`) puts a front end on this
 selector inside a lane's own checkout: it imports `selectSpecs` and this map,
-diffs `origin/develop` with `git diff --no-renames`, and spawns `bun run test:e2e`
-with the mapped paths as positional filters — with no filters when the answer is
-`full`, and not at all when it is `skip`. It prints the same `mode=` / `specs=` /
-`reason=` lines the `changes` job parses, plus `source=git|files|dirty` so a
-pasted decision says whether it describes the branch or a `--files` list.
-`--dry-run` stops after printing them.
+diffs `<merge-base>..HEAD` with `git diff --no-renames`, and spawns
+`bun run test:e2e` with the mapped paths as positional filters — with no filters
+when the answer is `full`, and not at all when it is `skip`. It prints the same
+`mode=` / `specs=` / `reason=` lines the `changes` job parses, plus
+`source=git|files|dirty` so a pasted decision says whether it describes the branch
+or a `--files` list. `source=dirty` warns that tracked files have uncommitted
+edits the decision cannot see; a `git status` that failed is its own caveat, not
+a clean tree. `--dry-run` stops after printing them.
 
 It is **not** in `always_full`. CI never executes it — the `changes` job runs
 `scripts/e2e-selection.ts` — so a tweak to the local driver cannot move CI's

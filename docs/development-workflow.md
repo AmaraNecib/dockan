@@ -216,56 +216,110 @@ before any of these. Otherwise the first failure reads as a broken script.
 | 3 | the PR's CI head | after the push | free; it also runs red-on-parent |
 | 4 | `bun run test:e2e` | **once per PR**, right before the lane reports | all 35 specs, ~9 minutes, queued |
 
-Only tier 0 is free. Tiers 1, 2 and 4 are queued rather than excluded from the
-queue: both new scripts are matched by the bash heavy-work guard's "a test run"
-pattern, so a lane calls `heavy_run` (or takes the guard's redirect) instead of
-believing they run inline. Tier 1 is also not "seconds": the scripts step alone
-measured 156 s here (294 pass, 1 skip, 7 files), and `turbo.json` gives `test` a
+Only tier 0 is free, and the queue's rule is a **string match on the command**, not
+on what the command runs. `bun run test:affected`, `bun run test:e2e:changed` and
+`bun run test:e2e` all contain the words the bash heavy-work guard looks for, so
+they are refused inline and you call `heavy_run` (or take the guard's redirect).
+The `--dry-run` flag does not change that: `bun run test:affected --dry-run` is
+refused too, because the guard reads the argv and a dry run is not a different
+argv to it.
+
+The unqueued spelling is the direct one — `bun scripts/test-affected.ts` and
+`bun scripts/e2e-changed.ts` match no guard rule. Use those for the **decide and
+run nothing** shapes, which are the cheap ones:
+
+```bash
+bun scripts/test-affected.ts --dry-run        # scope= + reason= + one step= line per command
+bun scripts/e2e-changed.ts --dry-run --files apps/web/src/pages/backups.tsx
+```
+
+And be careful with the same spelling when it DOES run: `bun scripts/test-affected.ts`
+spawns turbo and `bun scripts/e2e-changed.ts` spawns the Playwright suite, and
+neither is queued under that spelling. Run them through `heavy_run` when the
+queue matters, or you have taken the slot yourself.
+
+Tier 1 is also not "seconds": the scripts step alone measured about two minutes
+here (446 pass, 1 skip, 8 files), and `turbo.json` gives `test` a
 `dependsOn: ["^build"]`, so a cold run builds every package first.
 
 Tier 1 is `bun run test:affected`: turbo's impacted filter **and** the scripts
-suite that carries the e2e map's drift guard, run at the same time. They cannot
-reach each other, so the tier costs the longer step instead of the sum, and both
-verdicts arrive in one pass: a red package suite is no longer masked by a green
-scripts run. Each step's exit code is printed as it finishes, and the script's own
-exit code is the first failure in plan order. The filter follows the diff, and
-that is load-bearing rather than tidy. turbo's root `//` package declares no
-`test` task, so a filter that selects only `//` runs zero tasks and **exits 0**
-("WARNING No tasks were executed as part of this run"). A diff entirely inside
-`apps/<name>/` or `packages/<name>/` therefore gets `--filter=...[origin/develop]`
-(the changed packages **and the packages that depend on them**), while any path
-outside those trees — `package.json`, `turbo.json`, `bun.lock`,
-`tsconfig.base.json`, `scripts/`, `docs/` — drops the filter so every package
-runs, naming the path that caused it. The same unfiltered fallback covers
-`origin/develop` not resolving and a diff git cannot read. `--dry-run` prints the
-decision and runs nothing:
+suite that carries the e2e map's drift guard, started together. They cannot reach
+each other, so one pass carries both verdicts: a red package suite is no longer
+masked by a green scripts run, and the script's own exit code is the first failure
+in plan order so it does not depend on which child finished first. Both suites
+write to inherited stdio, so their output **interleaves and cannot be attributed**
+to a step from the transcript; the per-step `→ exit N` lines are printed after
+both finish and are the only place that says which one failed. The speed claim is
+gone on purpose: the measured difference against the serial shape was 178 s to
+173 s warm, which is noise on a three-minute tier. The gain is the shared verdict,
+not time.
+
+The filter follows the diff, and that is load-bearing rather than tidy. turbo's
+root `//` package declares no `test` task, so a filter that selects only `//` runs
+zero tasks and **exits 0** ("WARNING No tasks were executed as part of this run").
+A diff entirely inside `apps/<name>/` or `packages/<name>/` therefore gets
+`--filter=...[<merge-base>]` (the changed packages **and the packages that depend
+on them**), while any path outside those trees — `package.json`, `turbo.json`,
+`bun.lock`, `tsconfig.base.json`, `scripts/`, `docs/` — drops the filter so every
+package runs, naming the path that caused it.
+
+That filter is not trusted on its own. Before committing to it the script asks
+turbo what the filter would select (`--dry-run=json`, about half a second, no
+suite), and widens — naming the cause — when the answer is empty, is only `//`, or
+cannot be read. Same rule as the other two fallbacks, and for the same reason: the
+expensive answer is allowed to be wrong, the silent one is not. The unfiltered
+fallback therefore has **three** causes now — a path outside every workspace
+package, a base git cannot resolve, and a filter that selects nothing — and a
+moved base is no longer one of them: the diff and the filter both use
+`git merge-base <base> HEAD`, the commit the branch forked from. Diffing the base's
+TIP against the working tree picked up everything merged since the fork; measured
+on one stale branch, the tip diff was 27 paths and the merge-base diff 12, and 16
+`apps/web` paths appeared only because another PR merged after the fork.
+
+One slot now holds two concurrent suites — turbo at `--concurrency=2` plus
+`bun test ./scripts/` — so the queue undercounts this box by two or three times
+for the length of a tier-1 run. The scripts step is also unconditional: a one-line
+`apps/api` change still pays for the gate's own suite, because that suite is where
+the e2e map's drift guard lives.
 
 ```bash
-bun run test:affected --dry-run   # scope= + reason= + one step= line per command
+bun run test:affected --dry-run   # refused by the guard: the argv matches "a bun test run"
+bun scripts/test-affected.ts --dry-run   # the cheap spelling: decide, run nothing
 ```
 
 Tier 3 is the one that runs `scripts/red-on-parent.ts`. That gate judges every
 test file the change **adds** under `apps/`, `packages/` and `scripts/`, on the
-parent of the change — and it fakes the modules the change adds: a hollow stand-in
-with the same export names and no behaviour, so a test that pins nothing passes on
-the parent (and is rejected) while a real one fails for its own reason. A module a
-faithful mirror cannot reproduce — an `export default`, a re-export, an enum, a
-namespace, a decorated or destructured export — is the verdict CANNOT_HOLLOW,
-which fails closed and is cleared only by
+parent of the change — and it writes stand-ins for the modules the change brings:
+a hollow module for one the parent does not have, and a copy of the parent's own
+module with only the new names appended for one it does. A test that pins nothing
+then passes on the parent (and is rejected) while a real one fails for its own
+reason. A module a faithful stand-in cannot reproduce — an `export default`, a
+re-export, an enum, a namespace, a decorated or destructured export, or an
+appended declaration that would redeclare a name the parent's scope already binds
+— is the verdict CANNOT_HOLLOW, which fails closed and is cleared only by
 `// red-on-parent-waive: "whole file" — <why the parent cannot run this file>` in
-the added test file. The same verdict covers a file that needs an export the
-parent's copy of an *edited* module does not have: the parent cannot run it, and
-one waiver line records that instead of one per test.
+the added test file, spelled exactly that way.
 
-Tier 2 is `bun run test:e2e:changed`, the only supported spelling (the npm script
-is what the guard recognises; `bun scripts/e2e-changed.ts` is the same program and
-is not queued). It imports `selectSpecs` and the checked-in map from
-`scripts/e2e-selection.ts`, so there is one map and one set of precedence rules.
-What differs is the range and the overrides: this driver diffs
-`<merge-base with origin/develop>..HEAD`, while CI diffs `base.sha..head.sha` —
-on a stacked PR that is the parent branch, not `origin/develop` — and replaces
-the decision outright for `push`, `workflow_dispatch` and the `e2e:full` label.
-The local run is a cheaper early warning, never a substitute for the PR's head.
+What the gate proves is narrower than "this test asserts a behaviour": it proves
+the file **reaches** the change and **fails there**. Two shapes assert nothing and
+are accepted by design — a TypeError from dereferencing a stand-in, and an
+assertion that only reads a const stand-in — and both are pinned as fixtures in
+`scripts/red-on-parent.test.ts`. `docs/verification-and-merge-gate.md` has the
+full statement; the grammar it documents, this section and `VERDICT_GUIDE` in
+`scripts/red-on-parent.ts` name the same four waivable verdicts and the same
+waiver spelling.
+
+Tier 2 is `bun run test:e2e:changed`, the queued spelling;
+`bun scripts/e2e-changed.ts` is the same program and is not queued. It imports
+`selectSpecs` and the checked-in map from `scripts/e2e-selection.ts`, so there is
+one map and one set of precedence rules. What differs is the range and the
+overrides: this driver diffs `<merge-base with origin/develop>..HEAD`, while CI
+diffs `base.sha..head.sha` — on a stacked PR that is the parent branch, not
+`origin/develop` — and replaces the decision outright for `push`,
+`workflow_dispatch` and the `e2e:full` label. The local run is a cheaper early
+warning, never a substitute for the PR's head. `--files` and `--base` cannot be
+combined: `--files` decides from the list you give it and never reads git, so the
+pair exits 2 rather than quietly ignoring one of them.
 
 ```bash
 bun run test:e2e:changed --dry-run                                        # decide, run nothing

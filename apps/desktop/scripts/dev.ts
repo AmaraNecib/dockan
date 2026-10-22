@@ -18,7 +18,12 @@ const host = resolveAppHost(process.env);
 const port = process.env.DOKAN_WEB_PORT ?? "5173";
 const overlay = JSON.stringify({ build: { devUrl: `http://${host}:${port}` } });
 
-const child = Bun.spawn(["tauri", "dev", "--no-dev-server-wait", "--config", overlay], {
+// Everything the caller passed goes through (#357 review P2): `bun run dev --
+// --release`, `--features …`, `--no-watch` are tauri's own flags, and a wrapper
+// that swallowed them would silently run a different command than the one asked
+// for. Only the two flags this script OWNS are prepended.
+const forwarded = process.argv.slice(2);
+const child = Bun.spawn(["tauri", "dev", "--no-dev-server-wait", "--config", overlay, ...forwarded], {
   stdio: ["inherit", "inherit", "inherit"],
   env: { ...process.env, DOKAN_APP_HOST: host },
 });

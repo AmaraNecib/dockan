@@ -115,6 +115,29 @@ export function selectSpecs(changed: string[], map: SelectionMap = loadMap()): S
   return { mode: "affected", specs, reason: `${specs.length} spec(s) mapped from ${files.length} file(s)` };
 }
 
+// One builder for the Playwright path shape, used by both the selector's
+// contract lines and the local driver's spawn argv. It used to be written out
+// twice — once in `contractLines` and once in `e2e-changed.ts` — so changing the
+// prefix in one place left `--dry-run` printing one path set and the spawn
+// passing another, while the byte comparison between the two front ends stayed
+// green because both went through `contractLines`.
+export function specPaths(scope: Scope): string[] {
+  return scope.mode === "affected" ? scope.specs.map((spec) => `tests/e2e/${spec}`) : [];
+}
+
+// The `mode=` / `specs=` / `reason=` lines are the selector's output contract:
+// ci.yml parses them, and so does the local driver in `e2e-changed.ts`. One
+// formatter, so the two front ends cannot drift into two formats.
+// `specs` is emitted as space-separated `tests/e2e/<name>` paths for the
+// Playwright CLI; empty for full and skip.
+export function contractLines(scope: Scope): string[] {
+  return [
+    `mode=${scope.mode}`,
+    `specs=${specPaths(scope).join(" ")}`,
+    `reason=${scope.reason}`,
+  ];
+}
+
 if (import.meta.main) {
   const file = process.argv[2];
   if (!file) {
@@ -122,10 +145,5 @@ if (import.meta.main) {
     process.exit(2);
   }
   const scope = selectSpecs(readFileSync(file, "utf8").split("\n"));
-  // `specs` is emitted as space-separated `tests/e2e/<name>` paths for the
-  // Playwright CLI; empty for full and skip.
-  const specs = scope.mode === "affected" ? scope.specs.map((s) => `tests/e2e/${s}`) : [];
-  for (const [k, v] of [["mode", scope.mode], ["specs", specs.join(" ")], ["reason", scope.reason]]) {
-    console.log(`${k}=${v}`);
-  }
+  for (const line of contractLines(scope)) console.log(line);
 }

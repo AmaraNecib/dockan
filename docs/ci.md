@@ -140,10 +140,67 @@ Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
 - `.github/**` is skipped: CI configuration cannot change what the browser
   renders, and the workflow itself is covered by the `checks` job's workflow
   tests (`apps/desktop/scripts/ci-workflow.test.ts`).
+- `scripts/**` is **skipped**, with two exceptions that stay critical because
+  `always_full` is checked first: `scripts/e2e-selection.ts` (it decides which
+  specs CI runs) and the e2e reset helpers (`wipe-e2e.mjs`,
+  `reset-e2e-preferences.mjs`, `reset-e2e-records.mjs`). Everything else there is
+  local tooling, including `scripts/e2e-changed.ts` — CI never executes it, so a
+  change to it cannot move CI's coverage. `scripts/test-affected.ts` used to be
+  unmapped and fell through to a full run for that reason alone.
+
+  **This is a deliberate coverage change, and it is worth reading as one.** Before
+  the `scripts/**` row, a PR whose diff was only under `scripts/` selected `full`,
+  because at least one of its files matched nothing and the map fails closed. It
+  now selects `skip`: no spec renders differently because a lane's own tooling
+  changed, and the `checks` job — which does run `bun test ./scripts/` and the
+  gate's suite — is where that diff is judged. Two rows that were listed
+  individually above `scripts/**` (`scripts/sync-claude-skills.ts` and its test)
+  are gone: `skip_e2e` is OR'd, so the pattern row already covered them and the
+  two entries were dead.
 
 Selecting fewer specs changes which tests run, not how the servers start: a
 subset run still boots the config's shared API+web pair and is wiped/reseeded
 from `E2E_DATA_DIR` (see the vault section below).
+
+### The same decision, asked locally (verification tier 2)
+
+`scripts/e2e-changed.ts` (`bun run test:e2e:changed`) puts a front end on this
+selector inside a lane's own checkout: it imports `selectSpecs` and this map,
+diffs `<merge-base>..HEAD` with `git diff --no-renames`, and spawns
+`bun run test:e2e` with the mapped paths as positional filters — with no filters
+when the answer is `full`, and not at all when it is `skip`. It prints the same
+`mode=` / `specs=` / `reason=` lines the `changes` job parses, plus
+`source=git|files|dirty` so a pasted decision says whether it describes the branch
+or a `--files` list. `source=dirty` warns that tracked files have uncommitted
+edits the decision cannot see; a `git status` that failed is its own caveat, not
+a clean tree. `--dry-run` stops after printing them.
+
+It is **not** in `always_full`. CI never executes it — the `changes` job runs
+`scripts/e2e-selection.ts` — so a tweak to the local driver cannot move CI's
+coverage, and charging the full 35-spec suite for one buys nothing. The selector
+above is a different matter: it decides which specs CI runs, so it stays
+critical.
+
+The range and the overrides differ too: this driver reads
+`<merge-base with origin/develop>..HEAD`, while CI reads `base.sha..head.sha`
+(on a stacked PR, the parent branch) and overrides the decision for `push`,
+`workflow_dispatch` and the `e2e:full` label. Same map, different question.
+
+A subset run still starts the config's shared API+web pair. Those defaults
+(`DOKAN_PORT=4317`, `DOKAN_WEB_PORT=5173`) belong to whoever is not in a lane: two
+lanes on them cross-wire silently — the second lane's API cannot bind,
+Playwright's `/health` wait is satisfied by the first lane's API, and the second
+lane's specs run against the first lane's server and store. Set both in a lane:
+
+```bash
+DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bun run test:e2e:changed
+```
+
+This narrows **local** wall-clock only. The repository is public and standard
+runner minutes are not billed, so the PR jobs keep making their own decision; the
+local driver is verification tier 2 in `development-workflow.md` §7, which is
+also where the queue, the dirty-tree caveat and the three causes of `mode=full`
+are written down. Do not restate them here.
 
 ## e2e failure evidence
 

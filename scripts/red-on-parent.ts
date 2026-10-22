@@ -27,7 +27,7 @@
  *     where every failure was typed `AssertionError`; on the pinned 1.4.3 that
  *     counter is not load-bearing, and it misread a `node:assert` red (also
  *     `AssertionError`, but `assertions="0"`) as a wrong-reason red. The
- *     measured table and the residual hole are on `isAssertionRed`.
+ *     measured table and the residual hole are on `isOwnRed`.
  *   - a hook that *asserts* rather than throws is not a wrong-reason red: it
  *     reports `AssertionError`, exactly like a test body, and the junit names
  *     the failing line. A helper a test body calls fails at that helper's
@@ -71,7 +71,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, posix, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import ts from "typescript";
@@ -192,6 +192,7 @@ export type VerdictName =
   | "NOT_ON_CHANGE"
   | "WRONG_REASON_RED"
   | "NOT_ON_PARENT"
+  | "CANNOT_HOLLOW"
   | "GREEN_ON_PARENT"
   | "WAIVER_MISFILED"
   | "RUN_INCOMPLETE";
@@ -558,6 +559,7 @@ export function verdictPasses(verdict: Verdict): boolean {
       return true;
     case "WRONG_REASON_RED":
     case "NOT_ON_PARENT":
+    case "CANNOT_HOLLOW":
     case "GREEN_ON_PARENT":
       return verdict.waiver !== null;
     // A test that is red on the change is broken, and a waiver says why a test
@@ -608,6 +610,7 @@ function classifyResult(
   result: TestResult,
   waiver: Waiver | null,
   matching: Waiver[],
+  hollowed: boolean,
 ): Verdict {
   const test = displayName(result);
   if (result.status === "skipped") {
@@ -630,13 +633,13 @@ function classifyResult(
       waivers: matching,
     };
   }
-  if (isAssertionRed(result)) {
+  if (isOwnRed(result, hollowed)) {
     if (waiver !== null) {
       return {
         file,
         test,
         name: "WAIVER_MISFILED",
-        detail: `waived, but the test already fails on the parent with an AssertionError — delete the waiver`,
+        detail: `waived, but the test already fails on the parent for its own reason — delete the waiver`,
         waiver,
         waivers: matching,
       };
@@ -645,7 +648,9 @@ function classifyResult(
       file,
       test,
       name: "RIGHT_REASON_RED",
-      detail: `fails on the parent with an assertion on the behaviour the change adds`,
+      detail: hollowed
+        ? `fails on the parent against the hollow stand-in, for a reason the test itself produced (${failureReason(result)})`
+        : `fails on the parent with an assertion on the behaviour the change adds`,
       waiver: null,
       waivers: [],
     };
@@ -692,8 +697,40 @@ function classifyResult(
  * `expect.fail` on 1.4.3 is not a function at all (TypeError, assertions="0"),
  * so a test that calls it needs a waiver; nothing in this repo does.
  */
-function isAssertionRed(result: TestResult): boolean {
-  return result.failureType === "AssertionError";
+function isOwnRed(result: TestResult, hollowed: boolean): boolean {
+  if (result.failureType === "AssertionError") return true;
+  // A hollow module's functions return `undefined` and its consts are
+  // `undefined`, so a test that reads a property of what the module produced dies
+  // with a TypeError before any assertion runs — `turboArgs(...).args` on a hollow
+  // is `undefined.args`. That red is caused by the module the change adds, and the
+  // test only reaches it by using the module, so it is the test's own red on a
+  // hollowed file.
+  //
+  // ACCEPTED BY DESIGN, and it is the gate's weakest verdict. `hollowed` covers
+  // both stand-in kinds, so this also accepts the same TypeError in a file whose
+  // module was AUGMENTED — where the parent's real code still runs, so the
+  // TypeError has a second possible cause the gate cannot see. Two shapes pass on
+  // a stand-in that asserts nothing:
+  //
+  //   1. a test that dereferences what a stand-in returned —
+  //      `turboArgs([], "x").args` is `undefined.args`, a TypeError;
+  //   2. a test that only checks a const stand-in exists —
+  //      `expect(NEW_LIMIT).toBeDefined()` is `undefined` against a
+  //      stand-in whose value is `undefined`, an AssertionError.
+  //
+  // Both are pinned as fixtures (`accepted by design, not a defect`). What the
+  // gate proves is narrower than "this test asserts a behaviour": it proves the
+  // test REACHES the change and fails there. Sharper discrimination needs more
+  // than junit's failure type, which is a design change, not a fix.
+  //
+  // The residual hole, stated because a gate that hides it is the thing this gate
+  // exists against: a `beforeEach` that dereferences the hollow makes every test
+  // in the file read as its own red without a body running, so a vacuous test
+  // behind such a hook passes. RED ON CHANGE still catches a test that is broken
+  // on the change, and the hook is code the reviewer reads in the diff. The
+  // alternative — waiving twelve rows of a file whose only defect is this shape —
+  // buries the same fact in twelve lines nobody reads.
+  return hollowed && result.failureType === "TypeError";
 }
 
 /** Why a failing test is not a right-reason red, in wording bun does not vary. */
@@ -712,7 +749,9 @@ export function classifyFileRun(
   run: FileRun,
   waivers: Waiver[],
   changeResults: TestResult[] = [],
+  options: { hollowed?: boolean } = {},
 ): Classification {
+  const hollowed = options.hollowed === true;
   const used = new Set<number>();
   const verdicts: Verdict[] = [];
 
@@ -821,7 +860,7 @@ export function classifyFileRun(
     const matching = waivers.filter((candidate) => matches(candidate, result));
     const waiver = matching[0] ?? null;
     if (waiver !== null) used.add(waiver.line);
-    verdicts.push(classifyResult(run.file, result, waiver, matching));
+    verdicts.push(classifyResult(run.file, result, waiver, matching, hollowed));
   }
   return { verdicts, usedWaiverLines: used, problems: waiverProblems };
 }
@@ -980,6 +1019,20 @@ export function missingExport(stdout: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * The export bun could not find, and the module it looked in.
+ *
+ * `missingExport` answers "which name"; this answers "which name, in which
+ * file", which is what tells an export the change ADDS to a module the parent
+ * already has (a real, waivable "the parent cannot run this file") from a module
+ * the parent is missing altogether (which the hollow path already handles).
+ */
+export function missingExportDetail(stdout: string): { name: string; module: string } | null {
+  const match = /Export named ['"]([^'"]+)['"] not found in module ['"]([^'"]+)['"]/u.exec(stdout);
+  if (match?.[1] === undefined || match[2] === undefined) return null;
+  return { name: match[1], module: match[2] };
+}
+
 export function loadFailureReason(stdout: string): string {
   if (/Ran 0 tests/u.test(stdout)) return "the file declares no tests";
   // The report says what the parent was missing, not only that it could not
@@ -1043,6 +1096,94 @@ export function notRegisteredOnChange(
   return verdicts;
 }
 
+/**
+ * Why the parent cannot run an added test file, when the cause is an export the
+ * parent's copy of a module the diff *edits* does not have.
+ *
+ * The hollow path cannot fix this one: the parent HAS the module, so replacing it
+ * with a stand-in would erase behaviour the parent really carries, and a test that
+ * pins that behaviour would then fail on the parent and be read as a right-reason
+ * red — a false PASS.
+ *
+ * Round 25 gives the gate a narrower move for the same case: keep the parent's
+ * module and append stand-ins for the names the change adds
+ * (`augmentModuleSource`). This function is the residue — the transcript said the
+ * parent is missing an export after the augmentation pass, so the name arrived by
+ * a route that pass cannot see (a chain, a second spelling of the same module, or
+ * a shape an appended declaration cannot carry). One row, one waiver, still the
+ * honest answer: the file is unjudgeable on this parent.
+ *
+ * Without this, the file got one WRONG REASON RED row per test it registers (the
+ * round-8 rule: a waiver must name the test it excuses), which is 40 waiver lines
+ * for one cause in this repo's `scripts/e2e-changed.test.ts` — and
+ * `fileLevelWaiverProblems` refuses a pattern that names all of them at once. A
+ * gate nobody can satisfy is a gate that gets bypassed.
+ */
+export function editedModuleExportRefusal(
+  stdout: string,
+  touched: ReadonlySet<string>,
+): string | null {
+  const detail = missingExportDetail(stdout);
+  if (detail === null) return null;
+  const modulePath = detail.module.replaceAll("\\", "/");
+  const touchedPath = [...touched].find(
+    (path) => modulePath === path || modulePath.endsWith(`/${path}`),
+  );
+  if (touchedPath === undefined) return null;
+  return `${touchedPath}: the parent has this module but not its \`${detail.name}\` export, and the gate could not append a stand-in for that name to the parent's own copy — so the parent cannot load the file, and a whole-module stand-in would erase behaviour the parent really carries`;
+}
+
+/**
+ * The waiver spelling that clears a whole file, and it is the only one.
+ *
+ * The docs advertise `red-on-parent-waive: "whole file" — …` for the one verdict
+ * whose only escape hatch is a whole-file waiver (CANNOT HOLLOW). The matcher used
+ * to probe two strings — `(whole file)` and `whole file` — with the waiver as a
+ * regex, so `"file"`, `"whole"`, `"^whole"`, `"."` and `".*"` all cleared the
+ * file. That is the broad-file waiver `fileLevelWaiverProblems` exists to refuse,
+ * reintroduced through the one verdict where it is allowed, and it is reachable by
+ * a one-character typo.
+ *
+ * The spelling is compared, not matched: the pattern has to BE `whole file` for
+ * the file to be waived. A pattern that names a real test still cannot clear this
+ * row, because the row's name is not a test's name.
+ */
+const WHOLE_FILE_WAIVER = /^whole file$/u;
+
+/**
+ * The one row a file gets when the gate cannot write a faithful stand-in for an
+ * added module it imports, or cannot append one to a module the parent already
+ * has.
+ *
+ * It replaces the parent's rows rather than joining them, because the parent's run
+ * never judged the file: it read a checkout that is missing the module, or missing
+ * the export. The row's test name is `(whole file)`, the same name the gate
+ * already uses for a run that produced no verdict.
+ *
+ * A waiver here excuses the whole file because the whole file is what the parent
+ * could not run. That is the case `fileLevelWaiverProblems` exists to forbid, and
+ * this is the one verdict where a whole-file waiver is also the only thing a
+ * waiver can mean — the alternative was one waiver per test for one cause, and
+ * `fileLevelWaiverProblems` refuses a pattern that names all of them at once. A
+ * gate nobody can satisfy is a gate that gets bypassed.
+ *
+ * Because the escape hatch is the whole file, the spelling is exact
+ * (`WHOLE_FILE_WAIVER`), so it cannot be reached by a pattern that accidentally
+ * covers everything.
+ */
+export function cannotHollowVerdict(file: string, refusal: string, waivers: Waiver[]): Verdict {
+  const test = "(whole file)";
+  const matching = waivers.filter((waiver) => WHOLE_FILE_WAIVER.test(waiver.pattern));
+  return {
+    file,
+    test,
+    name: "CANNOT_HOLLOW",
+    detail: `${refusal} — so the parent cannot load this file, and nothing was judged there`,
+    waiver: matching[0] ?? null,
+    waivers: matching,
+  };
+}
+
 /** Waivers that matched no test at all. Each is a failure: it excuses nothing. */
 export function unusedWaiverVerdicts(file: string, waivers: Waiver[], used: Set<number>): Verdict[] {
   return waivers
@@ -1063,12 +1204,18 @@ export function unusedWaiverVerdicts(file: string, waivers: Waiver[], used: Set<
 
 /**
  * New unit-test files, and only those. A `.spec.ts` is Playwright (its red
- * needs both servers); a file under an `e2e` directory is the same thing; and
- * nothing outside `apps/` and `packages/` is a product test.
+ * needs both servers), and a file under an `e2e` directory is the same thing.
+ *
+ * `scripts/` is in scope because its tests are tests: the round-2 change added
+ * 26 of them and the gate judged none. The cost of leaving them out was measured
+ * — a vacuous assertion sat in one of those files, unchallenged, because no gate
+ * ever asked the parent to run it. The cost of including them is the hollow-module
+ * path below, which is what makes such a file runnable on a parent that does not
+ * have the module it imports.
  */
 export function isGatedTestPath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
-  if (!/^(apps|packages)\//u.test(normalized)) return false;
+  if (!/^(apps|packages|scripts)\//u.test(normalized)) return false;
   if (normalized.includes("/e2e/") || normalized.includes("/tests/e2e/")) return false;
   if (/\.spec\.[cm]?[jt]sx?$/u.test(normalized)) return false;
   return /\.test\.[cm]?[jt]sx?$/u.test(normalized);
@@ -1116,24 +1263,94 @@ function isTypeOnlyReference(node: ts.ImportDeclaration | ts.ExportDeclaration):
  * contributed. So a file that imports another test file brings that file's
  * cases into its own report and the report cannot say whose case it holds.
  * The import is found in the source instead, because the report cannot be
- * asked.
+ * asked: `loadedRelativeSpecifiers` walks the tree, and this function decides
+ * which of the modules it names are test files. An alias resolved by the
+ * package's `tsconfig` paths — `@/lib/fixtures.test.ts` — is invisible to that
+ * walk, so a file that reaches another test file that way is judged on a mixed
+ * report.
+ */
+export function importedTestFiles(source: string, path: string): string[] {
+  return loadedRelativeSpecifiers(source, path).filter((specifier) =>
+    TEST_LIKE_BASENAME.test(specifier.split("/").pop() ?? ""),
+  );
+}
+
+/**
+ * The names a source file imports at runtime, per relative specifier.
+ *
+ * `loadedRelativeSpecifiers` answers "which module" and this answers "which
+ * name", because an augmentation needs both: the module the parent already has, and
+ * the export its copy does not declare.
+ *
+ * Only named imports are recorded, and a type-only specifier is dropped, because
+ * the loader drops it: `import { type Scope, specPaths }` loads `specPaths` and
+ * nothing else. A namespace import (`import * as m`) records nothing, because a
+ * missing name reached through a namespace object is `undefined` rather than a
+ * load error — there is no failure for a stand-in to prevent. A default import
+ * records `default`, which an appended declaration can never mirror; the plan
+ * refuses it instead of guessing.
+ */
+export function importedModuleBindings(
+  source: string,
+  path: string,
+): Array<{ specifier: string; names: string[] }> {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const bindings = new Map<string, string[]>();
+  for (const statement of file.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(specifier)) continue;
+    if (!specifier.text.startsWith("./") && !specifier.text.startsWith("../")) continue;
+    // The whole-clause form is erased, and so is each `type`-marked specifier; a
+    // clause that names one value still loads that value.
+    if (isTypeOnlyReference(statement)) continue;
+    const clause = statement.importClause;
+    if (clause === undefined) continue;
+    const names = bindings.get(specifier.text) ?? [];
+    if (clause.name !== undefined) names.push("default");
+    if (clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
+      for (const element of clause.namedBindings.elements) {
+        if (element.isTypeOnly) continue;
+        // `propertyName` is the exported name the module must carry; `name` is
+        // only the local alias.
+        names.push((element.propertyName ?? element.name).text);
+      }
+    }
+    bindings.set(specifier.text, names);
+  }
+  return [...bindings].map(([specifier, names]) => ({ specifier, names: [...new Set(names)] }));
+}
+
+/**
+ * Every relative module a source file loads, in the order the file names them.
+ *
+ * One walk serves two readers, because they must agree on what counts as a load:
+ * `importedTestFiles` refuses a file that mixes a second file's cases into its
+ * report, and `planHollowModules` decides which added module the parent has to be
+ * given a stand-in for. A specifier one of them saw and the other did not would
+ * either let a mixed report through or leave the parent unable to load the file.
  *
  * The specifiers come from the AST, not from a text scan. That is what makes a
- * commented-out import impossible to report: `// import "./setup.test.ts"` is
- * not a node, so there is nothing for this function to find. The text scan it
- * replaced needed a mask over every comment and literal in the file to make the
- * same distinction, and each of the mask's four bugs was a shape it read as code
- * that was not code. `path` decides how the file is parsed, because `<Foo>"ok"`
- * is a type assertion in `.ts` and JSX in `.tsx`, and it is required: a default
- * let a `.tsx` file be read as `.ts`, and the same source then reported an import
- * the real file does not have (or missed one it does).
+ * commented-out import impossible to report: `// import "./setup.test.ts"` is not
+ * a node, so there is nothing here to find. The text scan this replaced needed a
+ * mask over every comment and literal in the file to make the same distinction,
+ * and each of the mask's four bugs was a shape it read as code that was not code.
+ * `path` decides how the file is parsed, because `<Foo>"ok"` is a type assertion
+ * in `.ts` and JSX in `.tsx`, and it is required: a default let a `.tsx` file be
+ * read as `.ts`, and the same source then reported an import the real file does
+ * not have (or missed one it does).
  *
  * Only **relative** specifiers (`./`, `../`) are read. An alias resolved by the
- * package's `tsconfig` paths — `@/lib/fixtures.test.ts` — is invisible here, so a
- * file that reaches another test file that way is judged on a mixed report.
+ * package's `tsconfig` paths — `@/lib/fixtures.test.ts` — is invisible here.
  *
- * `require("…")` and `import("…")` are read here too, from the call nodes, since
- * both load a module the report cannot attribute. A specifier written as a
+ * `require("…")` and `import("…")` are read too, from the call nodes, since both
+ * load a module the report cannot attribute. A specifier written as a
  * no-substitution template (a dynamic import whose argument is a backtick
  * literal) is as static as a quoted one, import attributes after it change
  * nothing, and `require` is recognised bare, qualified (`module.require`),
@@ -1144,7 +1361,7 @@ function isTypeOnlyReference(node: ts.ImportDeclaration | ts.ExportDeclaration):
  * file. They are known limits of asking the source, not a claim that the gate
  * covers them.
  */
-export function importedTestFiles(source: string, path: string): string[] {
+function loadedRelativeSpecifiers(source: string, path: string): string[] {
   const file = ts.createSourceFile(
     path,
     source,
@@ -1158,8 +1375,6 @@ export function importedTestFiles(source: string, path: string): string[] {
   const add = (specifier: string | undefined): void => {
     if (specifier === undefined) return;
     if (!specifier.startsWith("./") && !specifier.startsWith("../")) return;
-    const name = specifier.split("/").pop() ?? "";
-    if (!TEST_LIKE_BASENAME.test(name)) return;
     specifiers.add(specifier);
   };
   /**
@@ -1230,7 +1445,7 @@ export function isTestLikePath(path: string): boolean {
 /** Why the gate does not gate this path, or null when the path is in scope. */
 export function skipReason(path: string): string | null {
   const normalized = path.replaceAll("\\", "/");
-  if (!/^(apps|packages)\//u.test(normalized)) return "outside apps/ and packages/";
+  if (!/^(apps|packages|scripts)\//u.test(normalized)) return "outside apps/, packages/ and scripts/";
   if (normalized.includes("/e2e/") || normalized.includes("/tests/e2e/")) {
     return "under an e2e directory";
   }
@@ -1240,6 +1455,1133 @@ export function skipReason(path: string): string | null {
 
 /** A test file the diff touches and the gate does not gate. */
 export type SkippedTestFile = { path: string; reason: string };
+
+// ---------------------------------------------------------------------------
+// Hollow stand-ins for the modules a change adds
+// ---------------------------------------------------------------------------
+
+/**
+ * Why the gate fakes a module at all.
+ *
+ * A test file the diff adds usually imports a module the same diff adds. On the
+ * parent that module does not exist, so the file does not load: bun writes no
+ * junit, every case reads WRONG REASON RED, and one waiver line clears all of
+ * them. A test that asserts `true` is then indistinguishable from a test that
+ * pins the new behaviour — which is not a hypothetical. The round-2 change added
+ * 26 tests under `scripts/` that the gate never looked at, and a vacuous
+ * assertion sat in one of them.
+ *
+ * So the parent gets a HOLLOW version of the module, written at its own path:
+ * the same export names, no behaviour. A test that pins nothing then runs on the
+ * parent and passes there (GREEN ON PARENT, rejected), and a real test fails for
+ * its own assertion reason. That is the discrimination the gate exists to make.
+ *
+ * A hollow is a mirror, and a wrong mirror is worse than a refusal: one that
+ * carries behaviour lets a vacuous test through, and one that drops an export
+ * makes a real test fail for a reason the change did not cause. So anything the
+ * mirror cannot reproduce faithfully is refused with CANNOT HOLLOW, which fails
+ * closed and is cleared only by the waiver grammar every other unjudgeable case
+ * uses.
+ */
+
+/** A module the gate faked into the parent, and the file that needed it. */
+export type HollowedModule = { path: string; importedBy: string };
+
+export type HollowResult = { ok: true; text: string } | { ok: false; refusal: string };
+
+export type HollowPlan = {
+  modules: Array<HollowedModule & { text: string }>;
+  refusal: string | null;
+};
+
+const HOLLOW_HEADER = [
+  "// Hollow stand-in, written by scripts/red-on-parent.ts for the parent checkout:",
+  "// this module is added by the change under review, so the parent does not have",
+  "// it. Same export names, no behaviour — a test that pins nothing passes here.",
+].join("\n");
+
+/**
+ * The header an appended stand-in carries, and why it is not the hollow's.
+ *
+ * The two are different promises and a reader has to be able to tell them
+ * apart. A hollow stands in for a module the parent has none of. An appended
+ * stand-in sits *beside* the parent's real source, in a module the parent does
+ * have, and everything the parent really does still works. A single header would make
+ * the stronger claim about the weaker change.
+ */
+const AUGMENT_HEADER = [
+  "// Appended stand-in, written by scripts/red-on-parent.ts for the parent checkout:",
+  "// the parent HAS this module and keeps its real source above; only this export is",
+  "// added by the change under review. Same name, no behaviour.",
+].join("\n");
+
+/** Which kind of stand-in is being written, which decides the header it carries. */
+export type MirrorKind = "hollow" | "augment";
+
+const MIRROR_HEADER = {
+  hollow: HOLLOW_HEADER,
+  augment: AUGMENT_HEADER,
+} satisfies Record<MirrorKind, string>;
+
+/** The extensions a relative specifier is resolved against, in bun's order. */
+const MODULE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+
+/**
+ * Whether a node carries one of the keywords a declaration can be written with.
+ *
+ * Asked per keyword through `getModifiers`, which takes any node and answers for
+ * the ones that can have modifiers, rather than through
+ * `getCombinedModifierFlags`, whose signature takes a `Declaration`: the loop
+ * below walks `Statement`s, and an expression statement's lack of modifiers is
+ * the answer rather than a type error to work around.
+ */
+function hasKeyword(node: ts.Node, keyword: ts.SyntaxKind): boolean {
+  if (!ts.canHaveModifiers(node)) return false;
+  return (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === keyword);
+}
+
+/**
+ * The names one variable declaration binds, in source order.
+ *
+ * An identifier is the ordinary `const x = 1`. Everything else is a binding
+ * pattern, and a pattern binds one name per element: `const { a, b: c } = x`
+ * binds `a` and `c` — the BINDING name, not the property name —
+ * `const [first, , third] = y` binds `first` and `third` (the hole binds
+ * nothing), and `const { outer: { inner } } = z` binds `inner` because a nested
+ * pattern recurses.
+ *
+ * The pattern is the one shape whose name node is not an identifier, and reading
+ * only identifiers contributed NOTHING for it. That is how the parent's own
+ * `export const { value } = { value: 7 }` read as exporting no `value`: a stand-in
+ * was appended over the real export, and a test of the parent's behaviour failed
+ * against the shadow and was scored RIGHT-REASON-RED — a false pass.
+ *
+ * Three readers share this walk — `declaredExportNames`, `runtimeExportNames` and
+ * `topLevelBindingNames` — because they have to agree about which names a variable
+ * statement declares. The reader that decides "the parent already supplies this"
+ * and the reader that checks the mirror declares exactly that are the two halves
+ * whose disagreement is the bug, so one walk feeds all of them and they cannot
+ * drift again.
+ */
+function variableBindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  const names: string[] = [];
+  for (const element of name.elements) {
+    if (ts.isOmittedExpression(element)) continue;
+    names.push(...variableBindingNames(element.name));
+  }
+  return names;
+}
+
+/**
+ * The names a module exports, sorted.
+ *
+ * Read from the tree twice: once for the real module and once for the mirror the
+ * gate wrote, so the mirror must declare exactly the export names the module
+ * does.
+ *
+ * Two shapes name an export without declaring one, and both are read here:
+ * `export { a, b as c }` and `export { a } from "./y"` name their names
+ * literally, and `export * as ns from "./y"` names `ns`. A default export names
+ * nothing here — every one of those is refused before a mirror is written, so
+ * the lists the gate compares stay comparable rather than merely similar.
+ *
+ * Reading the literal forms is not a nicety. This set answers "might the parent
+ * already supply this name", and answering "no" for a name the parent really
+ * supplies is how an appended stand-in SHADOWS the parent's working export —
+ * the false pass `planAugmentedModules` refuses to risk. `export *` is the one
+ * shape that names nothing this file can answer: its names are the target's, and
+ * that chain is resolved in the parent worktree (see `starExportNames`).
+ */
+export function declaredExportNames(path: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const names: string[] = [];
+  for (const statement of file.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      const clause = statement.exportClause;
+      if (clause === undefined) continue;
+      if (ts.isNamedExports(clause)) {
+        // `propertyName` is the module-local name; `name` is the name the
+        // module exports, so `export { a as b }` contributes `b`.
+        for (const element of clause.elements) names.push(element.name.text);
+        continue;
+      }
+      names.push(clause.name.text);
+      continue;
+    }
+    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        names.push(...variableBindingNames(declaration.name));
+      }
+      continue;
+    }
+    if (
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      ts.isModuleDeclaration(statement)
+    ) {
+      const name = statement.name;
+      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * The names a module exports that exist **at runtime**, sorted.
+ *
+ * `declaredExportNames` answers "what shape does this module declare"; this one
+ * answers "what can a running import bind". The two differ by every shape
+ * TypeScript erases, and asking the wrong one is a false "the parent already has
+ * it": `export type { value } from "./types"` is gone before the module
+ * executes, so a plan built on the declared list appends no stand-in for the
+ * runtime `value` the change adds, the parent's `import { value }` fails to
+ * resolve, and a file the gate could judge becomes CANNOT-HOLLOW plus a
+ * whole-file waiver.
+ *
+ * Dropped: `export type { … }` (the whole declaration, including
+ * `export type * from`), a `type`-marked specifier inside an export list, a type
+ * alias, an interface, and an ambient `declare` export — the last for the reason
+ * `hollowModuleSource` already refuses to mirror one, that it "emits no runtime
+ * value". Kept: everything else `declaredExportNames` keeps, because a function,
+ * a class, a `const`/`let`/`var`, an enum, a namespace and `export * as ns` all
+ * bind a value.
+ *
+ * `declaredExportNames` itself is deliberately left alone, because its other
+ * callers are not asking a runtime question: `hollowModuleSource` compares the
+ * real module's declared shape against its mirror's and must read both sides the
+ * same way (an interface is mirrored *because* the real file declares one), and
+ * `augmentModuleSource`'s clash check asks which names one statement declares —
+ * a scope question, not a runtime one. `export *` names nothing here either; its
+ * names are the target's and are resolved in the parent worktree by
+ * `starExportNames`.
+ */
+export function runtimeExportNames(path: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const names: string[] = [];
+  for (const statement of file.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      // `export type { … }` and `export type * from …` carry nothing that runs.
+      if (statement.isTypeOnly) continue;
+      const clause = statement.exportClause;
+      // A bare `export *` names nothing here; `starExportNames` resolves it.
+      if (clause === undefined) continue;
+      if (ts.isNamedExports(clause)) {
+        // `export { type a, b }` keeps `b` and drops `a`.
+        for (const element of clause.elements) {
+          if (element.isTypeOnly) continue;
+          names.push(element.name.text);
+        }
+        continue;
+      }
+      // `export * as ns from "./y"` binds the namespace object.
+      names.push(clause.name.text);
+      continue;
+    }
+    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) continue;
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        names.push(...variableBindingNames(declaration.name));
+      }
+      continue;
+    }
+    if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) continue;
+    if (
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      ts.isModuleDeclaration(statement)
+    ) {
+      const name = statement.name;
+      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * Every name declared in a module's top-level scope, exported or not.
+ *
+ * This, not `declaredExportNames`, is the set an appended declaration can
+ * collide with: a declaration redeclares any binding in the same scope, and the
+ * ordinary way a module gains an export is to promote a module-local binding to
+ * one (`const specPaths = ["a"]` → `export const specPaths = ["a"]`). That case
+ * is invisible to the export list, and writing the stand-in anyway produces a
+ * module with two `specPaths` in one scope — a file that does not load, so every
+ * test in the importing file reads as a whole-file failure.
+ *
+ * Import bindings are included for the same reason: `import { readFileSync }`
+ * occupies the top-level scope exactly as a `const` does, and appending a
+ * declaration of that name is the same duplicate.
+ */
+export function topLevelBindingNames(path: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const names: string[] = [];
+  for (const statement of file.statements) {
+    if (ts.isVariableStatement(statement)) {
+      // A destructured binding (`const { a, b } = x`, `const [c] = y`) declares
+      // one name per element, and those names are top-level bindings too. One
+      // walk, shared with the two export readers, so the clash set and the
+      // export sets cannot disagree about what a statement declares.
+      for (const declaration of statement.declarationList.declarations) {
+        names.push(...variableBindingNames(declaration.name));
+      }
+      continue;
+    }
+    if (ts.isImportDeclaration(statement)) {
+      // An import binding occupies the top-level scope exactly as a `const`
+      // does. `import x` / `import * as x` / `import { a as b }` are three
+      // spellings of the same declaration.
+      const clause = statement.importClause;
+      if (clause === undefined) continue;
+      if (clause.name !== undefined) names.push(clause.name.text);
+      const bindings = clause.namedBindings;
+      if (bindings === undefined) continue;
+      if (ts.isNamespaceImport(bindings)) {
+        names.push(bindings.name.text);
+        continue;
+      }
+      for (const element of bindings.elements) names.push(element.name.text);
+      continue;
+    }
+    if (
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      ts.isModuleDeclaration(statement)
+    ) {
+      const name = statement.name;
+      if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * The hollow mirror of one module, or the reason it cannot be mirrored.
+ *
+ * Every export mirror is chosen so that calling it cannot throw: a function with
+ * an empty body returns `undefined`, a `const` is `undefined`, a `let` is
+ * uninitialised, a class is empty. A hollow that threw on call would make a
+ * vacuous test fail for the harness's reason and read as a real red.
+ *
+ * Imports are dropped rather than mirrored. Importing a module runs it, and a
+ * hollow's whole contract is that it runs nothing — so a chain of added modules
+ * cannot put behaviour back through it. That is why the nested case needs no
+ * chain walk: after hollowing, nothing in the module loads anything.
+ */
+export function hollowModuleSource(
+  source: string,
+  path: string,
+  kind: MirrorKind = "hollow",
+): HollowResult {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const refuse = (why: string): HollowResult => ({ ok: false, refusal: `${path}: ${why}` });
+  const lines: string[] = [];
+  for (const statement of file.statements) {
+    if (ts.isImportDeclaration(statement) || ts.isImportEqualsDeclaration(statement)) {
+      // `export import X = require(…)` re-exports, so it is not an import to drop.
+      if (hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) {
+        return refuse("it exports an `import =` alias, which a hollow cannot mirror");
+      }
+      continue;
+    }
+    // `export { a }` and `export default x` carry no `export` *modifier* — the
+    // statement kind is the export — so they are refused before the modifier
+    // check below, which would otherwise read them as behaviour with no name to
+    // mirror and drop them in silence.
+    if (ts.isExportDeclaration(statement)) {
+      return refuse(
+        "it re-exports from another module (`export … from`), and a hollow has nothing to re-export",
+      );
+    }
+    if (ts.isExportAssignment(statement)) {
+      return refuse(statement.isExportEquals ? "it uses `export =`" : "it has an `export default`");
+    }
+    // A statement with no `export` modifier is behaviour with no name to mirror,
+    // which is exactly what a hollow leaves out.
+    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (hasKeyword(statement, ts.SyntaxKind.DefaultKeyword)) {
+      return refuse("it has an `export default`, whose meaning is the whole module's value");
+    }
+    if (hasKeyword(statement, ts.SyntaxKind.DeclareKeyword)) {
+      return refuse(
+        "it declares an ambient (`declare`) export, which emits no runtime value — mirroring it would invent an export the real module does not have",
+      );
+    }
+    const decorators = ts.canHaveDecorators(statement) ? ts.getDecorators(statement) : undefined;
+    if (decorators !== undefined && decorators.length > 0) {
+      return refuse("an exported declaration is decorated, and a decorator is behaviour");
+    }
+    if (ts.isFunctionDeclaration(statement)) {
+      const name = statement.name;
+      if (name === undefined) return refuse("it exports a function with no name");
+      // `..._args` rather than the real signature: the parent's copy is never
+      // type-checked, and a test that calls it with anything must reach its own
+      // assertion instead of a load error. No annotation, and no return
+      // annotation either — this is the one body for every language, because
+      // `scriptKindFor` parses `.js`, `.mjs` and `.cjs` as JavaScript and bun
+      // does not type-check. A TypeScript signature emitted into a JavaScript
+      // file is a syntax error: bun answers `Expected ")" but found ":"`, the
+      // stand-in never loads, and a valid test is scored WRONG_REASON_RED
+      // instead of being judged against a runnable parent. One shape that loads
+      // everywhere, rather than two shapes chosen by extension.
+      lines.push(`export function ${name.text}(..._args) {\n  return undefined;\n}`);
+      continue;
+    }
+    if (ts.isClassDeclaration(statement)) {
+      const name = statement.name;
+      if (name === undefined) return refuse("it exports a class with no name");
+      lines.push(`export class ${name.text} {}`);
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      const flags = statement.declarationList.flags;
+      const keyword =
+        (flags & ts.NodeFlags.Const) !== 0 ? "const" : (flags & ts.NodeFlags.Let) !== 0 ? "let" : "var";
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) {
+          return refuse("it exports a destructured binding, whose names are not one declaration each");
+        }
+        // `let`/`var` without an initialiser is already `undefined`; `const`
+        // needs one to parse.
+        lines.push(
+          keyword === "const"
+            ? `export const ${declaration.name.text} = undefined;`
+            : `export ${keyword} ${declaration.name.text};`,
+        );
+      }
+      continue;
+    }
+    if (ts.isInterfaceDeclaration(statement)) {
+      // Erased by the runtime, so an empty one is not a lie — the mirror must
+      // *declare* it only because the real module does.
+      lines.push(`export interface ${statement.name.text} {}`);
+      continue;
+    }
+    if (ts.isTypeAliasDeclaration(statement)) {
+      lines.push(`export type ${statement.name.text} = unknown;`);
+      continue;
+    }
+    if (ts.isEnumDeclaration(statement)) {
+      return refuse("it exports an enum, whose members are runtime values a hollow cannot reproduce");
+    }
+    if (ts.isModuleDeclaration(statement)) {
+      return refuse("it exports a namespace, whose members are runtime values a hollow cannot reproduce");
+    }
+    return refuse(
+      `it exports a ${ts.SyntaxKind[statement.kind]} declaration, which a hollow does not mirror`,
+    );
+  }
+
+  const text = [MIRROR_HEADER[kind], "", ...lines].join("\n") + "\n";
+  // The last line of defence, and the reason the mirror is parsed again rather
+  // than trusted: an emission that lost or invented an export name would be a
+  // hollow that lies about the module's shape, and refusing is always available.
+  const wanted = declaredExportNames(path, source);
+  const mirrored = declaredExportNames(path, text);
+  if (wanted.join("\u0000") !== mirrored.join("\u0000")) {
+    return refuse(
+      `a hollow would export ${mirrored.join(", ") || "nothing"} where the module exports ${wanted.join(", ") || "nothing"}`,
+    );
+  }
+  return { ok: true, text };
+}
+
+/**
+ * How many syntax errors TypeScript finds in a source file.
+ *
+ * `transpileModule` reports syntactic diagnostics only — a type error is not one
+ * — which is exactly the question here: a file that does not parse cannot be
+ * appended to, and a file that parses but would not typecheck is the parent's
+ * normal state (the parent checkout is never typechecked by this gate).
+ *
+ * Not `SourceFile.parseDiagnostics`: that array is on the runtime object and
+ * absent from the public typings, so reading it means a cast that a minor
+ * TypeScript upgrade can turn into a silent zero — and a silent zero here
+ * augments broken text instead of refusing it.
+ */
+function syntaxErrorCount(source: string, path: string): number {
+  const result = ts.transpileModule(source, {
+    fileName: path,
+    reportDiagnostics: true,
+    compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext },
+  });
+  return result.diagnostics?.length ?? 0;
+}
+
+/** Whether a module's source carries a default export, in either spelling. */
+function hasDefaultExport(source: string, path: string): boolean {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  return file.statements.some(
+    (statement) =>
+      (ts.isExportAssignment(statement) && !statement.isExportEquals) ||
+      hasKeyword(statement, ts.SyntaxKind.DefaultKeyword),
+  );
+}
+
+/**
+ * Where one export name is declared in a module's source, or why it cannot be
+ * mirrored by appending a declaration.
+ *
+ * `.` is the declaration to mirror; the other two are refusals with a reason a
+ * human can act on, because an appended stand-in has to be about *this* name and
+ * nothing else.
+ */
+type ExportLookup =
+  | { kind: "declaration"; statement: ts.Statement }
+  | { kind: "unmirrorable"; why: string }
+  | { kind: "missing" };
+
+function exportLookup(source: string, path: string, name: string): ExportLookup {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  // A direct declaration first: a module can carry `export *` beside the name an
+  // appended stand-in is for, and the name it really declares is the one to
+  // mirror.
+  for (const statement of file.statements) {
+    if (!hasKeyword(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isVariableStatement(statement)) {
+      const declares = statement.declarationList.declarations.some((declaration) =>
+        ts.isIdentifier(declaration.name) ? declaration.name.text === name : false,
+      );
+      if (declares) return { kind: "declaration", statement };
+      continue;
+    }
+    if (
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      ts.isModuleDeclaration(statement)
+    ) {
+      const declared = statement.name;
+      if (declared !== undefined && ts.isIdentifier(declared) && declared.text === name) {
+        return { kind: "declaration", statement };
+      }
+    }
+  }
+  // Then the export statements, which name the export without declaring it.
+  for (const statement of file.statements) {
+    if (!ts.isExportDeclaration(statement)) continue;
+    const clause = statement.exportClause;
+    if (clause !== undefined && ts.isNamedExports(clause)) {
+      if (!clause.elements.some((element) => element.name.text === name)) continue;
+      return {
+        kind: "unmirrorable",
+        why:
+          statement.moduleSpecifier === undefined
+            ? `the change exports \`${name}\` through an export list (\`export { … }\`), which carries no declaration an appended stand-in could mirror`
+            : `the change re-exports \`${name}\` from another module, and an appended stand-in cannot re-export`,
+      };
+    }
+    if (statement.moduleSpecifier !== undefined) {
+      return {
+        kind: "unmirrorable",
+        why: `the change re-exports from another module and may re-export \`${name}\` that way, and an appended stand-in cannot re-export`,
+      };
+    }
+  }
+  return { kind: "missing" };
+}
+
+/**
+ * The parent's copy of a module with stand-ins appended for the export names it
+ * lacks, or the reason that cannot be done faithfully.
+ *
+ * This is the third thing the gate can do with a module, and the narrow one:
+ *
+ *   - the change ADDS the module: the parent gets a hollow (same names, no
+ *     behaviour);
+ *   - the parent HAS the module and the test only uses names the parent's copy
+ *     declares: the parent's own file is left alone;
+ *   - the parent HAS the module and the change adds a name to it: the parent's
+ *     source is kept byte for byte and a stand-in for that name is appended.
+ *
+ * The middle case is why this is not a hollow. A stand-in for the whole module
+ * would erase behaviour the parent really carries, and a test of that behaviour
+ * would then fail on the parent and be read as a right-reason red — a false pass
+ * for a test that pins nothing the change adds. Appending leaves every existing
+ * export real, so that test still passes on the parent and is rejected.
+ *
+ * Everything an appended declaration cannot carry is refused, in the same
+ * vocabulary the hollow writer refuses: a default, a re-export, an export list,
+ * an enum, a namespace, an ambient `declare`, a destructured binding, a
+ * decorator. So is a parent copy that does not parse, and a declaration that
+ * shares a statement with a name the parent's scope already binds — appending it
+ * would declare that name twice and the augmented file would not load at all.
+ *
+ * The clash set is `topLevelBindingNames`, not `declaredExportNames`: a
+ * declaration collides with a module-local binding as surely as with an export,
+ * and promoting a local binding to an export (`const x = 1` → `export const x =
+ * 1`) is the ordinary way a module gains a name. See that function.
+ *
+ * `names` is the planner's answer, and `parentSupplied` is the other half of it:
+ * every export the parent's copy RESOLVES at runtime, and where it comes from.
+ * The planner is where a parent's `export *` chain is resolved
+ * (`starExportNames`), because this function cannot read another file. It must
+ * be told rather than guess, for the reason the sibling check below exists.
+ *
+ * A mirrored statement is appended whole, so it can declare a name the caller
+ * did not ask for. That is fine when the parent does not supply the sibling
+ * (`export const a = 1, b = 2` with a test that imports only `a`). It is a
+ * shadow when the parent does: `export * from "./base"` supplies `b` without
+ * binding it locally, so the parent's binding set cannot see it, and appending
+ * the change's `export const a = 1, b = 7` replaces the parent's working `b`
+ * with the stand-in's `undefined`. A test of the parent's own `b` then fails
+ * against the fake and the gate scores it RIGHT-REASON-RED — a false pass, and
+ * the worst one this gate can print, because the untouched parent passes that
+ * test. So a sibling the parent supplies is a refusal here, not a "not my
+ * problem" the clash set happens not to cover.
+ */
+export function augmentModuleSource(
+  parentSource: string,
+  changeSource: string,
+  path: string,
+  names: string[],
+  parentSupplied: ReadonlyMap<string, ParentSupply>,
+): HollowResult {
+  const refuse = (why: string): HollowResult => ({ ok: false, refusal: `${path}: ${why}` });
+  if (names.length === 0) return { ok: true, text: parentSource };
+  if (syntaxErrorCount(parentSource, path) > 0) {
+    return refuse(
+      "the parent's copy of this module does not parse, so appending to it would produce text that still loads nowhere",
+    );
+  }
+  if (syntaxErrorCount(changeSource, path) > 0) {
+    return refuse("the change's copy of this module does not parse");
+  }
+  const parentExports = new Set(declaredExportNames(path, parentSource));
+  // Every name the parent's module scope already binds, so an appended
+  // declaration cannot silently redeclare one of them.
+  const parentBindings = new Set(topLevelBindingNames(path, parentSource));
+  // The names this call is FOR. A sibling outside this set is carried along by
+  // the statement's shape, not requested, so it is the one the parent might
+  // already supply.
+  const requested = new Set(names);
+  const blocks: string[] = [];
+  // Statements already mirrored. `export const b = 2, c = 3;` declares two names,
+  // so a request for both resolves to the same statement twice; appending it
+  // twice would declare each name twice.
+  const mirroredStatements = new Set<string>();
+  // Every name the mirrored statements really declare, which is a superset of
+  // `names` whenever a statement declares more than the one requested. The
+  // self-check below asks what the appended text is meant to declare rather than
+  // what the test happened to import. See the block comment on the comparison for
+  // why that is the shape and not a hole.
+  const appendedNames: string[] = [];
+  for (const name of names) {
+    if (name === "default") {
+      return refuse(
+        "the change gives this module an `export default`, whose meaning is the whole module's value — no appended declaration can stand in for it",
+      );
+    }
+    const lookup = exportLookup(changeSource, path, name);
+    if (lookup.kind === "missing") {
+      return refuse(
+        `the change composes \`${name}\` in a way this gate cannot read as one declaration, so no stand-in can be appended for it`,
+      );
+    }
+    if (lookup.kind === "unmirrorable") return refuse(lookup.why);
+    const statementText = lookup.statement.getText();
+    // The statement may declare more than the one name. The stand-in mirrors the
+    // whole statement, so every name it declares must be free in the parent's
+    // scope: a bound name would be declared twice in the augmented file.
+    const declared = declaredExportNames(path, statementText);
+    const clash = declared.filter((candidate) => parentBindings.has(candidate));
+    if (clash.length > 0) {
+      // The refusal is about the STATEMENT, because that is what would be
+      // appended. Naming only `name` made the message read like a gate bug when
+      // the clash was a sibling (`export const b = 2, c = 3;` refused for `b`
+      // because the parent already has `c`), so the message says which
+      // declaration cannot be appended and why, and only then what that costs.
+      const shared = declared.length > 1 ? ` (the statement \`${statementText.trim()}\` declares ${declared.map((candidate) => `\`${candidate}\``).join(", ")} together)` : "";
+      if (clash.includes(name)) {
+        return refuse(
+          `the parent's module already binds \`${name}\`${shared}, so the stand-in that declares it cannot be appended without declaring it twice`,
+        );
+      }
+      return refuse(
+        `a stand-in for \`${name}\` would have to append \`${statementText.trim()}\`, which the parent's module already binds \`${clash.join("`, `")}\` in, so that declaration cannot be appended and \`${name}\` has no stand-in`,
+      );
+    }
+    // A sibling the parent RESOLVES is a shadow, whether the parent binds it or
+    // only re-exports it. `export * from "./base"` creates no local binding, so
+    // the clash set above answers "free" for a name the running parent really
+    // has; appending the statement anyway would hide the parent's real export
+    // behind the fake and turn a passing test into an accepted red.
+    const shadow = declared.find(
+      (sibling) => !requested.has(sibling) && parentSupplied.has(sibling),
+    );
+    if (shadow !== undefined) {
+      const supply = parentSupplied.get(shadow);
+      const where =
+        supply?.kind === "star"
+          ? `through \`${supply.specifier}\``
+          : "in its own export list";
+      return refuse(
+        `a stand-in for \`${name}\` would append \`${statementText.trim()}\`, which also declares \`${shadow}\`, and the parent supplies \`${shadow}\` ${where} — appending that declaration would shadow the parent's real export, so a test of the parent's own \`${shadow}\` would fail against the fake and be accepted as a right-reason red`,
+      );
+    }
+    if (mirroredStatements.has(statementText)) continue;
+    mirroredStatements.add(statementText);
+    appendedNames.push(...declared);
+    const mirrored = hollowModuleSource(statementText, path, "augment");
+    if (!mirrored.ok) {
+      // The hollow writer's reason, with the name this iteration is for. A file can
+      // import several names the parent lacks, and "an enum cannot be mirrored"
+      // without the name leaves the author looking through the module for it. The
+      // path prefix the mirror already carries is not repeated.
+      const prefix = `${path}: `;
+      const why = mirrored.refusal.startsWith(prefix)
+        ? mirrored.refusal.slice(prefix.length)
+        : mirrored.refusal;
+      return refuse(`an appended stand-in for \`${name}\` would be unfaithful — ${why}`);
+    }
+    blocks.push(mirrored.text);
+  }
+  // The parent's text verbatim, then the appended stand-ins. One blank line
+  // between the halves whether or not the parent's file ends with a newline.
+  const separator = parentSource.endsWith("\n") ? "\n" : "\n\n";
+  const text = `${parentSource}${separator}${blocks.join("\n")}`;
+  // The same last line of defence the hollow writer has: a mirror that lost or
+  // invented a name is a lie about the module's shape, and refusing is always
+  // available.
+  //
+  // What is EXPECTED is read from the change's own declarations — the requested
+  // names plus every sibling the mirrored statements declare — never from the
+  // emitted text, so a mirror that drops or invents a name still fails here. The
+  // expectation used to be the requested names alone, and a request for one name
+  // of a shared statement (`export const a = 1, b = 2`, test imports only `a`)
+  // then compared `a, base` against a faithful `a, b, base` and refused a valid
+  // stand-in: CANNOT-HOLLOW plus a whole-file waiver, for a file the gate could
+  // judge. Splitting the statement instead was the alternative; it would have
+  // meant a second emitter beside `hollowModuleSource` deciding what one
+  // declaration looks like, and two emitters that disagree is the bug this
+  // function's reading helpers exist to stop.
+  //
+  // The invariant that does not move: a stand-in is never appended over a name
+  // the parent already supplies. Three checks hold it up: the clash set refuses a
+  // name the parent BINDS, the shadow check above refuses a sibling the parent
+  // RESOLVES but does not bind (a re-export), and the BINDING comparison below is
+  // the backstop under both.
+  //
+  // Two checks, not one. The export set is what the importing file picks up; the
+  // BINDING list is what makes the file load at all. The two compare differently,
+  // on purpose. The export side is a SET, because one name can legitimately be
+  // named twice there and still load: the parent's `export type { value } from
+  // "./types"` beside an appended `export function value()` is exactly the shape
+  // this round exists to accept. The BINDING side stays a sorted ARRAY, because a
+  // name declared twice appears twice in `topLevelBindingNames` and a stray
+  // duplicate must fail the comparison instead of sitting in the parent worktree
+  // as a file that cannot load — which is the blocker round 25 closed.
+  const wantedNames = [...new Set(names)];
+  const appendedDeclared = [...new Set(appendedNames)];
+  // What the appended text is meant to add, for the refusal messages as well as
+  // the comparison: the request plus the siblings it dragged in with it.
+  const appendedLabel = [...new Set([...wantedNames, ...appendedDeclared])];
+  const wantedExports = [...new Set([...parentExports, ...appendedLabel])].sort();
+  const wantedBindings = [...new Set([...parentBindings, ...appendedLabel])].sort();
+  // A set on the export side, and only there. `export type { value } from
+  // "./types"` beside an appended `export function value()` names `value` twice
+  // in the declared export list and loads fine — that pair is the shape this
+  // round exists to accept — while a genuinely duplicated declaration is caught
+  // by the BINDING comparison below, which stays a multiset for exactly that
+  // reason.
+  const mirroredExports = [...new Set(declaredExportNames(path, text))].sort();
+  const mirroredBindings = topLevelBindingNames(path, text);
+  if (wantedExports.join("\u0000") !== mirroredExports.join("\u0000")) {
+    return refuse(
+      `an augmentation would export ${mirroredExports.join(", ") || "nothing"} where the parent's module plus \`${appendedLabel.join("`, `")}\` is ${wantedExports.join(", ") || "nothing"}`,
+    );
+  }
+  if (wantedBindings.join("\u0000") !== mirroredBindings.join("\u0000")) {
+    return refuse(
+      `an augmentation would declare ${mirroredBindings.join(", ") || "nothing"} at the top level where the parent's module plus \`${appendedLabel.join("`, `")}\` is ${wantedBindings.join(", ") || "nothing"} — the augmented file would not load`,
+    );
+  }
+  return { ok: true, text };
+}
+
+/**
+ * The paths a relative specifier could name, in bun's probe order, or null when
+ * the specifier is not a relative module inside the repository.
+ *
+ * Two callers probe this list and they have to agree: the diff's own paths ask
+ * which module the change adds or edits, and an `export *` chain asks which
+ * module the parent's copy re-exports from, by reading. Both land on the same
+ * file the loader will, or on nothing.
+ *
+ * The probe order is bun's: the specifier itself (it may carry an extension),
+ * then the bare extensions, then a directory index. A `..` that climbs out of the
+ * repository resolves to nothing.
+ */
+function moduleCandidates(fromFile: string, specifier: string): string[] | null {
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return null;
+  const joined = posix.normalize(posix.join(posix.dirname(fromFile), specifier));
+  if (joined.startsWith("../") || joined === ".." || posix.isAbsolute(joined)) return null;
+  return [
+    joined,
+    ...MODULE_EXTENSIONS.map((extension) => `${joined}${extension}`),
+    ...MODULE_EXTENSIONS.map((extension) => `${joined}/index${extension}`),
+  ];
+}
+
+/**
+ * The file a relative specifier names, out of a set of paths the gate already
+ * knows.
+ *
+ * Two callers, one resolution: the hollow path asks it whether the diff ADDS the
+ * module, and the augment path whether the diff EDITS it. Both have to land on
+ * the same file the loader will, or one of them fakes a module the other already
+ * judged.
+ *
+ * Only an exact hit against the set is accepted, so the gate never guesses at a
+ * resolution it cannot confirm. See `moduleCandidates` for the probe order.
+ */
+function resolveModuleIn(
+  fromFile: string,
+  specifier: string,
+  paths: ReadonlySet<string>,
+): string | null {
+  const candidates = moduleCandidates(fromFile, specifier);
+  if (candidates === null) return null;
+  return candidates.find((candidate) => paths.has(candidate)) ?? null;
+}
+
+/**
+ * The same resolution, probed by reading: the first candidate the parent's
+ * checkout actually holds.
+ *
+ * `export *` names a target the diff need not have touched, so there is no path
+ * set to look it up in. The read is the probe, and a `null` from every candidate
+ * is the gate's answer that it cannot resolve the chain.
+ */
+function resolveModuleWith(
+  fromFile: string,
+  specifier: string,
+  read: (path: string) => string | null,
+): string | null {
+  const candidates = moduleCandidates(fromFile, specifier);
+  if (candidates === null) return null;
+  return candidates.find((candidate) => read(candidate) !== null) ?? null;
+}
+
+/**
+ * The targets a module re-exports everything from (`export * from "…"`), as
+ * written.
+ *
+ * The names such a module supplies are the target's names, so this file cannot
+ * answer what they are. `export type *` is skipped: its names are types, erased
+ * before the file runs, so they supply no runtime export a stand-in could shadow.
+ */
+function starExportSpecifiers(path: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    scriptKindFor(path),
+  );
+  const specifiers: string[] = [];
+  for (const statement of file.statements) {
+    if (!ts.isExportDeclaration(statement)) continue;
+    // `export { a }` and `export * as ns` name their own exports; only a bare
+    // star hands the naming to another module.
+    if (statement.exportClause !== undefined) continue;
+    if (statement.isTypeOnly) continue;
+    const module = statement.moduleSpecifier;
+    if (module === undefined || !ts.isStringLiteral(module)) continue;
+    specifiers.push(module.text);
+  }
+  return specifiers;
+}
+
+/**
+ * The names a module supplies through its `export *` chain, resolved inside the
+ * parent's checkout, or the reason the gate cannot resolve it.
+ *
+ * A name the parent supplies through `export *` is absent from the parent's own
+ * export list, so asking `declaredExportNames` alone answers "missing" for a name
+ * the parent really has. The appended stand-in then SHADOWS the parent's working
+ * re-export: a test of the parent's own behaviour fails against the fake, and the
+ * gate accepts that as a right-reason red — a test that pins nothing, scored as a
+ * test that pins something.
+ *
+ * Resolving is the only alternative to refusing. A chain the gate cannot read — a
+ * target outside the repository, a package specifier, a file the parent does not
+ * have — refuses the augmentation, because assuming such a chain cannot supply
+ * the name is exactly the shadow this function exists to stop.
+ *
+ * A cycle is followed once: a module that re-exports everything from itself adds
+ * no name the first visit did not already read.
+ *
+ * The result is a name-to-SPECIFIER map, not a bare list: the caller has to know
+ * which line of the parent's source reaches a name to refuse it in words the
+ * author can act on (`through "./base"`), and a name three links down a chain is
+ * not one the author wrote. A nested hop is attributed to the specifier THIS
+ * module wrote, because that is the line the reader can go and look at.
+ */
+function starExportNames(
+  path: string,
+  source: string,
+  read: (path: string) => string | null,
+  seen: Set<string>,
+): { ok: true; origins: Map<string, string> } | { ok: false; refusal: string } {
+  const specifiers = starExportSpecifiers(path, source);
+  if (specifiers.length === 0 || seen.has(path)) return { ok: true, origins: new Map() };
+  seen.add(path);
+  // Every name attributed to the specifier that reaches it from THIS module, so
+  // a refusal can say `through "./base"` rather than naming a file further down
+  // the chain that the author never wrote.
+  const origins = new Map<string, string>();
+  for (const specifier of specifiers) {
+    const target = resolveModuleWith(path, specifier, read);
+    const targetSource = target === null ? null : read(target);
+    if (target === null || targetSource === null) {
+      return {
+        ok: false,
+        refusal: `${path}: the parent's copy re-exports everything from \`${specifier}\`, and the gate cannot resolve that inside the parent's checkout — the names it supplies are unknowable from here, and a stand-in for one of them would shadow the parent's real export, so this module cannot be augmented`,
+      };
+    }
+    const direct = runtimeExportNames(target, targetSource);
+    for (const name of direct) {
+      if (!origins.has(name)) origins.set(name, specifier);
+    }
+    const nested = starExportNames(target, targetSource, read, seen);
+    if (!nested.ok) return nested;
+    for (const name of nested.origins.keys()) {
+      if (!origins.has(name)) origins.set(name, specifier);
+    }
+  }
+  return { ok: true, origins };
+}
+
+/**
+ * The hollow modules one added test file needs on the parent.
+ *
+ * `added` is every path the diff adds, and `readAdded` reads one at `head`. A
+ * specifier that names a test file is not hollowed: a file that imports another
+ * test file is refused outright before this runs, because the report cannot say
+ * whose case failed.
+ */
+export function planHollowModules(
+  testFile: string,
+  testSource: string,
+  added: ReadonlySet<string>,
+  readAdded: (path: string) => string | null,
+): HollowPlan {
+  const modules: HollowPlan["modules"] = [];
+  const seen = new Set<string>();
+  for (const specifier of loadedRelativeSpecifiers(testSource, testFile)) {
+    if (TEST_LIKE_BASENAME.test(specifier.split("/").pop() ?? "")) continue;
+    const path = resolveModuleIn(testFile, specifier, added);
+    if (path === null || seen.has(path)) continue;
+    seen.add(path);
+    const source = readAdded(path);
+    if (source === null) {
+      return {
+        modules: [],
+        refusal: `${path}: the gate cannot read the module this file imports at the change's commit, so it cannot tell what the parent is missing`,
+      };
+    }
+    const hollow = hollowModuleSource(source, path);
+    if (!hollow.ok) return { modules: [], refusal: hollow.refusal };
+    modules.push({ path, importedBy: testFile, text: hollow.text });
+  }
+  // Sorted so the report and the manifest describe one order whatever order the
+  // file lists its imports in.
+  modules.sort((left, right) => (left.path < right.path ? -1 : 1));
+  return { modules, refusal: null };
+}
+
+/** A module the parent HAS, carried into the parent worktree with stand-ins appended. */
+export type AugmentedModule = { path: string; importedBy: string; names: string[] };
+
+/**
+ * How the parent's copy supplies one runtime export name.
+ *
+ * `own` is the parent's own source — a local declaration, or a literal
+ * `export { b } from "./x"` that names an export a running import can bind
+ * without binding it locally. `star` is a bare `export * from`, which hands the
+ * naming to another module entirely, so the specifier is the answer to "where
+ * does this come from" for the refusal.
+ */
+export type ParentSupply = { kind: "own" } | { kind: "star"; specifier: string };
+
+export type AugmentPlan = {
+  modules: Array<AugmentedModule & { text: string }>;
+  refusal: string | null;
+};
+
+/**
+ * The modules a gated test file needs *augmented* on the parent: the ones the
+ * diff edits, where the test imports a name the parent's copy does not declare.
+ *
+ * `touched` is every path the diff edits rather than adds, and the two sets are
+ * disjoint: an added module is the hollow path's, and a module the diff does not
+ * touch is identical on both sides, so it cannot be missing a name the change
+ * adds.
+ *
+ * The names come from the test file's own imports, not from the load error bun
+ * prints. The static answer is the one that can be checked before the run, and it
+ * is the one that can be refused with the name and the shape in the message — a
+ * transcript is only read after the fact.
+ *
+ * A refusal is about one module, and it survives beside the stand-ins the other
+ * modules get. Two consequences worth stating, because both were bugs:
+ *
+ *   - the parent's own export list is asked FIRST, and a module whose requested
+ *     names it answers never has its `export *` chain resolved at all. An
+ *     unrelated `export * from "some-package"` used to refuse the plan, dropping
+ *     a sibling module's stand-in for a name the test really needs;
+ *   - a module that cannot be mirrored no longer empties `modules`. Its refusal
+ *     is still reported and the file still will not load, so nothing is accepted
+ *     that was not judged — the sibling's stand-in is simply not thrown away with
+ *     it.
+ */
+export function planAugmentedModules(
+  testFile: string,
+  testSource: string,
+  touched: ReadonlySet<string>,
+  readChange: (path: string) => string | null,
+  readParent: (path: string) => string | null,
+): AugmentPlan {
+  const modules: AugmentPlan["modules"] = [];
+  // Per-module, and never a reason to drop a sibling's stand-in. A refusal is
+  // about one module's source; the modules this function *can* mirror are
+  // still returned, so the report says what the gate actually wrote.
+  const refusals: string[] = [];
+  const seen = new Set<string>();
+  for (const binding of importedModuleBindings(testSource, testFile)) {
+    const path = resolveModuleIn(testFile, binding.specifier, touched);
+    if (path === null || seen.has(path)) continue;
+    seen.add(path);
+    const changeSource = readChange(path);
+    if (changeSource === null) {
+      refusals.push(
+        `${path}: the gate cannot read this module at the change's commit, so it cannot tell which exports the change adds to the parent's copy`,
+      );
+      continue;
+    }
+    const parentSource = readParent(path);
+    if (parentSource === null) {
+      refusals.push(
+        `${path}: the diff edits this module and the parent checkout has no copy of it, so there is nothing to augment`,
+      );
+      continue;
+    }
+    // The parent's RUNTIME export set, not its declared one: this answers "can a
+    // running import of this module bind the name", and a type-only export
+    // cannot. Counting `export type { value } from "./types"` as present appended
+    // no stand-in for the runtime `value` the change adds, so the parent's own
+    // `import { value }` failed to resolve and the file became a whole-file waiver.
+    //
+    // A MAP, not a Set: `augmentModuleSource` mirrors a whole statement, so it
+    // must also know which sibling names this set answers for, and a refusal has
+    // to say where the parent has one. The name it never declares locally is the
+    // dangerous one — `export * from "./base"` supplies `b` without binding it.
+    const supplied = new Map<string, ParentSupply>();
+    for (const name of runtimeExportNames(path, parentSource)) {
+      supplied.set(name, { kind: "own" });
+    }
+    const parentHasDefault = hasDefaultExport(parentSource, path);
+    const stillMissing = (name: string): boolean =>
+      name === "default" ? !parentHasDefault : !supplied.has(name);
+    let missing = binding.names.filter(stillMissing);
+    if (missing.length > 0) {
+      // Only now, and only for the names the parent's own export list and literal
+      // export lists did not answer: a name may still arrive through `export *`,
+      // and assuming it cannot is the shadow this gate exists to stop.
+      //
+      // Asking earlier was the Greptile P1. `starExportNames` refuses a chain it
+      // cannot resolve — a package specifier, a target outside the repository —
+      // and a module that merely *carries* an `export * from "some-package"`
+      // beside a name the test really uses then refused the whole plan. A test
+      // file importing an existing name from that module and a new name from a
+      // second module lost the second module's stand-in, so a file the gate could
+      // load and judge became a whole-file waiver. A chain says nothing about a
+      // name the parent's own copy already supplies, so it is not consulted for
+      // one.
+      const starred = starExportNames(path, parentSource, readParent, new Set());
+      if (!starred.ok) {
+        // Scoped, not fatal. The refusal is about THIS module's chain: a sibling
+        // module's stand-in is still written, because one module that cannot be
+        // mirrored does not make another one unmirrorable. The file will not load
+        // either way, so the refusal still stands and is still reported — this
+        // only keeps the report from claiming the gate did less than it did.
+        refusals.push(starred.refusal);
+        continue;
+      }
+      // Attributed to the specifier that reaches it, so the refusal below can
+      // name `./base` — the line the author wrote — instead of the gate's own
+      // vocabulary. A name the parent's own source already supplied keeps its
+      // `own` origin, because a local declaration wins over a star anyway.
+      for (const [name, specifier] of starred.origins) {
+        if (!supplied.has(name)) supplied.set(name, { kind: "star", specifier });
+      }
+      missing = binding.names.filter(stillMissing);
+    }
+    // A test that only uses names the parent's copy really declares says nothing
+    // about an augmentation, and the parent's file is left exactly as it is.
+    if (missing.length === 0) continue;
+    const augmented = augmentModuleSource(parentSource, changeSource, path, missing, supplied);
+    if (!augmented.ok) {
+      refusals.push(augmented.refusal);
+      continue;
+    }
+    modules.push({ path, importedBy: testFile, names: missing, text: augmented.text });
+  }
+  modules.sort((left, right) => (left.path < right.path ? -1 : 1));
+  // The first refusal in the file's own import order, and only one: the report
+  // prints a refusal as one row's detail, and an author who fixes the first
+  // re-runs and sees the next. Reporting the last would be arbitrary; reporting
+  // all of them in one row buries each path behind the previous one.
+  return { modules, refusal: refusals[0] ?? null };
+}
 
 // ---------------------------------------------------------------------------
 // Git and the base worktree
@@ -1573,6 +2915,10 @@ export type GateRun = {
   uncommitted: string[];
   /** Test files the diff touches that the gate does not gate, with the reason. */
   skipped: SkippedTestFile[];
+  /** Added modules the gate faked into the parent, and the file that needed each. */
+  hollowed: HollowedModule[];
+  /** Modules the parent HAS, carried in whole, with stand-ins appended for the names the change adds. */
+  augmented: AugmentedModule[];
 };
 
 function resolveBase(repo: string, requested: string | null): string {
@@ -1590,15 +2936,25 @@ function resolveBase(repo: string, requested: string | null): string {
   );
 }
 
-export function addedTestFiles(repo: string, mergeBase: string, head: string): string[] {
-  const added: string[] = [];
-  for (const path of changedPaths(repo, mergeBase, head)) {
+/** The paths the diff adds. A path present at the parent is an edit, not an add. */
+export function addedFiles(repo: string, mergeBase: string, head: string): string[] {
+  return changedPaths(repo, mergeBase, head).filter(
+    (path) => !git(repo, ["cat-file", "-e", `${mergeBase}:${path}`]).ok,
+  );
+}
+
+export function addedTestFiles(
+  repo: string,
+  mergeBase: string,
+  head: string,
+  added: ReadonlySet<string> = new Set(addedFiles(repo, mergeBase, head)),
+): string[] {
+  const files: string[] = [];
+  for (const path of added) {
     if (!isGatedTestPath(path)) continue;
-    // Present at the parent => an edited file, never gated. Absent => added.
-    if (git(repo, ["cat-file", "-e", `${mergeBase}:${path}`]).ok) continue;
-    added.push(path);
+    files.push(path);
   }
-  return added.sort();
+  return files.sort();
 }
 
 /** The paths the diff touches, with the raw bytes of every name. */
@@ -1625,8 +2981,9 @@ export function skippedTestFiles(
   repo: string,
   mergeBase: string,
   head: string,
+  addedPaths: ReadonlySet<string> = new Set(addedFiles(repo, mergeBase, head)),
 ): SkippedTestFile[] {
-  const added = new Set(addedTestFiles(repo, mergeBase, head));
+  const added = new Set(addedTestFiles(repo, mergeBase, head, addedPaths));
   const skipped: SkippedTestFile[] = [];
   for (const path of changedPaths(repo, mergeBase, head)) {
     if (added.has(path)) continue;
@@ -1784,8 +3141,14 @@ export function runGate(options: GateOptions, versions: { bun?: string } = bunVe
   const { repo, head, fresh } = options;
   const baseSha = gitText(repo, ["merge-base", options.base, head]).trim();
   const uncommitted = uncommittedTestFiles(repo);
-  const files = addedTestFiles(repo, baseSha, head);
-  const skipped = skippedTestFiles(repo, baseSha, head);
+  // Every path the diff adds, computed ONCE. It used to be computed three times
+  // (here, inside `addedTestFiles`, and again below), and each computation spawns
+  // `git cat-file` once per changed path — on a diff of a hundred files that is
+  // three hundred subprocess spawns for one answer that cannot change inside a
+  // run.
+  const added = new Set(addedFiles(repo, baseSha, head));
+  const files = addedTestFiles(repo, baseSha, head, added);
+  const skipped = skippedTestFiles(repo, baseSha, head, added);
   // A test file the working tree holds and HEAD does not is invisible to the
   // gate: it is neither in the diff nor in the commit the gate reads. Naming
   // it was not enough — the run exited 0, so the file that was about to be
@@ -1821,8 +3184,20 @@ export function runGate(options: GateOptions, versions: { bun?: string } = bunVe
       problems,
       uncommitted,
       skipped,
+      hollowed: [],
+      augmented: [],
     };
   }
+  // Every path the diff adds, so the parent can be given a hollow stand-in for
+  // the added module a gated test file imports. Read once above, with the test
+  // list it produces.
+  //
+  // The modules the diff edits rather than adds. A hollow is never written for
+  // one: the parent has it, and a fake would erase behaviour the parent really
+  // carries. It is here so a load failure caused by one can say which export.
+  const touched = new Set(
+    changedPaths(repo, baseSha, head).filter((path) => !added.has(path)),
+  );
   // Two runs from the same checkout and the same base share this worktree, and
   // one of them copying files into it or `--fresh`-deleting it would corrupt the
   // other's verdicts. The lock covers everything that reads or writes it, so the
@@ -1835,7 +3210,17 @@ export function runGate(options: GateOptions, versions: { bun?: string } = bunVe
     files.length,
   );
   try {
-    return gateBaseWorktree({ repo, head, baseSha, files, uncommitted, skipped, fresh });
+    return gateBaseWorktree({
+      repo,
+      head,
+      baseSha,
+      files,
+      uncommitted,
+      skipped,
+      added,
+      touched,
+      fresh,
+    });
   } finally {
     release();
   }
@@ -1849,9 +3234,11 @@ function gateBaseWorktree(input: {
   files: string[];
   uncommitted: string[];
   skipped: SkippedTestFile[];
+  added: ReadonlySet<string>;
+  touched: ReadonlySet<string>;
   fresh: boolean;
 }): GateRun {
-  const { repo, head, baseSha, files, uncommitted, skipped, fresh } = input;
+  const { repo, head, baseSha, files, uncommitted, skipped, added, touched, fresh } = input;
   const { path: worktree, created } = ensureBaseWorktree(repo, baseSha, fresh);
   const installLog = ensureBaseNodeModules(worktree);
 
@@ -1863,6 +3250,8 @@ function gateBaseWorktree(input: {
       `${path}: is in the working tree but not in HEAD, so the gate cannot judge it — commit it and run again`,
   );
   const copied: string[] = [];
+  const hollowed: HollowedModule[] = [];
+  const augmented: AugmentedModule[] = [];
   const manifest = manifestPath(repo, baseSha);
   // The parent side runs the file *at `head`*, copied into the base worktree.
   // The change side has to run the checkout's own modules, so it can only
@@ -1913,6 +3302,53 @@ function gateBaseWorktree(input: {
       // leaves ignored paths alone, so the installed `node_modules` survives.
       resetBaseWorktree(worktree);
       copyIntoBaseWorktree(manifest, worktree, file, source, copied);
+      // The added modules this file imports are the ones the parent cannot load,
+      // so they are the ones it gets a hollow copy of. Written after the restore
+      // and after the test file's own copy, in the order a run needs them; the
+      // next file's restore removes them, and each is named in the manifest so a
+      // run that dies half way still leaves nothing behind for the next one.
+      const hollow = planHollowModules(file, source, added, (path) => {
+        try {
+          return readAtRevision(repo, head, path);
+        } catch {
+          return null;
+        }
+      });
+      for (const module of hollow.modules) {
+        copyIntoBaseWorktree(manifest, worktree, module.path, module.text, copied);
+        hollowed.push({ path: module.path, importedBy: module.importedBy });
+      }
+      // The other half: a module the parent HAS, kept byte for byte, with a
+      // stand-in appended only for the export names the change adds to it. Not a
+      // hollow — a hollow of this file would erase behaviour the parent really
+      // carries — and it is skipped when the hollow path already refused, because
+      // then the file cannot load at all and one refusal is the honest report.
+      const augment =
+        hollow.refusal === null
+          ? planAugmentedModules(
+              file,
+              source,
+              touched,
+              (path) => {
+                try {
+                  return readAtRevision(repo, head, path);
+                } catch {
+                  return null;
+                }
+              },
+              (path) => {
+                try {
+                  return readAtRevision(repo, baseSha, path);
+                } catch {
+                  return null;
+                }
+              },
+            )
+          : { modules: [], refusal: null };
+      for (const module of augment.modules) {
+        copyIntoBaseWorktree(manifest, worktree, module.path, module.text, copied);
+        augmented.push({ path: module.path, importedBy: module.importedBy, names: module.names });
+      }
 
       const junitPath = join(outDir, `${copied.length}.xml`);
       rmSync(junitPath, { force: true });
@@ -1954,7 +3390,24 @@ function gateBaseWorktree(input: {
       // working tree is dirty, registers nothing — and comparing that against
       // the parent's list would restate the problem once per test.
       const changeSideRan = enumerateChange && problems.length === problemsBeforeChange;
-      const classified = classifyFileRun(fileRun, parsed.waivers, changeResults);
+      // A module the parent has but the change extends with a new export is not
+      // something a mirror can stand in for, and bun names it in the transcript.
+      const refusal =
+        hollow.refusal ?? augment.refusal ?? editedModuleExportRefusal(fileRun.stdout, touched);
+      const classified = classifyFileRun(fileRun, parsed.waivers, changeResults, {
+        // Both stand-in kinds answer the same question for `isOwnRed`: did the
+        // gate's own fake turn a property read into `undefined`? A test that
+        // dereferences an appended stand-in dies the same way one that
+        // dereferences a hollow does.
+        //
+        // The residual hole this flag carries, stated rather than narrowed: an
+        // AUGMENTED file still runs the parent's real code, so a TypeError there
+        // has a cause the gate cannot see. Keeping the two kinds together is
+        // deliberate — narrowing the flag would reject a legitimate
+        // "dereference the new export" test — and both accepted shapes are
+        // pinned as fixtures. See `isOwnRed`.
+        hollowed: hollow.modules.length > 0 || augment.modules.length > 0,
+      });
       for (const problem of classified.problems) problems.push(problem);
       const unregistered =
         parentResults.length === 0
@@ -1966,15 +3419,52 @@ function gateBaseWorktree(input: {
       const notOnChange = changeSideRan
         ? notRegisteredOnChange(file, parentResults, changeResults)
         : [];
-      verdicts.push(...classified.verdicts, ...unregistered.verdicts, ...notOnChange);
+      // A module the gate could not mirror replaces the parent's verdicts with
+      // one row, because the parent's run never judged the file: it read a parent
+      // that is missing the module, and every row it produced says so. Keeping
+      // those rows would print "the parent could not load the file" once per test
+      // and leave the real reason — an unfaithful mirror — nowhere in the report.
+      //
+      // That justification holds only for a file the parent could not LOAD, so
+      // the replacement is bounded at both ends:
+      //
+      //   - a run that did not finish is never replaced. RUN_INCOMPLETE is not a
+      //     load failure — the file may never have been read — and no waiver covers
+      //     it. Replacing it handed the whole file to a waiver, so a module
+      //     refusal (made from the source, before the run) excused a parent run
+      //     that timed out;
+      //   - a run that FINISHED and registered testcases is never replaced. The
+      //     file loaded, so a refusal cannot explain anything about this run: the
+      //     planner sees every specifier in the source, including a lazy
+      //     `await import()` inside a function body that no load reaches, and can
+      //     refuse a module the parent never asked for. The parent's own rows are
+      //     the honest report there, and dropping a refusal is not a false pass —
+      //     a test that passes on the parent is GREEN_ON_PARENT and rejected.
+      const unfinished = classified.verdicts.some((verdict) => verdict.name === "RUN_INCOMPLETE");
+      const replacedByRefusal: Verdict | null =
+        refusal !== null && !unfinished && parentResults.length === 0
+          ? cannotHollowVerdict(file, refusal, parsed.waivers)
+          : null;
+      const parentVerdicts: Verdict[] =
+        replacedByRefusal === null
+          ? [...classified.verdicts, ...unregistered.verdicts, ...notOnChange]
+          : [replacedByRefusal];
+      verdicts.push(...parentVerdicts);
       // The change's own run is already made, so its statuses cost nothing to
       // read. They are read independently of the parent's waivers: a waiver says
       // why the parent could not run a test, not that the test works on the
       // change.
-      verdicts.push(
-        ...changeSideVerdicts(file, [...classified.verdicts, ...unregistered.verdicts], changeResults),
+      verdicts.push(...changeSideVerdicts(file, parentVerdicts, changeResults));
+      // When the file's rows are replaced by one CANNOT HOLLOW row, the waivers
+      // `classifyFileRun` matched belong to rows nobody will read — counting them
+      // used would hide the per-test waiver as accepted when the run says the file
+      // was never judged. So only the rows that reach the report mark waivers used.
+      const usedLines = new Set<number>(
+        replacedByRefusal === null
+          ? [...classified.usedWaiverLines, ...unregistered.usedWaiverLines]
+          : [],
       );
-      const usedLines = new Set([...classified.usedWaiverLines, ...unregistered.usedWaiverLines]);
+      for (const verdict of parentVerdicts) for (const waiver of verdict.waivers) usedLines.add(waiver.line);
       // A waiver can only be judged against tests the run actually enumerated.
       // When nothing was enumerated (a load failure with no change-side names,
       // or a run that could not judge the file), a waiver naming a real test
@@ -1999,6 +3489,8 @@ function gateBaseWorktree(input: {
     problems,
     uncommitted,
     skipped,
+    hollowed,
+    augmented,
   };
 }
 
@@ -2013,6 +3505,7 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
     fixes: [
       "nothing — keep the test as it is",
       "do not waive it: a waiver on a right-reason red is misfiled and the gate will say so",
+      "this proves the test REACHES the change and fails there, not that it asserts a behaviour: a test that dereferences a stand-in (a TypeError) or only checks a const stand-in exists (an AssertionError) is accepted by design",
     ],
   },
   {
@@ -2044,8 +3537,18 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
     title: "the test could not be evaluated on the parent (load error, or a non-assertion throw)",
     fixes: [
       "land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken",
-      "or point the gate at a parent that already has it: `bun scripts/red-on-parent.ts --base <rev>`",
+      "a module this diff EDITS is different: the gate keeps the parent's copy and appends a stand-in for the names the change adds, so a load failure there is a `CANNOT_HOLLOW` row that names the shape it refused — read that row, not this one",
       "if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`",
+    ],
+  },
+  {
+    name: "CANNOT_HOLLOW",
+    title:
+      "the file imports an export the gate cannot stand in for: a name of an added module that no hollow can mirror, or a name the parent's own copy lacks in a shape no appended stand-in can carry",
+    fixes: [
+      "the gate fakes an added module into the parent, and appends a stand-in to a module the parent already has, so this file can load there; it refuses when the mirror would be unfaithful (a default export, a re-export, an export list, an enum, a namespace, an ambient `declare`, a destructured export, a decorator, a parent copy that does not parse, or a name the parent's own module scope already binds — promoting a module-local `const` to an export is the common one)",
+      'if the module really cannot be mirrored, add `// red-on-parent-waive: "whole file" — <why the parent cannot run this file>` to the added test file, spelled exactly that way: this verdict is the one whose only escape hatch is a whole-file waiver, and the pattern has to BE `whole file`, not merely match it',
+      "do not waive it to get past the gate: an unfaithful mirror lets a test that pins nothing pass on the parent",
     ],
   },
   {
@@ -2125,6 +3628,29 @@ export function renderReport(run: GateRun, problems: string[]): string {
     return `${lines.join("\n")}\n`;
   }
   if (run.installLog.length > 0) lines.push(`installed the parent's dependencies: ${run.installLog}`);
+  // A run whose red was produced against a fake has to say so, in the transcript
+  // a human reads: a hollow that quietly swallowed an export would otherwise look
+  // exactly like a verdict about the change.
+  if (run.hollowed.length > 0) {
+    lines.push(
+      "hollowed modules (the parent has none of these, so the gate wrote a stand-in — same export names, no behaviour):",
+    );
+    for (const entry of run.hollowed) {
+      lines.push(`  ${entry.path} — hollowed for ${entry.importedBy}`);
+    }
+  }
+  // Stated under its own heading, and after the hollows, because the two are
+  // different promises: this module is the PARENT's, kept whole, and only the
+  // names the change adds are faked. A reader who took it for a hollow would
+  // think the parent's own behaviour had been erased.
+  if (run.augmented.length > 0) {
+    lines.push(
+      "augmented modules (the parent HAS these, so the gate kept the parent's own source and appended stand-ins for the exports the change adds — NOT hollowed):",
+    );
+    for (const entry of run.augmented) {
+      lines.push(`  ${entry.path} — appended ${entry.names.join(", ")} for ${entry.importedBy}`);
+    }
+  }
   lines.push("");
 
   const fileWidth = Math.max(12, ...run.verdicts.map((v) => v.file.length));
@@ -2208,7 +3734,10 @@ export function renderReport(run: GateRun, problems: string[]): string {
       // explanation for a run whose only waived row was the second, while the
       // guide for that verdict says the same thing.
       const unjudged = waived.filter(
-        (verdict) => verdict.name === "WRONG_REASON_RED" || verdict.name === "NOT_ON_PARENT",
+        (verdict) =>
+          verdict.name === "WRONG_REASON_RED" ||
+          verdict.name === "NOT_ON_PARENT" ||
+          verdict.name === "CANNOT_HOLLOW",
       ).length;
       if (unjudged > 0) {
         lines.push(
@@ -2252,6 +3781,7 @@ function summaryLine(counts: Map<VerdictName, number>): string {
     "NOT_ON_CHANGE",
     "WRONG_REASON_RED",
     "NOT_ON_PARENT",
+    "CANNOT_HOLLOW",
     "GREEN_ON_PARENT",
     "WAIVER_MISFILED",
     "RUN_INCOMPLETE",

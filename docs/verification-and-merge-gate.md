@@ -57,10 +57,28 @@ lane that only writes the commit body produces no comment, so reason 4 fails at 
 ### The red is enforced by `scripts/red-on-parent.ts`, and a waiver is its only exception
 
 "Red before green" is not an honour system here. `bun scripts/red-on-parent.ts` reconstructs the
-**parent of the change** (the merge-base, not the previous commit), copies the test files the diff
-*adds* into that checkout at their own paths, and runs each one there. Every test in an added file
-must fail on the parent, for its own reason — a real assertion, not a load error and not a throw
-from a hook. Playwright specs are out of scope, because their red needs two servers.
+**parent of the change** (the merge-base, not the previous commit) and puts the files the diff adds
+into that checkout at their own paths: the added test files themselves, a **hollow** stand-in for each
+module they import that the parent does not have, and an **augmented** copy of each module the parent
+*does* have that the test imports a name from. It then runs each added test file there. Every test in
+an added file must fail on the parent, for its own reason — a real assertion, not a load error and not
+a throw from a hook. Playwright specs are out of scope, because their red needs two servers.
+
+A module the parent already has is **kept real and only augmented**: its source is written byte for
+byte and stand-ins for the names the change added are appended below it. A hollow there would erase
+behaviour the parent really carries, so a test of that behaviour would fail on the parent and be read
+as a right-reason red — a false pass. Appending leaves every existing export real, so that test still
+passes on the parent, is scored GREEN-ON-PARENT and is rejected. The append is refused when the stand-in
+would not load: a `default`, a re-export, an export list, an enum, a namespace, an ambient `declare`, a
+destructured binding, a decorator, a parent copy that does not parse, a name the parent's module
+scope already binds, or a parent copy that re-exports everything (`export *`) from a module the gate
+cannot resolve — promoting a module-local `const` to an export is the ordinary way a module gains a
+name, and that declaration cannot be appended twice.
+
+`scripts/**` is in scope. The gate judges an added test file under `apps/`, `packages/` **and**
+`scripts/`, because the gate's own suite lives there and a gate nobody tests is the failure mode this
+document keeps paying for. A `.spec.ts`, an `e2e/` file, and anything under `tests/` or `docs/` are not
+judged.
 
 There is exactly one exception, and it is written into the test file so a reviewer reads it in the
 diff:
@@ -71,14 +89,17 @@ diff:
 
 The reason is required. The pattern is a regex matched against the test's display name. The line must
 be a line comment standing on its own — whitespace or another comment may precede it on the line,
-code may not. The gate accepts a waiver for three verdicts and no others:
+code may not. The gate accepts a waiver for **four** verdicts and no others:
 
-- **the test is green on the parent, legitimately** — a characterization test of behaviour the change
-  keeps, so a red for it cannot exist;
-- **the parent could not run the test** — the module, export or fixture it needs is what the change
-  adds, as in a rename or a moved file;
-- **the parent's run never registered the test** — it is registered behind a condition the change
-  newly satisfies, so the parent's run has no case to judge.
+- **the test is green on the parent, legitimately** (`GREEN_ON_PARENT`) — a characterization test of
+  behaviour the change keeps, so a red for it cannot exist;
+- **the parent could not run the test** (`WRONG_REASON_RED`) — the module, export or fixture it needs
+  is what the change adds, as in a rename or a moved file;
+- **the parent's run never registered the test** (`NOT_ON_PARENT`) — it is registered behind a
+  condition the change newly satisfies, so the parent's run has no case to judge;
+- **the gate could not write a faithful stand-in** (`CANNOT_HOLLOW`) — the module the file imports
+  cannot be mirrored or appended to, so the parent cannot load the file at all and nothing there was
+  judged.
 
 A waiver cannot excuse a test that is red or skipped *on the change*, a test the change stopped
 running, or a run that did not finish. A waiver that matches no test in its file is itself a failure,
@@ -86,6 +107,39 @@ and so is a pattern broad enough to cover every test in a multi-test file. The r
 waiver with its file and line, and its last line prints `PASS (n waived)` along with how many of
 those the parent never ran — a PR that waived its way past the gate says so where the reviewer reads
 it.
+
+**The one exception to that rule is `CANNOT_HOLLOW`, and it is deliberate.** Its row is the single file
+row `(whole file)`, so the only waiver that can clear it is a whole-file one:
+
+```ts
+// red-on-parent-waive: "whole file" — <why the parent cannot run this file>
+```
+
+The spelling has to be exactly `whole file` — the pattern is compared, not matched, so `"file"`,
+`"whole"`, `"."` and `".*"` do not clear it. It is not the bypass the broad-pattern rule exists to
+stop, because it names no test and clears nothing silently: the report prints it as a waived
+`CANNOT_HOLLOW` row with its reason, which is the truth about that file — the parent could not run it.
+The alternative was one waiver per test for one cause, and the broad-pattern rule refuses a pattern
+that names all of them at once, which is a gate nobody can satisfy and therefore a gate that gets
+bypassed.
+
+### What the gate proves, and what it does not
+
+The gate proves that an added test file **reaches** the change and **fails there**. It does not prove
+that the test asserts a behaviour. Two shapes assert nothing and are accepted, by design:
+
+1. **a TypeError from dereferencing a stand-in** — the hollow's function returns `undefined`, so
+   `turboArgs([], "x").args` is `undefined.args` and dies before any assertion runs;
+2. **an assertion reading a const stand-in** — a hollow const's value is `undefined`, so
+   `expect(NEW_LIMIT).toBeDefined()` is false on the parent and true on the change.
+
+Both are pinned as fixtures in `scripts/red-on-parent.test.ts` with the comment `accepted by design,
+not a defect`. The asymmetry is easy to mistake for a bug: `expect(brandNew).toBeDefined()` on a
+**function** export is green on the parent (a hollow function exists) and rejected, while the same
+shape on a **const** export is accepted. What separates them is what a stand-in can be, not an
+inconsistency in the gate. A vacuous assertion is rejected only in the shapes the gate can
+distinguish. Closing the rest needs a discrimination junit's failure type cannot carry, which is a
+design change rather than a fix.
 
 ## 2. The four reasons
 

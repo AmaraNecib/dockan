@@ -38,25 +38,36 @@ import { dirname, join, resolve } from "node:path";
 
 import * as gateModule from "./red-on-parent";
 import {
+  augmentModuleSource,
   bunOnlyRefusal,
+  cannotHollowVerdict,
   changeSideResults,
   changeSideVerdicts,
   classifyFileRun,
   decodeXml,
+  declaredExportNames,
   displayName,
+  editedModuleExportRefusal,
+  hollowModuleSource,
   importedTestFiles,
   isGatedTestPath,
   loadFailureReason,
   lockPidFileContent,
   main,
+  missingExportDetail,
   notRegisteredOnChange,
   parseJunit,
   parseWaivers,
+  planAugmentedModules,
+  planHollowModules,
   reclaimClaimName,
   renderReport,
   runPasses,
+  runtimeExportNames,
   runFinished,
   runGate,
+  skipReason,
+  topLevelBindingNames,
   unregisteredVerdicts,
   unusedWaiverVerdicts,
   verdictPasses,
@@ -288,25 +299,26 @@ describe("guard", () => {
     }
   }, 60_000);
 
-  test("WRONG-REASON RED: a file that cannot load on the parent fails the gate", () => {
+  test("CANNOT HOLLOW: a file that cannot load on the parent fails the gate", () => {
     const fixture = createFixture(
       [PKG, HELPER],
       [
         {
           path: "packages/core/src/helper.ts",
+          // Round 25: an export the parent's copy lacks is no longer enough to
+          // stop this file loading — the gate appends a stand-in for it. What
+          // still stops it is a name whose declaration an appended stand-in
+          // cannot carry, and an enum is one: its members are runtime values.
           text: `${HELPER_AFTER}
-export function brandNew(n: number): number {
-  return n;
-}
-`,
+export enum Mode {\n  One,\n}\n`,
         },
         {
           path: "packages/core/src/load.test.ts",
           text: `import { describe, expect, test } from "bun:test";
-import { brandNew } from "./helper";
+import { Mode } from "./helper";
 describe("brand", () => {
   test("returns the number", () => {
-    expect(brandNew(2)).toBe(2);
+    expect(Mode.One).toBe(0);
   });
 });
 `,
@@ -315,13 +327,11 @@ describe("brand", () => {
     );
     try {
       const { status, stdout } = runGateFixture(fixture);
-      expect(stdout).toContain("WRONG-REASON-RED");
-      expect(stdout).toContain("# Unhandled error between tests");
-      // The parent is the merge-base, so a commit inside this change is still
-      // after it: the fix has to say so, or an author follows it and meets the
-      // same missing import on the next run.
-      expect(stdout).toContain("--base <rev>");
-      expect(stdout).not.toContain("first commit");
+      // Round 24 renamed this row: the cause is the change's, not the test's — the
+      // parent has `helper.ts` but cannot be given `Mode` — so it is one CANNOT
+      // HOLLOW row for the file, which the waiver grammar can clear with one line.
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("`Mode`");
       expect(status).toBe(1);
     } finally {
       fixture.cleanup();
@@ -414,29 +424,42 @@ describe("pre", () => {
     }
   }, 60_000);
 
-  test("WRONG-REASON RED, waived: a rename whose import only resolves on the change passes", () => {
+  test("CANNOT HOLLOW, waived: a file that needs an export the parent cannot be given passes with one line", () => {
+    // Round 24 changed this row from one WRONG REASON RED per test to one CANNOT
+    // HOLLOW for the file, because the cause is single: the parent cannot be given
+    // the export the file imports. One waiver line, naming the file, records
+    // exactly that — where the per-test rows demanded one line per test for the
+    // same fact, and the file-level rule then refused a pattern broad enough to
+    // cover them.
+    //
+    // Round 25 narrowed which names reach this row: a plain function export is
+    // appended as a stand-in now and judged, so the fixture uses an enum, whose
+    // members are runtime values an appended declaration cannot carry.
     const fixture = createFixture(
       [PKG, HELPER],
       [
-        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        {
+          path: "packages/core/src/helper.ts",
+          text: `${HELPER_AFTER}\nexport enum Mode {\n  One,\n}\n`,
+        },
         {
           path: "packages/core/src/moved.test.ts",
           text: `import { describe, expect, test } from "bun:test";
-import { brandNew } from "./helper";
+import { Mode } from "./helper";
 describe("moved", () => {
   test("returns the number", () => {
-    expect(brandNew(2)).toBe(2);
+    expect(Mode.One).toBe(0);
   });
 });
-// red-on-parent-waive: "moved returns the number" — rename: the test moved with the file
+// red-on-parent-waive: "whole file" — the parent cannot be given the enum the test imports
 `,
         },
       ],
     );
     try {
       const { status, stdout } = runGateFixture(fixture);
-      expect(stdout).toContain("WRONG-REASON-RED");
-      expect(stdout).toMatch(/WRONG-REASON-RED\s+line \d+/u);
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toMatch(/CANNOT-HOLLOW\s+line \d+/u);
       expect(status).toBe(0);
     } finally {
       fixture.cleanup();
@@ -1046,12 +1069,15 @@ describe("isGatedTestPath", () => {
     expect(isGatedTestPath("apps/web/src/x.test.tsx")).toBe(true);
   });
 
-  test("never gates specs, e2e files, or anything outside apps and packages", () => {
+  test("never gates specs, e2e files, or anything outside apps, packages and scripts", () => {
     expect(isGatedTestPath("tests/e2e/sale.spec.ts")).toBe(false);
     expect(isGatedTestPath("apps/web/tests/e2e/sale.test.ts")).toBe(false);
     expect(isGatedTestPath("packages/core/src/e2e/x.test.ts")).toBe(false);
-    expect(isGatedTestPath("scripts/red-on-parent.test.ts")).toBe(false);
+    expect(isGatedTestPath("tests/outside.test.ts")).toBe(false);
     expect(isGatedTestPath("packages/core/src/helper.ts")).toBe(false);
+    // `scripts/` is in scope since round 24: its tests are tests, and the gate
+    // judged none of the 26 this repo added under it.
+    expect(isGatedTestPath("scripts/red-on-parent.test.ts")).toBe(true);
   });
 });
 
@@ -1506,6 +1532,8 @@ describe("red-on-parent round 7", () => {
       problems: [],
       uncommitted: [],
       skipped: [],
+      hollowed: [],
+      augmented: [],
     };
     const { verdicts, usedWaiverLines } = classifyFileRun(
       { file: "packages/core/src/cart.test.ts", junit: xml, stdout: "", error: "" },
@@ -1648,29 +1676,31 @@ describe("stale", () => {
     expect(verdicts.every(verdictPasses)).toBe(false);
   });
 
-  test("a waiver excuses only the test it names", () => {
-    // The file cannot load on the parent, so the gate has no parent-side test
-    // list; the names the change registers are all it has. A waiver naming one
-    // of them used to excuse the whole file, and the other test was never
-    // judged and never named.
+  test("a waiver that names one test does not excuse a file the parent cannot load", () => {
+    // A file that cannot load on the parent has no parent-side test list. The gate
+    // reports that as one CANNOT HOLLOW row for the file, so the waiver an author
+    // needs is one that names the file; a pattern naming a single test is misfiled
+    // and the run still fails. The per-test rows are still what `classifyFileRun`
+    // produces for a load failure it does own (see the unit test of that name).
+    //
+    // Round 25: the file is stopped by an export whose declaration an appended
+    // stand-in cannot carry, so the refusal is still the gate's and the waiver is
+    // still judged against `(whole file)`.
     const fixture = createFixture(
       [PKG, HELPER],
       [
         {
           path: "packages/core/src/helper.ts",
           text: `${HELPER_AFTER}
-export function brandNew(n: number): number {
-  return n;
-}
-`,
+export enum Mode {\n  One,\n}\n`,
         },
         {
           path: "packages/core/src/mixed.test.ts",
           text: `import { describe, expect, test } from "bun:test";
-import { brandNew } from "./helper";
+import { Mode } from "./helper";
 describe("mixed", () => {
   test("pins the new behaviour", () => {
-    expect(brandNew(1)).toBe(1);
+    expect(Mode.One).toBe(0);
   });
 });
 describe("other", () => {
@@ -1678,17 +1708,15 @@ describe("other", () => {
     expect(1).toBe(1);
   });
 });
-// red-on-parent-waive: "mixed pins the new behaviour" — rename: the test moved with the file
+// red-on-parent-waive: "mixed pins the new behaviour" — the author thought this named the cause
 `,
         },
       ],
     );
     try {
       const { status, stdout } = runGateFixture(fixture);
-      expect(stdout).toContain("WRONG-REASON-RED");
-      // The unjudged sibling has to be named: a waiver that names one test says
-      // nothing about the next one.
-      expect(stdout).toContain("other already worked");
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("WAIVER-MISFILED");
       expect(status).toBe(1);
     } finally {
       fixture.cleanup();
@@ -1696,23 +1724,23 @@ describe("other", () => {
   }, 60_000);
 
   test("a test file outside the gate's scope is named, not silently ignored", () => {
-    // The gate on its own pull request adds `scripts/red-on-parent.test.ts` and
-    // gates nothing. The report has to say which files it did not gate: "no
-    // added test files" reads as "this change adds no tests", which is a
-    // different claim.
+    // The report has to say which files it did not gate: "no added test files"
+    // reads as "this change adds no tests", which is a different claim. Round 24
+    // put `scripts/` in scope, so the example moved to `tests/`, which no gate
+    // reads.
     const fixture = createFixture(
       [PKG, HELPER],
       [
         { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
         {
-          path: "scripts/outside.test.ts",
+          path: "tests/outside.test.ts",
           text: `import { expect, test } from "bun:test";\ntest("outside", () => {\n  expect(1).toBe(1);\n});\n`,
         },
       ],
     );
     try {
       const { status, stdout } = runGateFixture(fixture);
-      expect(stdout).toContain("scripts/outside.test.ts");
+      expect(stdout).toContain("tests/outside.test.ts");
       expect(stdout).toContain("skipped test files");
       // The list is only an inventory of test-like *names*; a test file named
       // any other way is invisible, so the reporting site says which naming
@@ -2643,18 +2671,27 @@ describe("red-on-parent round 13 — the debate findings at 8a618ed9", () => {
     );
   });
 
-  test("a file the parent cannot load says which module is missing", () => {
+  test("a file the parent cannot load says which export is missing", () => {
+    // The parent's helper cannot be given the export the file imports, so the added
+    // test file cannot load there and the report has to say which name was missing
+    // rather than only "could not load". An added *module* no longer produces this
+    // shape at all: round 24 writes a hollow stand-in for it, so the file loads and
+    // the verdict is about the test. A module the parent HAS — extended by the
+    // change with an export the gate cannot stand in for — is the case a hollow must
+    // not touch, because faking it would erase behaviour the parent really carries;
+    // round 25 appends a stand-in when it can, and refuses naming the export when it
+    // cannot. It is one CANNOT HOLLOW row that names the export, so one waiver line
+    // clears one cause.
     const fixture = createFixture(
       [PKG, HELPER],
       [
-        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
-        { path: "packages/core/src/new-helper.ts", text: "export const answer = 42;\n" },
+        { path: "packages/core/src/helper.ts", text: `${HELPER_AFTER}\nexport enum Mode {\n  One,\n}\n` },
         {
           path: "packages/core/src/needs-new.test.ts",
           text: `import { expect, test } from "bun:test";
-import { answer } from "./new-helper";
-test("uses the new module", () => {
-  expect(answer).toBe(42);
+import { Mode } from "./helper";
+test("uses the new export", () => {
+  expect(Mode.One).toBe(0);
 });
 `,
         },
@@ -2662,9 +2699,9 @@ test("uses the new module", () => {
     );
     try {
       const { status, stdout } = runGateFixture(fixture);
-      // The parent has no new-helper.ts, so the file cannot load there, and
-      // the report has to say that rather than only "could not load".
-      expect(stdout).toContain("the parent has no ./new-helper");
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("packages/core/src/helper.ts");
+      expect(stdout).toContain("`Mode`");
       expect(status).toBe(1);
     } finally {
       fixture.cleanup();
@@ -2678,16 +2715,15 @@ test("uses the new module", () => {
     const fixture = createFixture(
       [PKG, HELPER],
       [
-        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
-        { path: "packages/core/src/new-helper.ts", text: "export const answer = 42;\n" },
+        { path: "packages/core/src/helper.ts", text: `${HELPER_AFTER}\nexport enum Mode {\n  One,\n}\n` },
         {
           path: "packages/core/src/needs-new.test.ts",
           text: `import { expect, test } from "bun:test";
-import { answer } from "./new-helper";
-test("uses the new module", () => {
-  expect(answer).toBe(42);
+import { Mode } from "./helper";
+test("uses the new export", () => {
+  expect(Mode.One).toBe(0);
 });
-// red-on-parent-waive: "uses the new module" — the parent has no new-helper yet
+// red-on-parent-waive: "whole file" — the parent's helper cannot be given the enum the test imports
 `,
         },
       ],
@@ -2745,6 +2781,7 @@ describe("red-on-parent round 14 — the test-audit findings at 8a618ed9", () =>
         "SKIPPED_ON_CHANGE",
         "NOT_ON_CHANGE",
         "WRONG_REASON_RED",
+        "CANNOT_HOLLOW",
         "NOT_ON_PARENT",
         "GREEN_ON_PARENT",
         "WAIVER_MISFILED",
@@ -3813,6 +3850,8 @@ describe("red-on-parent round 23 — the lens findings at 0f95d7d4", () => {
       problems: [],
       uncommitted: [],
       skipped: [],
+      hollowed: [],
+      augmented: [],
     };
     const report = renderReport(run, []);
     expect(verdictPasses(waivedRow)).toBe(true);
@@ -3831,4 +3870,2316 @@ describe("red-on-parent round 23 — the lens findings at 0f95d7d4", () => {
       "1 of them: the parent could not run the test, so nothing was judged there",
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// Round 24 — a module the change adds, and a gate that judged none of it.
+//
+// The test-audit lens on the round-2 diff: `isGatedTestPath` returned false for
+// anything outside `apps/` and `packages/`, so both `scripts/*.test.ts` files
+// were outside the gate — 26 tests with no red-first enforcement, which is how a
+// vacuous assertion landed unchallenged. Widening the scope is not enough on its
+// own: on the parent the module those tests import does not exist, the junit
+// report is absent, and every case reads WRONG REASON RED, which one waiver line
+// turns into a PASS. A real test and a test that asserts `true` are
+// indistinguishable in that report.
+//
+// So the gate writes a HOLLOW stand-in for an added module into the parent at its
+// own path: same export names, no behaviour. Then the vacuous test passes on the
+// parent (GREEN ON PARENT, rejected) and the real one fails for its own assertion
+// reason. What it cannot mirror it refuses, with a verdict that fails closed.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 24 — a hollow stand-in for a module the change adds", () => {
+  test("a function export becomes an empty function of the same name", () => {
+    const hollow = hollowModuleSource(
+      `export function twice(n: number): number {\n  return n * 2;\n}\n`,
+      "scripts/mod.ts",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    expect(hollow.text).toContain("export function twice");
+    // No behaviour: the body is empty, so the arithmetic cannot leak through.
+    expect(hollow.text).not.toContain("n * 2");
+    expect(hollow.text).not.toContain("return n");
+  });
+
+  test("a const and a let become undefined", () => {
+    const hollow = hollowModuleSource(
+      `export const table = { a: 1 };\nexport let counter = 7;\nexport var flag = true;\n`,
+      "scripts/mod.ts",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    expect(hollow.text).toContain("export const table = undefined;");
+    expect(hollow.text).toContain("export let counter;");
+    expect(hollow.text).toContain("export var flag;");
+    expect(hollow.text).not.toContain("a: 1");
+    expect(hollow.text).not.toContain("7");
+  });
+
+  test("a class becomes an empty class", () => {
+    const hollow = hollowModuleSource(
+      `export class Store {\n  read(): number {\n    return 1;\n  }\n}\n`,
+      "scripts/mod.ts",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    expect(hollow.text).toContain("export class Store");
+    expect(hollow.text).not.toContain("read()");
+  });
+
+  test("an interface and a type alias are re-emitted, because they emit nothing at runtime", () => {
+    const hollow = hollowModuleSource(
+      `export interface Shape {\n  a: number;\n}\nexport type Mode = "one" | "two";\n`,
+      "scripts/mod.ts",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    expect(hollow.text).toContain("export interface Shape");
+    expect(hollow.text).toContain("export type Mode");
+    expect(hollow.text).not.toContain("a: number");
+  });
+
+  // Everything below is a shape a bounded mirror cannot reproduce, and a wrong
+  // hollow is worse than a refusal: one that carries behaviour lets a vacuous
+  // test pass on the parent, and one that drops an export makes a real test fail
+  // for a reason the change did not cause.
+  test("an export default is refused", () => {
+    for (const source of [
+      "export default function twice() {\n  return 2;\n}\n",
+      "export default 2;\n",
+      "const value = 2;\nexport default value;\n",
+    ]) {
+      const hollow = hollowModuleSource(source, "scripts/mod.ts");
+      expect({ source, ok: hollow.ok }).toEqual({ source, ok: false });
+    }
+  });
+
+  test("a re-export is refused", () => {
+    for (const source of [
+      `export { twice } from "./other";\n`,
+      `export * from "./other";\n`,
+      `export * as other from "./other";\n`,
+      `export { type Shape } from "./other";\n`,
+    ]) {
+      const hollow = hollowModuleSource(source, "scripts/mod.ts");
+      expect({ source, ok: hollow.ok }).toEqual({ source, ok: false });
+    }
+  });
+
+  test("an enum, a namespace and a local export list are refused", () => {
+    for (const source of [
+      "export enum Mode {\n  One,\n}\n",
+      "export namespace util {\n  export const a = 1;\n}\n",
+      "function twice() {\n  return 2;\n}\nexport { twice };\n",
+      "export = twice;\n",
+    ]) {
+      const hollow = hollowModuleSource(source, "scripts/mod.ts");
+      expect({ source, ok: hollow.ok }).toEqual({ source, ok: false });
+    }
+  });
+
+  test("a destructuring export is refused, because its names are not one declaration each", () => {
+    const hollow = hollowModuleSource("export const { a, b } = { a: 1, b: 2 };\n", "scripts/mod.ts");
+    expect(hollow.ok).toBe(false);
+  });
+
+  test("a hollow that does not export the same names is refused rather than written", () => {
+    // `export declare` is a shape a bounded mirror would silently drop. The
+    // self-check compares the export names it re-reads from its own output with
+    // the names the real module declares, so a mirror that lost one is refused
+    // instead of faked.
+    const hollow = hollowModuleSource("export declare const table: number;\n", "scripts/mod.ts");
+    expect(hollow.ok).toBe(false);
+  });
+
+  test("the refusal names the module and the reason, so a human can act on it", () => {
+    const hollow = hollowModuleSource("export enum Mode {\n  One,\n}\n", "scripts/mod.ts");
+    expect(hollow.ok).toBe(false);
+    if (hollow.ok) return;
+    expect(hollow.refusal).toContain("scripts/mod.ts");
+    expect(hollow.refusal).toContain("enum");
+  });
+
+  test("a hollow keeps no imports, so a chain of added modules cannot put behaviour back", () => {
+    // Nested case: the added test imports an added module that itself imports
+    // another added module. The hollow drops every import, so the chain can never
+    // load — and there is nothing left to hollow. That is stricter than hollowing
+    // the chain and needs no second resolution step.
+    const hollow = hollowModuleSource(
+      `import { helper } from "./other";\nimport "./side-effect";\nexport function twice(n: number): number {\n  return helper(n) * 2;\n}\n`,
+      "scripts/mod.ts",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    expect(hollow.text).not.toContain("import");
+    expect(hollow.text).not.toContain("./other");
+    expect(hollow.text).not.toContain("helper");
+  });
+
+  test("the stand-in says it is a stand-in, so a reader of the parent worktree knows", () => {
+    const hollow = hollowModuleSource(
+      "export function twice(): number {\n  return 2;\n}\n",
+      "scripts/mod.ts",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    expect(hollow.text).toContain("red-on-parent");
+  });
+});
+
+describe("red-on-parent round 24 — which added module the parent gets hollowed", () => {
+  const ADDED = new Set(["scripts/mod.ts", "scripts/other.ts"]);
+  const read = (path: string): string | null => {
+    if (path === "scripts/mod.ts") {
+      return `import { helper } from "./other";\nexport function twice(n: number): number {\n  return helper(n) * 2;\n}\n`;
+    }
+    if (path === "scripts/other.ts") {
+      return `export function helper(n: number): number {\n  return n;\n}\n`;
+    }
+    return null;
+  };
+
+  test("a relative import of a module the same diff adds is hollowed", () => {
+    const plan = planHollowModules(
+      "scripts/mod.test.ts",
+      `import { twice } from "./mod";\ntest("x", () => {\n  expect(twice(2)).toBe(4);\n});\n`,
+      ADDED,
+      read,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/mod.ts"]);
+    expect(plan.modules[0]?.importedBy).toBe("scripts/mod.test.ts");
+  });
+
+  test("the extensionless specifier and the explicit one land on the same file", () => {
+    for (const specifier of ["./mod", "./mod.ts"]) {
+      const plan = planHollowModules(
+        "scripts/mod.test.ts",
+        `import { twice } from "${specifier}";\n`,
+        ADDED,
+        read,
+      );
+      expect({ specifier, paths: plan.modules.map((module) => module.path) }).toEqual({
+        specifier,
+        paths: ["scripts/mod.ts"],
+      });
+    }
+  });
+
+  test("a module the diff does not add is left alone", () => {
+    // A module the parent already has is not the change's: it loads there, or it
+    // does not, and either answer is about the parent.
+    const plan = planHollowModules(
+      "scripts/mod.test.ts",
+      `import { twice } from "./not-in-this-diff";\n`,
+      ADDED,
+      read,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toBeNull();
+  });
+
+  test("a type-only import is not hollowed, because it is erased before the file runs", () => {
+    for (const source of [
+      `import type { Twice } from "./mod";\n`,
+      `import { type Twice } from "./mod";\n`,
+    ]) {
+      expect(planHollowModules("scripts/mod.test.ts", source, ADDED, read).modules).toEqual([]);
+    }
+  });
+
+  test("an import that pulls a value is hollowed even when it also names a type", () => {
+    const plan = planHollowModules(
+      "scripts/mod.test.ts",
+      `import { type Twice, twice } from "./mod";\n`,
+      ADDED,
+      read,
+    );
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/mod.ts"]);
+  });
+
+  test("a nested added module is not hollowed too, because the hollow keeps no imports", () => {
+    const plan = planHollowModules(
+      "scripts/mod.test.ts",
+      `import { twice } from "./mod";\n`,
+      ADDED,
+      read,
+    );
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/mod.ts"]);
+    expect(plan.modules[0]?.text).not.toContain("./other");
+  });
+
+  test("a module that cannot be mirrored refuses instead of being half-faked", () => {
+    const plan = planHollowModules(
+      "scripts/mod.test.ts",
+      `import { twice } from "./mod";\n`,
+      ADDED,
+      (path) => (path === "scripts/mod.ts" ? "export default 2;\n" : null),
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/mod.ts");
+  });
+});
+
+describe("red-on-parent round 24 — the gate's scope includes scripts/", () => {
+  test("a new test under scripts/ is gated", () => {
+    expect(isGatedTestPath("scripts/test-affected.test.ts")).toBe(true);
+    expect(isGatedTestPath("scripts/nested/thing.test.tsx")).toBe(true);
+  });
+
+  test("the reasons a file is not gated still hold under scripts/", () => {
+    expect(isGatedTestPath("scripts/x.spec.ts")).toBe(false);
+    expect(isGatedTestPath("scripts/e2e/x.test.ts")).toBe(false);
+    expect(isGatedTestPath("docs/x.test.ts")).toBe(false);
+    expect(skipReason("scripts/x.test.ts")).toBeNull();
+  });
+});
+
+describe("red-on-parent round 24 — CANNOT HOLLOW fails closed", () => {
+  const refusal: Verdict = {
+    file: "scripts/mod.test.ts",
+    test: "(whole file)",
+    name: "CANNOT_HOLLOW",
+    detail: "scripts/mod.ts: the module exports a default, which a hollow cannot mirror",
+    waiver: null,
+    waivers: [],
+  };
+  const waiver: Waiver = {
+    pattern: "whole file",
+    reason: "the module has no faithful hollow",
+    line: 3,
+  };
+
+  test("an unwaived CANNOT HOLLOW fails the run", () => {
+    expect(verdictPasses(refusal)).toBe(false);
+  });
+
+  test("the existing waiver grammar is the only thing that clears it", () => {
+    expect(verdictPasses({ ...refusal, waiver, waivers: [waiver] })).toBe(true);
+  });
+
+  test("the verdict has a guide entry, so an author knows what to do", () => {
+    const entry = VERDICT_GUIDE.find((candidate) => candidate.name === "CANNOT_HOLLOW");
+    expect(entry?.title).toContain("hollow");
+    expect(entry?.fixes.join(" ")).toContain("red-on-parent-waive");
+  });
+
+  test("the report says which module was faked, and for which file", () => {
+    // A human reading the transcript has to be able to see that the parent's red
+    // was produced against a fake, or a hollow that quietly swallowed an export
+    // would look like a real verdict.
+    const run: GateRun = {
+      baseSha: "a1b2c3d4e5f6",
+      worktree: "(none)",
+      worktreeCreated: false,
+      installLog: "",
+      files: ["scripts/mod.test.ts"],
+      verdicts: [],
+      stdoutByFile: new Map(),
+      problems: [],
+      uncommitted: [],
+      skipped: [],
+      hollowed: [{ path: "scripts/mod.ts", importedBy: "scripts/mod.test.ts" }],
+      augmented: [],
+    };
+    expect(renderReport(run, [])).toContain(
+      "scripts/mod.ts — hollowed for scripts/mod.test.ts",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 26 — only the documented spelling clears a whole file.
+//
+// The matcher tested the waiver regex against BOTH `(whole file)` and
+// `whole file`, so any pattern matching either cleared the file: `"file"`,
+// `"whole"`, `"."`, `".*"`. The documented spelling is `"whole file"`, and the
+// docs say a pattern broad enough to cover a whole multi-test file is a failure
+// — so a one-character waiver overrode the one rule the verdict is supposed to
+// be an exception to.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 26 — only the documented spelling waives a whole file", () => {
+  const refusal = "scripts/mod.ts: the module exports an enum, which a hollow cannot mirror";
+  const waiverFor = (pattern: string): Waiver => ({
+    pattern,
+    reason: "the parent cannot run this file",
+    line: 3,
+  });
+
+  test("the documented spelling clears the file", () => {
+    const verdict = cannotHollowVerdict("scripts/mod.test.ts", refusal, [waiverFor("whole file")]);
+    expect(verdict.waiver?.pattern).toBe("whole file");
+  });
+
+  test("a pattern that merely matches the words does not", () => {
+    // Each of these matched under the old two-string probe. `.` and `.*` are the
+    // broad-file waiver the design forbids; `file` and `whole` are shorter
+    // spellings that used to be enough.
+    for (const pattern of ["file", "whole", ".", ".*", "hole fi", "^whole", "file$"]) {
+      const verdict = cannotHollowVerdict("scripts/mod.test.ts", refusal, [waiverFor(pattern)]);
+      expect({ pattern, waived: verdict.waiver !== null }).toEqual({ pattern, waived: false });
+    }
+  });
+
+  test("the parenthesised spelling is not required, because the docs do not advertise it", () => {
+    const verdict = cannotHollowVerdict("scripts/mod.test.ts", refusal, [waiverFor("(whole file)")]);
+    expect({ waived: verdict.waiver !== null }).toEqual({ waived: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 24, end to end: the plant pair the lens asked for, as fixtures.
+//
+// A vacuous test and a real one that import a module the same diff adds are
+// indistinguishable to the old gate: on the parent the module is missing, so
+// both read "the parent could not load the file" and one waiver line clears
+// both. The gate now writes a hollow stand-in, so the vacuous test passes on the
+// parent (GREEN ON PARENT — rejected) and the real one still fails for its own
+// assertion reason.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 24 — a module the change adds, end to end", () => {
+  const ADDED_MODULE: File = {
+    path: "packages/core/src/added.ts",
+    text: `export function twice(n: number): number {\n  return n * 2;\n}\n`,
+  };
+  const VACUOUS: File = {
+    path: "packages/core/src/vacuous.test.ts",
+    text: `import { expect, test } from "bun:test";
+import { twice } from "./added";
+test("vacuous", () => {
+  expect(twice).toBeDefined();
+  expect(true).toBe(true);
+});
+`,
+  };
+  const REAL: File = {
+    path: "packages/core/src/real.test.ts",
+    text: `import { expect, test } from "bun:test";
+import { twice } from "./added";
+test("real", () => {
+  expect(twice(2)).toBe(4);
+});
+`,
+  };
+
+  test("a test that asserts nothing the added module produces is rejected", () => {
+    const fixture = createFixture([PKG], [ADDED_MODULE, VACUOUS]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // Against a hollow module `expect(twice).toBeDefined()` is still true —
+      // hollow means "same export names, no behaviour" — so this test is GREEN
+      // on the parent and pins nothing. Before the hollow it was WRONG REASON
+      // RED with the same shape a genuinely unreachable test has.
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a test that asserts a value the added module produces is accepted", () => {
+    const fixture = createFixture([PKG], [ADDED_MODULE, REAL]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a vacuous assertion against a CONST stand-in is accepted — by design, not a defect", () => {
+    // ACCEPTED BY DESIGN. The second of the two shapes that pass on a stand-in
+    // that asserts nothing. A const stand-in's VALUE is `undefined`, so
+    // `expect(NEW_LIMIT).toBeDefined()` is false on the parent and true on the
+    // change: an AssertionError, which the gate cannot tell from a real
+    // assertion red. `expect(NEW_LIMIT).toBe(7)` would also pass, for the same
+    // reason and with the same limitation.
+    //
+    // The asymmetry this produces is worth writing down, because it looks like a
+    // bug and is not one: `expect(brandNew).toBeDefined()` on a FUNCTION export is
+    // GREEN on the parent (a hollow function exists) and rejected, while the same
+    // shape on a CONST export is accepted. What separates them is not the gate
+    // being inconsistent, it is what a hollow can stand in for — a function whose
+    // value exists, versus a const whose value cannot.
+    const fixture = createFixture([PKG], [
+      {
+        path: "packages/core/src/limits.ts",
+        text: `export const NEW_LIMIT = 7;\nexport function readLimit(): number {\n  return NEW_LIMIT;\n}\n`,
+      },
+      {
+        path: "packages/core/src/limits.test.ts",
+        text: `import { expect, test } from "bun:test";
+import { NEW_LIMIT } from "./limits";
+test("only checks the export exists", () => {
+  expect(NEW_LIMIT).toBeDefined();
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("GREEN-ON-PARENT");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a module a hollow cannot mirror fails the gate instead of being faked", () => {
+    const fixture = createFixture([PKG], [
+      { path: "packages/core/src/defaulted.ts", text: `const thing = 2;\nexport default thing;\n` },
+      {
+        path: "packages/core/src/defaulted.test.ts",
+        text: `import { expect, test } from "bun:test";
+import thing from "./defaulted";
+test("real", () => {
+  expect(thing).toBe(2);
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("packages/core/src/defaulted.ts");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a waiver on the whole file is the only thing that clears it", () => {
+    // The existing grammar, not a second one: the verdict's test name is
+    // `(whole file)`, so a waiver that names it is what clears it.
+    const fixture = createFixture([PKG], [
+      { path: "packages/core/src/defaulted.ts", text: `const thing = 2;\nexport default thing;\n` },
+      {
+        path: "packages/core/src/defaulted.test.ts",
+        text: `import { expect, test } from "bun:test";
+import thing from "./defaulted";
+// red-on-parent-waive: "whole file" — the module's default export has no faithful stand-in
+test("real", () => {
+  expect(thing).toBe(2);
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("PASS (1 waived)");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a new test under scripts/ is judged, not skipped as outside the gate", () => {
+    const fixture = createFixture([PKG], [
+      {
+        path: "scripts/mod.ts",
+        text: `export function twice(n: number): number {\n  return n * 2;\n}\n`,
+      },
+      {
+        path: "scripts/mod.test.ts",
+        text: `import { expect, test } from "bun:test";
+import { twice } from "./mod";
+test("real", () => {
+  expect(twice(2)).toBe(4);
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("added test files: 1");
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("an added test under apps/ that imports no added module is still judged as before", () => {
+    // No false rejection from the hollow path: a file with nothing to hollow runs
+    // on the parent exactly as it did before this change.
+    const fixture = createFixture([PKG, HELPER], [
+      { path: "apps/api/src/hollow-free.test.ts", text: `import { expect, test } from "bun:test";
+import { guard } from "../../../packages/core/src/helper";
+test("real", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+` },
+      { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("hollowed for");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 24, second finding: the two shapes that turned the gate red on the
+// branch that switched it on.
+//
+// Turning `scripts/` into gated scope immediately ran the gate over this
+// branch's own two added test files, and both failed for reasons that were the
+// gate's, not the tests':
+//
+//   - a hollow function returns `undefined`, so a test that reads a property of
+//     what the module produced dies with a TypeError before it can assert. Twelve
+//     rows of `scripts/test-affected.test.ts` said WRONG REASON RED for that.
+//   - `scripts/e2e-changed.test.ts` imports `specPaths` from a module the parent
+//     HAS and the change extends. No mirror can stand in for that module, so the
+//     file cannot load on the parent at all — and per-test waiver rows made that
+//     one cause into forty lines, which the file-level waiver rule then refused.
+// ---------------------------------------------------------------------------
+
+function failureXml(type: string, name = "case"): string {
+  return (
+    '<testsuites><testsuite name="probe">' +
+    `<testcase name="${name}" classname="probe">` +
+    `<failure type="${type}" message="boom">${type}: boom</failure>` +
+    "</testcase></testsuite></testsuites>"
+  );
+}
+
+describe("red-on-parent round 24 — a hollowed file's TypeError is the test's own red", () => {
+  test("a TypeError against the hollow passes as a right-reason red", () => {
+    // `turboArgs(...).args` on a hollow is `undefined.args`. The test reached the
+    // module and the red is about what the module does not do yet.
+    const { verdicts } = classifyFileRun(
+      { file: "scripts/mod.test.ts", junit: failureXml("TypeError"), stdout: "", error: "" },
+      [],
+      [],
+      { hollowed: true },
+    );
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["RIGHT_REASON_RED"]);
+  });
+
+  test("the same TypeError in a file with no hollow is still a wrong-reason red", () => {
+    // The ablation. Without a hollow in play there is nothing that could have
+    // turned a property read into `undefined`, so the widening does not apply.
+    const { verdicts } = classifyFileRun(
+      { file: "apps/api/src/mod.test.ts", junit: failureXml("TypeError"), stdout: "", error: "" },
+      [],
+    );
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+  });
+
+  test("a thrown Error in a hollowed file is still not the test's own red", () => {
+    // The hook-throws discrimination survives: a `beforeEach` that throws reports
+    // `Error`, and that shape is unchanged by having hollowed the file.
+    const { verdicts } = classifyFileRun(
+      { file: "scripts/mod.test.ts", junit: failureXml("Error"), stdout: "", error: "" },
+      [],
+      [],
+      { hollowed: true },
+    );
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+  });
+
+  test("the verdict says it was judged against the stand-in", () => {
+    const { verdicts } = classifyFileRun(
+      { file: "scripts/mod.test.ts", junit: failureXml("TypeError"), stdout: "", error: "" },
+      [],
+      [],
+      { hollowed: true },
+    );
+    expect(verdicts[0]?.detail).toContain("hollow stand-in");
+  });
+});
+
+describe("red-on-parent round 24 — an export the parent's copy of an edited module lacks", () => {
+  const TRANSCRIPT =
+    "# Unhandled error between tests\n" +
+    "-------------------------------\n" +
+    "SyntaxError: Export named 'specPaths' not found in module " +
+    "'C:\\tmp\\wt-abc\\scripts\\e2e-selection.ts'.\n" +
+    "-------------------------------\n";
+
+  test("bun's message gives the name and the module, not only the name", () => {
+    expect(missingExportDetail(TRANSCRIPT)).toEqual({
+      name: "specPaths",
+      module: "C:\\tmp\\wt-abc\\scripts\\e2e-selection.ts",
+    });
+    expect(missingExportDetail("something else")).toBeNull();
+  });
+
+  test("a touched module named in the transcript is reported as unmirrorable", () => {
+    const refusal = editedModuleExportRefusal(TRANSCRIPT, new Set(["scripts/e2e-selection.ts"]));
+    expect(refusal).toContain("scripts/e2e-selection.ts");
+    expect(refusal).toContain("`specPaths`");
+  });
+
+  test("a module the diff does not touch is left to the existing verdicts", () => {
+    // A dependency the parent cannot resolve at all is a different case; the
+    // gate must not claim it as its own shape.
+    expect(editedModuleExportRefusal(TRANSCRIPT, new Set(["packages/core/src/other.ts"]))).toBeNull();
+  });
+
+  test("an added module is not reported this way, because the hollow path owns it", () => {
+    // The caller passes `touched`, which is the changed set minus `added`, so an
+    // added module never reaches this function. The contract is asserted by
+    // CALLING it: a Set built only in the test proves nothing about the gate.
+    // `touched` here is empty, which is what the caller's set arithmetic yields
+    // for a module the diff adds.
+    expect(editedModuleExportRefusal(TRANSCRIPT, new Set<string>())).toBeNull();
+    // And the helper really does read the set it is given, so the `null` above is
+    // the empty set's answer rather than a function that always returns null.
+    expect(editedModuleExportRefusal(TRANSCRIPT, new Set(["scripts/e2e-selection.ts"]))).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 25 — a module the parent HAS, plus the exports the change adds.
+//
+// Round 24 ended with one waiver on `scripts/e2e-changed.test.ts`: the change
+// adds `specPaths` to `scripts/e2e-selection.ts`, a module the parent already
+// carries, so the parent cannot load the test file and forty-odd tests went
+// unjudged. The hollow path cannot fix that — a stand-in for the whole module
+// would erase behaviour the parent really has, and a test of that behaviour
+// would then fail on the parent and read as a right-reason red.
+//
+// So the mirror is narrower. Keep the parent's module exactly as it is, append
+// stand-ins for the export names the parent's copy does not have, and refuse
+// every shape an appended declaration cannot carry. The distinction is the
+// point: a hollow replaces a module the parent has none of, an augmentation
+// preserves a module the parent has and adds names to it.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 25 — augmenting a module the parent already has", () => {
+  const PARENT = `import { readFileSync } from "node:fs";
+
+export function guard(n: number): number {
+  if (n <= 0) throw new Error("zero");
+  return n;
+}
+`;
+  const CHANGE = `import { readFileSync } from "node:fs";
+
+export function guard(n: number): number {
+  if (n <= 0) throw new Error("ZERO");
+  return n;
+}
+
+export function brandNew(n: number): number {
+  return n + 1;
+}
+`;
+
+  test("the parent's own source is kept, and only the missing name is appended", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
+    expect(augmented.ok).toBe(true);
+    if (!augmented.ok) return;
+    // Byte for byte: an existing behaviour cannot be faked by accident, which is
+    // the whole difference between this and a hollow.
+    expect(augmented.text.startsWith(PARENT)).toBe(true);
+    expect(augmented.text).toContain("export function brandNew");
+    expect(augmented.text).not.toContain("n + 1;");
+    expect(augmented.text).not.toContain("ZERO");
+  });
+
+  test("the appended stand-in carries no behaviour, and says what it is", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
+    expect(augmented.ok).toBe(true);
+    if (!augmented.ok) return;
+    const appended = augmented.text.slice(PARENT.length);
+    expect(appended).toContain("red-on-parent");
+    expect(appended).not.toContain("n + 1");
+    // The appended body is the hollow's: a function that returns undefined.
+    expect(appended).toContain("return undefined;");
+  });
+
+  test("an export the parent already has is not appended again", () => {
+    // A second `export function guard` in the same file is a duplicate
+    // declaration, so the augmented file would not load at all — the one way an
+    // augmentation can do more damage than the refusal it replaced.
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
+    expect(augmented.ok).toBe(true);
+    if (!augmented.ok) return;
+    expect(augmented.text.match(/export function guard/gu)?.length).toBe(1);
+    expect(augmented.text).not.toContain('Error("ZERO")');
+  });
+
+  test("a parent copy that does not parse is refused, not appended to", () => {
+    // Appending to broken text produces broken text that loads nowhere, so the
+    // file would read as a load failure the gate never explained.
+    const augmented = augmentModuleSource(
+      "export function guard(n: number): number {\n  return n;\n",
+      "export function guard(n: number): number {\n  return n;\n}\nexport function brandNew(): number {\n  return 1;\n}\n",
+      "scripts/mod.ts",
+      ["brandNew"],
+      new Map(),
+    );
+    expect(augmented.ok).toBe(false);
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("scripts/mod.ts");
+    expect(augmented.refusal).toContain("parse");
+  });
+
+  test("every shape an appended declaration cannot carry is refused", () => {
+    // The refusal set of the hollow writer, for the same reason: a mirror that
+    // guesses is worse than a refusal. Each entry is the change's copy of the
+    // module, with the export the parent lacks written in that shape.
+    const cases: Array<{ name: string; source: string; why: string }> = [
+      { name: "Mode", source: "export enum Mode {\n  One,\n}\n", why: "enum" },
+      { name: "util", source: "export namespace util {\n  export const a = 1;\n}\n", why: "namespace" },
+      { name: "default", source: "const thing = 2;\nexport default thing;\n", why: "default" },
+      { name: "brandNew", source: `export { brandNew } from "./other";\n`, why: "re-export" },
+      {
+        name: "brandNew",
+        source: "function brandNew() {\n  return 1;\n}\nexport { brandNew };\n",
+        why: "export list",
+      },
+      { name: "brandNew", source: "export declare const brandNew: number;\n", why: "declare" },
+    ];
+    for (const entry of cases) {
+      const augmented = augmentModuleSource(PARENT, entry.source, "scripts/mod.ts", [entry.name], new Map());
+      expect({ name: entry.name, ok: augmented.ok }).toEqual({ name: entry.name, ok: false });
+      if (augmented.ok) continue;
+      expect({ name: entry.name, refusal: augmented.refusal }).toEqual({
+        name: entry.name,
+        refusal: expect.stringContaining(entry.why),
+      });
+    }
+  });
+
+  test("the augmented module declares exactly the parent's names plus the appended ones", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
+    expect(augmented.ok).toBe(true);
+    if (!augmented.ok) return;
+    expect(declaredExportNames("scripts/mod.ts", augmented.text)).toEqual(["brandNew", "guard"]);
+  });
+
+  test("a module with nothing missing is left byte-identical", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", [], new Map());
+    expect(augmented).toEqual({ ok: true, text: PARENT });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 26 — the clash set is every top-level binding, not only the exports.
+//
+// The check used to ask whether the appended statement redeclares a name the
+// parent EXPORTS, which is not the question. A declaration collides with any
+// binding in the parent's module scope, exported or not, and the ordinary way a
+// module gains an export is to promote a module-local binding to one:
+//
+//   parent  const specPaths = ["a"];
+//   change  export const specPaths = ["a"];
+//
+// The old check saw no clash (`specPaths` is not exported on the parent), wrote
+// `export const specPaths = undefined;` after the parent's own declaration, and
+// passed its self-check — which re-parses the text and compares EXPORT names, so
+// it saw exactly the names it wanted. `syntaxErrorCount` did not save it either:
+// it reads `transpileModule` diagnostics, and a duplicate declaration is not a
+// syntax error.
+//
+// The consequence was worse than one bad row: the augmented module cannot load,
+// so every test in the file reads as a load failure, and the remedy the report
+// prints is "point the gate at a parent that already has it" or "waive it" —
+// both wrong, because the parent does have it.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 26 — an appended stand-in clashes with every parent binding", () => {
+  // The local binding the change exports. Nothing about `specPaths` changed; the
+  // parent simply cannot re-export a name it never exported.
+  const PARENT = `const specPaths = ["a"];\nexport function select(): string[] {\n  return specPaths;\n}\n`;
+  const CHANGE = `export const specPaths = ["a"];\nexport function select(): string[] {\n  return specPaths;\n}\n`;
+
+  test("a module-local const the change promotes to an export is refused, not appended twice", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["specPaths"], new Map());
+    // Refused, because the parent's own `const specPaths` is already there and a
+    // second declaration of it would not load.
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("scripts/mod.ts");
+    expect(augmented.refusal).toContain("specPaths");
+  });
+
+  test("a module-local function, class and type the change exports are refused the same way", () => {
+    // One shape per declaration kind, because the clash set is built by kind too:
+    // a fix that only widened the variable branch would leave these three open.
+    const cases: Array<{ kind: string; parent: string; change: string; name: string }> = [
+      {
+        kind: "function",
+        parent: `function helper(): number {\n  return 1;\n}\nexport const n = helper();\n`,
+        change: `export function helper(): number {\n  return 1;\n}\nexport const n = helper();\n`,
+        name: "helper",
+      },
+      {
+        kind: "class",
+        parent: `class Box {\n  value = 1;\n}\nexport const boxes = [new Box()];\n`,
+        change: `export class Box {\n  value = 1;\n}\nexport const boxes = [new Box()];\n`,
+        name: "Box",
+      },
+      {
+        kind: "type",
+        parent: `type Mode = "a";\nexport function mode(): Mode {\n  return "a";\n}\n`,
+        change: `export type Mode = "a";\nexport function mode(): Mode {\n  return "a";\n}\n`,
+        name: "Mode",
+      },
+    ];
+    for (const entry of cases) {
+      const augmented = augmentModuleSource(entry.parent, entry.change, "scripts/mod.ts", [entry.name], new Map());
+      expect({ kind: entry.kind, ok: augmented.ok }).toEqual({ kind: entry.kind, ok: false });
+      if (augmented.ok) continue;
+      expect({ kind: entry.kind, refusal: augmented.refusal }).toEqual({
+        kind: entry.kind,
+        refusal: expect.stringContaining(entry.name),
+      });
+    }
+  });
+
+  test("an imported binding the change tries to redeclare is refused too", () => {
+    // An import binding is as much a top-level binding as a `const`. Appending a
+    // declaration of it is a duplicate declaration, and the parent's import is
+    // the one that would win or lose depending on hoisting — which is not a
+    // question the gate may leave to chance.
+    const parent = `import { readFileSync } from "node:fs";\nexport function read(p: string): string {\n  return readFileSync(p, "utf8");\n}\n`;
+    const change = `export function readFileSync(p: string): string {\n  return p;\n}\nexport function read(p: string): string {\n  return p;\n}\n`;
+    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["readFileSync"], new Map());
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("readFileSync");
+  });
+
+  test("exportedNameSet and topLevelBindingSet disagree on exactly the local bindings", () => {
+    // The two readers, side by side: the fix is only correct if the binding
+    // reader is a strict superset of the export reader on the same source. A
+    // future edit that narrowed either one breaks this before it breaks the gate.
+    const bindings = topLevelBindingNames("scripts/mod.ts", PARENT);
+    const exports = declaredExportNames("scripts/mod.ts", PARENT);
+    expect(bindings).toContain("specPaths");
+    expect(bindings).toContain("select");
+    expect(exports).toEqual(["select"]);
+    for (const name of exports) expect(bindings).toContain(name);
+  });
+
+  test("a parent binding of a different name does not block the stand-in", () => {
+    // The fix must not be "refuse everything": a same-named binding is the only
+    // thing a declaration collides with, so a module-local name the change did
+    // not export leaves the append available.
+    const parent = `const internal = 3;\nexport function read(): number {\n  return internal;\n}\n`;
+    const change = `const internal = 3;\nexport function read(): number {\n  return internal;\n}\nexport function brandNew(): number {\n  return internal + 1;\n}\n`;
+    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["brandNew"], new Map());
+    expect({ ok: augmented.ok }).toEqual({ ok: true });
+    if (!augmented.ok) return;
+    expect(augmented.text.startsWith(parent)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 26 — one statement declaring two names is appended once.
+//
+// `export const b = 2, c = 3;` answers the lookup for both `b` and `c`, so a
+// request for both used to append the same statement twice and declare each name
+// twice. And when the parent already binds only `c`, a request for `b` alone was
+// refused with "`b` is declared beside `c`" — correct refusal, message that reads
+// like a gate bug, because `b` is not the problem.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 26 — a shared variable statement is appended once, and the refusal names it", () => {
+  const PARENT = `export function read(): number {\n  return 1;\n}\n`;
+  const CHANGE = `export function read(): number {\n  return 1;\n}\nexport const b = 2, c = 3;\n`;
+
+  test("both names in one statement are appended once, and the module still loads", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["b", "c"], new Map());
+    expect({ ok: augmented.ok }).toEqual({ ok: true });
+    if (!augmented.ok) return;
+    // One appended statement, so each name is declared once: two copies would be
+    // a duplicate declaration and the file would not load at all.
+    expect(augmented.text.match(/export const b/gu)?.length).toBe(1);
+    expect(augmented.text.match(/export const c/gu)?.length).toBe(1);
+    expect(topLevelBindingNames("scripts/mod.ts", augmented.text)).toEqual(["b", "c", "read"]);
+    expect(declaredExportNames("scripts/mod.ts", augmented.text)).toEqual(["b", "c", "read"]);
+  });
+
+  test("a clash on a sibling name says the statement is what cannot be appended", () => {
+    // The parent binds `c`; the change declares `b` and `c` in one statement. `b`
+    // itself is free, so a message about `b` is misleading: the appended text is
+    // the whole statement, and that statement cannot go in.
+    const parent = `export function read(): number {\n  return 1;\n}\nexport const c = 30;\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"], new Map());
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    // Names the declaration, and the sibling that blocks it, and the consequence.
+    expect(augmented.refusal).toContain("export const b = 2, c = 3;");
+    expect(augmented.refusal).toContain("`c`");
+    expect(augmented.refusal).toContain("no stand-in");
+    // And it does not claim `b` is the one the parent already has.
+    expect(augmented.refusal).not.toContain("already binds `b`");
+  });
+
+  test("a clash on the requested name itself says the parent already binds it", () => {
+    const parent = `const b = 20;\nexport function read(): number {\n  return b;\n}\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"], new Map());
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("already binds `b`");
+    expect(augmented.refusal).toContain("declaring it twice");
+  });
+
+  test("a destructured parent binding is in the clash set too", () => {
+    // `const { b } = obj` is a top-level binding of `b` with no simple name node,
+    // so a clash reader that only walked identifiers would miss it.
+    const parent = `const source = { b: 20 };\nconst { b } = source;\nexport function read(): number {\n  return b;\n}\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"], new Map());
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+  });
+});
+
+describe("red-on-parent round 25 — which module the gate augments, and with which names", () => {
+  const TOUCHED = new Set(["scripts/e2e-selection.ts"]);
+  const PARENT = `export type Scope = { mode: string };\nexport function select(changed: string[]): Scope {\n  return { mode: "affected" };\n}\n`;
+  const CHANGE = `export type Scope = { mode: string };\nexport function select(changed: string[]): Scope {\n  return { mode: "affected" };\n}\nexport function specPaths(scope: Scope): string[] {\n  return [];\n}\n`;
+  const readChange = (path: string): string | null =>
+    path === "scripts/e2e-selection.ts" ? CHANGE : null;
+  const readParent = (path: string): string | null =>
+    path === "scripts/e2e-selection.ts" ? PARENT : null;
+
+  const TEST_FILE = `import { select, specPaths, type Scope } from "./e2e-selection";\n`;
+
+  test("the names the test imports but the parent lacks are the ones appended", () => {
+    const plan = planAugmentedModules(
+      "scripts/e2e-changed.test.ts",
+      TEST_FILE,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/e2e-selection.ts"]);
+    expect(plan.modules[0]?.names).toEqual(["specPaths"]);
+    expect(plan.modules[0]?.importedBy).toBe("scripts/e2e-changed.test.ts");
+    // The parent's module is carried into the worktree, not replaced.
+    expect(plan.modules[0]?.text.startsWith(PARENT)).toBe(true);
+  });
+
+  test("a type-only name is never appended, because it is erased before the file runs", () => {
+    const plan = planAugmentedModules(
+      "scripts/e2e-changed.test.ts",
+      `import { type SelectionMap, specPaths } from "./e2e-selection";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules[0]?.names).toEqual(["specPaths"]);
+  });
+
+  test("a module the diff does not touch is left alone", () => {
+    const plan = planAugmentedModules(
+      "scripts/e2e-changed.test.ts",
+      `import { anything } from "./untouched";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toBeNull();
+  });
+
+  test("a module the test imports only names the parent already has is not written", () => {
+    const plan = planAugmentedModules(
+      "scripts/e2e-changed.test.ts",
+      `import { select } from "./e2e-selection";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toBeNull();
+  });
+
+  test("a parent copy the gate cannot read is a refusal, not a silent skip", () => {
+    const plan = planAugmentedModules(
+      "scripts/e2e-changed.test.ts",
+      TEST_FILE,
+      TOUCHED,
+      readChange,
+      () => null,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/e2e-selection.ts");
+  });
+
+  test("a change copy the gate cannot read is a refusal too", () => {
+    const plan = planAugmentedModules(
+      "scripts/e2e-changed.test.ts",
+      TEST_FILE,
+      TOUCHED,
+      () => null,
+      readParent,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/e2e-selection.ts");
+  });
+});
+
+describe("red-on-parent round 25 — the report tells an augmentation from a hollow", () => {
+  test("the augmented block names the module, the appended exports and the file", () => {
+    const run: GateRun = {
+      baseSha: "a1b2c3d4e5f6",
+      worktree: "(none)",
+      worktreeCreated: false,
+      installLog: "",
+      files: ["scripts/e2e-changed.test.ts"],
+      verdicts: [],
+      stdoutByFile: new Map(),
+      problems: [],
+      uncommitted: [],
+      skipped: [],
+      hollowed: [],
+      augmented: [
+        {
+          path: "scripts/e2e-selection.ts",
+          importedBy: "scripts/e2e-changed.test.ts",
+          names: ["specPaths"],
+        },
+      ],
+    };
+    const report = renderReport(run, []);
+    expect(report).toContain("scripts/e2e-selection.ts");
+    expect(report).toContain("specPaths");
+    expect(report).toContain("for scripts/e2e-changed.test.ts");
+    // A reader must not read this as a fake of the whole module.
+    expect(report).not.toContain("hollowed for scripts/e2e-changed.test.ts");
+  });
+});
+
+describe("red-on-parent round 25 — a module the parent has, plus its new export, end to end", () => {
+  // `helper.ts` exists on the parent; the change edits it and adds `brandNew`.
+  // The appended stand-in is what makes the file load on the parent at all.
+  const REAL_TEST = `import { expect, test } from "bun:test";
+import { brandNew } from "../../../packages/core/src/helper";
+test("real", () => {
+  expect(brandNew(2)).toBe(2);
+});
+`;
+  const VACUOUS_TEST = `import { expect, test } from "bun:test";
+import { brandNew } from "../../../packages/core/src/helper";
+test("vacuous", () => {
+  expect(brandNew).toBeDefined();
+});
+`;
+  const EXISTING_TEST = `import { expect, test } from "bun:test";
+import { guard } from "../../../packages/core/src/helper";
+test("existing behaviour", () => {
+  expect(guard(2)).toBe(2);
+});
+`;
+
+  test("a test that calls the appended export fails on the parent for its own reason", () => {
+    const fixture = createFixture([PKG, HELPER], [
+      { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+      { path: "apps/api/src/new-export.test.ts", text: REAL_TEST },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a test that asserts nothing the appended export produces is rejected", () => {
+    const fixture = createFixture([PKG, HELPER], [
+      { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+      { path: "apps/api/src/new-export-vacuous.test.ts", text: VACUOUS_TEST },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("the parent's own behaviour stays real, so a test of it is not faked into a red", () => {
+    // The shape that separates augmentation from hollowing. `guard(2)` is 2 on
+    // both sides, so the test is GREEN ON PARENT and must be rejected. A hollow
+    // of `helper.ts` would have replaced `guard` with a stand-in, turned this
+    // into a TypeError, and accepted it as a right-reason red.
+    const fixture = createFixture([PKG, HELPER], [
+      { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+      { path: "apps/api/src/existing-behaviour.test.ts", text: EXISTING_TEST },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a TypeError on an AUGMENTED file is accepted, and that is by design, not a defect", () => {
+    // ACCEPTED BY DESIGN. This fixture exists so the next reader does not
+    // rediscover it as a bug, and so a change to the behaviour is deliberate.
+    //
+    // The test dereferences the value the appended stand-in produces. On the
+    // parent the stand-in returns `undefined`, so `undefined.mode` is a TypeError
+    // before any assertion runs; on the change the real export returns the object
+    // and the assertion passes. The gate reads that TypeError as the test's own
+    // red, because in a HOLLOWED file nothing but the gate's fake could have
+    // produced it.
+    //
+    // In an AUGMENTED file the parent's real code is still there and still runs,
+    // so a TypeError has a second possible cause the gate cannot see: the parent's
+    // own code. This is the residual hole, stated rather than hidden. Closing it
+    // needs a stronger discrimination than junit's failure type can carry, which
+    // is a design change, not a fix.
+    const fixture = createFixture([PKG, HELPER], [
+      {
+        path: "packages/core/src/helper.ts",
+        text: `export function guard(n: number): number {\n  if (n <= 0) throw new Error("ZERO");\n  return n;\n}\nexport function brandNew(): { mode: string } {\n  return { mode: "affected" };\n}\n`,
+      },
+      {
+        path: "apps/api/src/dereferences-a-standin.test.ts",
+        text: `import { expect, test } from "bun:test";
+import { brandNew } from "../../../packages/core/src/helper";
+test("dereferences the appended stand-in", () => {
+  expect(brandNew().mode).toBe("affected");
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 27 — the Greptile P1s at b9f9cc4e.
+//
+// Three findings, none of them about a verdict class: a stand-in that cannot
+// load, a stand-in that shadows a name the parent really supplies (a false
+// pass), and a waiver that excuses a parent run that never finished.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 27 — a JavaScript module's stand-in loads", () => {
+  /**
+   * Load the hollow in a real bun process.
+   *
+   * The property under test is "this text parses and runs", and no amount of
+   * string inspection answers it: `..._args: unknown[]` looks perfectly
+   * reasonable in a template literal and is a syntax error in a `.js` file.
+   */
+  function loadHollow(name: string, hollowText: string) {
+    const dir = mkdtempSync(join(tmpdir(), "ronp-hollow-"));
+    try {
+      writeFileSync(join(dir, "package.json"), `{ "type": "module" }\n`);
+      writeFileSync(join(dir, name), hollowText);
+      writeFileSync(
+        join(dir, "run.mjs"),
+        `import * as mod from "./${name}";\n` +
+          `if (typeof mod.twice !== "function") throw new Error("twice is not a function");\n` +
+          `if (mod.twice(2) !== undefined) throw new Error("the stand-in carries behaviour");\n` +
+          `console.log("LOADED");\n`,
+      );
+      const result = spawnSync(process.execPath, [join(dir, "run.mjs")], { encoding: "utf8" });
+      return {
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        status: result.status,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a .js module's stand-in is JavaScript, so the parent can load it", () => {
+    const hollow = hollowModuleSource(
+      `export function twice(n) {\n  return n * 2;\n}\n`,
+      "scripts/mod.js",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    // No parameter or return annotation: the file is JavaScript, and bun does
+    // not type-check, so an annotation here is a load error rather than a
+    // harmless extra.
+    expect(hollow.text).not.toContain(": unknown");
+    expect(hollow.text).not.toContain("unknown[]");
+    const run = loadHollow("mod.js", hollow.text);
+    expect({ stdout: run.stdout, status: run.status }).toEqual({ stdout: "LOADED\n", status: 0 });
+  });
+
+  test("a .mjs module's stand-in is JavaScript too", () => {
+    const hollow = hollowModuleSource(
+      `export function twice(n) {\n  return n * 2;\n}\n`,
+      "scripts/mod.mjs",
+    );
+    expect(hollow.ok).toBe(true);
+    if (!hollow.ok) return;
+    const run = loadHollow("mod.mjs", hollow.text);
+    expect({ stdout: run.stdout, status: run.status }).toEqual({ stdout: "LOADED\n", status: 0 });
+  });
+});
+
+describe("red-on-parent round 27 — a test importing a new .js module, end to end", () => {
+  // The fixture Greptile named: an added test imports a `.js` module the same
+  // change adds. The stand-in for it is written into the parent worktree, and a
+  // TypeScript annotation in that stand-in is a load error rather than a red.
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { twice } from "./doubles.js";
+test("doubles", () => {
+  expect(twice(2)).toBe(4);
+});
+`;
+
+  test("the parent loads the JavaScript stand-in and judges the test on its assertion", () => {
+    const fixture = createFixture(
+      [PKG],
+      [
+        { path: "packages/core/src/doubles.js", text: `export function twice(n) {\n  return n * 2;\n}\n` },
+        { path: "packages/core/src/doubles.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 27 — a stand-in never shadows a name the parent supplies", () => {
+  const TOUCHED = new Set(["scripts/mod.ts"]);
+
+  test("an export list and a re-export list name their exports", () => {
+    // The names are literal, so there is nothing to resolve: `export { a }` and
+    // `export { a } from "./y"` both put `a` on the module.
+    expect(declaredExportNames("scripts/mod.ts", `const a = 1;\nexport { a };\n`)).toEqual(["a"]);
+    expect(
+      declaredExportNames("scripts/mod.ts", `export { a, b as c } from "./other";\n`),
+    ).toEqual(["a", "c"]);
+    expect(declaredExportNames("scripts/mod.ts", `export * as ns from "./other";\n`)).toEqual([
+      "ns",
+    ]);
+  });
+
+  const CHANGE = `export function value(): number {\n  return 1;\n}\n`;
+  const TEST_FILE = `import { value } from "./mod";\n`;
+
+  function planFor(parent: string, parentFiles: Record<string, string> = {}) {
+    return planAugmentedModules(
+      "scripts/mod.test.ts",
+      TEST_FILE,
+      TOUCHED,
+      (path) => (path === "scripts/mod.ts" ? CHANGE : null),
+      (path) => (path === "scripts/mod.ts" ? parent : (parentFiles[path] ?? null)),
+    );
+  }
+
+  test("a name the parent supplies through an export list is not appended", () => {
+    const plan = planFor(`const value = (): number => 1;\nexport { value };\n`);
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("a name the parent supplies by re-export is not appended", () => {
+    const plan = planFor(`export { value } from "./base";\n`, {
+      "scripts/base.ts": `export function value(): number {\n  return 1;\n}\n`,
+    });
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("an export star is followed through the parent worktree to the name it supplies", () => {
+    // Two hops, so a one-level resolution is not enough to pass this.
+    const plan = planFor(`export * from "./base";\n`, {
+      "scripts/base.ts": `export * from "./deep";\n`,
+      "scripts/deep.ts": `export function value(): number {\n  return 1;\n}\n`,
+    });
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("an export star the gate cannot resolve refuses the augmentation", () => {
+    // The names such a module supplies are unknowable from this file, and an
+    // appended stand-in for one of them would shadow the parent's real export —
+    // a test that passes on the parent would be scored a right-reason red. Fail
+    // closed instead.
+    const plan = planFor(`export * from "./nowhere";\n`);
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/mod.ts");
+    expect(plan.refusal).toContain("./nowhere");
+  });
+
+  test("a resolvable star that does not supply the name still gets the stand-in", () => {
+    const plan = planFor(`export * from "./base";\n`, {
+      "scripts/base.ts": `export function other(): number {\n  return 0;\n}\n`,
+    });
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+  });
+});
+
+describe("red-on-parent round 27 — a re-exported name the parent supplies, end to end", () => {
+  // The false pass Greptile named. On the parent, `helper.ts` supplies `value`
+  // through `export *`; the change replaces that with a direct declaration. A
+  // test of the parent's own behaviour passes here — so it pins nothing the
+  // change adds and must be scored GREEN-ON-PARENT.
+  //
+  // Appending an empty `value` stand-in to the parent's copy SHADOWS the real
+  // re-export: the test then reads `undefined`, and the gate accepts its
+  // assertion failure as a right-reason red. A test that pins nothing is scored
+  // as a test that pins something.
+  const PARENT_HELPER = `export * from "./helper-base";\n`;
+  const PARENT_BASE = `export function value(): number {\n  return 1;\n}\n`;
+  const CHANGE_HELPER = `export function value(): number {\n  return 1;\n}\n`;
+  const SHADOW_TEST = `import { expect, test } from "bun:test";
+import { value } from "./helper";
+test("the parent's own export", () => {
+  expect(value()).toBe(1);
+});
+`;
+
+  test("a test of the parent's real behaviour is rejected, not accepted on a shadow", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/helper.ts", text: PARENT_HELPER },
+        { path: "packages/core/src/helper-base.ts", text: PARENT_BASE },
+      ],
+      [
+        { path: "packages/core/src/helper.ts", text: CHANGE_HELPER },
+        { path: "packages/core/src/star-shadow.test.ts", text: SHADOW_TEST },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      // No stand-in is appended, so there is no augmentation to report either.
+      expect(stdout).not.toContain("appended stand-in");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 27 — a waiver cannot excuse an unfinished parent run", () => {
+  // Two defects in one ordering. A refusal replaces EVERY parent verdict with a
+  // waivable CANNOT_HOLLOW row, and the planner can refuse on an import no load
+  // takes — a lazy `import()` inside a function body — so the parent's real run
+  // is discarded for a claim about a file it did load.
+  const MODE = `export enum Mode {\n  One,\n}\n`;
+
+  test("a whole-file waiver does not clear a parent run that never finished", () => {
+    // The hang is on the parent only: `PHASE` is "parent" there, so the parent's
+    // run times out while the change's run finishes and passes. The added module
+    // with the enum is reached only through a lazy import, so the file still
+    // loads and the hang is the only thing the parent's run has to say.
+    const fixture = createFixture(
+      [
+        PKG,
+        {
+          path: "packages/core/src/helper.ts",
+          text: `export const PHASE = "parent";\nexport function guard(n: number): number {\n  if (n <= 0) throw new Error("zero");\n  return n;\n}\n`,
+        },
+      ],
+      [
+        {
+          path: "packages/core/src/helper.ts",
+          text: `export const PHASE = "change";\nexport function guard(n: number): number {\n  if (n <= 0) throw new Error("ZERO");\n  return n;\n}\n`,
+        },
+        { path: "packages/core/src/mode.ts", text: MODE },
+        {
+          path: "packages/core/src/refused-and-hung.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { PHASE, guard } from "./helper";
+
+async function later() {
+  const { Mode } = await import("./mode.ts");
+  return Mode;
+}
+
+test("hangs on the parent only", async () => {
+  if (PHASE === "parent") await new Promise(() => {});
+  expect(() => guard(0)).toThrow("ZERO");
+  expect(await later()).toBeDefined();
+});
+// red-on-parent-waive: "whole file" — the module this file needs has no faithful hollow
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(
+        fixture,
+        { RED_ON_PARENT_TEST_TIMEOUT_MS: "1500" },
+        [],
+        20_000,
+      );
+      expect(stdout).toContain("RUN-INCOMPLETE");
+      expect(stdout).toContain("did not complete");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a refusal about a lazily imported module does not replace the parent's own verdicts", () => {
+    // `mode.ts` is added and imported only inside `later()`, which the test never
+    // calls. The parent loads the file and runs the test, so its verdict is the
+    // test's own assertion red — not a whole-file refusal about a module the
+    // parent never asked for.
+    const fixture = createFixture(
+      [PKG, HELPER],
+      [
+        { path: "packages/core/src/helper.ts", text: HELPER_AFTER },
+        { path: "packages/core/src/mode.ts", text: MODE },
+        {
+          path: "packages/core/src/lazy-import.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { guard } from "./helper";
+
+async function later() {
+  const { Mode } = await import("./mode.ts");
+  return Mode;
+}
+
+test("rejects zero", () => {
+  expect(() => guard(0)).toThrow("ZERO");
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 28 — the fail-closed refusal that c56ecd73 added fires too eagerly.
+//
+// Both findings are side effects of closing the star-shadow false pass, and both
+// push in the same direction: a file the gate could judge with a stand-in became
+// a whole-file waiver instead. That direction degrades a gate into noise, so it
+// is fixed by narrowing the question, not by widening the refusal.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 28 — a runtime export set excludes the shapes the runtime erases", () => {
+  const PATH = "scripts/mod.ts";
+
+  test("a type-only re-export list names nothing the runtime has", () => {
+    expect(runtimeExportNames(PATH, `export type { value } from "./types";\n`)).toEqual([]);
+  });
+
+  test("a type-only specifier inside an export list is dropped, its sibling kept", () => {
+    expect(runtimeExportNames(PATH, `export { type a, b } from "./other";\n`)).toEqual(["b"]);
+    expect(runtimeExportNames(PATH, `const a = 1;\nconst b = 2;\nexport { type a, b };\n`)).toEqual([
+      "b",
+    ]);
+  });
+
+  test("a type alias and an interface are erased; a function, a const and an enum are not", () => {
+    expect(
+      runtimeExportNames(
+        PATH,
+        `export type Shape = { a: number };\nexport interface Port {\n  b: string;\n}\nexport function run(): void {}\nexport const FLAG = 1;\nexport enum Mode {\n  One,\n}\n`,
+      ),
+    ).toEqual(["FLAG", "Mode", "run"]);
+  });
+
+  test("a type-only star supplies nothing, and `export * as ns` supplies the namespace object", () => {
+    expect(
+      runtimeExportNames(PATH, `export type * from "./types";\nexport * as ns from "./other";\n`),
+    ).toEqual(["ns"]);
+  });
+
+  test("an ambient declare export emits no runtime value, so it is not in the set", () => {
+    expect(runtimeExportNames(PATH, `export declare const table: number;\n`)).toEqual([]);
+  });
+
+  test("declaredExportNames is unchanged: it answers the declared shape, not the runtime one", () => {
+    // The reader the type-only fix must NOT rewrite. `hollowModuleSource` compares
+    // a module's declared shape against its mirror, and a mirror of an interface
+    // is the only honest mirror of an interface. Widening this set to the runtime
+    // answer would make a faithful hollow look like an unfaithful one.
+    expect(declaredExportNames(PATH, `export type { value } from "./types";\n`)).toEqual(["value"]);
+    expect(declaredExportNames(PATH, `export interface Port {}\n`)).toEqual(["Port"]);
+  });
+});
+
+describe("red-on-parent round 28 — a type-only export does not hide a runtime name", () => {
+  // The parent re-exports `value` as a TYPE and the change makes it a runtime
+  // export. Counting the type-only name as present appended nothing, so the
+  // parent's `import { value }` failed to resolve and a file that could be judged
+  // with a stand-in became CANNOT-HOLLOW plus a whole-file waiver.
+  const TOUCHED = new Set(["scripts/mod.ts"]);
+  const PARENT = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\n`;
+  const CHANGE = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\nexport function value(): number {\n  return 7;\n}\n`;
+  const TEST_FILE = `import { value } from "./mod";\n`;
+
+  function planFor(parent: string, change: string, testFile = TEST_FILE) {
+    return planAugmentedModules(
+      "scripts/mod.test.ts",
+      testFile,
+      TOUCHED,
+      (path) => (path === "scripts/mod.ts" ? change : null),
+      (path) => (path === "scripts/mod.ts" ? parent : null),
+    );
+  }
+
+  test("a runtime name the parent only declares as a type still gets its stand-in", () => {
+    const plan = planFor(PARENT, CHANGE);
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+  });
+
+  test("the augmented text keeps the parent's type-only export and appends the runtime one", () => {
+    const plan = planFor(PARENT, CHANGE);
+    const text = plan.modules[0]?.text ?? "";
+    expect(text.startsWith(PARENT)).toBe(true);
+    expect(runtimeExportNames("scripts/mod.ts", text)).toEqual(["twice", "value"]);
+    expect(declaredExportNames("scripts/mod.ts", text)).toEqual(["twice", "value", "value"]);
+  });
+
+  test("a type-only name the test imports as a type is still never appended", () => {
+    // The sibling case, so the fix cannot be read as "append every type-only name
+    // too": an `import { type Shape }` clause is erased and needs no stand-in.
+    const plan = planFor(PARENT, CHANGE, `import { type Shape, value } from "./mod";\n`);
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+  });
+});
+
+describe("red-on-parent round 28 — an unrelated re-export does not refuse another module", () => {
+  // Module A carries `export * from "some-package"` and the test imports only a
+  // name A declares itself. Module B is where the change adds a name. Following
+  // A's star chain refused the whole plan, so B's stand-in was dropped and the
+  // file became a whole-file waiver over a module the test barely uses.
+  const PARENT_A = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\n`;
+  const CHANGE_A = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\nexport function alsoNew(): number {\n  return 5;\n}\n`;
+  const PARENT_B = `export const other = 1;\n`;
+  const CHANGE_B = `export const other = 1;\nexport function brandNew(): number {\n  return 2;\n}\n`;
+  const TOUCHED = new Set(["scripts/a.ts", "scripts/b.ts"]);
+
+  const readChange = (path: string): string | null =>
+    path === "scripts/a.ts" ? CHANGE_A : path === "scripts/b.ts" ? CHANGE_B : null;
+  const readParent = (path: string): string | null =>
+    path === "scripts/a.ts" ? PARENT_A : path === "scripts/b.ts" ? PARENT_B : null;
+
+  test("a module whose names the parent declares directly never has its star chain consulted", () => {
+    const plan = planAugmentedModules(
+      "scripts/two-modules.test.ts",
+      `import { existing } from "./a";\nimport { brandNew } from "./b";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/b.ts"]);
+    expect(plan.modules[0]?.names).toEqual(["brandNew"]);
+    // B's stand-in, not a refusal about A's package specifier.
+    expect(plan.modules[0]?.text.startsWith(PARENT_B)).toBe(true);
+  });
+
+  test("the same module alone, asked for nothing it lacks, is left alone", () => {
+    const plan = planAugmentedModules(
+      "scripts/a-only.test.ts",
+      `import { existing } from "./a";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+
+  test("a refusal stays scoped to the module it is about", () => {
+    // C genuinely lacks the name and its star cannot be resolved, so C has no
+    // stand-in and the file will not load — the refusal is honest. B's stand-in
+    // is not C's, and one module's refusal must not delete it.
+    const parentC = `export * from "./nowhere";\n`;
+    const changeC = `export * from "./nowhere";\nexport function brandNewC(): number {\n  return 3;\n}\n`;
+    const plan = planAugmentedModules(
+      "scripts/three-modules.test.ts",
+      `import { brandNew } from "./b";\nimport { brandNewC } from "./c";\n`,
+      new Set(["scripts/b.ts", "scripts/c.ts"]),
+      (path) => (path === "scripts/b.ts" ? CHANGE_B : path === "scripts/c.ts" ? changeC : null),
+      (path) => (path === "scripts/b.ts" ? PARENT_B : path === "scripts/c.ts" ? parentC : null),
+    );
+    expect(plan.modules.map((module) => module.path)).toEqual(["scripts/b.ts"]);
+    expect(plan.refusal).toContain("scripts/c.ts");
+    expect(plan.refusal).toContain("./nowhere");
+  });
+
+  test("a star chain is still followed for a module that is missing a name", () => {
+    // The regression guard on the narrowing itself: skipping the chain when the
+    // direct exports answer every name must not become skipping it always.
+    const base = `export function value(): number {\n  return 1;\n}\n`;
+    const plan = planAugmentedModules(
+      "scripts/star-supplies.test.ts",
+      `import { value } from "./b";\n`,
+      new Set(["scripts/b.ts"]),
+      () => CHANGE_B,
+      (path) =>
+        path === "scripts/b.ts" ? `export * from "./base";\n` : path === "scripts/base.ts" ? base : null,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+});
+
+describe("red-on-parent round 28 — a type-only export, end to end", () => {
+  const PARENT = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\n`;
+  const CHANGE = `export type { value } from "./types";\nexport function twice(n: number): number {\n  return n * 2;\n}\nexport function value(): number {\n  return 7;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { value } from "./typed";
+test("uses the new runtime export", () => {
+  expect(value()).toBe(7);
+});
+`;
+
+  test("the parent's type-only name does not turn the file into a whole-file waiver", () => {
+    const fixture = createFixture(
+      [PKG, { path: "packages/core/src/typed.ts", text: PARENT }],
+      [
+        { path: "packages/core/src/typed.ts", text: CHANGE },
+        { path: "packages/core/src/typed-only.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 28 — an unrelated re-export, end to end", () => {
+  // `some-package` is a real package in the fixture's committed `node_modules`,
+  // so the parent LOADS the module that re-exports it — which is what makes this
+  // the Greptile shape rather than a load failure. The gate's star reader only
+  // resolves relative specifiers, so the chain is unresolvable to it and used to
+  // refuse the sibling module's stand-in.
+  const PACKAGE_JSON: File = {
+    path: "node_modules/some-package/package.json",
+    text: `{\n  "name": "some-package",\n  "type": "module",\n  "main": "index.js"\n}\n`,
+  };
+  const PACKAGE_INDEX: File = {
+    path: "node_modules/some-package/index.js",
+    text: `export function fromPackage() {\n  return 0;\n}\n`,
+  };
+  const RE_EXPORTER = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\n`;
+  const RE_EXPORTER_AFTER = `export * from "some-package";\nexport function existing(): number {\n  return 1;\n}\nexport function alsoNew(): number {\n  return 5;\n}\n`;
+  const EXTENDED = `export const other = 1;\n`;
+  const EXTENDED_AFTER = `export const other = 1;\nexport function brandNew(): number {\n  return 2;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { existing } from "./re-exporter";
+import { brandNew } from "./extended";
+test("uses both modules", () => {
+  expect(existing()).toBe(1);
+  expect(brandNew()).toBe(2);
+});
+`;
+
+  test("the re-exporting module does not refuse the module that gained a name", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        PACKAGE_JSON,
+        PACKAGE_INDEX,
+        { path: "packages/core/src/re-exporter.ts", text: RE_EXPORTER },
+        { path: "packages/core/src/extended.ts", text: EXTENDED },
+      ],
+      [
+        { path: "packages/core/src/re-exporter.ts", text: RE_EXPORTER_AFTER },
+        { path: "packages/core/src/extended.ts", text: EXTENDED_AFTER },
+        { path: "packages/core/src/two-modules.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(stdout).not.toContain("WRONG-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 29 — the gaps a review lens found in the round 28 fold.
+//
+// Each case here pins one half of the fold that the round 28 tests reached only
+// through the shape it was found in: a type-only export beside a direct one, a
+// refusal seen at plan level only, the collapse to `refusals[0]`, and the two
+// runtime-name readers nothing asserted directly.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 29 — a star target that only type-exports the name", () => {
+  // `starExportNames` asks each star target for its RUNTIME export names, and
+  // nothing fed it a target whose only mention of the requested name is a
+  // `export type`. Counting that name as supplied appends no stand-in, the
+  // parent's own `import { value }` fails to resolve, and a file the gate could
+  // judge as a right-reason red becomes CANNOT-HOLLOW plus a whole-file waiver.
+  const PATH = "scripts/mod.ts";
+  const PARENT = `export * from "./types";\nexport function stable(): number {\n  return 3;\n}\n`;
+  const CHANGE = `${PARENT}export function value(): number {\n  return 7;\n}\n`;
+  const TYPES = `export type { value } from "./real";\n`;
+  const REAL = `export function value(): number {\n  return 70;\n}\n`;
+
+  function planFor() {
+    return planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { value } from "./mod";\n`,
+      new Set([PATH]),
+      (path) => (path === PATH ? CHANGE : null),
+      (path) =>
+        path === PATH
+          ? PARENT
+          : path === "scripts/types.ts"
+            ? TYPES
+            : path === "scripts/real.ts"
+              ? REAL
+              : null,
+    );
+  }
+
+  test("a name the star target only type-exports is still missing from the parent's runtime", () => {
+    const plan = planFor();
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["value"]]);
+    // The parent's `export *` line survives verbatim and the stand-in is appended
+    // beside it, so the parent's own `stable` still works and `value` now binds.
+    const text = plan.modules[0]?.text ?? "";
+    expect(text.startsWith(PARENT)).toBe(true);
+    expect(runtimeExportNames(PATH, text)).toEqual(["stable", "value"]);
+  });
+});
+
+describe("red-on-parent round 29 — a type-only star target, end to end", () => {
+  // Regression guard 1 (a test of the parent's real behaviour is GREEN-ON-PARENT,
+  // not accepted on a shadow) reached through an `export *` whose target only
+  // type-exports the name. The stand-in has to be written for `value`, and the
+  // file still has to be REJECTED for the test that pins what the parent already
+  // does — a whole-file refusal for `value` would hide that test behind a waiver
+  // instead.
+  const TYPES = `export type { value } from "./real";\n`;
+  const REAL = `export function value(): number {\n  return 70;\n}\n`;
+  const PARENT = `export * from "./types";\nexport function stable(): number {\n  return 3;\n}\n`;
+  const CHANGE = `${PARENT}export function value(): number {\n  return 7;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { stable, value } from "./star-typed";
+test("uses the runtime export the change adds", () => {
+  expect(value()).toBe(7);
+});
+test("pins the behaviour the parent already has", () => {
+  expect(stable()).toBe(3);
+});
+`;
+
+  test("the stand-in is written, and the parent-behaviour test is rejected, not waived", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/types.ts", text: TYPES },
+        { path: "packages/core/src/real.ts", text: REAL },
+        { path: "packages/core/src/star-typed.ts", text: PARENT },
+      ],
+      [
+        { path: "packages/core/src/star-typed.ts", text: CHANGE },
+        { path: "packages/core/src/star-typed.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // `value` got its stand-in, so the file loads on the parent at all.
+      expect(stdout).toContain("packages/core/src/star-typed.ts — appended value");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      // The test that pins the parent's own `stable` is green there.
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("red-on-parent: PASS");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 29 — a refusal beside a sibling's stand-in, end to end", () => {
+  // Round 28 proved the pair at plan level. This is the whole gate: one module it
+  // must refuse, one it can still stand in for, and the run has to do both — write
+  // the sibling's stand-in AND report the refusal — instead of trading one for the
+  // other.
+  const REFUSER = `export * from "nowhere-pkg";\nexport function existingR(): number {\n  return 1;\n}\n`;
+  const REFUSER_AFTER = `${REFUSER}export function gainedR(): number {\n  return 2;\n}\n`;
+  const SIBLING = `export const other = 1;\n`;
+  const SIBLING_AFTER = `${SIBLING}export function brandNewS(): number {\n  return 4;\n}\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { gainedR } from "./refuser";
+import { brandNewS } from "./sibling";
+test("uses both modules", () => {
+  expect(gainedR()).toBe(2);
+  expect(brandNewS()).toBe(4);
+});
+`;
+
+  test("the refusal is reported and the sibling's stand-in is still written", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/refuser.ts", text: REFUSER },
+        { path: "packages/core/src/sibling.ts", text: SIBLING },
+      ],
+      [
+        { path: "packages/core/src/refuser.ts", text: REFUSER_AFTER },
+        { path: "packages/core/src/sibling.ts", text: SIBLING_AFTER },
+        { path: "packages/core/src/refused-sibling.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // The refusal, about the module it is about.
+      expect(stdout).toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("packages/core/src/refuser.ts");
+      expect(stdout).toContain("nowhere-pkg");
+      // The sibling's stand-in, in the report and in what the run actually wrote.
+      expect(stdout).toContain("packages/core/src/sibling.ts — appended brandNewS");
+      const written = readFileSync(
+        join(fixture.cache, `wt-${fixture.base}`, "packages/core/src/sibling.ts"),
+        "utf8",
+      );
+      expect(written.startsWith(SIBLING)).toBe(true);
+      expect(written).toContain("Appended stand-in");
+      expect(written).toContain("export function brandNewS");
+      // And the verdict is not an accept: the file never loaded on the parent.
+      expect(stdout).toContain("red-on-parent: FAIL");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+describe("red-on-parent round 29 — several refusals collapse to the first in import order", () => {
+  // The plan returns `refusals[0]`, and the report prints one refusal as one row's
+  // detail. Which refusal an author sees is therefore a choice, not an accident:
+  // it is the first in the file's own import order. Pinning it means a refactor
+  // cannot silently change the module an author is told to fix without failing
+  // here, and reversing the imports proves the order is the file's and not the
+  // modules' sort order.
+  const PARENT_A = `export * from "./nowhere-a";\n`;
+  const PARENT_B = `export * from "./nowhere-b";\n`;
+  const CHANGE_A = `${PARENT_A}export function nameA(): number {\n  return 1;\n}\n`;
+  const CHANGE_B = `${PARENT_B}export function nameB(): number {\n  return 2;\n}\n`;
+  const TOUCHED = new Set(["scripts/a.ts", "scripts/b.ts"]);
+
+  const readChange = (path: string): string | null =>
+    path === "scripts/a.ts" ? CHANGE_A : path === "scripts/b.ts" ? CHANGE_B : null;
+  const readParent = (path: string): string | null =>
+    path === "scripts/a.ts" ? PARENT_A : path === "scripts/b.ts" ? PARENT_B : null;
+
+  test("two refusable modules report the first one the file imports", () => {
+    const plan = planAugmentedModules(
+      "scripts/two-refusals.test.ts",
+      `import { nameA } from "./a";\nimport { nameB } from "./b";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/a.ts");
+    expect(plan.refusal).toContain("./nowhere-a");
+    expect(plan.refusal).not.toContain("scripts/b.ts");
+    expect(plan.refusal).not.toContain("./nowhere-b");
+  });
+
+  test("the reported refusal follows the file's order, not the modules' sort order", () => {
+    const plan = planAugmentedModules(
+      "scripts/two-refusals-reversed.test.ts",
+      `import { nameB } from "./b";\nimport { nameA } from "./a";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("scripts/b.ts");
+    expect(plan.refusal).toContain("./nowhere-b");
+    expect(plan.refusal).not.toContain("scripts/a.ts");
+    expect(plan.refusal).not.toContain("./nowhere-a");
+  });
+});
+
+describe("red-on-parent round 29 — a JavaScript module's runtime names", () => {
+  // `runtimeExportNames` takes `scriptKindFor(path)`, so the extension decides how
+  // the source is parsed: `.js`, `.mjs` and `.cjs` are read as JavaScript. What is
+  // pinned here is the export SET a JavaScript module produces through that path.
+  // The two parsers do not disagree about an export name in any case found so far
+  // (TypeScript's parser recovers from JS-valid input, and a JS reading drops the
+  // same type-only shapes), so this is coverage of the JavaScript branch rather
+  // than a differential test — said plainly, because a reader should not take it
+  // as proof that the script kind changes the answer.
+  const JS = `export function twice(n) {\n  return n * 2;\n}\nexport const FLAG = 1;\nexport class Box {}\n`;
+  const JS_TYPE_ONLY = `export type { value } from "./types";\nexport interface Port {\n  b: string;\n}\n`;
+
+  test("a .js module's runtime names are read from JavaScript source", () => {
+    expect(runtimeExportNames("scripts/mod.js", JS)).toEqual(["Box", "FLAG", "twice"]);
+    // A JS file may carry the same type-only shapes a TS one does, and they name
+    // nothing the runtime has either way.
+    expect(runtimeExportNames("scripts/mod.js", JS_TYPE_ONLY)).toEqual([]);
+  });
+
+  test("the same holds for a .mjs module", () => {
+    expect(runtimeExportNames("scripts/mod.mjs", JS)).toEqual(["Box", "FLAG", "twice"]);
+    expect(runtimeExportNames("scripts/mod.mjs", JS_TYPE_ONLY)).toEqual([]);
+  });
+});
+
+describe("red-on-parent round 29 — a class and a namespace bind runtime values", () => {
+  // Both are in the kept list and neither was asserted directly: the round 28 test
+  // pinned a function, a const and an enum, so a change that started dropping
+  // classes or namespaces would have passed it.
+  test("a class and a namespace count; a type alias and an interface do not", () => {
+    expect(
+      runtimeExportNames(
+        "scripts/mod.ts",
+        `export class Box {\n  static empty = true;\n}\nexport namespace Registry {\n  export const size = 0;\n}\nexport type Shape = { a: number };\nexport interface Port {\n  b: string;\n}\n`,
+      ),
+    ).toEqual(["Box", "Registry"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 30 — a destructured export is a runtime name.
+//
+// A name a module exports through a DESTRUCTURING binding is a runtime export
+// like any other. Both export readers walked
+// `if (ts.isIdentifier(declaration.name))` and contributed nothing for it, so
+// the parent's own `value` read as absent, a stand-in was appended over the
+// real export, and a test of the parent's behaviour failed against the
+// stand-in — scored RIGHT-REASON-RED, a false pass.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 30 — a destructured export is a runtime name", () => {
+  const PATH = "scripts/mod.ts";
+  const BASE = `export const { value } = { value: 7 };\n`;
+
+  test("the runtime reader names an object-pattern binding's BINDING name", () => {
+    expect(runtimeExportNames(PATH, BASE)).toEqual(["value"]);
+    // The binding name, not the property name: `{ a: b }` puts `b` on the module.
+    expect(runtimeExportNames(PATH, `export const { a: b } = { a: 1 };\n`)).toEqual(["b"]);
+    // A shorthand and a rename in one pattern.
+    expect(runtimeExportNames(PATH, `export const { a, c: d } = { a: 1, c: 2 };\n`)).toEqual([
+      "a",
+      "d",
+    ]);
+  });
+
+  test("an array pattern contributes every element, and an elision contributes none", () => {
+    expect(
+      runtimeExportNames(PATH, `export const [first, , third] = [1, 2, 3] as number[];\n`),
+    ).toEqual(["first", "third"]);
+    // A nested pattern recurses: `{ outer: { inner } }` binds `inner` alone.
+    expect(
+      runtimeExportNames(PATH, `export const { outer: { inner } } = { outer: { inner: 1 } };\n`),
+    ).toEqual(["inner"]);
+  });
+
+  test("the declared reader names it too, because the hollow compares declared shapes", () => {
+    // `declaredExportNames` answers a different question — what shape the module
+    // declares — and a destructured binding declares a name on both readings. The
+    // hole was in both readers, and `hollowModuleSource` compares two answers from
+    // this one, so a divergence here is how the class of bug returns.
+    expect(declaredExportNames(PATH, BASE)).toEqual(["value"]);
+    expect(declaredExportNames(PATH, `export const { a: b } = { a: 1 };\n`)).toEqual(["b"]);
+  });
+
+  test("the binding reader and the export reader still agree on the same names", () => {
+    expect(topLevelBindingNames(PATH, BASE)).toEqual(["value"]);
+  });
+
+  test("a name the parent's star target destructures is present, so no stand-in is appended", () => {
+    // The Greptile shape at plan level. The parent's `mod.ts` re-exports `base.ts`,
+    // and `base.ts` exports `value` by destructuring; the change replaces the
+    // re-export with a plain declaration. Reading `base.ts` as exporting nothing
+    // made the planner append a stand-in over the parent's working export.
+    const plan = planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { value } from "./mod";\n`,
+      new Set([PATH]),
+      (path) => (path === PATH ? `export const value = 7;\n` : null),
+      (path) =>
+        path === PATH ? `export * from "./base";\n` : path === "scripts/base.ts" ? BASE : null,
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules).toEqual([]);
+  });
+});
+
+describe("red-on-parent round 30 — a destructured export, end to end", () => {
+  // The false pass Greptile named. On the parent, `destr.ts` re-exports `value`
+  // from `destr-base.ts`, which exports it by destructuring. The test asserts the
+  // parent's own value, so it pins nothing the change adds and must be scored
+  // GREEN-ON-PARENT. Before the fix a stand-in was appended over the re-export,
+  // the test read `undefined`, and the gate accepted the assertion failure as a
+  // right-reason red — a test that pins nothing, scored as one that pins
+  // something.
+  const PARENT_BASE = `export const { value } = { value: 7 };\n`;
+  const PARENT = `export * from "./destr-base";\n`;
+  const CHANGE = `export const value = 7;\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { value } from "./destr";
+test("the parent's own destructured export", () => {
+  expect(value).toBe(7);
+});
+`;
+
+  test("the parent's real behaviour is rejected, not accepted on a shadow", () => {
+    const fixture = createFixture(
+      [
+        PKG,
+        { path: "packages/core/src/destr-base.ts", text: PARENT_BASE },
+        { path: "packages/core/src/destr.ts", text: PARENT },
+      ],
+      [
+        { path: "packages/core/src/destr.ts", text: CHANGE },
+        { path: "packages/core/src/destr-shadow.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("GREEN-ON-PARENT");
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("appended stand-in");
+      expect(status).toBe(1);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 30 — a shared variable statement does not force a waiver.
+//
+// A variable statement is mirrored whole, while the self-check expected only the
+// requested names. `export const a = 1, b = 2` added by the change, with a test
+// importing only `a`, emitted both names and was refused, so a valid stand-in
+// became CANNOT-HOLLOW plus a whole-file waiver.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 30 — a shared variable statement does not force a waiver", () => {
+  const PARENT = `export const base = 0;\n`;
+  // One statement, two names; the test below imports only `a`.
+  const CHANGE = `export const base = 0;\nexport const a = 1, b = 2;\n`;
+
+  test("a stand-in asked for one name in a shared statement is written, not refused", () => {
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["a"], new Map());
+    expect(augmented.ok).toBe(true);
+    if (!augmented.ok) return;
+    // The parent's own source verbatim, then the stand-ins.
+    expect(augmented.text.startsWith(PARENT)).toBe(true);
+    // The statement's sibling is mirrored with it, because that is what the
+    // statement declares — and neither name may be declared twice.
+    expect(runtimeExportNames("scripts/mod.ts", augmented.text)).toEqual(["a", "b", "base"]);
+    expect(topLevelBindingNames("scripts/mod.ts", augmented.text)).toEqual(["a", "b", "base"]);
+  });
+
+  test("a sibling the parent already supplies still refuses, so a duplicate is still caught", () => {
+    // The invariant that must not move: a stand-in may never be appended over a
+    // name the parent supplies. Pinned as behaviour — it holds before this round's
+    // change too, because the clash check runs first; the binding-multiset
+    // comparison behind it is the backstop, not the first line.
+    const parent = `export const base = 0;\nexport const b = 20;\n`;
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["a"], new Map());
+    expect({ ok: augmented.ok }).toEqual({ ok: false });
+    if (augmented.ok) return;
+    expect(augmented.refusal).toContain("export const a = 1, b = 2;");
+    expect(augmented.refusal).toContain("`b`");
+    expect(augmented.refusal).toContain("no stand-in");
+  });
+
+  test("the same refusal reaches the plan as a refusal, not a stand-in", () => {
+    const plan = planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { a } from "./mod";\n`,
+      new Set(["scripts/mod.ts"]),
+      (path) => (path === "scripts/mod.ts" ? CHANGE : null),
+      (path) =>
+        path === "scripts/mod.ts" ? `export const base = 0;\nexport const b = 20;\n` : null,
+    );
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("`b`");
+  });
+});
+
+describe("red-on-parent round 30 — a shared variable statement, end to end", () => {
+  // Before this round's change the mirror emitted `a` and `b` while the check
+  // expected only `a`, so the augmentation was refused and the file needed a
+  // whole-file waiver to pass.
+  const PARENT = `export const base = 0;\n`;
+  const CHANGE = `export const base = 0;\nexport const a = 1, b = 2;\n`;
+  const TEST_FILE = `import { expect, test } from "bun:test";
+import { a } from "./shared-names";
+test("uses the name the shared statement adds", () => {
+  expect(a).toBe(1);
+});
+`;
+
+  test("the stand-in is written and the test is judged, not waived", () => {
+    const fixture = createFixture(
+      [PKG, { path: "packages/core/src/shared-names.ts", text: PARENT }],
+      [
+        { path: "packages/core/src/shared-names.ts", text: CHANGE },
+        { path: "packages/core/src/shared-names.test.ts", text: TEST_FILE },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("packages/core/src/shared-names.ts — appended a");
+      expect(stdout).not.toContain("CANNOT-HOLLOW");
+      expect(stdout).toContain("RIGHT-REASON-RED");
+      expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 31 — a mirrored sibling cannot shadow a name the parent re-exports.
+//
+// The change adds `export const a = 1, b = 7` to a module whose parent copy
+// already supplies `b` through `export * from "./base"`. A test imports both
+// names and asserts only `b`. The plan asks for `a` alone — the parent resolves
+// `b` — but the statement is mirrored whole, so the appended stand-in declares
+// `b` as well. A re-export creates no local binding, so the clash set did not see
+// it: the stand-in shadowed the parent's working `b` with `undefined`, the test
+// failed against the fake, and the gate scored that RIGHT-REASON-RED even though
+// the untouched parent passes the same test.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 31 — a mirrored sibling cannot shadow a name the parent re-exports", () => {
+  const BASE = `export const b = 7;\n`;
+  const PARENT = `export * from "./base";\n`;
+  // The change redeclares `b` beside the star, which is what makes mirroring the
+  // whole statement dangerous: `b` is exactly what the parent already supplies.
+  const CHANGE = `export * from "./base";\nexport const a = 1, b = 7;\n`;
+  const MODULE = "packages/core/src/star-export.ts";
+  const BASE_MODULE = "packages/core/src/base.ts";
+  const TOUCHED = new Set([MODULE]);
+
+  const readChange = (path: string): string | null =>
+    path === MODULE ? CHANGE : path === BASE_MODULE ? BASE : null;
+  const readParent = (path: string): string | null =>
+    path === MODULE ? PARENT : path === BASE_MODULE ? BASE : null;
+
+  test("the plan refuses the stand-in, and names the sibling and where the parent has it", () => {
+    const plan = planAugmentedModules(
+      "packages/core/src/star-export.test.ts",
+      `import { a, b } from "./star-export";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    // A refusal, not a stand-in: the alternative is a module that loads and
+    // answers `b` with the fake's `undefined`.
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("`b`");
+    expect(plan.refusal).toContain("./base");
+    expect(plan.refusal).toContain(MODULE);
+  });
+
+  test("an ordinary shared statement whose sibling the parent does NOT supply is still accepted", () => {
+    // Round 30's case, pinned in the other direction: `b` is not a name the
+    // parent supplies, so mirroring it beside `a` shadows nothing.
+    const parent = `export const base = 0;\n`;
+    const change = `export const base = 0;\nexport const a = 1, b = 2;\n`;
+    const plan = planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { a } from "./mod";\n`,
+      new Set(["scripts/mod.ts"]),
+      (path) => (path === "scripts/mod.ts" ? change : null),
+      (path) => (path === "scripts/mod.ts" ? parent : null),
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["a"]]);
+  });
+
+  test("the gate refuses instead of scoring a false right-reason red, end to end", () => {
+    // The unchanged parent passes this test: `b` really is 7 there. Before this
+    // round the gate appended `export const a = undefined, b = undefined` over
+    // it, the assertion failed against the fake, and the gate printed
+    // RIGHT-REASON-RED and exited 0 — certifying a test that pins nothing.
+    //
+    // After the refusal nothing is appended, so the parent's own `b` is what the
+    // test reads and the verdict is the honest one: GREEN-ON-PARENT, rejected.
+    // Not CANNOT-HOLLOW, because bun binds a missing named import to `undefined`
+    // rather than failing the link — the file still loads here, and a refusal may
+    // only replace rows the parent could not produce. The refusal's job is to
+    // keep the shadow out, and the parent's own run is the better witness.
+    const fixture = createFixture(
+      [PKG, { path: BASE_MODULE, text: BASE }, { path: MODULE, text: PARENT }],
+      [
+        { path: MODULE, text: CHANGE },
+        {
+          path: "packages/core/src/star-export.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { a, b } from "./star-export";
+test("the parent's own b is still 7", () => {
+  expect(b).toBe(7);
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // The gate rejects the file, and never certifies the fake's failure as the
+      // test's own reason.
+      expect(status).toBe(1);
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("appended stand-in");
+      expect(stdout).toContain("GREEN-ON-PARENT");
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
 });

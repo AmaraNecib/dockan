@@ -295,9 +295,10 @@ jobs:
     runs-on: ubuntu-latest
     # The job budget has to cover SETUP + the run step's own limit + the upload,
     # or a step timeout never fires: the job would cancel first and the evidence
-    # would depend on cancellation semantics. Measured setup is ~30s warm, and
-    # minutes cold (`playwright install --with-deps` is the bulk), so
-    # 6 (cold setup) + 15 (run step) + 4 (upload) = 25 with nothing to spare.
+    # would depend on cancellation semantics. Setup is ~30s with a warm browser
+    # cache and ~10m on a miss (the download is 9m17s measured), so
+    # 6 (cold setup) + 15 (run step) + 4 (upload) = 25 with
+    # nothing to spare. The budget stays at 25: a cache miss must still fit.
     timeout-minutes: 25
     env:
       # CI-only ports. Never the developer defaults (4317/5173), which other
@@ -322,6 +323,19 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # The browser download measured 9m17s of this job on run 39861711960
+      # (22:01:26 -> 22:10:43 for the install step, then 7m29s of actual specs).
+      # It is cacheable: the same lockfile always asks for the same browser build,
+      # so the key follows bun.lock. `--with-deps` stays because the apt half is
+      # fast and must not be skipped when a runner image moves.
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
       - name: Install Playwright browser
         run: bunx playwright install --with-deps chromium

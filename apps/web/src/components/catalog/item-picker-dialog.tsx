@@ -80,6 +80,10 @@ export function ItemPickerDialog({
   const matches = search.data?.matches ?? [];
   const visibleActiveIndex = activeIndex !== null && activeIndex < matches.length ? activeIndex : null;
   const matchSetKey = matches.map((match) => match.item.id).join("|");
+  // The exact-match panel reads this three times; binding it once is the narrowing
+  // (the query's data is a nullable union, so  was asserting what
+  // this line proves).
+  const exactMatch = search.data?.exact ?? null;
 
   // A refetch can replace the ranked set without a query input event. Do not
   // leave an index pointing at a different item after that result change.
@@ -120,7 +124,7 @@ export function ItemPickerDialog({
           aria-autocomplete="list"
           aria-controls="picker-results"
           aria-expanded={debounced.length > 0}
-          aria-activedescendant={visibleActiveIndex !== null ? `picker-option-${matches[visibleActiveIndex]!.item.id}` : undefined}
+          aria-activedescendant={visibleActiveIndex !== null && visibleActiveIndex < matches.length ? `picker-option-${matches[visibleActiveIndex]?.item?.id}` : undefined}
           className={cn(inputClass, "w-full px-4 py-3 text-base")}
           placeholder={t("itemsSearchPlaceholder")}
           value={query}
@@ -152,13 +156,13 @@ export function ItemPickerDialog({
             }
           }}
         />
-        {debounced.length > 0 && search.data?.exact && (
+        {debounced.length > 0 && exactMatch !== null && (
           <button
             type="button"
             className="mt-2 w-full rounded border bg-accent p-2 text-right hover:bg-accent/80"
-            onClick={() => onSelect(search.data!.exact!.item)}
+            onClick={() => onSelect(exactMatch.item)}
           >
-            {search.data.exact.item.name} <Barcode code={search.data.exact.item.barcode ?? ""} />
+            {exactMatch.item.name} <Barcode code={exactMatch.item.barcode ?? ""} />
           </button>
         )}
         <ul id="picker-results" role="listbox" aria-label={t("itemsSearchPlaceholder")} className="mt-2 max-h-80 overflow-y-auto">

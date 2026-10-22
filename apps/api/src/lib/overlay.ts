@@ -54,6 +54,14 @@ export function createOverlay(deps: OverlayDeps): RequestHandler {
       return c.text("not found", 404);
     }
     if (deps.vaultApp !== undefined && pathname.startsWith("/api/vault/")) return deps.vaultApp.fetch(c.req.raw, c.env);
+    // A build WITHOUT a vault answers the status route instead of 404ing it
+    // (#341 fresh-eyes P2). The web has to tell "this build has no vault" from
+    // "a hop refused me", and a missing route and a proxy 404 are the same
+    // bytes; only a positive answer separates them. `mode: "disabled"` is
+    // already in the web's schema and was never sent until now.
+    if (deps.vaultApp === undefined && pathname === "/api/vault/status") {
+      return c.json({ mode: "disabled" as const });
+    }
     if (pathname === "/health") {
       if (deps.api !== undefined) return deps.api(c.req.raw);
       return c.json({ ok: true, version: deps.config.version, vault: deps.vaultState() });

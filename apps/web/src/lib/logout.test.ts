@@ -108,9 +108,16 @@ describe("logoutAndReload", () => {
     // 404 is read as absence (#319 round 5). No vault session exists, which
     // makes the local clear the WHOLE credential; holding the page here left
     // the legacy app mounted after a sign-out that had succeeded.
-    globalThis.fetch = Object.assign(async (): Promise<Response> => new Response("not found", { status: 404 }), {
-      preconnect: originalFetch.preconnect,
-    });
+    // the absence is the build's own ANSWER now, not a missing route
+    // (#341 fresh-eyes P2): a 404 is what a proxy also returns
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const path = new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname;
+        if (path === "/api/vault/status") return Response.json({ mode: "disabled" });
+        return new Response("not found", { status: 404 });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
     storeVaultSessionToken("vault-session-token");
     let signedOut = false;
     await logoutAndReload(async () => {
@@ -162,6 +169,9 @@ describe("logoutAndReload", () => {
       async (input: RequestInfo | URL): Promise<Response> => {
         const path = new URL(input instanceof Request ? input.url : String(input), "http://localhost").pathname;
         if (path === "/api/vault/logout") return new Response("gateway error", { status: 502 });
+        // a vault-less build ANSWERS the status route (#341 fresh-eyes P2); a 404
+        // is a hop's accident, not evidence about the build
+        if (path === "/api/vault/status") return Response.json({ mode: "disabled" });
         return new Response("not found", { status: 404 });
       },
       { preconnect: originalFetch.preconnect },
@@ -218,16 +228,19 @@ describe("logoutAndReload", () => {
     expect(authLossReason()).toBe("signed-out");
 
     // what a FRESH PAGE finds: the flag alone puts the unlock screen up, with
-    // no markSignedOut call and no memory of this page — which is the reload
-    expect(window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toBe("1");
+    // no markSignedOut call and no memory of this page — which is the reload.
+    // `sessionStorage`, so the hold is THIS window's: a sibling tab that still
+    // holds a live credential is not gated by it (#341 fresh-eyes P2)
+    expect(window.sessionStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toBe("1");
+    expect(window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toBeNull();
     // ... and it is a flag, never a credential: one byte, no token, no
     // generation, and nothing that could be replayed to the server
-    expect(Object.keys(window.localStorage)).toEqual([SIGNED_OUT_STORAGE_KEY]);
+    expect(Object.keys(window.sessionStorage)).toEqual([SIGNED_OUT_STORAGE_KEY]);
     expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
 
     // the owner's unlock is the one thing that ends it, and it ends it for good
     clearAuthLost();
-    expect(window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toBeNull();
+    expect(window.sessionStorage.getItem(SIGNED_OUT_STORAGE_KEY)).toBeNull();
     expect(authLossReason()).toBeUndefined();
   });
 

@@ -810,7 +810,9 @@ describe("a session that died under a live window (#319)", () => {
     // status route answers `session: true` for a machine that was just signed
     // out. Without the persisted flag this mount reaches the app, which is the
     // shared-machine failure the hold exists to prevent.
-    window.localStorage.setItem(SIGNED_OUT_STORAGE_KEY, "1");
+    // `sessionStorage`: the hold belongs to the window that signed out, and a
+    // reload of THAT window is what has to land on the gate (#341 fresh-eyes P2)
+    window.sessionStorage.setItem(SIGNED_OUT_STORAGE_KEY, "1");
     vaultStatusResponse = async () =>
       Response.json({
         mode: "vault",

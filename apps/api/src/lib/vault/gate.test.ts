@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
 import http from "node:http";
@@ -878,6 +878,25 @@ describe("vault gate hardening (review supplement)", () => {
     const retryBody = await json<{ recoveryKey: string }>(retry);
     expect(retryBody.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+  });
+
+  it("answers the status route on a build with no vault, instead of 404ing it (#341 fresh-eyes P2)", async () => {
+    // The web has to tell "this build has no vault" from "a hop refused me". A
+    // missing route and a proxy 404 are the same bytes, so absence must be a
+    // POSITIVE answer — the mode the schema always allowed and nothing sent.
+    const overlay = createOverlay({
+      // SAFETY: the overlay reads only `bootToken` on this path, and the case is
+      // about a build with no vault, so no other field is consulted.
+      config: { bootToken: undefined } as never,
+      api: undefined,
+      lockedApiHandler: () => Response.json({ error: { code: "VAULT_NOT_UNLOCKED" } }, { status: 503 }),
+      vaultApp: undefined,
+      vaultState: () => "disabled",
+      webIndex: undefined,
+    });
+    const answer = await overlay(new Request("http://127.0.0.1/api/vault/status"));
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toEqual({ mode: "disabled" });
   });
 
   itHeavy("refuses credential routes from a non-loopback peer through the REAL overlay, and fails closed on an unknown peer (round-8 finding 1)", async () => {

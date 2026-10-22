@@ -97,11 +97,18 @@ export function secureOrigin(request: Request): boolean {
 /**
  * The host (host AND port) the client actually addressed this server on.
  *
- * `request.url` is built from the `Host` header by the server adapter, so this
- * is the app's own origin as the caller saw it — not a value the caller can
- * restate in a header of its own. `x-forwarded-host` is deliberately not
- * consulted: that IS a caller-chosen header, and honouring it would let a
- * request declare the origin it wants to be judged against.
+ * `request.url` is built from the `Host` header by the server adapter, so this is
+ * the app's own origin as the caller saw it. What makes it trustworthy is a
+ * property of BROWSERS, not of headers: a page cannot set `Host` on its own
+ * requests, so the value it is judged against is one it could not choose. A
+ * non-browser client can set `Host` freely — which is why this gate binds pages
+ * and not local servers, and why the local-server replay is a separate, accepted
+ * limit (ADR-0013, #343). An earlier version of this comment claimed the header
+ * was one "the caller cannot restate", which is false and would tempt a reader to
+ * trust the host somewhere it is only a header.
+ *
+ * `x-forwarded-host` is deliberately not consulted: that one a caller CAN set,
+ * and honouring it would let a request declare the origin it wants judged against.
  *
  * The `undefined` arm is defensive, not reachable through a listener: a
  * `Request` cannot be built from a URL that does not parse, so the transport

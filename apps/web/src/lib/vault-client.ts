@@ -581,12 +581,25 @@ export async function revokeVaultSession(): Promise<void> {
  *   session exists. `isAbsentVaultSession` read exactly that way and was
  *   deleted with the round-6 finding rather than left as a trap.
  */
+/** the one field a vault-less build answers, and the only one this probe reads */
+const vaultModeSchema = z.object({ mode: z.enum(["vault", "disabled"]) });
+
 export async function vaultRouteAbsent(): Promise<boolean> {
+  // A POSITIVE answer, never an inference (#341 fresh-eyes P2). A build with no
+  // vault ANSWERS `{ mode: "disabled" }`; a 404 is not evidence of one — a proxy,
+  // a renamed route and a gateway answering `{}`/`null`/HTML all produce the same
+  // bytes, and reading that as absence reloads with a live cookie.
+  //
+  // It reads the mode alone rather than through `fetchVaultStatus`, which decodes
+  // a whole vault status: a build without one has no state to report, and asking
+  // it for one would turn its honest answer into a decode failure.
   try {
-    await fetchVaultStatus();
+    const response = await fetch("/api/vault/status", { signal: AbortSignal.timeout(STATUS_PROBE_TIMEOUT_MS) });
+    if (!response.ok) return false;
+    const decoded = vaultModeSchema.safeParse(JSON.parse(await response.text()));
+    return decoded.success && decoded.data.mode === "disabled";
+  } catch {
     return false;
-  } catch (failure) {
-    return failure instanceof VaultRequestError && failure.code === "VAULT_UNSUPPORTED";
   }
 }
 

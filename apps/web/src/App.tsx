@@ -61,6 +61,27 @@ export function RequireSession({ children }: { children: ReactNode }) {
   const authLoss = useAuthLossReason();
   const authLost = authLoss !== undefined;
   /**
+   * The gate has a second reason the re-check must cover, and it took a different
+   * review family to see it (#341 fresh-eyes P1): the boot path. `vaultStatus.session`
+   * describes the cookie the browser attached when that request LEFT. Window B's
+   * unlock rotates the token; window A's boot read leaves with the dead cookie and
+   * is answered `session: false`; B's reply then installs the live one; A's answer
+   * arrives and A gates — for good, because a gated window makes no RPC call, so no
+   * refusal ever arrives, and `focus`/`visibilitychange` were only wired for a
+   * refusal. The only visible exit was the passphrase, which rotates the token and
+   * locks B out: the ping-pong the ADR names as the thing to avoid.
+   *
+   * So the re-check listens when the gate is up for EITHER reason a live session
+   * could clear: a refusal, or "the vault is unlocked and this page's credential is
+   * not the live one".
+   */
+  const vaultStatusNow = vault.status;
+  const waitingOnCredential =
+    vaultStatusNow !== undefined &&
+    vaultStatusNow.mode === "vault" &&
+    vaultStatusNow.state === "unlocked" &&
+    (vaultStatusNow.broker ? readVaultSessionToken() !== undefined : vaultStatusNow.session) === false;
+  /**
    * The in-use screen's retry asks the refused instance to re-check the folder
    * before it re-reads the status (#277). Only the button does this: a poll is
    * not a retry, or the client's rate becomes the reclaim rate (greptile P2 on
@@ -120,8 +141,9 @@ export function RequireSession({ children }: { children: ReactNode }) {
    * does B's reply install the replacement in the shared jar. A holds a working
    * credential and sits on the gate, because nothing looks again.
    *
-   * So while the screen is up for a REFUSAL, re-check when the window becomes
-   * visible again (focus, or a tab switch back). That is the cheapest shared
+   * So while the screen is up for a REFUSAL — or for the boot race above, which
+   * is the same shape one step earlier — re-check when the window becomes visible
+   * again (focus, or a tab switch back). That is the cheapest shared
    * signal a browser gives two windows, it needs no channel of our own, and the
    * ordering above is exactly what it closes: probe said false, cookie was then
    * replaced, the owner comes back to this window, the next read says live.
@@ -130,12 +152,14 @@ export function RequireSession({ children }: { children: ReactNode }) {
    * timer, so a real refusal costs one read per time the owner looks at the
    * window and never a poll — the app is not the caller's rate (the same rule
    * greptile P2 on #298 set for the reclaim tick). A read already in flight is
-   * not stacked on. And it cannot demote a sign-out: the effect is attached only
-   * for `"refusal"`, and `recoverAuthLost()` refuses every other reason anyway.
+   * not stacked on. And it cannot demote a sign-out: the effect is attached for a
+   * refusal or for a missing credential, never for `"signed-out"`, and
+   * `recoverAuthLost()` refuses every other reason anyway.
    */
   const recheckInFlightRef = useRef(false);
   useEffect(() => {
-    if (authLoss !== "refusal") return;
+    // a refusal, or the boot race above — the two reasons a LIVE session clears
+    if (authLoss !== "refusal" && !waitingOnCredential) return;
     const recheck = (): void => {
       // `visibilitychange` fires for a hidden page too, and a page nobody is
       // looking at is not where a refusal gets resolved
@@ -149,11 +173,17 @@ export function RequireSession({ children }: { children: ReactNode }) {
     };
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    // Look ONCE the moment a CREDENTIAL gate appears: the owner may be looking at
+    // the window already, so no focus event will ever come. Not for a refusal —
+    // that path already probed once, and a second read per episode is the thing
+    // the ref exists to bound.
+    if (waitingOnCredential) recheck();
     return () => {
       window.removeEventListener("focus", recheck);
       document.removeEventListener("visibilitychange", recheck);
     };
-  }, [authLoss, vault.refresh]);
+  }, [authLoss, waitingOnCredential, vault.refresh]);
   // The vault gate owns the first paint: no app route exists until the
   // encrypted store is open (ADR-0008 §4.6).
   if (vault.status !== undefined && vault.status.mode === "vault") {

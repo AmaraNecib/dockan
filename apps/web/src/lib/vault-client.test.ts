@@ -76,21 +76,26 @@ describe("a vault route this build does not have (round-4 P1)", () => {
       expect(error).toBeInstanceOf(VaultRequestError);
       if (error instanceof VaultRequestError) expect(error.code).toBe("VAULT_UNSUPPORTED");
       // ... and the code alone is a GUESS about one hop, not a statement about
-      // the build: the absence question is asked of the status route
+      // the build. Asked of the status route, and answered POSITIVELY: a 404 from
+      // the probe is not absence either (#341 fresh-eyes P2)
+      routes.set("/api/vault/status", () => new Response("not found", { status: 404 }));
+      expect(await vaultRouteAbsent()).toBe(false);
+      routes.set("/api/vault/status", () => Response.json({ mode: "disabled" }));
       expect(await vaultRouteAbsent()).toBe(true);
+      routes.delete("/api/vault/status");
     }
 
-    // the STATUS probe applies the same rule as any other request: a 404 whose
-    // body names a code is a refusal from a gateway, not an unmounted route. The
-    // first version read the status alone, which made an `absent` build reload
-    // with a live cookie — the round-4 defect one hop over (#341 round 5).
+    // Absence is a POSITIVE answer now (#341 fresh-eyes P2): a vault-less build
+    // ANSWERS `mode: "disabled"`, and nothing is inferred from a 404. A gateway
+    // envelope, a bare 404, an HTML page — none of them is evidence of a build
+    // without a vault, and reading them as one reloads with a live cookie.
     routes.set("/api/vault/status", () =>
       Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 }),
     );
     expect(await vaultRouteAbsent()).toBe(false);
-    routes.delete("/api/vault/status");
-    // and a bare 404, naming nothing, is the unmatched-route answer after all
     routes.set("/api/vault/status", () => new Response("not found", { status: 404 }));
+    expect(await vaultRouteAbsent()).toBe(false);
+    routes.set("/api/vault/status", () => Response.json({ mode: "disabled" }));
     expect(await vaultRouteAbsent()).toBe(true);
     routes.delete("/api/vault/status");
 

@@ -14,11 +14,18 @@ import { AUTH_REFUSAL } from "@dokan/contracts";
  *   flight across another window's rotation), and a live session is allowed to
  *   take it back.
  * - a SIGN-OUT the server could not confirm is a decision. It is held in this
- *   page's memory AND persisted, so neither a reload nor a storage that refuses
- *   every call can undo it (round-4 P1, round-6 finding 1): the revoke failed,
- *   the `HttpOnly` cookie is still live, and the next page load would otherwise
- *   find `status.session` true and mount the app — the shared-machine failure
- *   `logout.ts` exists to prevent.
+ *   WINDOW's memory and in its `sessionStorage`, so neither a reload nor a storage
+ *   that refuses every call can undo it (round-4 P1, round-6 finding 1): the
+ *   revoke failed, the `HttpOnly` cookie is still live, and the next page load
+ *   would otherwise find `status.session` true and mount the app — the
+ *   shared-machine failure `logout.ts` exists to prevent.
+ *
+ *   `sessionStorage`, not `localStorage` (#341 fresh-eyes P2): the hold belongs to
+ *   the window that signed out. `localStorage` is shared by every tab of the
+ *   origin, so one window's failed sign-out would gate a sibling that still held a
+ *   live credential, and any window's unlock would clear the hold of the window
+ *   that actually signed out. A tab is what asked, and a tab is what
+ *   `sessionStorage` scopes — while still surviving the F5 the hold exists for.
  */
 
 /**
@@ -47,7 +54,7 @@ export const SIGNED_OUT_STORAGE_KEY = "dokan.auth.signed-out";
  *
  * It is the half that a profile with a full quota, a blocked storage or a
  * partitioned store still gets (round-6 finding 1). Without it the hold existed
- * only in `localStorage`, so on such a profile `markSignedOut()` threw, the
+ * only in storage, so on such a profile `markSignedOut()` threw, the
  * throw was swallowed as best-effort, and `authLostState()` answered `false`
  * while the revoke had never been confirmed — `logoutAndReload()` returned
  * without reloading and without hiding the still-authenticated app. A comment
@@ -61,7 +68,7 @@ let signedOutLost = false;
 /** Whether the last sign-out could not be confirmed, read fresh every time. */
 function signedOutRemembered(): boolean {
   try {
-    return window.localStorage.getItem(SIGNED_OUT_STORAGE_KEY) === "1";
+    return window.sessionStorage.getItem(SIGNED_OUT_STORAGE_KEY) === "1";
   } catch {
     // a profile that refuses storage cannot persist the hold; `signedOutLost`
     // holds it for this page either way, and a throw here would take the app down
@@ -71,7 +78,7 @@ function signedOutRemembered(): boolean {
 
 function rememberSignedOut(): void {
   try {
-    window.localStorage.setItem(SIGNED_OUT_STORAGE_KEY, "1");
+    window.sessionStorage.setItem(SIGNED_OUT_STORAGE_KEY, "1");
   } catch {
     /* best-effort: without storage the hold lasts this page's lifetime */
   }
@@ -79,7 +86,7 @@ function rememberSignedOut(): void {
 
 function forgetSignedOut(): void {
   try {
-    window.localStorage.removeItem(SIGNED_OUT_STORAGE_KEY);
+    window.sessionStorage.removeItem(SIGNED_OUT_STORAGE_KEY);
   } catch {
     /* nothing to forget when nothing could be written */
   }

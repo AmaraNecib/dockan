@@ -53,6 +53,7 @@ import { localDateTime } from "../lib/logger";
 import { CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
+import { trimSql } from "./trim-chars";
 
 /** bun:sqlite surfaces the adjustment partial unique-index violation as
  * `UNIQUE constraint failed: supplier_account_entries.dedup_key`. Scoped to
@@ -2752,13 +2753,15 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // typed name), and a typed-only query matches by trimmed name only when
       // the invoice carries no id — so the two identities never cross-pollinate,
       // and a padded stored name (store-seam inserts, seeds) is not orphaned
-      // from its summary row.
+      // from its summary row. "Trimmed" is `trimSql` on BOTH sides: the stored
+      // column and the name asked for, so padding on either end is the same
+      // party (#337).
       const conds: SQL[] = [
         sql`${invoices.kind} = ${kind}`,
         sql`${invoices.remainingAmount} > 0`,
         counterpartyId !== null
           ? sql`${invoices.counterpartyId} = ${counterpartyId}`
-          : sql`${invoices.counterpartyId} IS NULL AND TRIM(${invoices.counterpartyName}) = TRIM(${counterpartyName})`,
+          : sql`${invoices.counterpartyId} IS NULL AND ${trimSql(invoices.counterpartyName)} = ${trimSql(counterpartyName)}`,
       ];
       const rows = await db
         .select(invoiceCols)
@@ -2771,15 +2774,19 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // The label for an id-backed group is the party's CURRENT name (joined
       // from the role's table), never the historical counterparty_name an
       // invoice snapshotted — a renamed party must not keep its old label on
-      // the debts screen. Typed-only groups still use their invoice name.
+      // the debts screen. Typed-only groups still use their invoice name, and
+      // #337 makes every name read the same trimmed identity: the group key AND
+      // the returned label are `trimSql`, so a stored name padded with anything
+      // JavaScript trims (NBSP, U+3000, a tab) is one party here and the label
+      // is the name the drill-down can ask for.
       // SAFETY: GROUP BY yields one row per (kind, party); the keys below
       // match the alias names, columns are TEXT/INTEGER per db/schema.ts.
       const aggregated = (await db.all(sql`
         SELECT invoices.kind AS kind,
                invoices.counterparty_id AS counterparty_id,
                CASE
-                 WHEN invoices.counterparty_id IS NOT NULL THEN COALESCE(customers.name, suppliers.name, invoices.counterparty_name)
-                 ELSE invoices.counterparty_name
+                 WHEN invoices.counterparty_id IS NOT NULL THEN COALESCE(customers.name, suppliers.name, ${trimSql(invoices.counterpartyName)})
+                 ELSE ${trimSql(invoices.counterpartyName)}
                END AS counterparty_name,
                SUM(invoices.remaining_amount) AS remaining_total,
                COUNT(*) AS invoice_count,
@@ -2792,7 +2799,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         LEFT JOIN customers ON invoices.counterparty_id = customers.id
         LEFT JOIN suppliers ON invoices.counterparty_id = suppliers.id
         WHERE invoices.remaining_amount > 0 AND (invoices.counterparty_id IS NOT NULL OR invoices.counterparty_name IS NOT NULL)
-        GROUP BY invoices.kind, COALESCE(invoices.counterparty_id, invoices.counterparty_name)
+        GROUP BY invoices.kind, COALESCE(invoices.counterparty_id, ${trimSql(invoices.counterpartyName)})
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
       const summaries = aggregated.map((r) => {
         const kind =

@@ -16,7 +16,10 @@ import { orpc } from "./rpc";
  * The rule here is the SERVER's, not a new one: `debtsByPartyInputSchema`
  * says an id is authoritative (the store matches on it and the name only
  * labels the request) and that a typed party is matched on its trimmed name.
- * One rule, one key, both screens.
+ * One rule, one key, both screens. #337 — the server's trim set is the same
+ * JavaScript set this file trims with (`apps/api/src/store/trim-chars.ts`), so
+ * a typed party has one identity on both sides of the wire and no spelling of
+ * it has to be refused.
  */
 
 /** which side of the ledger a party is on: a customer (SALE) or a supplier (PURCHASE) */
@@ -40,32 +43,19 @@ export type PartyBalanceInput = {
  * The canonical input for a party, or null when the party has NO identity at
  * all: no id and no usable name. The read is refused then, because such a
  * key would be the key of every other nameless party.
+ *
+ * #337 — the name is trimmed here with JavaScript's rule, and the server now
+ * applies the SAME set on its side (`apps/api/src/store/trim-chars.ts`, used by
+ * both the debts GROUP BY and the drill-down's WHERE), returning an already
+ * trimmed label. So the trimmed name is not an approximation of the stored one:
+ * it is the identity the server itself computes, which is why nothing that
+ * JavaScript's trim can change has to be refused any more.
  */
 export function partyBalanceInput(identity: PartyBalanceIdentity): PartyBalanceInput | null {
   const id = identity.counterpartyId?.trim() ?? "";
   if (id !== "") return { kind: identity.kind, counterpartyId: id, counterpartyName: null };
-  const raw = identity.counterpartyName ?? "";
-  const name = raw.trim();
+  const name = (identity.counterpartyName ?? "").trim();
   if (name === "") return null;
-  // #323 review — a name that JavaScript's trim changes but sqlite's TRIM() does
-  // not is unaddressable, so it is refused rather than looked up.
-  //
-  // The wire contract trims with JavaScript semantics
-  // (`packages/contracts/src/core.ts` `counterpartyName: z.string().trim()`),
-  // while `debtSummaries` groups by the RAW `COALESCE(counterparty_id,
-  // counterparty_name)` and `debtsByParty` matches with sqlite's `TRIM()`, which
-  // strips U+0020 only. A stored name padded with anything JavaScript strips and
-  // sqlite does not (NBSP, U+3000, tab, U+FEFF) therefore cannot be asked for at
-  // all: the request leaves trimmed, the store answers with the UNPADDED party,
-  // and the padded row's drill-down draws another party's invoices under its own
-  // label. One party's money under another party's name is worse than a refusal.
-  //
-  // Padding with ORDINARY SPACES is different and must stay readable: sqlite's
-  // TRIM() strips exactly those, so the store answers the query correctly. The
-  // two rows (padded and not) share one key as a result, which is what the server
-  // itself says — its WHERE treats them as the same typed party.
-  const spaceTrimmed = raw.replace(/^ +| +$/g, "");
-  if (name !== spaceTrimmed) return null;
   return { kind: identity.kind, counterpartyId: null, counterpartyName: name };
 }
 

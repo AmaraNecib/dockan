@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // Same hoisting as scripts/: the workspace's type packages resolve through
+    // apps/api's node_modules - there is no root node_modules/@types.
+    "typeRoots": ["../apps/api/node_modules/@types"],
+    // These tools run under bun (import.meta.main, `bun -e` in the tests), so the
+    // ambient types are node + bun - unlike tests/, which the Playwright runner loads.
+    "types": ["node", "bun"]
+  },
+  "include": ["**/*.ts"],
+  // oxlint/ is a vendored third-party plugin (install-anti-slop), never imported by
+  // repo code and executed by oxlint's own JS runtime. It is not ours to edit and it
+  // does not compile under this base config (it imports with .ts extensions, which
+  // needs allowImportingTsExtensions, and has an upstream noUncheckedIndexedAccess
+  // error in shared/dictionary-types.ts). Everything else under tools/ is typechecked.
+  "exclude": ["oxlint/**"]
+}

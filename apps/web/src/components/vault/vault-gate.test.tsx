@@ -9,7 +9,7 @@ import { createRoot } from "react-dom/client";
 import i18n from "@/lib/i18n";
 import { VaultGate } from "./vault-gate";
 import type { BrokerInvokeArgs, BrokerReply } from "@/lib/vault-broker";
-import type { VaultStatus } from "@/lib/vault-client";
+import { clearVaultSessionToken, readVaultSessionToken, type VaultStatus } from "@/lib/vault-client";
 
 /** The global the Tauri webview injects; tests stand in with this shape. */
 type FakeTauriInternals = { invoke: (command: string, args?: BrokerInvokeArgs) => Promise<BrokerReply> };
@@ -21,6 +21,9 @@ const statusFor = (state: VaultStatus["state"], extra: Partial<VaultStatus> = {}
   recoveryKeyCount: state === "unconfigured" ? 0 : 1,
   lockedForMs: 0,
   unlocked: state === "unlocked",
+  // this request's credential is the live session: the gate renders the app on
+  // that answer (#319), so a fixture that omitted it would gate everything
+  session: state === "unlocked",
   broker: false,
   ...extra,
 });
@@ -44,6 +47,8 @@ beforeEach(() => {
   routes = new Map();
   globalThis.fetch = mockFetch;
   window.sessionStorage.clear();
+  // the page holds a token in memory and nowhere else since #319
+  clearVaultSessionToken();
 });
 
 afterEach(() => {
@@ -291,7 +296,8 @@ describe("vault gate keeps one failure value (issue #217)", () => {
 describe("VaultGate", () => {
   it("creates the vault, shows the recovery key once, and requires the save acknowledgement", async () => {
     const recoveryKey = "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BC";
-    routes.set("/api/vault/setup", () => Response.json({ ok: true, recoveryKey, sessionToken: "session-token" }));
+    // the browser path's reply carries no token: the credential is the cookie (#319)
+    routes.set("/api/vault/setup", () => Response.json({ ok: true, recoveryKey }));
     let unlocked = 0;
     const host = await mount(statusFor("unconfigured"), () => {
       unlocked += 1;
@@ -305,8 +311,10 @@ describe("VaultGate", () => {
     expect(host.querySelector('[data-testid="vault-recovery-key"]')?.textContent).toBe(recoveryKey);
     const continueButton = host.querySelector<HTMLButtonElement>('[data-testid="vault-recovery-continue"]');
     expect(continueButton?.disabled).toBe(true);
-    // the session token is already stored so the app can proceed after the ack
-    expect(window.sessionStorage.getItem("dokan.vault.session")).toBe("session-token");
+    // nothing is held for the page to keep: the reply set the cookie, and the
+    // gate's ack only releases the shell's key screen (#319)
+    expect(readVaultSessionToken()).toBeUndefined();
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBeNull();
 
     const checkbox = host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-confirm"]');
     if (checkbox === null) throw new Error("missing recovery confirm");
@@ -341,6 +349,15 @@ describe("VaultGate", () => {
     await submit(host, "vault-unlock-submit");
 
     expect(calls[0]).toEqual({ command: "vault_unlock", args: { passphrase: "correct horse battery" } });
+    // The broker path's token still crosses the native bridge and is kept for
+    // the page to sign its RPC calls with (issue #141, unchanged). It is
+    // PERSISTED on this path now (#319 review P2): a webview reload used to
+    // forget it, and the broker refuses further commands once served, so even
+    // the right passphrase could not recover without restarting the app. That
+    // adds no exposure here — the page already holds the token in memory to
+    // sign its calls — while the browser path, where storage is exactly what
+    // must not exist, still holds nothing.
+    expect(readVaultSessionToken()).toBe("broker-session");
     expect(window.sessionStorage.getItem("dokan.vault.session")).toBe("broker-session");
     expect(unlocked).toBe(1);
   });

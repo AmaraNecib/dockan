@@ -6,17 +6,33 @@ import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
 import { AuthErrorAlert, authFieldKey, useAuthReporter } from "./lib/auth-errors";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
-import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
+import { isSetupKeyOnScreen, VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
-import { readVaultSessionToken, requestVaultReclaim } from "./lib/vault-client";
+import { readVaultSessionToken, requestVaultReclaim, type VaultBootStatus } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
+import { clearAuthLost, recoverAuthLost, useAuthLossReason } from "./lib/auth-refusal";
 import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY, onPreferenceWriteSettled } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
 /** The longest accepted login name: "+213550123123". */
 const PHONE_MAX_LENGTH = 13;
+
+/**
+ * Whether a status answer says THIS request's credential is the live session.
+ *
+ * One predicate for both readers of the answer — the one probe after a refusal
+ * and the re-check on focus — so they cannot disagree about what "live" means.
+ * Broker mode is never a live answer here: its token lives in this page, and a
+ * token the server refused cannot become live again by being asked.
+ */
+function isLiveSessionAnswer(fresh: VaultBootStatus | undefined): boolean {
+  // a build with no vault has no vault session to be live: the legacy gate is
+  // the session there
+  if (fresh === undefined || fresh.mode === "disabled") return false;
+  return fresh !== undefined && fresh.mode === "vault" && !fresh.broker && fresh.session;
+}
 
 /**
  * The setup name rules (`firstTimeSetupInputSchema`: `z.string().trim().min(1)`),
@@ -33,6 +49,53 @@ function setupNameKey(ownerName: string, storeName: string): MessageKey | null {
 export function RequireSession({ children }: { children: ReactNode }) {
   const vault = useVaultStatus();
   /**
+   * The session can die under a live window — another window replaced it, the
+   * owner logged out, the vault was locked. The refusal that says so must
+   * land on the unlock screen, not on a page of failed queries (#319).
+   *
+   * Read only inside the `mode === "vault"` branch below, and that is the whole
+   * scope it has. A plaintext build has no unlock screen to hold and no vault
+   * cookie to protect, so a hold there could only strand the owner on a screen
+   * with no exit (or, reloaded, loop on the persisted flag). The unconfirmed
+   * sign-out on that build is answered where the decision is made instead: with
+   * no vault route, `logout.ts` treats the local clear as the whole credential
+   * and reloads (#319 round 5 P3).
+   */
+  const authLoss = useAuthLossReason();
+  const authLost = authLoss !== undefined;
+  /**
+   * The gate has a second reason the re-check must cover, and it took a different
+   * review family to see it (#341 fresh-eyes P1): the boot path. `vaultStatus.session`
+   * describes the cookie the browser attached when that request LEFT. Window B's
+   * unlock rotates the token; window A's boot read leaves with the dead cookie and
+   * is answered `session: false`; B's reply then installs the live one; A's answer
+   * arrives and A gates — for good, because a gated window makes no RPC call, so no
+   * refusal ever arrives, and `focus`/`visibilitychange` were only wired for a
+   * refusal. The only visible exit was the passphrase, which rotates the token and
+   * locks B out: the ping-pong the ADR names as the thing to avoid.
+   *
+   * So the re-check listens when the gate is up for EITHER reason a live session
+   * could clear: a refusal, or "the vault is unlocked and this page's credential is
+   * not the live one".
+   */
+  const vaultStatusNow = vault.status;
+  /**
+   * Is the gate up for a reason a LIVE session could clear? That covers the boot
+   * race ("unlocked, but this page's credential is not the live one") AND the
+   * waiting windows (#341 round 7 P1): two windows opened before any unlock both
+   * read `locked`/`unconfigured`, so a window that is still waiting had no listener
+   * and never noticed the other window's unlock — it kept asking for a passphrase
+   * over a vault that was already open.
+   *
+   * A sign-out is the one reason a live session must NOT clear, so it is the one
+   * reason this is false.
+   */
+  const gateOpenForSession =
+    vaultStatusNow !== undefined &&
+    vaultStatusNow.mode === "vault" &&
+    (vaultStatusNow.state !== "unlocked" ||
+      (vaultStatusNow.broker ? readVaultSessionToken() !== undefined : vaultStatusNow.session) === false);
+  /**
    * The in-use screen's retry asks the refused instance to re-check the folder
    * before it re-reads the status (#277). Only the button does this: a poll is
    * not a retry, or the client's rate becomes the reclaim rate (greptile P2 on
@@ -41,19 +104,125 @@ export function RequireSession({ children }: { children: ReactNode }) {
   const retryRefusedFolder = useCallback(() => {
     void requestVaultReclaim().then(() => vault.refresh());
   }, [vault.refresh]);
+  /**
+   * A refusal can be TRANSIENT, and the unlock screen must not be the only way
+   * out of it (#319 review P1). A query in flight across another window's
+   * `changeVaultPassphrase` rotation is refused with a perfectly live cookie
+   * behind it; the only other exit was re-entering the passphrase, which
+   * rotates the token and refuses the window that was working — two windows
+   * taking turns locking each other out. So while the refusal is up, ask the
+   * server ONCE whether this request's credential is live again, and drop the
+   * refusal only on that fresh answer. Recovery is a status read, not a
+   * rotation.
+   *
+   * The answer has to be the one the probe read, not the status already on
+   * screen: that one was read before the refusal, and deciding on it recovers a
+   * refusal that is real. The ref bounds it to one probe per episode, because a
+   * real loss would otherwise probe on every re-render. Broker mode is not
+   * recoverable by asking — its token lives in this page, and a token the server
+   * refused cannot become live again — so recovery there stays a reload or a
+   * passphrase.
+   *
+   * What this can NOT promise, and does not pretend to: the answer is true at the
+   * moment it was BUILT. `appliedRef` discards a read a local unlock overtook,
+   * but a lock has no local `setStatus` to race — so a reply built while the
+   * session was live and delivered after the lock clears the refusal and mounts
+   * the app for as long as it takes the first query to come back refused, which
+   * raises the gate again. Closing that window needs a value the refusal itself
+   * carries (a session epoch) for the page to compare the answer against, and
+   * that is a contract change, not a guard. It is not a way in: every route
+   * behind the mounted app refuses on the dead session (#319 round 4).
+   */
+  const reprobedRef = useRef(false);
+  useEffect(() => {
+    if (!authLost) {
+      reprobedRef.current = false;
+      return;
+    }
+    if (reprobedRef.current) return;
+    reprobedRef.current = true;
+    void vault.refresh().then((fresh) => {
+      // `recoverAuthLost`, not `clearAuthLost`: a sign-out the server never
+      // confirmed is not undone by a live cookie (see auth-refusal.ts).
+      if (isLiveSessionAnswer(fresh)) recoverAuthLost();
+    });
+  }, [authLost, vault.refresh]);
+  /**
+   * The ONE probe per episode above is answered once, and that is the round-6
+   * finding (3 and 4): two windows share one cookie, and the probe can lose the
+   * race for it. Window B rotates the token; window A's next call is refused; A's
+   * probe leaves with the OLD cookie and reads `session: false` — and only then
+   * does B's reply install the replacement in the shared jar. A holds a working
+   * credential and sits on the gate, because nothing looks again.
+   *
+   * So while the screen is up for a REFUSAL — or for the boot race above, which
+   * is the same shape one step earlier — re-check when the window becomes visible
+   * again (focus, or a tab switch back). That is the cheapest shared
+   * signal a browser gives two windows, it needs no channel of our own, and the
+   * ordering above is exactly what it closes: probe said false, cookie was then
+   * replaced, the owner comes back to this window, the next read says live.
+   *
+   * Bounded, and by construction rather than by a counter: a listener is not a
+   * timer, so a real refusal costs one read per time the owner looks at the
+   * window and never a poll — the app is not the caller's rate (the same rule
+   * greptile P2 on #298 set for the reclaim tick). A read already in flight is
+   * not stacked on. And it cannot demote a sign-out: the effect is attached for a
+   * refusal or for a missing credential, never for `"signed-out"`, and
+   * `recoverAuthLost()` refuses every other reason anyway.
+   */
+  const recheckInFlightRef = useRef(false);
+  useEffect(() => {
+    // a refusal, or the boot race above — the two reasons a LIVE session clears
+    if (authLoss === "signed-out" || !gateOpenForSession) return;
+    const recheck = (): void => {
+      // `visibilitychange` fires for a hidden page too, and a page nobody is
+      // looking at is not where a refusal gets resolved
+      if (document.visibilityState === "hidden") return;
+      // ... and never while this window is showing a recovery key it has not had
+      // confirmed: a setup installs the live cookie BEFORE the owner writes the
+      // key down, so applying the now-unlocked status would unmount the screen and
+      // destroy the only copy of it (#341 round 8 P1)
+      if (isSetupKeyOnScreen()) return;
+      if (recheckInFlightRef.current) return;
+      recheckInFlightRef.current = true;
+      void vault.refresh().then((fresh) => {
+        recheckInFlightRef.current = false;
+        if (isLiveSessionAnswer(fresh)) recoverAuthLost();
+      });
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    // Look ONCE the moment a CREDENTIAL gate appears: the owner may be looking at
+    // the window already, so no focus event will ever come. Not for a refusal —
+    // that path already probed once, and a second read per episode is the thing
+    // the ref exists to bound.
+    recheck();
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [authLoss, gateOpenForSession, vault.refresh]);
   // The vault gate owns the first paint: no app route exists until the
   // encrypted store is open (ADR-0008 §4.6).
   if (vault.status !== undefined && vault.status.mode === "vault") {
     const vaultStatus = vault.status;
-    // A client without the in-process session token is treated as locked even
-    // when the server stays unlocked: a new window must re-enter the passphrase
-    // rather than inherit access it was never given.
-    const hasSession = readVaultSessionToken() !== undefined;
-    if (vaultStatus.state !== "unlocked" || !hasSession) {
+    // The browser path's credential is a cookie this page cannot read, so
+    // whether this window holds one is the server's business — and the status
+    // route answers it for THIS request (#319), so a window with no valid
+    // cookie lands on the unlock screen instead of mounting the app and being
+    // sent back there by its first refused query. The broker path's token
+    // lives in this page, so a window without it has no session at all.
+    const hasSession = vaultStatus.broker ? readVaultSessionToken() !== undefined : vaultStatus.session;
+    if (vaultStatus.state !== "unlocked" || !hasSession || authLost) {
       return (
         <VaultGate
           status={vaultStatus}
-          onUnlocked={() => vault.setStatus({ ...vaultStatus, state: "unlocked", unlocked: true })}
+          onUnlocked={() => {
+            clearAuthLost();
+            // the unlock minted a fresh credential, which is exactly what the
+            // status route would now report: this window holds the live session
+            vault.setStatus({ ...vaultStatus, state: "unlocked", unlocked: true, session: true });
+          }}
         />
       );
     }

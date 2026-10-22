@@ -6,6 +6,7 @@ import {
   VaultRequestError,
   acknowledgeVaultSetup,
   fetchVaultStatus,
+  noteVaultMode,
   fetchVaultSetupWarning,
   isVaultPassphraseLongEnough,
   readSessionTokenFromHash,
@@ -17,9 +18,9 @@ import {
   vaultUnlock,
   vaultUnlockWithRecovery,
   type VaultCleanupOutcome,
+  type VaultBootStatus,
   type VaultStatus,
 } from "@/lib/vault-client";
-
 /**
  * The pre-boot vault gate (ADR-0008 §4.6). Every app screen stays unmounted
  * until the passphrase (or a recovery key) opens the encrypted store; the
@@ -58,13 +59,18 @@ const VAULT_STATUS_FAILURES = new Map<string, VaultFailure>([
 const VAULT_REFUSAL_POLL_MS = 5_000;
 
 type VaultHook = {
-  status: VaultStatus | undefined;
+  status: VaultBootStatus | undefined;
   /** "unsupported" = legacy build; "unreachable" = show retry, never login;
    *  "in-use" = another copy holds the folder (#276); "stale-lock" = the lock's
    *  pid stopped beating and may be recycled (#283) */
   failure: VaultFailure | undefined;
   setStatus: (status: VaultStatus) => void;
-  refresh: () => void;
+  /**
+   * Re-read the status. Resolves with the answer it read, so a caller that has
+   * to DECIDE on the fresh answer (the refusal re-probe in `App.tsx`) does not
+   * have to guess from the render that triggered it.
+   */
+  refresh: () => Promise<VaultBootStatus | undefined>;
 };
 
 /** The input a gate refusal points at; null means the form-level alert. */
@@ -75,10 +81,48 @@ type VaultGateField = "passphrase" | "confirm" | "recovery" | null;
  * token the desktop shell minted at unlock, which always lands in
  * sessionStorage before the first RPC call.
  */
+/**
+ * Whether THIS window is showing a recovery key it has not yet had confirmed.
+ *
+ * A setup installs the live cookie before the owner confirms having saved the key
+ * (#341 round 8 P1). If a background status read then lands — the focus re-check
+ * that lets a waiting sibling window recover — the gate unmounts and the key is
+ * gone before it was written down, with the confirmation and the cleanup warning
+ * skipped. So the re-check asks this before it refreshes: recovery of a sibling
+ * must not cost this window its only copy of the key.
+ */
+let setupKeyOnScreen = false;
+
+export function noteSetupKeyOnScreen(shown: boolean): void {
+  setupKeyOnScreen = shown;
+}
+
+export function isSetupKeyOnScreen(): boolean {
+  return setupKeyOnScreen;
+}
+
 export function useVaultStatus(): VaultHook {
-  const [status, setStatus] = useState<VaultStatus | undefined>(undefined);
+  const [status, setStatus] = useState<VaultBootStatus | undefined>(undefined);
   const [failure, setFailure] = useState<VaultFailure | undefined>(undefined);
   const aliveRef = useRef(true);
+  /**
+   * How many status answers this hook has applied. It is what makes a READ
+   * stale-able (#319 round 3): the owner's unlock installs a status of its own
+   * (`setStatus`, from `onUnlocked`), and a read that was issued BEFORE that
+   * unlock describes a world that no longer exists. Applying it would put the
+   * gate back for up to `VAULT_REFUSAL_POLL_MS` with the vault wide open — the
+   * refusal probe in `App.tsx` is exactly that shape: its request leaves while
+   * the screen is up, the owner unlocks, and then the pre-unlock answer lands.
+   */
+  const appliedRef = useRef(0);
+
+  /** Apply an answer, and mark it the newest one this hook knows. */
+  const settle = useCallback((next: VaultBootStatus): void => {
+    // what kind of build this is, remembered for the sign-out (#341 round 8)
+    noteVaultMode(next.mode === "disabled" ? "disabled" : "vault");
+    appliedRef.current += 1;
+    setStatus(next);
+  }, []);
 
   /**
    * Read the status once.
@@ -89,24 +133,34 @@ export function useVaultStatus(): VaultHook {
    * loading screen while `failure` is undefined, so the sentence and the retry
    * button disappeared and came back every poll, and the keyboard focus that
    * was on the button was dropped with them.
+   *
+   * The answer is only applied if nothing newer has been applied since the read
+   * started, and resolves `undefined` when it was overtaken: a caller that has
+   * to DECIDE on the answer (the refusal re-probe) must not decide on one the
+   * page has already moved past.
    */
-  const load = useCallback(() => {
-    fetchVaultStatus()
-      .then((result) => {
-        if (!aliveRef.current) return;
-        setStatus(result);
-        setFailure(undefined);
-      })
-      .catch((reason) => {
-        if (!aliveRef.current) return;
+  const load = useCallback(async (): Promise<VaultBootStatus | undefined> => {
+    const appliedAtStart = appliedRef.current;
+    try {
+      const result = await fetchVaultStatus();
+      // a local answer (an unlock) landed while this read was in flight
+      if (appliedAtStart !== appliedRef.current) return undefined;
+      if (!aliveRef.current) return result;
+      settle(result);
+      setFailure(undefined);
+      return result;
+    } catch (reason) {
+      if (aliveRef.current && appliedAtStart === appliedRef.current) {
         const code = reason instanceof VaultRequestError ? reason.code : "VAULT_UNREACHABLE";
         const mapped = VAULT_STATUS_FAILURES.get(code) ?? "unreachable";
         // the recycled-pid flag only ever refines the lock refusal: it must not
         // repaint an unrelated failure that happened to carry the field
         const staleLock = reason instanceof VaultRequestError && reason.staleHeartbeat && mapped === "in-use";
         setFailure(staleLock ? "stale-lock" : mapped);
-      });
-  }, []);
+      }
+      return undefined;
+    }
+  }, [settle]);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -129,7 +183,7 @@ export function useVaultStatus(): VaultHook {
     return () => clearInterval(timer);
   }, [failure, load]);
 
-  return { status, failure, setStatus, refresh: load };
+  return { status, failure, setStatus: settle, refresh: load };
 }
 
 /** A form-level error announced through role="alert". */
@@ -171,6 +225,12 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [savedConfirmed, setSavedConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
+  // the key screen owns the window only while it is the current screen
+  useEffect(() => {
+    noteSetupKeyOnScreen(screen === "recovery-show" && recoveryKey !== null);
+  }, [screen, recoveryKey]);
+  useEffect(() => () => noteSetupKeyOnScreen(false), []);
+
   // A failure and the field it blames are ONE value: setting one always sets
   // the other, so a server error that names no field can never strand a stale
   // field blame (and edit-clear can never swallow an unrelated message).
@@ -323,8 +383,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               return;
             }
             void run(async () => {
-              const token = await vaultUnlockWithRecovery(recoveryInput, status.broker);
-              storeVaultSessionToken(token);
+              await vaultUnlockWithRecovery(recoveryInput, status.broker);
               onUnlocked();
             });
           }}
@@ -382,7 +441,6 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
             }
             void run(async () => {
               const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
-              storeVaultSessionToken(result.sessionToken);
               setRecoveryKey(result.recoveryKey);
               setScreen("recovery-show");
               if (status.broker) {
@@ -464,8 +522,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
             return;
           }
           void run(async () => {
-            const token = await vaultUnlock(passphrase, status.broker);
-            storeVaultSessionToken(token);
+            await vaultUnlock(passphrase, status.broker);
             onUnlocked();
           });
         }}

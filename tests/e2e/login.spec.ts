@@ -92,3 +92,40 @@ test("an empty login field shows Arabic copy, never the browser bubble", async (
   await expect(alert).toHaveText("كلمة السر قصيرة جداً. استعمل 4 أحرف على الأقل.");
   await expect(page.getByLabel("كلمة السر")).toBeFocused();
 });
+
+/**
+ * Signing out reloads the page on the plaintext build too (#319 round 4).
+ *
+ * This suite runs with `DOKAN_VAULT=disabled`, so `/api/vault/logout` is not
+ * mounted and the revoke answers 404. Reading that as "the revoke failed" held
+ * the page instead of reloading — the only build in which the no-vault answer
+ * is the COMMON case, and the app stayed mounted after a sign-out the server had
+ * already accepted.
+ *
+ * What is asserted is the reload, because only a fresh document can prove the
+ * page did not merely unmount a subtree. The browser session itself does not
+ * die here: better-auth's origin check refuses the sign-out POST behind the vite
+ * proxy (`Invalid origin: http://127.0.0.1:5173` — its baseURL is the api's own
+ * origin), so the session cookie survives and the reloaded page can sign back
+ * in. That refusal predates this change and is not what this case is about.
+ */
+test("signing out on the plaintext build reloads the page", async ({ page }) => {
+  await signIn(page);
+  // a value only a fresh document can forget
+  await page.evaluate(() => {
+    // SAFETY: a probe property this test sets on the page's own window
+    (window as { signedOutReloadProbe?: number }).signedOutReloadProbe = 1;
+  });
+
+  await page.getByRole("button", { name: "خروج" }).click();
+  // the dialog's confirm button, not the header icon that opened it (same name)
+  await page.getByRole("dialog").getByRole("button", { name: "خروج" }).click();
+
+  await expect
+    .poll(
+      // SAFETY: the same probe, read back from whatever document is on screen now
+      async () => await page.evaluate(() => (window as { signedOutReloadProbe?: number }).signedOutReloadProbe),
+      { timeout: 10_000 },
+    )
+    .toBeUndefined();
+});

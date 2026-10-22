@@ -1,23 +1,93 @@
-import { clearVaultSessionToken, revokeVaultSession } from "./vault-client";
+import { clearVaultSessionToken, observedVaultModeNow, revokeVaultSession, vaultBuildMode } from "./vault-client";
+import { markSignedOut } from "./auth-refusal";
 import { brokerAvailable, brokerCommands, invokeBrokerVoid } from "./vault-broker";
 
 /** What a sign-out call resolves to; better-auth returns a data envelope. */
 export type SignOutResult = { data: unknown } | null | undefined;
 
 /**
- * Logout for both credential worlds. Better Auth signs the session out, but in
- * vault mode the owner access rides `dokan.vault.session` in sessionStorage;
- * leaving it behind means the reload lands straight back in the app without a
- * passphrase on a shared computer. The server-side session is revoked FIRST
- * (finding: a copied token kept authorising RPCs after logout), then the local
- * token is cleared, and the reload always happens.
+ * What the revoke established about the server's copy of the credential.
+ *
+ * - `revoked` — the server confirmed it dropped the session.
+ * - `absent` — there is no vault credential for a reload to walk back in with:
+ *   this build mounts no vault route at all. The local clear WAS the whole
+ *   credential. NOTE the narrowness: absence is not "the revoke said there was
+ *   nothing to revoke" (see `revokeOutcome`).
+ * - `unconfirmed` — a vault may still accept a live cookie. Only this one means
+ *   the reload would walk back into the app.
  */
-export async function logoutAndReload(signOut: () => Promise<SignOutResult>): Promise<void> {
+type RevokeOutcome = "revoked" | "absent" | "unconfirmed";
+
+async function revokeOutcome(vaultEnabled: boolean): Promise<RevokeOutcome> {
+  // NO VAULT IN THIS BUILD means no vault cookie for a reload to walk back in
+  // with: the credential is the better-auth session, and `signOut()` ends it.
+  // Asking the vault-status route here was wrong twice over (#341 round 7 P1):
+  // that route can fail on a plaintext build (a proxy, a sidecar restart), and a
+  // failed probe held the page while the shop stayed on screen — the exact
+  // shared-machine failure the hold exists to prevent, inverted. The page already
+  // knows what kind of build it is, so the decision does not need a probe.
+  if (!vaultEnabled) return "absent";
   try {
     await revokeVaultSession();
-  } catch {
-    // an already-revoked or unreachable session must not block the logout
+    return "revoked";
+  } catch (error) {
+    // An absent session is not a failed revoke. Reading "not success" as
+    // "unconfirmed" was the round-4 defect: the legacy build has no logout
+    // route at all, so a sign-out the server never even saw held the page and
+    // left the app mounted on a session that was already gone.
+    if (!(error instanceof Error)) return "unconfirmed";
+    // ABSENCE IS ASKED OF THE BUILD, NEVER READ OFF THIS CALL (round-6 finding
+    // 2). `VAULT_NOT_UNLOCKED` used to count as "nothing to revoke" here, and it
+    // is not that: the API answers it for an OLD token as readily as for no
+    // session at all. Another window rotating the token is exactly how logout
+    // comes to carry the old cookie — and reading that 401 as absence skipped
+    // `markSignedOut()` and RELOADED, which put the replacement cookie into the
+    // shared jar and landed the page back in the app. So the revoke hop's own
+    // code decides nothing; whether a vault cookie can walk back in is the
+    // status route's answer, and it is the same read the gate makes on boot.
+    //
+    // Three answers, because two of them are not the same question (#341 round 7
+    // P1). `disabled` — no vault in this build, so there is no vault cookie to
+    // walk back in with and the local clear was the whole credential: reload.
+    // `vault` — a vault exists, so hold. `unknown` — the probe itself failed (a
+    // proxy, a restarting sidecar): fall back to the revoke's own answer, whose
+    // bodiless 404 is the one signal a vault-less build gives when the status
+    // route cannot be reached at all.
+    // A build the page has already SEEN to have no vault needs no probe at all:
+    // there is no vault cookie, and asking at sign-out only adds a way to fail.
+    if (observedVaultModeNow() === "disabled") return "absent";
+    const build = await vaultBuildMode();
+    if (build === "disabled") return "absent";
+    // `unknown` is NOT absence (#341 round 8 P1): a probe that failed cannot tell
+    // "no vault here" from "the proxy died", and reading it as absence reloads
+    // with a live cookie — the defect this whole branch exists to prevent.
+    // `unknown` is NOT absence (#341 round 8 P1): a probe that failed cannot tell
+    // "no vault here" from "the proxy died", and reading it as absence reloads
+    // with a live cookie — the defect this whole branch exists to prevent.
+    return "unconfirmed";
   }
+}
+
+/**
+ * Logout for both credential worlds. Better Auth signs the session out, and in
+ * vault mode the owner access rides one live token: the browser path carries it
+ * in an `HttpOnly` cookie that survives the reload, the broker path in this
+ * page's storage (#319). Leaving either behind means landing straight back in
+ * the app without a passphrase on a shared computer.
+ *
+ * So the RELOAD is not tied to "the call succeeded": it is tied to "no live
+ * cookie can walk back in". A confirmed revoke says that, and so does a server
+ * that answered "there is nothing to revoke" — no vault route in this build, or
+ * no session. The page cannot disable an `HttpOnly` cookie by itself, so a
+ * reload after an UNCONFIRMED revoke — a 403, a restarting sidecar, a refused
+ * origin — would arrive with the cookie still live and put the owner back in
+ * the app; that case shows the unlock screen instead of reloading.
+ */
+export async function logoutAndReload(
+  signOut: () => Promise<SignOutResult>,
+  options: { vaultEnabled: boolean } = { vaultEnabled: true },
+): Promise<void> {
+  const revoked = await revokeOutcome(options.vaultEnabled);
   clearVaultSessionToken();
   // Broker mode: the serving sidecar is one-shot, so replace it with a freshly
   // verified sibling before the reload; otherwise the reloaded gate could
@@ -33,9 +103,16 @@ export async function logoutAndReload(signOut: () => Promise<SignOutResult>): Pr
   try {
     await signOut();
   } catch {
-    // the server session may already be gone; the local session is cleared
-    // and the reload below is the authoritative logout
-  } finally {
-    window.location.reload();
+    // the server session may already be gone; the revoke above is what gates
+    // the reload, not this call
   }
+  if (revoked === "unconfirmed") {
+    // The credential the reload would present may still be live. Show the
+    // unlock screen in place: `markSignedOut` outranks the "a live cookie is
+    // not a reason to sit on the gate" recovery in App.tsx, and it is
+    // persisted, so an F5 cannot undo it (round-4 P1).
+    markSignedOut();
+    return;
+  }
+  window.location.reload();
 }

@@ -105,6 +105,28 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     }
   });
 
+  it("says the address is refused without naming one, so no fill-in reaches the owner (#319 round 5)", () => {
+    // The callers do not pass a value: the RPC seam hands over the bare code
+    // `VAULT_ORIGIN_FORBIDDEN` (party-forms, party-picker, customer-settle), so
+    // a sentence with a placeholder reached the owner as literal `{{origin}}`.
+    // Not passing one is therefore the case under test, and the old test
+    // passed a value, which is why it could not see this.
+    const copy = tError("VAULT_ORIGIN_FORBIDDEN");
+    // no unfilled placeholder can reach the owner, by either delimiter
+    expect(copy).not.toContain("{{");
+    expect(copy).not.toContain("}}");
+    expect(copy).toMatch(/[\u0600-\u06FF]/);
+    // A value the page HAS must not appear either: on a refused page
+    // `window.location.origin` is the refused address, so naming it tells the
+    // owner to open the address that just refused them.
+    expect(copy).not.toContain("127.0.0.1");
+    expect(copy).not.toContain("http");
+    // and it is a different remedy from the peer-address rule one line above
+    expect(copy).not.toBe(tError("VAULT_LOOPBACK_REQUIRED"));
+    // the copied remedy was the loopback rule's own sentence
+    expect(copy).not.toContain("افتح دكان على الجهاز نفسه");
+  });
+
   it("says something honest and calm when the failure is unknown, never 'unexpected'", () => {
     const generic = i18n.t("errorGeneric");
     expect(tError("a sentence no i18n key matches")).toBe(generic);

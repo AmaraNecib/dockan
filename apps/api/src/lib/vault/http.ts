@@ -19,6 +19,13 @@ import {
   type VaultSession,
 } from "./manager";
 import { VaultFormatError } from "./format";
+import {
+  clearedVaultSessionCookie,
+  resolveVaultCredential,
+  vaultOriginGate,
+  vaultSessionPayload,
+  type VaultSessionPayload,
+} from "./session";
 import type { AppConfig } from "../../config";
 
 /**
@@ -29,8 +36,14 @@ import type { AppConfig } from "../../config";
  * All responses are JSON with a stable `error.code` (plus structured extras
  * such as `retryAfterMs`). The API never ships display copy: the web owns
  * every sentence through its i18n layer (locale-neutral guard). Secrets never
- * appear in URLs, logs or error text; the session token is the only credential
- * and it rides a header.
+ * appear in URLs, logs or error text.
+ *
+ * The session token is the only credential and it rides ONE of two
+ * transports, chosen by this server's mode and not by the request (issue
+ * #319): a browser-mode server hands it to the browser in an `HttpOnly`
+ * cookie — never in the response body — and a broker-mode server (the
+ * packaged desktop) returns it in the body because the secret crosses the
+ * native bridge there by design. See `lib/vault/session.ts`.
  */
 
 export type VaultBootstrapInput = {
@@ -145,6 +158,25 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   app.use("/api/vault/*", async (c, next) => {
     if (deps.config.vaultBroker && requiresBroker(c.req.path)) return errorResponse("VAULT_BROKER_REQUIRED", 403);
     if (requiresLoopback(c.req.path) && !isLoopbackRequest(c)) return errorResponse("VAULT_LOOPBACK_REQUIRED", 403);
+    // Every LOOPBACK-REQUIRED route refuses a request from an origin that is
+    // not this app's own — including the routes that run before any cookie
+    // exists (#319). The scope is `requiresLoopback`, not "every vault route":
+    // `/api/vault/status` reads the credential (to answer `session`) and is not
+    // gated, so a status read from a foreign page is answered rather than
+    // refused. The rule itself lives in `session.ts`, one copy, and the RPC
+    // seam asks the same one. See `vaultOriginGate` for why a loopback origin is
+    // not enough and why broker mode is exempt.
+    //
+    // The code is the seam's code, not the peer's (#319 round 3): a foreign
+    // origin is `VAULT_ORIGIN_FORBIDDEN`, the same string the RPC seam throws,
+    // because it is the same rule and the same refusal. `VAULT_LOOPBACK_REQUIRED`
+    // stays the answer to the OTHER question one line up — the peer address is
+    // not loopback — which no origin can describe. One rule, one code, and one
+    // sentence for each: a request from `127.0.0.1` on another port is loopback
+    // and used to be told it was not.
+    if (requiresLoopback(c.req.path) && vaultOriginGate(c.req.raw, { broker: deps.config.vaultBroker }) === "foreign-origin") {
+      return errorResponse("VAULT_ORIGIN_FORBIDDEN", 403);
+    }
     return next();
   });
 
@@ -167,10 +199,37 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     return provided !== undefined && tokenMatches(provided, deps.config.bootToken);
   };
 
-  const sessionOk = (request: Request): boolean => deps.manager.sessionMatches(request.headers.get("x-vault-session"));
+  /**
+   * The session check that can say WHY it refused (#319): a request with no
+   * usable session is `VAULT_NOT_UNLOCKED`, and one that carries a credential
+   * the server no longer holds is the same answer. One place, so every route
+   * that needs the session refuses the same way.
+   *
+   * There is no foreign-origin arm: every route that asks this question
+   * requires loopback, and the middleware above refuses a foreign-origin
+   * request to those routes first. The rule has one copy (`vaultOriginGate`)
+   * and one refusal; a second arm here could never fire.
+   */
+  const sessionRefusal = (request: Request): { code: VaultErrorCode; status: number } | undefined => {
+    const resolution = resolveVaultCredential(request, { broker: deps.config.vaultBroker });
+    if (resolution.kind !== "credential") return { code: "VAULT_NOT_UNLOCKED", status: 401 };
+    // every cookie of this name the jar presented: a planted duplicate can
+    // arrive first, and only one token is live either way (#319 round 5)
+    if (resolution.tokens.some((token) => deps.manager.sessionMatches(token))) return undefined;
+    return { code: "VAULT_NOT_UNLOCKED", status: 401 };
+  };
 
   app.get("/api/vault/status", (c) => {
     const status = deps.manager.status();
+    // Whether THIS request's credential is the live session (#319). The gate
+    // needs it: a browser window with no valid cookie must be sent to the
+    // unlock screen before the app renders, instead of being sent there by its
+    // first refused query — that is the page of failed queries the module
+    // exists to prevent, only shorter. A boolean discloses nothing to a caller
+    // that already holds (or lacks) the credential it describes.
+    const resolution = resolveVaultCredential(c.req.raw, { broker: deps.config.vaultBroker });
+    const session =
+      resolution.kind === "credential" && resolution.tokens.some((token) => deps.manager.sessionMatches(token));
     return c.json({
       mode: "vault" as const,
       state: status.state,
@@ -180,6 +239,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       recoveryKeyCount: status.state === "unlocked" ? status.recoveryKeyCount : 0,
       lockedForMs: status.lockedForMs,
       unlocked: deps.manager.unlocked,
+      // this request's own credential, and never another window's
+      session,
       // the shell's stdin broker owns the credential prompt; the gate UI then
       // routes unlock/setup through Tauri IPC instead of these HTTP routes
       broker: deps.config.vaultBroker,
@@ -255,14 +316,18 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       }
       deps.logger.info("VAULT_SETUP_DONE", "vault created; recovery key shown once");
       // the recovery key is the only time the plaintext code ever leaves the vault
-      return c.json({
-        ok: true as const,
-        recoveryKey: prepared.recoveryKey,
-        sessionToken: session.token,
-        sessionGeneration: session.generation,
-        plaintextStatus: cleanup.status,
-        plaintextRemaining: cleanup.remaining,
-      });
+      const payload = sessionResponse(deps, c.req.raw, session);
+      return c.json(
+        {
+          ok: true as const,
+          recoveryKey: prepared.recoveryKey,
+          ...payload.body,
+          plaintextStatus: cleanup.status,
+          plaintextRemaining: cleanup.remaining,
+        },
+        200,
+        payload.headers,
+      );
     } catch (error) {
       if (error instanceof VaultAlreadyConfiguredError) return errorResponse("VAULT_ALREADY_CONFIGURED", 409);
       if (error instanceof VaultSetupInProgressError) return errorResponse("VAULT_SETUP_IN_PROGRESS", 409);
@@ -276,10 +341,13 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   });
 
   app.post("/api/vault/logout", (c) => {
-    if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
+    const refusal = sessionRefusal(c.req.raw);
+    if (refusal !== undefined) return errorResponse(refusal.code, refusal.status);
     // revoke the in-process session: a copied token stops authorising RPCs
     deps.manager.revokeSession();
-    return c.json({ ok: true as const });
+    // the browser path's credential is the cookie, so it goes with the session
+    if (deps.config.vaultBroker) return c.json({ ok: true as const });
+    return c.json({ ok: true as const }, 200, { "set-cookie": clearedVaultSessionCookie(c.req.raw) });
   });
 
   app.post("/api/vault/unlock", async (c) => {
@@ -297,13 +365,15 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   });
 
   app.get("/api/vault/recovery-keys", (c) => {
-    if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
+    const refusal = sessionRefusal(c.req.raw);
+    if (refusal !== undefined) return errorResponse(refusal.code, refusal.status);
     const wraps = deps.manager.metadata().wraps.filter((wrap) => wrap.kind === "recovery");
     return c.json({ keys: wraps });
   });
 
   app.post("/api/vault/recovery-keys", async (c) => {
-    if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
+    const refusal = sessionRefusal(c.req.raw);
+    if (refusal !== undefined) return errorResponse(refusal.code, refusal.status);
     try {
       const added = await deps.manager.addRecoveryKey();
       await refreshBackupAfterCredentialChange();
@@ -315,14 +385,16 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   });
 
   app.delete("/api/vault/recovery-keys/:id", async (c) => {
-    if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
+    const refusal = sessionRefusal(c.req.raw);
+    if (refusal !== undefined) return errorResponse(refusal.code, refusal.status);
     try {
       const session = await deps.manager.removeRecoveryKey(c.req.param("id"));
       await refreshBackupAfterCredentialChange();
       // return the token and the generation it was minted at TOGETHER: a
       // rotation during the awaited refresh must never pair our (now revoked)
       // token with a newer generation (round-8 finding 2)
-      return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation });
+      const payload = sessionResponse(deps, c.req.raw, session);
+      return c.json({ ok: true as const, ...payload.body }, 200, payload.headers);
     } catch (error) {
       if (error instanceof Error && error.message === "VAULT_RECOVERY_NOT_FOUND") return errorResponse("VAULT_RECOVERY_NOT_FOUND", 404);
       if (error instanceof Error && error.message === "VAULT_LAST_RECOVERY_KEY") return errorResponse("VAULT_LAST_RECOVERY_KEY", 409);
@@ -331,13 +403,15 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   });
 
   app.post("/api/vault/change-passphrase", async (c) => {
-    if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
+    const refusal = sessionRefusal(c.req.raw);
+    if (refusal !== undefined) return errorResponse(refusal.code, refusal.status);
     const body = changePassphraseSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
     try {
       const session = await deps.manager.changePassphrase(body.data.currentPassphrase, body.data.newPassphrase);
       await refreshBackupAfterCredentialChange();
-      return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation });
+      const payload = sessionResponse(deps, c.req.raw, session);
+      return c.json({ ok: true as const, ...payload.body }, 200, payload.headers);
     } catch (error) {
       if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_PASSPHRASE", 401);
       if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });
@@ -361,7 +435,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     try {
       const session = await deps.manager.setPassphraseFromRecovery(body.data.recoveryKey, body.data.newPassphrase);
       await refreshBackupAfterCredentialChange();
-      return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation });
+      const payload = sessionResponse(deps, c.req.raw, session);
+      return c.json({ ok: true as const, ...payload.body }, 200, payload.headers);
     } catch (error) {
       if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_RECOVERY", 401);
       if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });
@@ -373,8 +448,29 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   return app;
 }
 
+/**
+ * How this server hands a freshly minted session to its caller (#319): the
+ * cookie on the browser path, the body on the broker path. The rule itself
+ * lives in `lib/vault/session.ts`, so the routes and the RPC guard cannot
+ * disagree about it.
+ */
+function sessionResponse(deps: VaultHttpDeps, request: Request, session: VaultSession): VaultSessionPayload {
+  // The server is the arbiter of the ONE live session (#319, greptile P1). A
+  // minting reply carries a `Set-Cookie`, and the browser applies it whatever
+  // this page decided: a reply that was slow enough to be overtaken by another
+  // window's unlock would overwrite the LIVE credential with a revoked one and
+  // lock every window out. So a reply whose session is no longer the live one
+  // carries no credential at all — no cookie, no token — and reports the
+  // generation that is actually in force. The caller's mutation already
+  // happened; only the credential it would install is dropped.
+  if (session.generation !== deps.manager.sessionEpoch()) {
+    return { body: { sessionGeneration: deps.manager.sessionEpoch() }, headers: {} };
+  }
+  return vaultSessionPayload(deps.config.vaultBroker, request, session.token, session.generation);
+}
+
 async function unlockResponse(
-  c: { json: (body: { ok: true; sessionToken: string; sessionGeneration: number }, status: 200) => Response },
+  c: Context,
   deps: VaultHttpDeps,
   unlock: () => Promise<VaultSession>,
   wrongCode: VaultErrorCode,
@@ -384,7 +480,8 @@ async function unlockResponse(
     await deps.bootstrap({ masterKey: deps.manager.requireMasterKey(), vaultId: deps.manager.metadata().vaultId, fresh: false });
     // the token and its generation travel together: a rotation during the
     // bootstrap can never make this response claim a newer generation
-    return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation }, 200);
+    const payload = sessionResponse(deps, c.req.raw, session);
+    return c.json({ ok: true as const, ...payload.body }, 200, payload.headers);
   } catch (error) {
     if (error instanceof VaultAuthenticationError) return errorResponse(wrongCode, 401);
     if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });

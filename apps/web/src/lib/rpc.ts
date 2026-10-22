@@ -1,34 +1,17 @@
-import { createORPCClient, onError } from "@orpc/client";
-import { RPCLink } from "@orpc/client/fetch";
 import { createTanstackQueryUtils } from "@orpc/tanstack-query";
 import type { DokanClient } from "@dokan/contracts";
 
-import { readVaultSessionToken } from "./vault-client";
+import { createDokanRpcClient } from "./rpc-link";
 
 /**
- * The one RPC entry point. Same-origin through the vite /api proxy; cookies
- * ride along so the server-side session guard recognizes the login. In vault
- * mode the unlocked-owner session token rides a custom header (never a
- * cookie), so cross-origin pages cannot ride the unlock.
+ * The one RPC entry point every screen imports.
+ *
+ * The link itself — the URL, the credential transport, and the refusal
+ * interceptor that raises the unlock screen (#319) — is built by
+ * `createDokanRpcClient` in `./rpc-link`, so the interceptor is testable from a
+ * file that does not have to mock this module. Component tests mock THIS file
+ * (`@/lib/rpc`), and bun's module mock shadows the real one for the rest of the
+ * process, which is why the refusal wiring must not live here.
  */
-const rpcLink = new RPCLink({
-  url: () => new URL("/api/rpc", window.location.origin).toString(),
-  fetch: (request, init) => {
-    const headers = new Headers(request.headers);
-    const vaultToken = readVaultSessionToken();
-    if (vaultToken !== undefined) headers.set("x-vault-session", vaultToken);
-    return globalThis.fetch(new Request(request, { headers }), {
-      ...init,
-      credentials: "include",
-    });
-  },
-  interceptors: [
-    onError((error) => {
-      if (import.meta.env.MODE === "test") return;
-      console.error("[dokan rpc]", error);
-    }),
-  ],
-});
-
-export const rpcClient: DokanClient = createORPCClient(rpcLink);
+export const rpcClient: DokanClient = createDokanRpcClient();
 export const orpc = createTanstackQueryUtils(rpcClient);

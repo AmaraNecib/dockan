@@ -615,8 +615,24 @@ export class VaultManager {
   /** Revoke the in-process session (logout): every existing token stops working. */
   revokeSession(): void {
     if (this.sessionToken === undefined) return;
-    this.sessionToken = undefined;
+    this.dropSession();
     this.logger.info("VAULT_SESSION_REVOKED", "vault session revoked (logout)");
+  }
+
+  /**
+   * Drop the live token AND advance the generation (#319 round 3).
+   *
+   * The generation means "still live": `sessionResponse` treats a minting
+   * reply as arbitrated-out when its generation no longer equals
+   * `sessionEpoch()`. A logout or a lock that dropped the token without moving
+   * the number left the epoch describing a session that was already gone, so a
+   * slow minting reply landing AFTER the logout still matched and installed a
+   * `Set-Cookie` for a token `sessionMatches` refuses — every window then fell
+   * to the unlock screen while the API held no session at all.
+   */
+  private dropSession(): void {
+    this.sessionToken = undefined;
+    this.sessionGeneration += 1;
   }
 
   /** Drain the queued pre-unlock failure events for the activity log. */
@@ -632,7 +648,11 @@ export class VaultManager {
   /** Zero the in-memory secrets. Best-effort: JavaScript cannot pin memory. */
   close(): void {
     this.replaceMasterKey(undefined);
-    this.sessionToken = undefined;
+    // the lock drops the session too, so it must move the generation: an
+    // in-flight minting reply that lands after the lock carries a generation
+    // that is no longer live, and installs nothing (see dropSession). No log
+    // line: `VAULT_SESSION_REVOKED` names a logout, and a lock is not one.
+    if (this.sessionToken !== undefined) this.dropSession();
   }
 
   private replaceMasterKey(next: Buffer | undefined): void {

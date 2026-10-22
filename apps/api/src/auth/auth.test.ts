@@ -10,6 +10,7 @@ import type { DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAppConfig } from "../config";
+import { authTrustedOrigins } from "./auth";
 import { openConnection, type Connection } from "../db/connection";
 import { AppLogger } from "../lib/logger";
 import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
@@ -201,5 +202,41 @@ describe("auth seam", () => {
     await store.setSetting("adminUserId", "00000000-0000-4000-8000-000000000000");
     await expect(client.categoriesList()).rejects.toMatchObject({ code: "FORBIDDEN" });
     if (realAdminId !== undefined) await store.setSetting("adminUserId", realAdminId);
+  });
+});
+
+/** a config with only the field the origin list reads */
+function configWithHost(host: string): Parameters<typeof authTrustedOrigins>[0] {
+  // SAFETY: `authTrustedOrigins` reads `config.host` and nothing else, which is
+  // the whole input this helper is about.
+  return { host } as Parameters<typeof authTrustedOrigins>[0];
+}
+
+describe("authTrustedOrigins (#347)", () => {
+  // the loopback gate is the whole safety property: a remote API must not gain an
+  // origin because a dev variable happens to be set
+  it("adds the dev origin only for a loopback API", () => {
+    expect(authTrustedOrigins(configWithHost("127.0.0.1"), { DOKAN_WEB_PORT: "5173" })).toEqual(["http://127.0.0.1:5173"]);
+    expect(authTrustedOrigins(configWithHost("localhost"), { DOKAN_WEB_PORT: "5173" })).toEqual(["http://localhost:5173"]);
+    // a remote API adds nothing, whatever the env says
+    expect(authTrustedOrigins(configWithHost("10.0.0.5"), { DOKAN_WEB_PORT: "5173" })).toEqual([]);
+  });
+
+  it("keeps only absolute http(s) origins from the environment", () => {
+    const configured = authTrustedOrigins(configWithHost("10.0.0.5"), {
+      DOKAN_TRUSTED_ORIGINS: "https://shop.example, http://10.0.0.5:8080, not-a-url, ftp://x.example, javascript:alert(1)",
+    });
+    // a bare host, a non-http scheme and a URL that does not parse are all dropped:
+    // a config mistake must not become a blanket allow
+    expect(configured).toEqual(["https://shop.example", "http://10.0.0.5:8080"]);
+  });
+
+  it("keeps a configured origin AND the dev origin on a loopback API", () => {
+    expect(
+      authTrustedOrigins(configWithHost("127.0.0.1"), {
+        DOKAN_TRUSTED_ORIGINS: "https://shop.example",
+        DOKAN_WEB_PORT: "5471",
+      }),
+    ).toEqual(["https://shop.example", "http://127.0.0.1:5471"]);
   });
 });

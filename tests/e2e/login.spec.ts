@@ -180,4 +180,10 @@ test("a foreign origin is refused with the session cookie present", async ({ pag
     headers: { origin: "https://evil.example", "content-type": "application/json" },
   });
   expect(refused.status()).toBe(403);
+
+  // ...and the refusal was about the ORIGIN, not about the request being
+  // rejected for some other reason: the session is still live afterwards
+  const stillLive = await page.request.get("/api/auth/get-session");
+  expect(stillLive.status()).toBe(200);
+  expect(await stillLive.text()).toContain(OWNER_PHONE.replace(/^213/, ""));
 });

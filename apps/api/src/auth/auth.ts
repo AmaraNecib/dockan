@@ -23,11 +23,33 @@ import { accounts, sessions, users, verifications } from "../db/schema";
  * talks to. A packaged app is same-origin with its sidecar, so its `baseURL`
  * already covers it, and nothing is added there.
  */
-export function authTrustedOrigins(config: AppConfig): string[] {
-  if (!isLoopbackHostname(config.host)) return [];
-  const webPort = Number(process.env.DOKAN_WEB_PORT ?? 5173);
-  if (!Number.isInteger(webPort) || webPort <= 0) return [];
-  return [`http://${config.host}:${webPort}`];
+export function authTrustedOrigins(config: AppConfig, env: Record<string, string | undefined> = process.env): string[] {
+  // A deployment can name its own origins; this is the only way a cross-host
+  // install (api on one host, web on another) can accept a cookie-bearing write.
+  // Only absolute http(s) origins are kept: a bare hostname or a wildcard would
+  // turn a config mistake into a blanket allow.
+  const configured = (env.DOKAN_TRUSTED_ORIGINS ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      try {
+        const url = new URL(entry);
+        return url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((origin): origin is string => origin !== null);
+
+  // The dev server's origin, and only on a loopback API: a packaged sidecar is
+  // same-origin with the web it serves, so it needs nothing here. When it IS a
+  // loopback API, the entry is inert for access — both ends are 127.0.0.1 — and
+  // it is what lets a developer sign out through the vite proxy at all.
+  if (!isLoopbackHostname(config.host)) return configured;
+  const webPort = Number(env.DOKAN_WEB_PORT ?? 5173);
+  if (!Number.isInteger(webPort) || webPort <= 0) return configured;
+  return [...configured, `http://${config.host}:${webPort}`];
 }
 
 /** loopback by literal address, not by name resolution: no DNS in an auth check */

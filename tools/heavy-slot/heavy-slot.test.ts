@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,8 @@ import {
   chooseFreeBase,
   claimBase,
   DEFAULT_BASE,
+  EXIT_FULL,
+  EXIT_REFUSED,
   killTree,
   maxSlots,
   readPersistedBase,
@@ -23,6 +25,7 @@ import {
   treeAlive,
   tryTake,
   unusableBanner,
+  writeBase,
 } from "./heavy-slot";
 
 // Spawned children and the injected-script imports resolve the tool from this
@@ -133,6 +136,34 @@ function stubUnusable(matches: (port: number) => boolean): void {
 }
 
 describe("heavy-slot", () => {
+  test("the F18 premise holds on this machine: renameSync over an existing file replaces it", () => {
+    const dir = freshDir();
+    writeFileSync(join(dir, "record"), "1\n");
+    writeFileSync(join(dir, "next.tmp"), "2\n");
+    // The atomic-replace story rests on this: the rename must REPLACE the live
+    // file, not fail or leave both behind (Windows would refuse without
+    // MOVEFILE_REPLACE_EXISTING). Verified with a real rename, not a comment.
+    renameSync(join(dir, "next.tmp"), join(dir, "record"));
+    expect(existsSync(join(dir, "record"))).toBe(true);
+    expect(readFileSync(join(dir, "record"), "utf8")).toBe("2\n");
+    expect(existsSync(join(dir, "next.tmp"))).toBe(false);
+  });
+
+  test("writeBase replaces a live record and answers with the file's own re-read", () => {
+    const dir = freshDir();
+    expect(claimBase(47001, dir)).toBe(true);
+    const after = writeBase(48001, dir);
+    expect(after).toBe(48001);
+    expect(readFileSync(join(dir, "base"), "utf8")).toBe("48001\n");
+    // no temp litter: the temp file lands exactly once as the record
+    expect(readdirSync(dir).filter((f) => f.startsWith(".base-"))).toEqual([]);
+  });
+
+  test("the exit-code contract is exported for library callers (F23)", () => {
+    expect(EXIT_FULL).toBe(75);
+    expect(EXIT_REFUSED).toBe(76);
+  });
+
   test("capacity never exceeds the ceiling", () => {
     expect(capacityFor(1000, 10, false)).toBeLessThanOrEqual(maxSlots());
     expect(capacityFor(1000, 10, true)).toBeLessThanOrEqual(maxSlots());
@@ -192,7 +223,7 @@ describe("heavy-slot", () => {
     ].join("\n");
     const t0 = Date.now();
     const r = await childOutput(spawn("bun", ["-e", script], { cwd: process.cwd(), env: childEnv(dir), stdio: ["ignore", "pipe", "pipe"] }));
-    expect(r.code).toBe(76);
+    expect(r.code).toBe(EXIT_REFUSED);
     expect(r.out).toContain(unusableBanner());
     expect(r.out).toContain(`HEAVY_SLOT_BASE=${TEST_BASE}`);
     expect(r.out).toContain("netsh int ipv4 show excludedportrange protocol=tcp");
@@ -210,7 +241,7 @@ describe("heavy-slot", () => {
       // value, and this test process is still alive to read it. That is what makes
       // the queue callable from a library, and it is the property the old
       // process.exit(76) inside run() could not have.
-      expect(await run("library-caller", "echo hi")).toBe(76);
+      expect(await run("library-caller", "echo hi")).toBe(EXIT_REFUSED);
     } finally {
       setBinderForTest(null);
     }
@@ -224,6 +255,52 @@ describe("heavy-slot", () => {
     expect(await run("library-caller", "echo library-run-ok")).toBe(0);
     expect(process.listenerCount("SIGINT")).toBe(sigint);
     expect(process.listenerCount("SIGTERM")).toBe(sigterm);
+  }, 20000);
+
+  test("F18: a record claimed under this process's stale probe is followed, never replaced - two queues stay impossible", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    // Free ports are picked while the real binder is still active.
+    const c1 = await chooseFreeBase(TEST_BASE + 2 * BASE_STRIDE, 4);
+    if (c1 === null) throw new Error("no free base for P1's claim C1");
+    const stale = await chooseFreeBase(c1 + BASE_STRIDE, 4);
+    if (stale === null) throw new Error("no free base for the stale record S");
+    // The F18 interleaving, enumerated in order at the two seams instead of
+    // raced with two children (the F7 race test could pass by luck):
+    //   1. P2 reads the record -> S.
+    //   2. P1's whole stale-path lands BEFORE P2's stale verdict is acted on:
+    //      the record is atomically replaced with a working claim C1.
+    //   3. P2 probes S (still the value it read) -> unusable. OLD P2 rm'ed the
+    //      file here and took C1 with it; the fix's pre-write re-read sees C1.
+    //   4. P2 must end ON C1, and the record must still say C1.
+    expect(claimBase(stale, dir)).toBe(true);
+    let p1Claimed = false;
+    setBinderForTest(async (port) => {
+      if (port === stale && !p1Claimed) {
+        p1Claimed = true;
+        writeBase(c1, dir); // P1's completed replace-and-claim
+        return { error: "unusable", code: "EACCES" };
+      }
+      return realOpenServer(port);
+    });
+    try {
+      const r = await acquireSlot("p2");
+      expect(p1Claimed).toBe(true); // the interleaving actually ran
+      expect(r.status).toBe("acquired");
+      const slot = r.status === "acquired" ? r.slot : null;
+      // P2 ends on C1 - a record it never read at decision time is followed.
+      expect(slot?.port).toBe(c1);
+      // And the record survived untouched: the file is still C1, byte for byte.
+      expect(readPersistedBase(dir)).toBe(c1);
+      expect(readFileSync(join(dir, "base"), "utf8")).toBe(`${c1}\n`);
+      if (slot) release(slot);
+    } finally {
+      setBinderForTest(null);
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+    }
   }, 20000);
 
   test("an EACCES on the range's first slot shifts the base by the stride and records it", async () => {
@@ -271,6 +348,136 @@ describe("heavy-slot", () => {
       if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
       else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
     }
+  }, 20000);
+
+  test("F19: a torn or empty record never becomes a private activation - the record the process ends on is the one on disk", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    // A torn write: the record file exists and reads as nothing (the old
+    // `winner ?? base` fallback said "I picked a range, I own it" and activated
+    // a private base while the file stayed empty - no record, no warning, a
+    // split queue). The fixed rule: publish or adopt - the file must name the
+    // base the process ends on.
+    writeFileSync(join(dir, "base"), "");
+    try {
+      const r = await acquireSlot("torn-record");
+      expect(r.status).toBe("acquired");
+      const slot = r.status === "acquired" ? r.slot : null;
+      expect(slot?.port).toBe(TEST_BASE);
+      const record = readPersistedBase(dir); // not null: a record was published
+      expect(record).not.toBeNull();
+      if (slot) expect(record).toBe(slot.port);
+      expect(readFileSync(join(dir, "base"), "utf8")).toBe(`${TEST_BASE}\n`);
+      if (slot) release(slot);
+    } finally {
+      setBinderForTest(null);
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+    }
+  }, 20000);
+
+  test("F20: a refused partly-reserved range does not keep the record, and the next resolve walks shifted", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    const prevMax = process.env.HEAVY_SLOT_MAX;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    process.env.HEAVY_SLOT_MAX = "4"; // capacity >= 2 even when the CPU meter subtracts its 2
+    // Unit-level, not an integration demo: every port the assertion depends on
+    // is canary-probed free while the binder is honest, and the walk windows
+    // before the shifted candidate are marked reserved by the stub - the
+    // assertion no more depends on the machine's capacity than a record check.
+    const shifted = await chooseFreeBase(TEST_BASE + 4 * BASE_STRIDE, 4);
+    if (shifted === null) throw new Error("no free base above the partly reserved range");
+    // Phase B's reserved set: the walk windows between the (re-reserved)
+    // preferred base and the shifted candidate - slot-1 ports of the walk.
+    const windowPorts = new Set<number>();
+    for (let shift = 1; TEST_BASE + shift * BASE_STRIDE < shifted; shift++) {
+      windowPorts.add(TEST_BASE + shift * BASE_STRIDE);
+    }
+    // Phase A's reserved set: slots 2..4 of the base itself. Slots are
+    // CONSECUTIVE ports (base+0..base+max-1), not stride windows - the EACCES
+    // that pre-empts waiting lands on the capacity loop, not on the walk.
+    const slotPorts = new Set<number>();
+    for (let slot = 2; slot <= 4; slot++) slotPorts.add(TEST_BASE + slot - 1);
+    // Phase A - the F20 shape: slot 1 binds but is HELD (a working queue), the
+    // deeper slots refuse (EACCES). The run must refuse loudly AND clear the
+    // record it proved broken, instead of handing the frozen base to everyone.
+    expect(claimBase(TEST_BASE, dir)).toBe(true);
+    const blocker = await tryTake(1, "blocker");
+    expect(blocker.ok).toBe(true);
+    setBinderForTest(async (port) =>
+      slotPorts.has(port) ? { error: "unusable", code: "EACCES" } : await realOpenServer(port),
+    );
+    try {
+      const refused = await acquireSlot("victim");
+      expect(refused.status).toBe("refused");
+      // THE F20 assertion: the proven-broken base is not recorded any more.
+      expect(readPersistedBase(dir)).toBeNull();
+      // Phase B - the record must not be re-frozen either: plant the same
+      // broken base again, but now the whole first window is genuinely
+      // reserved (the reboot case). The next resolve must walk to the shifted,
+      // working range and record THAT, replacing the stale base atomically.
+      expect(claimBase(TEST_BASE, dir)).toBe(true);
+      const allReserved = new Set<number>([TEST_BASE]);
+      for (const p of windowPorts) allReserved.add(p);
+      setBinderForTest(async (port) =>
+        allReserved.has(port) ? { error: "unusable", code: "EACCES" } : await realOpenServer(port),
+      );
+      const r = await acquireSlot("walker");
+      expect(r.status).toBe("acquired");
+      const slot = r.status === "acquired" ? r.slot : null;
+      expect(slot?.port).toBe(shifted); // shifted, not the frozen TEST_BASE
+      expect(readPersistedBase(dir)).toBe(shifted); // the record follows the decision
+      if (slot) release(slot);
+    } finally {
+      setBinderForTest(null);
+      if (blocker.ok) release(blocker.slot);
+      if (prevMax === undefined) delete process.env.HEAVY_SLOT_MAX;
+      else process.env.HEAVY_SLOT_MAX = prevMax;
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+    }
+  }, 30000);
+
+  test("F22: two bases holding slot 1 at the same time do not share slot metadata", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    const prevBase = process.env.HEAVY_SLOT_BASE;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    // Same slot INDEX, two different bases: the metadata file must key on the
+    // port - an index key would let the second holder overwrite the first's
+    // file and release() of one would delete the other holder's metadata.
+    const portA = await chooseFreeBase(TEST_BASE + 2 * BASE_STRIDE, 4);
+    if (portA === null) throw new Error("no free base A");
+    const portB = await chooseFreeBase(portA + BASE_STRIDE, 4);
+    if (portB === null) throw new Error("no free base B");
+    process.env.HEAVY_SLOT_BASE = String(portA);
+    resetBase();
+    const a = await tryTake(1, "holder-a"); // slot 1 on base A: port A
+    expect(a.ok).toBe(true);
+    process.env.HEAVY_SLOT_BASE = String(portB);
+    resetBase();
+    const b = await tryTake(1, "holder-b"); // slot 1 on base B: port B
+    expect(b.ok).toBe(true);
+    // Each holder owns slot-<port>.json; the index key's file exists nowhere.
+    if (a.ok && b.ok) {
+      expect(existsSync(join(dir, `slot-${portA}.json`))).toBe(true);
+      expect(existsSync(join(dir, `slot-${portB}.json`))).toBe(true);
+      expect(existsSync(join(dir, "slot-1.json"))).toBe(false);
+      release(a.slot); // A's release touches only A's file - B's holder intact
+      expect(existsSync(join(dir, `slot-${portA}.json`))).toBe(false);
+      expect(existsSync(join(dir, `slot-${portB}.json`))).toBe(true);
+      release(b.slot);
+    }
+    if (prevBase === undefined) delete process.env.HEAVY_SLOT_BASE;
+    else process.env.HEAVY_SLOT_BASE = prevBase;
+    if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+    else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+    resetBase(); // forget the second base decision; the caller's env governs again
   }, 20000);
 
   test("a second process reads the recorded base instead of picking a different one", async () => {
@@ -363,7 +570,7 @@ describe("heavy-slot", () => {
         stdio: ["ignore", "pipe", "pipe"],
       }),
     );
-    expect(r.code).toBe(75);
+    expect(r.code).toBe(EXIT_FULL);
     expect(r.out).toContain("gave up");
     // The refusal banner is reserved for a reserved range - never for a full queue.
     expect(r.out).not.toContain("no usable port range");

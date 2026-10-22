@@ -21,7 +21,7 @@
 
 import net from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { homedir, freemem, totalmem, cpus } from "node:os";
 import { join } from "node:path";
 
@@ -32,9 +32,10 @@ import { join } from "node:path";
 // `BASE_PROBE_WINDOW`, `DEFAULT_BASE`, `BASE_STRIDE`), the slot primitives a test
 // needs to hold a port from outside (`tryTake`, `release`) and the cancellation pair
 // (`killTree`, `treeAlive`), the bind seam tests inject through (`setBinderForTest`,
-// `realOpenServer` and its two types), and the base helpers a test uses to point the
-// queue at a scenario (`claimBase`, `readPersistedBase`, `chooseFreeBase`,
-// `resetBase`). Config getters, measurement, base resolution and the holders scan are
+// `realOpenServer` and its two types), the base helpers a test uses to point the
+// queue at a scenario (`claimBase`, `writeBase`, `readPersistedBase`,
+// `chooseFreeBase`, `resetBase`), and the exit-code contract (`EXIT_FULL`,
+// `EXIT_REFUSED`, `EXIT_USAGE`). Config getters, measurement, base resolution and the holders scan are
 // private on purpose: they are how this module works, not what it is for, and an
 // export is a promise to keep them.
 // ---------------------------------------------------------------------------
@@ -183,7 +184,7 @@ function closeServer(server: net.Server): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// The base: picking it, recording it, agreeing on it.
+// The record: a shared file, the single truth about the base.
 // ---------------------------------------------------------------------------
 
 const BASE_FILE_NAME = "base";
@@ -201,7 +202,7 @@ export function readPersistedBase(dir: string = stateDir()): number | null {
   }
 }
 
-/** Record a chosen base. First writer wins: when the file already exists the loser returns false and re-reads the winner instead of overwriting it. */
+/** First-writer-wins claim, used only where the record must not be overwritten: an absent-record race. When it succeeds this process created the file; when it fails another process wrote between this one's read and claim. */
 export function claimBase(base: number, dir: string = stateDir()): boolean {
   try {
     mkdirSync(dir, { recursive: true });
@@ -209,6 +210,43 @@ export function claimBase(base: number, dir: string = stateDir()): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * The atomic record write, and the rule it carries: [F18] a replace of a stale
+ * record goes temp-file-in-the-same-directory first, then `renameSync` over the
+ * record. Node's rename replaces the destination everywhere (Windows:
+ * MoveFileEx with MOVEFILE_REPLACE_EXISTING), so a concurrent reader sees
+ * either the old record or the new one - never an absent or torn file - and an
+ * unconditional `rmSync` at the read-then-delete site is GONE: a process that
+ * probes a record as stale may have read a value another process already
+ * replaced with a working claim, and deleting the file could take that claim
+ * with it. Only a record still holding the exact value this process probed
+ * (checked right before the write) is replaced.
+ *
+ * Returns the record's content AFTER the write, re-read from the file: the
+ * caller activates that value, not the one this process chose, so a process
+ * that wrote and re-read converges with one that wrote a moment later
+ * ("last atomic write wins, everybody re-reads"). An absent/torn record reads
+ * back null and the caller decides - see claimOrFollow.
+ * Exported for tests: staging a record or a loser's claim at the write seam.
+ */
+export function writeBase(base: number, dir: string = stateDir()): number | null {
+  let tmp = "";
+  try {
+    mkdirSync(dir, { recursive: true });
+    tmp = join(dir, `.base-${process.pid}-write.tmp`);
+    writeFileSync(tmp, `${base}\n`);
+    renameSync(tmp, baseFilePath(dir));
+    return readPersistedBase(dir);
+  } catch {
+    try {
+      if (tmp) rmSync(tmp, { force: true });
+    } catch {
+      /* the temp file is inert */
+    }
+    return readPersistedBase(dir);
   }
 }
 
@@ -223,62 +261,94 @@ function activate(base: number): number {
 }
 
 /**
- * Try to record `base` as the shared base through the state dir, exactly like every
- * other candidate - the preferred base includes itself, so two processes with
- * different environments never each activate a private choice. Losing the
- * first-writer race never ends in a private choice either: follow the winner. A
- * winner whose range no longer binds is a stale record: replace it and retry the
- * claim once, so a working range can still be written; if that claim also loses,
- * follow the winner anyway and let the acquisition loop's re-decide speak (refusal
- * with exit 76) - two queues disagreeing is worse than one queue refusing loudly.
+ * Establish `base` as the shared base - or follow the record that beat this
+ * process to the decision. The record is the truth, and it is read fresh every
+ * time before anything is written to it:
+ *
+ * - a record whose CURRENT content binds (free or busy - a held port is a
+ *   working queue) is followed, never overwritten: it was left by a process
+ *   that picked its range after this one read the stale value, and replacing it
+ *   would kill that claim - [F18] two queues are exactly that;
+ * - a record that still holds the value this process just probed as unusable is
+ *   replaced atomically (writeBase), and the re-read decides;
+ * - no record: this process may claim the file with "wx" where the record must
+ *   not be overwritten - creating it is not overwriting; a FAILED claim means
+ *   the file appeared under the read and the claim, and the winner's content is
+ *   re-read and followed;
+ * - a write that cannot land at all (the state dir unwritable is the usual
+ *   way) is retried once inside the loop, then disclosed ONCE per failed
+ *   decision with one console.error naming the split-queue risk, every run,
+ *   instead of splitting silently: [F19] - the old `winner ?? base` fallback
+ *   activated a private base with no record and no warning.
+ *
+ * The loop is bounded at two attempts - no probe storm - and every return after
+ * a write is the record's own re-read, not this process's choice.
  */
 async function claimOrFollow(base: number): Promise<number> {
-  if (claimBase(base)) return base;
-  let winner = readPersistedBase();
-  if (winner !== null && (await probePort(winner)) === "unusable") {
-    try {
-      rmSync(baseFilePath(), { force: true });
-    } catch {
-      /* fall through with the record still visible */
+  const dir = stateDir();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const current = readPersistedBase(dir);
+    if (current !== null) {
+      if ((await probePort(current)) !== "unusable") return current; // follow the live winner
+      // Current content is exactly the record this process probed as stale:
+      // replace the FILE, not the record that may have appeared under the walk.
+      const afterWrite = writeBase(base, dir);
+      if (afterWrite !== null) return afterWrite;
+      continue; // the write could not land; one retry, then disclose
     }
-    if (readPersistedBase() === null && claimBase(base)) return base;
-    winner = readPersistedBase();
+    if (claimBase(base, dir)) {
+      // Created it. The re-read is still authority: a concurrent writer's
+      // rename can land between the wx-claim and this read.
+      const mine = readPersistedBase(dir);
+      if (mine !== null) return mine;
+    } else if (readPersistedBase(dir) === null) {
+      // The "wx" claim lost AND the file still does not read: the record
+      // exists but is torn or empty, nobody can claim it and nobody can adopt
+      // it. This is the one overwrite whose target was never a readable
+      // decision - replace it with a probed candidate by atomic rename.
+      const afterRename = writeBase(base, dir);
+      if (afterRename !== null) return afterRename;
+    }
+    // Otherwise the wx race was lost to a REAL claim: go around, read and
+    // probe whatever the file holds now - its winner's content decides.
   }
-  // No record anywhere and one failed claim means this process is the only one
-  // that picked a range at all - own it; otherwise the winner owns the decision.
-  return winner ?? base;
+  console.error(
+    `[heavy-slot] no shared record could be adopted in ${dir} - every record write failed; ` +
+      `this process runs a PRIVATE base and the queue may split (a portable state dir makes this repeat on every run)`,
+  );
+  return base;
 }
 
 /**
- * Decide the base for this process, once. Order of authority:
- * 1. a base a previous process recorded, while it still binds (every process agrees with it);
- * 2. the preferred base (HEAVY_SLOT_BASE or the default), while it binds - but it is
- *    claimed through the shared state dir like any candidate, never activated privately;
- * 3. the preferred base shifted by BASE_STRIDE at a time, bounded; the first process to find
- *    a working candidate records it, a concurrent one reads the winner.
+ * Decide the base for the process, once. Order of authority:
+ * 1. the record, while its port binds (free or busy - every process agrees with it);
+ * 2. the preferred base (HEAVY_SLOT_BASE or the default), while it binds, claimed
+ *    through the record like any candidate - never activated privately;
+ * 3. the preferred base shifted by BASE_STRIDE at a time, bounded; the first
+ *    process to find a working candidate writes the record, concurrent ones
+ *    follow it (claimOrFollow re-reads before replacing anything).
  *
- * A recorded base that no longer binds (a reboot re-reserved its range) is removed
- * before the walk, so a working range can be claimed again instead of the stale
- * record freezing every later process into re-probing it forever.
+ * A stale record is NOT deleted here: deleting a file this process may not own
+ * any more (another process replaced it under the walk) is how two queues are
+ * made, and the record is the truth until a working candidate replaces it
+ * atomically in claimOrFollow. A refusal with the range proven unusable clears
+ * the record in acquireSlot instead - [F20].
  *
- * Returns null when every candidate is excluded - the caller must refuse loudly, never
- * report the queue as full.
+ * [F20, comment only] Each candidate probes ONLY its slot-1 port. Probing
+ * every slot of every candidate costs `BASE_PROBE_WINDOW * maxSlots` binds per
+ * decision and can hold ports a claimer is then denied, for a case (slot-1
+ * binds, deeper slots reserved) that surfaces at acquire time anyway - and when
+ * it does, the refusal path clears the record so the walk is not frozen by it.
+ * The cheap probe plus the honest clear is worth more than a wide probe.
+ *
+ * Returns null when every candidate is unusable - the caller must refuse
+ * loudly, never report the queue as full.
  */
 async function resolveBase(): Promise<number | null> {
   if (agreedBase !== null) return agreedBase;
   const preferred = preferredBase();
   const persisted = readPersistedBase();
-  if (persisted !== null) {
-    if ((await probePort(persisted)) !== "unusable") return activate(persisted);
-    // Stale record: rm it before walking candidates, so a working range can be
-    // claimed again - a persisted base that only ever reads as unusable would
-    // otherwise keep every claim failing forever.
-    try {
-      rmSync(baseFilePath(), { force: true });
-    } catch {
-      /* another process is replacing it right now; the claims below decide */
-    }
-  }
+  if (persisted !== null && (await probePort(persisted)) !== "unusable") return activate(persisted);
   // The preferred base is candidate 0 of the walk (BASE_PROBE_WINDOW counts it);
   // the loop takes the shifts 1..BASE_SHIFT_ATTEMPTS, so the two counts meet
   // exactly and nothing is skipped or probed twice.
@@ -330,6 +400,15 @@ export type TakeResult =
   | { ok: true; slot: Slot }
   | { ok: false; reason: "busy" | "unusable"; port: number; code: string };
 
+// [F22] Slot metadata is keyed by the PORT, never by the slot index: two bases
+// can each hold "slot 1" at the same time (a re-decided base and the old one's
+// holder), and an index key would make the second writer overwrite the first
+// holder's file - release() of one would then delete the other holder's
+// metadata and the status scan would misreport a live holder as stale.
+function slotMetaPath(port: number, dir: string = stateDir()): string {
+  return join(dir, `slot-${port}.json`);
+}
+
 export async function tryTake(index: number, label: string): Promise<TakeResult> {
   const port = portFor(index);
   const opened = await openServerImpl(port);
@@ -338,7 +417,7 @@ export async function tryTake(index: number, label: string): Promise<TakeResult>
   try {
     mkdirSync(stateDir(), { recursive: true });
     writeFileSync(
-      join(stateDir(), `slot-${index}.json`),
+      slotMetaPath(port),
       JSON.stringify({ slot: index, port, pid: process.pid, label, startedAt: new Date().toISOString() }),
     );
   } catch {
@@ -349,7 +428,7 @@ export async function tryTake(index: number, label: string): Promise<TakeResult>
 
 export function release(slot: Slot): void {
   try {
-    rmSync(join(stateDir(), `slot-${slot.index}.json`), { force: true });
+    rmSync(slotMetaPath(slot.port), { force: true });
   } catch {
     /* ignore */
   }
@@ -381,7 +460,7 @@ async function scanSlots(): Promise<{ list: Holder[]; unusablePorts: number[] }>
     let pid: number | undefined;
     let startedAt: string | undefined;
     try {
-      const raw = readFileSync(join(stateDir(), `slot-${i}.json`), "utf8");
+      const raw = readFileSync(slotMetaPath(port), "utf8");
       // SAFETY: shape matches what tryTake writes.
       const j = JSON.parse(raw) as { label?: string; pid?: number; startedAt?: string };
       label = j.label ?? label;
@@ -391,8 +470,7 @@ async function scanSlots(): Promise<{ list: Holder[]; unusablePorts: number[] }>
       /* no metadata */
     }
     if (probe === "busy") list.push({ slot: i, port, label, pid, startedAt, stale: false });
-    else if (existsSync(join(stateDir(), `slot-${i}.json`)))
-      list.push({ slot: i, port, label, pid, startedAt, stale: true });
+    else if (existsSync(slotMetaPath(port))) list.push({ slot: i, port, label, pid, startedAt, stale: true });
   }
   return { list, unusablePorts };
 }
@@ -490,7 +568,28 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
       // genuinely unusable for everyone: refuse 76 now instead of burning the
       // whole wait budget on a machine that is broken and reporting exit 75 -
       // "the queue is full" - afterwards.
-      if (next === null || next === before) return { status: "refused", reason: "unusable" };
+      if (next === null || next === before) {
+        // [F20] This process has now PROVEN at bind time (machine-global EACCES)
+        // that the refused base's range cannot serve work: keep the proof - the
+        // record is cleared when it still names the refused base, so the next
+        // acquire walks candidates instead of inheriting a frozen, broken
+        // record forever ("until someone deletes the file by hand"). A record
+        // that changed meanwhile is a newer decision this process never probed
+        // - not ours to delete, the same rule claimOrFollow enforces.
+        const recorded = readPersistedBase();
+        if (recorded !== null && (recorded === before || next === null)) {
+          try {
+            rmSync(baseFilePath(), { force: true });
+          } catch {
+            /* the next process re-probes the same range and repeats the decision */
+          }
+        }
+        // The cached decision proved broken with the record itself: forget it,
+        // so the next resolveBase in this process re-derives from the file
+        // instead of trusting the refused base.
+        resetBase();
+        return { status: "refused", reason: "unusable" };
+      }
       continue;
     }
     if (Date.now() - started > waitMs()) return { status: "full" };
@@ -559,10 +658,12 @@ export function treeAlive(child: ChildProcess): boolean {
  * Exit codes this tool answers a CLI caller with, kept in one place because they
  * are a contract: 75 = the queue stayed full for the whole wait budget (nothing
  * ran), 76 = the port range is unusable (waiting cannot help), 2 = usage.
+ * Exported (F23): `run()` returns a code a library caller must be able to name,
+ * and the constants ARE the contract.
  */
-const EXIT_FULL = 75;
-const EXIT_REFUSED = 76;
-const EXIT_USAGE = 2;
+export const EXIT_FULL = 75;
+export const EXIT_REFUSED = 76;
+export const EXIT_USAGE = 2;
 
 /**
  * Run `command` behind a slot, returning the exit code the caller should use: the
@@ -634,6 +735,15 @@ export async function run(label: string, command: string): Promise<number> {
     while (Date.now() < deadline && treeAlive(child)) {
       killTree(child, "SIGKILL");
       await wait(100);
+    }
+    // [F21] Disclose the give-up: the bounded budget ran out with the tree still
+    // alive, so the slot is released while work may still be running - the same
+    // double load the queue exists to prevent. A disclosed weakness is a
+    // visible one; the old silent fallthrough read as a clean release.
+    if (treeAlive(child)) {
+      console.error(
+        `[heavy-slot] the tree under pid ${child.pid} survived ${STOP_GRACE_MS}ms of forced kills - releasing slot ${slot.index} with work possibly still running`,
+      );
     }
   }
 

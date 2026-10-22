@@ -57,9 +57,9 @@ const SECRET = "schema-pin-secret-0123456789abcdef";
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-auth-schema-pin-"));
   conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
-  // a FRESH database: SCHEMA_DDL is the only shape there is — this change adds
-  // no migration (pre-release, no legacy vault to keep), so everything below
-  // pins what a new install gets
+  // a FRESH database: SCHEMA_DDL is the only shape there is, so everything below
+  // pins what a new install gets — the v6 -> v7 ALTER shape is pinned by
+  // store/user-auth-columns.test.ts
   await createDrizzleStore(conn).setup();
   auth = createAuth(conn.db, createAppConfig({ DOKAN_DATA_DIR: dir }), SECRET);
 }, HEAVY_TEST_TIMEOUT_MS);
@@ -178,21 +178,25 @@ describe("better-auth schema pin", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("the column better-auth writes but first-run provisioning omits stays insertable", () => {
-    // router.ts provisions the single owner without an email (ADR-0001: no email
-    // identity). better-auth declares `email` required and WRITES it, so arm 2
-    // skips it and arm 1 only asks that it exists — nothing would say a word if
-    // it became NOT NULL and provisioning started failing at runtime.
+  it("every column better-auth writes but first-run provisioning omits stays insertable", () => {
+    // router.ts provisions the single owner omitting BOTH of these (ADR-0001: no
+    // email identity). better-auth declares and WRITES them, so arm 2 skips them
+    // and arm 1 only asks that they exist — nothing would say a word if either
+    // became NOT NULL without a default, and first-run setup would die on a bare
+    // constraint error with every arm still green.
     // SAFETY: PRAGMA table_info returns rows shaped { name, notnull, dflt_value }
     const columns = conn.raw.query("PRAGMA table_info(user)").all() as Array<{
       name: string;
       notnull: number;
       dflt_value: string | null;
     }>;
-    const email = columns.find((column) => column.name === "email");
-    if (!email) throw new Error("user.email is missing from the schema this build creates");
-    const insertable = email.notnull === 0 || email.dflt_value !== null;
-    expect({ column: "user.email", insertable }).toEqual({ column: "user.email", insertable: true });
+    const offenders = ["email", "emailVerified"].flatMap((name) => {
+      const column = columns.find((candidate) => candidate.name === name);
+      if (!column) return [`user.${name} is missing`];
+      const insertable = column.notnull === 0 || column.dflt_value !== null;
+      return insertable ? [] : [`user.${name} is NOT NULL with no default`];
+    });
+    expect(offenders).toEqual([]);
   });
 
   // red-on-parent-waive: "better-auth serves a request against this schema \(no SCHEMA_MISMATCH\)" — the parent's adapter (1.7.1) does not run the check at all, so the same request answers 401 there; discrimination is the mutation proof (the request throws SCHEMA_MISMATCH naming the removed columns), not a parent run

@@ -385,7 +385,7 @@ export const users = sqliteTable("user", {
   image: text("image"),
   /**
    * better-auth's user table has declared `email` and `emailVerified` since
-   * before 1.7.1 — 1.7.12 is the release whose drizzle adapter ENFORCES it, and
+   * before 1.7.1 — the drizzle adapter enforces it by 1.7.11 and not in 1.7.1, and
    * it refuses to serve a request without them
    * (`@better-auth/core/db/schema-check.mjs` — `Missing columns user.email,
    * user.emailVerified`, then `SCHEMA_MISMATCH` on every call). This app has no

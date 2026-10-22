@@ -31,6 +31,27 @@ ceiling, not the value you get: a tight machine narrows itself, an idle machine 
 budget (`HEAVY_SLOT_WAIT_MS`, default 30 minutes) exits `75` having run nothing, so a caller can
 fall back to focused tests.
 
+## Port ranges: EACCES is not "busy"
+
+`EADDRINUSE` means another process holds the port: wait. `EACCES` (or `EADDRNOTAVAIL`) means the
+port is not ours to use at all - on Windows, TCP port ranges the OS reserves
+(`netsh int ipv4 show excludedportrange protocol=tcp`), and they move across reboots and
+Hyper-V changes. Waiting never fixes a reserved range, so the two error families are kept apart:
+
+- A range whose ports refuse to bind is never reported as "the queue is full" (or empty). `run`
+  refuses immediately with exit `76` and names `HEAVY_SLOT_BASE` and the `netsh` command;
+  `status` prints a one-line diagnostic instead of "the queue is empty".
+- When the preferred base's first slot refuses with `EACCES`, the base shifts by a stride
+  (+1000) at a time, up to 8 candidates. The first process that finds a working base
+  records it in `HEAVY_SLOT_STATE_DIR/base` with flag `wx` - first writer wins, and a concurrent
+  process reads the winner instead of overwriting it, so two processes never disagree.
+- A base that worked yesterday can be reserved today: a persisted base that no longer binds is
+  re-decided the same way. If every candidate is excluded, the process refuses loudly (exit 76)
+  instead of burning the wait budget.
+
+`HEAVY_SLOT_BASE` is a preference, not a promise. A recorded, still-binding base outranks it, so
+two processes with different `HEAVY_SLOT_BASE` values agree on the recorded one.
+
 ## Failure mode prevented
 
 Several agents on one box each running a full suite pin every core: every lane's timing tests

@@ -545,12 +545,11 @@ describe("dryRunArgs asks turbo about the argv the plan would run", () => {
     ]);
   });
 
-  test("the program name is dropped, because turbo is what receives the argv", () => {
-    // `step[0]` is `turbo`; passing it through would ask turbo to run a task
-    // called "turbo".
-    expect(dryRunArgs(STEP)).not.toContain("turbo");
-  });
-
+  // The "the program name is dropped" case is not a test of its own: the exact
+  // `toEqual` above already pins that `turbo` is not in the output, and the
+  // weaker `not.toContain("turbo")` assertion was refused by the red-on-parent
+  // gate for good reason — against a hollow `dryRunArgs` it dereferences
+  // `undefined` and cannot be evaluated, so it proved nothing there.
   test("the flag is last, so the plan's own argv survives verbatim", () => {
     // A test that asked turbo a different question than the run asks is the
     // drift this pin exists to prevent.

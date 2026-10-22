@@ -2059,16 +2059,30 @@ function exportLookup(source: string, path: string, name: string): ExportLookup 
  * and promoting a local binding to an export (`const x = 1` → `export const x =
  * 1`) is the ordinary way a module gains a name. See that function.
  *
- * `names` is the planner's answer, and the planner is where a parent's `export *`
- * chain is resolved (`starExportNames`): this function cannot read another file,
- * so it cannot know whether appending one of these names would shadow a name the
- * parent's chain already supplies.
+ * `names` is the planner's answer, and `parentSupplied` is the other half of it:
+ * every export the parent's copy RESOLVES at runtime, and where it comes from.
+ * The planner is where a parent's `export *` chain is resolved
+ * (`starExportNames`), because this function cannot read another file. It must
+ * be told rather than guess, for the reason the sibling check below exists.
+ *
+ * A mirrored statement is appended whole, so it can declare a name the caller
+ * did not ask for. That is fine when the parent does not supply the sibling
+ * (`export const a = 1, b = 2` with a test that imports only `a`). It is a
+ * shadow when the parent does: `export * from "./base"` supplies `b` without
+ * binding it locally, so the parent's binding set cannot see it, and appending
+ * the change's `export const a = 1, b = 7` replaces the parent's working `b`
+ * with the stand-in's `undefined`. A test of the parent's own `b` then fails
+ * against the fake and the gate scores it RIGHT-REASON-RED — a false pass, and
+ * the worst one this gate can print, because the untouched parent passes that
+ * test. So a sibling the parent supplies is a refusal here, not a "not my
+ * problem" the clash set happens not to cover.
  */
 export function augmentModuleSource(
   parentSource: string,
   changeSource: string,
   path: string,
   names: string[],
+  parentSupplied: ReadonlyMap<string, ParentSupply>,
 ): HollowResult {
   const refuse = (why: string): HollowResult => ({ ok: false, refusal: `${path}: ${why}` });
   if (names.length === 0) return { ok: true, text: parentSource };
@@ -2084,6 +2098,10 @@ export function augmentModuleSource(
   // Every name the parent's module scope already binds, so an appended
   // declaration cannot silently redeclare one of them.
   const parentBindings = new Set(topLevelBindingNames(path, parentSource));
+  // The names this call is FOR. A sibling outside this set is carried along by
+  // the statement's shape, not requested, so it is the one the parent might
+  // already supply.
+  const requested = new Set(names);
   const blocks: string[] = [];
   // Statements already mirrored. `export const b = 2, c = 3;` declares two names,
   // so a request for both resolves to the same statement twice; appending it
@@ -2130,6 +2148,24 @@ export function augmentModuleSource(
         `a stand-in for \`${name}\` would have to append \`${statementText.trim()}\`, which the parent's module already binds \`${clash.join("`, `")}\` in, so that declaration cannot be appended and \`${name}\` has no stand-in`,
       );
     }
+    // A sibling the parent RESOLVES is a shadow, whether the parent binds it or
+    // only re-exports it. `export * from "./base"` creates no local binding, so
+    // the clash set above answers "free" for a name the running parent really
+    // has; appending the statement anyway would hide the parent's real export
+    // behind the fake and turn a passing test into an accepted red.
+    const shadow = declared.find(
+      (sibling) => !requested.has(sibling) && parentSupplied.has(sibling),
+    );
+    if (shadow !== undefined) {
+      const supply = parentSupplied.get(shadow);
+      const where =
+        supply?.kind === "star"
+          ? `through \`${supply.specifier}\``
+          : "in its own export list";
+      return refuse(
+        `a stand-in for \`${name}\` would append \`${statementText.trim()}\`, which also declares \`${shadow}\`, and the parent supplies \`${shadow}\` ${where} — appending that declaration would shadow the parent's real export, so a test of the parent's own \`${shadow}\` would fail against the fake and be accepted as a right-reason red`,
+      );
+    }
     if (mirroredStatements.has(statementText)) continue;
     mirroredStatements.add(statementText);
     appendedNames.push(...declared);
@@ -2168,8 +2204,10 @@ export function augmentModuleSource(
   // function's reading helpers exist to stop.
   //
   // The invariant that does not move: a stand-in is never appended over a name
-  // the parent already supplies. The clash check above refuses that first, and the
-  // BINDING comparison below is the backstop under it.
+  // the parent already supplies. Three checks hold it up: the clash set refuses a
+  // name the parent BINDS, the shadow check above refuses a sibling the parent
+  // RESOLVES but does not bind (a re-export), and the BINDING comparison below is
+  // the backstop under both.
   //
   // Two checks, not one. The export set is what the importing file picks up; the
   // BINDING list is what makes the file load at all. The two compare differently,
@@ -2320,17 +2358,26 @@ function starExportSpecifiers(path: string, source: string): string[] {
  *
  * A cycle is followed once: a module that re-exports everything from itself adds
  * no name the first visit did not already read.
+ *
+ * The result is a name-to-SPECIFIER map, not a bare list: the caller has to know
+ * which line of the parent's source reaches a name to refuse it in words the
+ * author can act on (`through "./base"`), and a name three links down a chain is
+ * not one the author wrote. A nested hop is attributed to the specifier THIS
+ * module wrote, because that is the line the reader can go and look at.
  */
 function starExportNames(
   path: string,
   source: string,
   read: (path: string) => string | null,
   seen: Set<string>,
-): { ok: true; names: string[] } | { ok: false; refusal: string } {
+): { ok: true; origins: Map<string, string> } | { ok: false; refusal: string } {
   const specifiers = starExportSpecifiers(path, source);
-  if (specifiers.length === 0 || seen.has(path)) return { ok: true, names: [] };
+  if (specifiers.length === 0 || seen.has(path)) return { ok: true, origins: new Map() };
   seen.add(path);
-  const names: string[] = [];
+  // Every name attributed to the specifier that reaches it from THIS module, so
+  // a refusal can say `through "./base"` rather than naming a file further down
+  // the chain that the author never wrote.
+  const origins = new Map<string, string>();
   for (const specifier of specifiers) {
     const target = resolveModuleWith(path, specifier, read);
     const targetSource = target === null ? null : read(target);
@@ -2340,12 +2387,17 @@ function starExportNames(
         refusal: `${path}: the parent's copy re-exports everything from \`${specifier}\`, and the gate cannot resolve that inside the parent's checkout — the names it supplies are unknowable from here, and a stand-in for one of them would shadow the parent's real export, so this module cannot be augmented`,
       };
     }
-    names.push(...runtimeExportNames(target, targetSource));
+    const direct = runtimeExportNames(target, targetSource);
+    for (const name of direct) {
+      if (!origins.has(name)) origins.set(name, specifier);
+    }
     const nested = starExportNames(target, targetSource, read, seen);
     if (!nested.ok) return nested;
-    names.push(...nested.names);
+    for (const name of nested.origins.keys()) {
+      if (!origins.has(name)) origins.set(name, specifier);
+    }
   }
-  return { ok: true, names };
+  return { ok: true, origins };
 }
 
 /**
@@ -2388,6 +2440,17 @@ export function planHollowModules(
 
 /** A module the parent HAS, carried into the parent worktree with stand-ins appended. */
 export type AugmentedModule = { path: string; importedBy: string; names: string[] };
+
+/**
+ * How the parent's copy supplies one runtime export name.
+ *
+ * `own` is the parent's own source — a local declaration, or a literal
+ * `export { b } from "./x"` that names an export a running import can bind
+ * without binding it locally. `star` is a bare `export * from`, which hands the
+ * naming to another module entirely, so the specifier is the answer to "where
+ * does this come from" for the refusal.
+ */
+export type ParentSupply = { kind: "own" } | { kind: "star"; specifier: string };
 
 export type AugmentPlan = {
   modules: Array<AugmentedModule & { text: string }>;
@@ -2456,10 +2519,18 @@ export function planAugmentedModules(
     // cannot. Counting `export type { value } from "./types"` as present appended
     // no stand-in for the runtime `value` the change adds, so the parent's own
     // `import { value }` failed to resolve and the file became a whole-file waiver.
-    const present = new Set(runtimeExportNames(path, parentSource));
+    //
+    // A MAP, not a Set: `augmentModuleSource` mirrors a whole statement, so it
+    // must also know which sibling names this set answers for, and a refusal has
+    // to say where the parent has one. The name it never declares locally is the
+    // dangerous one — `export * from "./base"` supplies `b` without binding it.
+    const supplied = new Map<string, ParentSupply>();
+    for (const name of runtimeExportNames(path, parentSource)) {
+      supplied.set(name, { kind: "own" });
+    }
     const parentHasDefault = hasDefaultExport(parentSource, path);
     const stillMissing = (name: string): boolean =>
-      name === "default" ? !parentHasDefault : !present.has(name);
+      name === "default" ? !parentHasDefault : !supplied.has(name);
     let missing = binding.names.filter(stillMissing);
     if (missing.length > 0) {
       // Only now, and only for the names the parent's own export list and literal
@@ -2485,13 +2556,19 @@ export function planAugmentedModules(
         refusals.push(starred.refusal);
         continue;
       }
-      for (const name of starred.names) present.add(name);
+      // Attributed to the specifier that reaches it, so the refusal below can
+      // name `./base` — the line the author wrote — instead of the gate's own
+      // vocabulary. A name the parent's own source already supplied keeps its
+      // `own` origin, because a local declaration wins over a star anyway.
+      for (const [name, specifier] of starred.origins) {
+        if (!supplied.has(name)) supplied.set(name, { kind: "star", specifier });
+      }
       missing = binding.names.filter(stillMissing);
     }
     // A test that only uses names the parent's copy really declares says nothing
     // about an augmentation, and the parent's file is left exactly as it is.
     if (missing.length === 0) continue;
-    const augmented = augmentModuleSource(parentSource, changeSource, path, missing);
+    const augmented = augmentModuleSource(parentSource, changeSource, path, missing, supplied);
     if (!augmented.ok) {
       refusals.push(augmented.refusal);
       continue;

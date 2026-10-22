@@ -4581,7 +4581,7 @@ export function brandNew(n: number): number {
 `;
 
   test("the parent's own source is kept, and only the missing name is appended", () => {
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"]);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
     expect(augmented.ok).toBe(true);
     if (!augmented.ok) return;
     // Byte for byte: an existing behaviour cannot be faked by accident, which is
@@ -4593,7 +4593,7 @@ export function brandNew(n: number): number {
   });
 
   test("the appended stand-in carries no behaviour, and says what it is", () => {
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"]);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
     expect(augmented.ok).toBe(true);
     if (!augmented.ok) return;
     const appended = augmented.text.slice(PARENT.length);
@@ -4607,7 +4607,7 @@ export function brandNew(n: number): number {
     // A second `export function guard` in the same file is a duplicate
     // declaration, so the augmented file would not load at all — the one way an
     // augmentation can do more damage than the refusal it replaced.
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"]);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
     expect(augmented.ok).toBe(true);
     if (!augmented.ok) return;
     expect(augmented.text.match(/export function guard/gu)?.length).toBe(1);
@@ -4622,6 +4622,7 @@ export function brandNew(n: number): number {
       "export function guard(n: number): number {\n  return n;\n}\nexport function brandNew(): number {\n  return 1;\n}\n",
       "scripts/mod.ts",
       ["brandNew"],
+      new Map(),
     );
     expect(augmented.ok).toBe(false);
     if (augmented.ok) return;
@@ -4646,7 +4647,7 @@ export function brandNew(n: number): number {
       { name: "brandNew", source: "export declare const brandNew: number;\n", why: "declare" },
     ];
     for (const entry of cases) {
-      const augmented = augmentModuleSource(PARENT, entry.source, "scripts/mod.ts", [entry.name]);
+      const augmented = augmentModuleSource(PARENT, entry.source, "scripts/mod.ts", [entry.name], new Map());
       expect({ name: entry.name, ok: augmented.ok }).toEqual({ name: entry.name, ok: false });
       if (augmented.ok) continue;
       expect({ name: entry.name, refusal: augmented.refusal }).toEqual({
@@ -4657,14 +4658,14 @@ export function brandNew(n: number): number {
   });
 
   test("the augmented module declares exactly the parent's names plus the appended ones", () => {
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"]);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["brandNew"], new Map());
     expect(augmented.ok).toBe(true);
     if (!augmented.ok) return;
     expect(declaredExportNames("scripts/mod.ts", augmented.text)).toEqual(["brandNew", "guard"]);
   });
 
   test("a module with nothing missing is left byte-identical", () => {
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", []);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", [], new Map());
     expect(augmented).toEqual({ ok: true, text: PARENT });
   });
 });
@@ -4700,7 +4701,7 @@ describe("red-on-parent round 26 — an appended stand-in clashes with every par
   const CHANGE = `export const specPaths = ["a"];\nexport function select(): string[] {\n  return specPaths;\n}\n`;
 
   test("a module-local const the change promotes to an export is refused, not appended twice", () => {
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["specPaths"]);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["specPaths"], new Map());
     // Refused, because the parent's own `const specPaths` is already there and a
     // second declaration of it would not load.
     expect({ ok: augmented.ok }).toEqual({ ok: false });
@@ -4733,7 +4734,7 @@ describe("red-on-parent round 26 — an appended stand-in clashes with every par
       },
     ];
     for (const entry of cases) {
-      const augmented = augmentModuleSource(entry.parent, entry.change, "scripts/mod.ts", [entry.name]);
+      const augmented = augmentModuleSource(entry.parent, entry.change, "scripts/mod.ts", [entry.name], new Map());
       expect({ kind: entry.kind, ok: augmented.ok }).toEqual({ kind: entry.kind, ok: false });
       if (augmented.ok) continue;
       expect({ kind: entry.kind, refusal: augmented.refusal }).toEqual({
@@ -4750,7 +4751,7 @@ describe("red-on-parent round 26 — an appended stand-in clashes with every par
     // question the gate may leave to chance.
     const parent = `import { readFileSync } from "node:fs";\nexport function read(p: string): string {\n  return readFileSync(p, "utf8");\n}\n`;
     const change = `export function readFileSync(p: string): string {\n  return p;\n}\nexport function read(p: string): string {\n  return p;\n}\n`;
-    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["readFileSync"]);
+    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["readFileSync"], new Map());
     expect({ ok: augmented.ok }).toEqual({ ok: false });
     if (augmented.ok) return;
     expect(augmented.refusal).toContain("readFileSync");
@@ -4774,7 +4775,7 @@ describe("red-on-parent round 26 — an appended stand-in clashes with every par
     // not export leaves the append available.
     const parent = `const internal = 3;\nexport function read(): number {\n  return internal;\n}\n`;
     const change = `const internal = 3;\nexport function read(): number {\n  return internal;\n}\nexport function brandNew(): number {\n  return internal + 1;\n}\n`;
-    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["brandNew"]);
+    const augmented = augmentModuleSource(parent, change, "scripts/mod.ts", ["brandNew"], new Map());
     expect({ ok: augmented.ok }).toEqual({ ok: true });
     if (!augmented.ok) return;
     expect(augmented.text.startsWith(parent)).toBe(true);
@@ -4796,7 +4797,7 @@ describe("red-on-parent round 26 — a shared variable statement is appended onc
   const CHANGE = `export function read(): number {\n  return 1;\n}\nexport const b = 2, c = 3;\n`;
 
   test("both names in one statement are appended once, and the module still loads", () => {
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["b", "c"]);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["b", "c"], new Map());
     expect({ ok: augmented.ok }).toEqual({ ok: true });
     if (!augmented.ok) return;
     // One appended statement, so each name is declared once: two copies would be
@@ -4812,7 +4813,7 @@ describe("red-on-parent round 26 — a shared variable statement is appended onc
     // itself is free, so a message about `b` is misleading: the appended text is
     // the whole statement, and that statement cannot go in.
     const parent = `export function read(): number {\n  return 1;\n}\nexport const c = 30;\n`;
-    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"]);
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"], new Map());
     expect({ ok: augmented.ok }).toEqual({ ok: false });
     if (augmented.ok) return;
     // Names the declaration, and the sibling that blocks it, and the consequence.
@@ -4825,7 +4826,7 @@ describe("red-on-parent round 26 — a shared variable statement is appended onc
 
   test("a clash on the requested name itself says the parent already binds it", () => {
     const parent = `const b = 20;\nexport function read(): number {\n  return b;\n}\n`;
-    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"]);
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"], new Map());
     expect({ ok: augmented.ok }).toEqual({ ok: false });
     if (augmented.ok) return;
     expect(augmented.refusal).toContain("already binds `b`");
@@ -4836,7 +4837,7 @@ describe("red-on-parent round 26 — a shared variable statement is appended onc
     // `const { b } = obj` is a top-level binding of `b` with no simple name node,
     // so a clash reader that only walked identifiers would miss it.
     const parent = `const source = { b: 20 };\nconst { b } = source;\nexport function read(): number {\n  return b;\n}\n`;
-    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"]);
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["b"], new Map());
     expect({ ok: augmented.ok }).toEqual({ ok: false });
   });
 });
@@ -6010,7 +6011,7 @@ describe("red-on-parent round 30 — a shared variable statement does not force 
   const CHANGE = `export const base = 0;\nexport const a = 1, b = 2;\n`;
 
   test("a stand-in asked for one name in a shared statement is written, not refused", () => {
-    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["a"]);
+    const augmented = augmentModuleSource(PARENT, CHANGE, "scripts/mod.ts", ["a"], new Map());
     expect(augmented.ok).toBe(true);
     if (!augmented.ok) return;
     // The parent's own source verbatim, then the stand-ins.
@@ -6027,7 +6028,7 @@ describe("red-on-parent round 30 — a shared variable statement does not force 
     // change too, because the clash check runs first; the binding-multiset
     // comparison behind it is the backstop, not the first line.
     const parent = `export const base = 0;\nexport const b = 20;\n`;
-    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["a"]);
+    const augmented = augmentModuleSource(parent, CHANGE, "scripts/mod.ts", ["a"], new Map());
     expect({ ok: augmented.ok }).toEqual({ ok: false });
     if (augmented.ok) return;
     expect(augmented.refusal).toContain("export const a = 1, b = 2;");
@@ -6076,6 +6077,107 @@ test("uses the name the shared statement adds", () => {
       expect(stdout).not.toContain("CANNOT-HOLLOW");
       expect(stdout).toContain("RIGHT-REASON-RED");
       expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 31 — a mirrored sibling cannot shadow a name the parent re-exports.
+//
+// The change adds `export const a = 1, b = 7` to a module whose parent copy
+// already supplies `b` through `export * from "./base"`. A test imports both
+// names and asserts only `b`. The plan asks for `a` alone — the parent resolves
+// `b` — but the statement is mirrored whole, so the appended stand-in declares
+// `b` as well. A re-export creates no local binding, so the clash set did not see
+// it: the stand-in shadowed the parent's working `b` with `undefined`, the test
+// failed against the fake, and the gate scored that RIGHT-REASON-RED even though
+// the untouched parent passes the same test.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 31 — a mirrored sibling cannot shadow a name the parent re-exports", () => {
+  const BASE = `export const b = 7;\n`;
+  const PARENT = `export * from "./base";\n`;
+  // The change redeclares `b` beside the star, which is what makes mirroring the
+  // whole statement dangerous: `b` is exactly what the parent already supplies.
+  const CHANGE = `export * from "./base";\nexport const a = 1, b = 7;\n`;
+  const MODULE = "packages/core/src/star-export.ts";
+  const BASE_MODULE = "packages/core/src/base.ts";
+  const TOUCHED = new Set([MODULE]);
+
+  const readChange = (path: string): string | null =>
+    path === MODULE ? CHANGE : path === BASE_MODULE ? BASE : null;
+  const readParent = (path: string): string | null =>
+    path === MODULE ? PARENT : path === BASE_MODULE ? BASE : null;
+
+  test("the plan refuses the stand-in, and names the sibling and where the parent has it", () => {
+    const plan = planAugmentedModules(
+      "packages/core/src/star-export.test.ts",
+      `import { a, b } from "./star-export";\n`,
+      TOUCHED,
+      readChange,
+      readParent,
+    );
+    // A refusal, not a stand-in: the alternative is a module that loads and
+    // answers `b` with the fake's `undefined`.
+    expect(plan.modules).toEqual([]);
+    expect(plan.refusal).toContain("`b`");
+    expect(plan.refusal).toContain("./base");
+    expect(plan.refusal).toContain(MODULE);
+  });
+
+  test("an ordinary shared statement whose sibling the parent does NOT supply is still accepted", () => {
+    // Round 30's case, pinned in the other direction: `b` is not a name the
+    // parent supplies, so mirroring it beside `a` shadows nothing.
+    const parent = `export const base = 0;\n`;
+    const change = `export const base = 0;\nexport const a = 1, b = 2;\n`;
+    const plan = planAugmentedModules(
+      "scripts/mod.test.ts",
+      `import { a } from "./mod";\n`,
+      new Set(["scripts/mod.ts"]),
+      (path) => (path === "scripts/mod.ts" ? change : null),
+      (path) => (path === "scripts/mod.ts" ? parent : null),
+    );
+    expect(plan.refusal).toBeNull();
+    expect(plan.modules.map((module) => module.names)).toEqual([["a"]]);
+  });
+
+  test("the gate refuses instead of scoring a false right-reason red, end to end", () => {
+    // The unchanged parent passes this test: `b` really is 7 there. Before this
+    // round the gate appended `export const a = undefined, b = undefined` over
+    // it, the assertion failed against the fake, and the gate printed
+    // RIGHT-REASON-RED and exited 0 — certifying a test that pins nothing.
+    //
+    // After the refusal nothing is appended, so the parent's own `b` is what the
+    // test reads and the verdict is the honest one: GREEN-ON-PARENT, rejected.
+    // Not CANNOT-HOLLOW, because bun binds a missing named import to `undefined`
+    // rather than failing the link — the file still loads here, and a refusal may
+    // only replace rows the parent could not produce. The refusal's job is to
+    // keep the shadow out, and the parent's own run is the better witness.
+    const fixture = createFixture(
+      [PKG, { path: BASE_MODULE, text: BASE }, { path: MODULE, text: PARENT }],
+      [
+        { path: MODULE, text: CHANGE },
+        {
+          path: "packages/core/src/star-export.test.ts",
+          text: `import { expect, test } from "bun:test";
+import { a, b } from "./star-export";
+test("the parent's own b is still 7", () => {
+  expect(b).toBe(7);
+});
+`,
+        },
+      ],
+    );
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      // The gate rejects the file, and never certifies the fake's failure as the
+      // test's own reason.
+      expect(status).toBe(1);
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      expect(stdout).not.toContain("appended stand-in");
+      expect(stdout).toContain("GREEN-ON-PARENT");
     } finally {
       fixture.cleanup();
     }

@@ -383,6 +383,28 @@ export const users = sqliteTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   image: text("image"),
+  /**
+   * better-auth's user table has declared `email` and `emailVerified` since
+   * before 1.7.1 — 1.7.12 is the release whose drizzle adapter ENFORCES it, and
+   * it refuses to serve a request without them
+   * (`@better-auth/core/db/schema-check.mjs` — `Missing columns user.email,
+   * user.emailVerified`, then `SCHEMA_MISMATCH` on every call). This app has no
+   * email identity (ADR-0001, local-first, phone is the identity), so `email` is
+   * nullable and nothing here writes it: an insert that omits a nullable column
+   * is legal, which is what the check demands of a column better-auth does not
+   * own, and it keeps `user` insertable for the single owner first-run setup
+   * provisions. A UNIQUE index would be a constraint nothing enforces and would
+   * collide the moment two email-less owners existed, so there is none.
+   *
+   * `displayUsername` is deliberately absent: the username plugin only declares
+   * it when its `displayUsername` option is on, and auth.ts passes `false`
+   * (`better-auth/dist/plugins/username/index.mjs` — `usernameImpl(options,
+   * options?.displayUsername !== false)`), so the check does not ask for it. Flip
+   * that option and this table needs the column in the same change.
+   */
+  email: text("email"),
+  /** declared with `email`; the app's inserts omit it and take the default */
+  emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
   /** username-password login name = the normalized phone without + (ticket 02) */
   username: text("username").unique(),
   phoneNumber: text("phoneNumber").unique(),
@@ -493,7 +515,7 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category_id)`,
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT, username TEXT UNIQUE, phoneNumber TEXT UNIQUE, phoneNumberVerified INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT, email TEXT, emailVerified INTEGER NOT NULL DEFAULT 0, username TEXT UNIQUE, phoneNumber TEXT UNIQUE, phoneNumberVerified INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS session (id TEXT PRIMARY KEY, expiresAt INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, ipAddress TEXT, userAgent TEXT, userId TEXT NOT NULL REFERENCES user(id))`,
   `CREATE TABLE IF NOT EXISTS account (id TEXT PRIMARY KEY, accountId TEXT NOT NULL, providerId TEXT NOT NULL, issuer TEXT NOT NULL DEFAULT '', userId TEXT NOT NULL REFERENCES user(id), accessToken TEXT, refreshToken TEXT, idToken TEXT, accessTokenExpiresAt INTEGER, refreshTokenExpiresAt INTEGER, scope TEXT, password TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(providerId, accountId))`,
   `CREATE TABLE IF NOT EXISTS verification (id TEXT PRIMARY KEY, identifier TEXT NOT NULL, value TEXT NOT NULL, expiresAt TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,

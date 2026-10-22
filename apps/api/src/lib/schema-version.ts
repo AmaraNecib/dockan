@@ -52,8 +52,19 @@ import type { Database } from "bun:sqlite";
  * would therefore leave its leftover debt permanently unrelieved instead of
  * spreading it, and the owner's approved rule would silently stop applying. A
  * v5 build MUST therefore refuse the version-6 database (ADR-0008 §4.5).
+ *
+ * Version 7 (better-auth 1.7.12): the `user` table gains `email` and
+ * `emailVerified`, the two columns that version's schema check requires before
+ * it will serve one request (`@better-auth/core/db/schema-check.mjs` reports
+ * `Missing columns user.email, user.emailVerified` and every auth call throws
+ * `SCHEMA_MISMATCH`). There is no migration and none is owed: this app is
+ * pre-release, so SCHEMA_DDL creates a fresh vault in this shape and an
+ * existing version-6 vault is recreated rather than upgraded. The bump stays
+ * because the file's shape did change — a version-6 build refuses a version-7
+ * file instead of provisioning owner rows in the old shape on top of it
+ * (ADR-0008 §4.5).
  */
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 /**
  * A database written by a newer app. The older build cannot know what the

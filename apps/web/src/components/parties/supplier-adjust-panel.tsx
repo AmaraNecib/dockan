@@ -14,7 +14,7 @@ import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
 import { supplierBalanceDirectionKey, supplierDirectionHintKey, supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
-import { invalidatePartyBalance } from "@/lib/party-cache-key";
+import { invalidatePartyMoney } from "@/lib/party-cache-key";
 import { orpc } from "@/lib/rpc";
 
 const REASON_PRESETS = ["supplierAdjustPresetOpening", "supplierAdjustPresetCorrection", "supplierAdjustPresetOldDebt", "supplierAdjustPresetDiscount"] as const;
@@ -116,12 +116,11 @@ export function SupplierAdjustPanel({
         // the real debt/dashboard keys (Greptile round 1 finding 5: ["debtsData"]
         // matched nothing, so saving never marked the debts views stale). The
         // list/activity prefixes use the same generated-path shape.
-        queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         // #323 — one party, one cache identity: the adjustment moved THIS
         // supplier's money, so the tab is stale under the party's canonical key
         // (the id). The whole-family prefix used to stand in for it and
         // refreshed every party's tab instead.
-        invalidatePartyBalance(queryClient, { kind: "PURCHASE", counterpartyId: supplierId, counterpartyName: null }),
+        invalidatePartyMoney(queryClient, { kind: "PURCHASE", counterpartyId: supplierId, counterpartyName: null }),
         queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
       ]);
       onDone();

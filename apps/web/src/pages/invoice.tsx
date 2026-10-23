@@ -19,8 +19,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
-import { invalidatePartyBalance, partyBalanceInput } from "../lib/party-cache-key";
-import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
+import { invalidatePartyMoney, partyBalanceInput, partyBalanceQueryOptions } from "../lib/party-cache-key";
+import { LEDGER_REFETCH_MS } from "../lib/freshness";
 import { combineBusinessDateTime, formatDateTime } from "../lib/dates";
 import { debtOffsetDisplay } from "../lib/return-voucher";
 
@@ -122,26 +122,23 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
           queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
-          queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
           // #323 — the debts screen shows this customer's total; the payment
           // moved it, so that list is stale too.
-          queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         ]);
         // #256 round 4 — the returns panel derives its refund default from the
         // party's whole tab, so a recorded payment must refresh that read too or
-        // the preview keeps the pre-payment total. Exact key, like the detail
-        // read above; a purchase invoice has no customer tab to refresh.
-        if (invoice.kind === "SALE") {
-          // #323 — the customer's tab is read under the canonical party key (the
-          // id when known, the trimmed typed name otherwise), so this
-          // invalidation lands on the SAME key the debts screen reads and the
-          // refund preview this screen shows.
-          void invalidatePartyBalance(queryClient, {
-            kind: "SALE",
-            counterpartyId: invoice.counterpartyId,
-            counterpartyName: invoice.counterpartyName,
-          });
-        }
+        // the preview keeps the pre-payment total.
+        //
+        // #340 — BOTH kinds, not just a sale. A purchase invoice accepts payments
+        // as well, and that write moves the supplier's balance, the debts totals
+        // and the activity feed exactly like a customer payment does. The kind
+        // travels with the identity so the key is the one the supplier's screen
+        // reads.
+        void invalidatePartyMoney(queryClient, {
+          kind: invoice.kind,
+          counterpartyId: invoice.counterpartyId,
+          counterpartyName: invoice.counterpartyName,
+        });
       },
       onError: (err) => {
         setSavedPayment(null);
@@ -400,21 +397,16 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
     counterpartyName: invoice.counterpartyName,
   });
   const hasPartyIdentity = partyBalance !== null;
-  const partyDebtQuery = useQuery({
-    ...orpc.debtsByParty.queryOptions({
-      // the unidentified party's own values keep the key well-formed; the query
-      // is disabled, so nothing is ever sent under it
-      input: partyBalance ?? { kind: "SALE", counterpartyId: invoice.counterpartyId, counterpartyName: invoice.counterpartyName },
-    }),
-    enabled: invoice.kind === "SALE" && hasPartyIdentity,
-    // #323 review — the refund preview reads the customer's tab, and a payment
-    // recorded in ANOTHER window moves it. `invalidatePartyBalance` refreshes
-    // this window's cache only, and two windows side by side never exchange a
-    // focus event, so without a bounded tick this preview stays as old as the
-    // last read made it. Same lever #295 gave the counters for the #294 gap;
-    // `refreshMs` is injectable so a test can run this wiring on a fast clock.
-    ...hotCounterRefresh(refreshMs),
-  });
+  // #340 — the read goes through the seam, which owns "is this party addressable
+  // at all", the well-formed key for a disabled entry, and the bounded tick that
+  // converges a second window (no focus event ever arrives between them). The
+  // caller keeps only its own condition: a purchase invoice has no customer tab.
+  const partyDebtQuery = useQuery(
+    partyBalanceQueryOptions(
+      { kind: "SALE", counterpartyId: invoice.counterpartyId, counterpartyName: invoice.counterpartyName },
+      { enabled: invoice.kind === "SALE", refreshMs },
+    ),
+  );
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
   /** #256 — the owner's EXPLICIT method, or null while they have not picked.
@@ -634,7 +626,6 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
           // the shell badge and dashboard notice read this aggregate (issue #118)
           queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
-          queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
         ]);
       },
       onError: (err) => {

@@ -56,6 +56,17 @@ export const HOT_COUNTER_REFETCH_MS = 5_000;
 export const LEDGER_REFETCH_MS = 15_000;
 
 /**
+ * The tick for a party's balance — the debts drill-down and the refund preview.
+ *
+ * Same value as `LEDGER_REFETCH_MS` and for a different read: that one bounds a
+ * geo whole-ledger projection, this one a single party's open invoices (#340).
+ * They are separate constants on purpose — tuning the ledger's bound must not
+ * silently move a money panel, and the day one of the two reads changes shape
+ * the other's justification is still true.
+ */
+export const PARTY_BALANCE_REFETCH_MS = 15_000;
+
+/**
  * The calm cadence: the bound the queries #295 did NOT make hot keep.
  *
  * Two call sites, both of them for a query that must not ride the 5 s tick:

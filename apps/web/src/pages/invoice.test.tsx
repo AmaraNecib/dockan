@@ -151,6 +151,11 @@ function renderPanel(invoice: InvoiceDetail) {
 
 /** Renders the real InvoicePage (router-free) and waits for the detail read. */
 async function renderPage(invoice: InvoiceDetail) {
+  await renderPageWithClient(invoice);
+}
+
+/** The same render, returning the client so a test can watch invalidation. */
+async function renderPageWithClient(invoice: InvoiceDetail): Promise<QueryClient> {
   invoiceDetail = invoice;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const root = createRoot(host);
@@ -163,7 +168,7 @@ async function renderPage(invoice: InvoiceDetail) {
     );
   });
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (host.querySelector('[data-testid="invoice-page"]') !== null) return;
+    if (host.querySelector('[data-testid="invoice-page"]') !== null) return client;
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
@@ -635,5 +640,34 @@ describe("InvoicePage pay-then-return (#256 round 4)", () => {
     // the stale 1000 tab would show 800 debt / 0 cash, hiding the cash payout
     expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("600 دج");
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
+  });
+
+  // #340 review (Greptile P1) — a PURCHASE invoice takes payments too, and that
+  // write moves the supplier's balance, so the debts totals must refresh exactly
+  // as they do for a sale. The refresh used to sit inside a `kind === "SALE"`
+  // branch, which left a paid purchase showing its old total.
+  it("refreshes the debts totals after a payment on a PURCHASE invoice too", async () => {
+    const purchase = { ...makeInvoice(1000), kind: "PURCHASE" as const };
+    const client = await renderPageWithClient(purchase);
+    await flushAsync();
+    // seed an entry under the key the payment must invalidate, so "did it happen"
+    // is answered by the cache itself rather than by a mock's call count
+    client.setQueryData(["reportsDebts"], { items: [], total: 0 });
+    expect(client.getQueryState(["reportsDebts"])?.isInvalidated).toBe(false);
+
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "300");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="pmt-form"]')!);
+
+    let invalidated = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (client.getQueryState(["reportsDebts"])?.isInvalidated === true) {
+        invalidated = true;
+        break;
+      }
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(invalidated).toBe(true);
   });
 });

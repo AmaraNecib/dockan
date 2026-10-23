@@ -12,8 +12,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
-import { partyBalanceInput } from "../lib/party-cache-key";
-import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
+import { partyBalanceInput, partyBalanceQueryOptions } from "../lib/party-cache-key";
+import { LEDGER_REFETCH_MS } from "../lib/freshness";
 import { tError } from "../lib/i18n";
 import { formatDate } from "../lib/dates";
 import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
@@ -53,31 +53,24 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle, refreshMs = LEDGER
   // Per-row query gated on expansion: a freshly opened row shows its own
   // loading skeleton (never another party's cached invoices), while
   // re-opening the same row is served from the query cache instantly.
-  // #323 — one party, one cache identity. The drill-down reads the party under
-  // the canonical key (the id when the shop knows it, the trimmed typed name
-  // otherwise), the same key the invoice screen's customer tab reads and every
-  // money write invalidates. A party with no identity at all is refused below.
-  const balanceInput = partyBalanceInput({
+  // #323 — one party, one cache identity: the drill-down reads the party under
+  // the canonical key (id when the shop knows it, trimmed typed name otherwise),
+  // the same key the invoice screen's customer tab reads and every money write
+  // invalidates. #340 — the seam owns both that key and the addressability
+  // question; this row adds only its own condition. The RENDER branch below asks
+  // the same module whether the party is addressable, so the trim-and-check lives
+  // in one place while two readers use it.
+  const partyInput = partyBalanceInput({
     kind: row.kind,
     counterpartyId: row.counterpartyId,
     counterpartyName: row.counterpartyName,
   });
-  const invoices = useQuery({
-    ...orpc.debtsByParty.queryOptions({
-      // The unidentified party's own values keep the key well-formed. The query is
-      // disabled and invalidation never re-enables a disabled query, so this entry
-      // is inert — it is NOT a read under the nameless key, and the refusal below
-      // renders before any of the states this query reports.
-      input: balanceInput ?? { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
-    }),
-    enabled: expanded && balanceInput !== null,
-    // #323 review — a balance read in a second window. `invalidatePartyBalance`
-    // reaches this window's cache only, and two windows side by side never
-    // exchange a focus event, so the party's tab re-reads on a bounded tick or
-    // not at all. Same answer #295 gave the counters for the #294 gap;
-    // `refreshMs` is injectable so a test can run this wiring on a fast clock.
-    ...hotCounterRefresh(refreshMs),
-  });
+  const invoices = useQuery(
+    partyBalanceQueryOptions(
+      { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
+      { enabled: expanded, refreshMs },
+    ),
+  );
   // supplier account movements behind the net balance (issue 161)
   const account = useQuery({
     ...orpc.suppliersGet.queryOptions({ input: { id: row.counterpartyId ?? "" } }),
@@ -103,7 +96,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle, refreshMs = LEDGER
       {expanded && (
         <div id={`${groupLabel}-${partyId(signature)}-invoices`} className="border-t bg-accent px-4 py-3">
           <h3 className="text-sm font-semibold text-muted-foreground">{t("debtsInvoicesTitle")}</h3>
-          {balanceInput === null ? (
+          {partyInput === null ? (
             // #323 — no id and no usable name: there is no key to read this party
             // under, so the read is refused and the owner is told the one thing
             // that fixes it.

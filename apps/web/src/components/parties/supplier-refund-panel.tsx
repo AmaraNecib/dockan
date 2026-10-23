@@ -7,7 +7,7 @@ import { parseGroupedAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 
 import { tError } from "@/lib/i18n";
-import { invalidatePartyBalance } from "@/lib/party-cache-key";
+import { invalidatePartyMoney } from "@/lib/party-cache-key";
 import { orpc } from "@/lib/rpc";
 
 /**
@@ -70,11 +70,9 @@ export function SupplierRefundPanel({
         queryClient.invalidateQueries({ queryKey: orpc.suppliersGet.queryKey({ input: { id: supplierId } }) }),
         // #323 — the refund moved the supplier's money, so the tab the debts
         // screen reads under the party's canonical key is stale.
-        invalidatePartyBalance(queryClient, { kind: "PURCHASE", counterpartyId: supplierId, counterpartyName: null }),
+        invalidatePartyMoney(queryClient, { kind: "PURCHASE", counterpartyId: supplierId, counterpartyName: null }),
         // #323 — the debts screen shows this supplier's total; the refund moved
         // it, so that list is stale too.
-        queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
-        queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
       ]);
       onDone();
     } catch (err) {

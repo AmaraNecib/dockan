@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { invalidatePartyMoney, partyBalanceInput, partyBalanceQueryOptions, type CacheInvalidator } from "./party-cache-key";
+import { ACTIVITIES_LIST_QUERY_KEY, DEBTS_BY_PARTY_QUERY_KEY } from "./query-keys";
 
 /**
  * #340 — the money-write invariant and the addressability seam.
@@ -41,10 +42,23 @@ describe("#340 the party-money write invariant", () => {
     await promise;
 
     expect(keys).toHaveLength(3);
-    const joined = keys.join("\n");
-    expect(joined).toContain("debtsByParty");
-    expect(joined).toContain("reportsDebts");
-    expect(joined).toContain("activitiesList");
+    // SAFETY: `keys` holds `JSON.stringify(...)` of the query keys this test's
+    // recording client saw, so each string parses back to the array it came from.
+    const parsed = keys.map((key) => JSON.parse(key) as unknown[]);
+    // The KEY SHAPE, not its text. An oRPC key is `[["procedure"], { input, type }]`,
+    // so a bare `["activitiesList"]` matches nothing however right its text looks —
+    // exactly what this test's first version failed to catch. Equality with the
+    // prefix constant is the strongest form, and `query-keys.test.ts` already pins
+    // that the constant is a true prefix of a real key.
+    // toContainEqual takes a mutable element; the constant is `as const` so the
+    // comparison is against a copy, which the deep equality still makes exact
+    expect(parsed).toContainEqual([...ACTIVITIES_LIST_QUERY_KEY]);
+    // the debts read is the EXACT key of this party, so its first element is that
+    // procedure's path group rather than the bare prefix
+    expect(parsed.some((key) => JSON.stringify(key[0]) === JSON.stringify(DEBTS_BY_PARTY_QUERY_KEY[0]))).toBe(true);
+    // SAFETY: `parsed` is the JSON round-trip of the recorded keys, so each entry
+    // is an array by construction; `key[0]` is the oRPC path group.
+    expect(parsed.some((key) => (key[0] as unknown[])[0] === "reportsDebts")).toBe(true);
 
     // and a party with NO identity is not written under: that key would be every
     // nameless party's. Asserted here rather than alone, because on the parent a

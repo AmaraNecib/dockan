@@ -1,6 +1,7 @@
 import type { DebtsByPartyInput } from "@dokan/contracts";
 
 import { hotCounterRefresh, PARTY_BALANCE_REFETCH_MS } from "./freshness";
+import { ACTIVITIES_LIST_QUERY_KEY } from "./query-keys";
 import { orpc } from "./rpc";
 
 /**
@@ -95,8 +96,11 @@ export function invalidatePartyMoney(queryClient: CacheInvalidator, identity: Pa
     queryClient.invalidateQueries({ queryKey: orpc.debtsByParty.queryKey({ input }) }),
     // the debts list's totals: per-party money is part of that list's answer
     queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
-    // the activity feed shows the write that moved the money
-    queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
+    // the activity feed shows the write that moved the money. The oRPC key is
+    // `[["activitiesList"], { input, type }]`, so a bare `["activitiesList"]`
+    // matches nothing — the prefix constant is what the rest of the app uses
+    // (`lib/query-keys.ts`, with its own matching test).
+    queryClient.invalidateQueries({ queryKey: ACTIVITIES_LIST_QUERY_KEY }),
   ]).then(() => undefined);
 }
 

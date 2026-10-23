@@ -126,20 +126,31 @@ bypassed.
 ### What the gate proves, and what it does not
 
 The gate proves that an added test file **reaches** the change and **fails there**. It does not prove
-that the test asserts a behaviour. Two shapes assert nothing and are accepted, by design:
+that the test asserts a behaviour. The report's `STAND-IN` column says which fake a row was judged
+against, because the two fakes make two different promises:
 
-1. **a TypeError from dereferencing a stand-in** — the hollow's function returns `undefined`, so
-   `turboArgs([], "x").args` is `undefined.args` and dies before any assertion runs;
-2. **an assertion reading a const stand-in** — a hollow const's value is `undefined`, so
-   `expect(NEW_LIMIT).toBeDefined()` is false on the parent and true on the change.
+1. **hollow** — the change ADDS the module, so the parent has none of it and the gate wrote a
+   stand-in with the same export names and no behaviour. A `TypeError` there is the gate's own fake
+   being dereferenced — `turboArgs([], "x").args` on a hollow is `undefined.args` — so the body never
+   evaluated an assertion about the change, and the row is **wrong-reason red**, not the test's own
+   red (#348). What is still accepted on a hollow: an `AssertionError`, including one that only reads
+   a const stand-in (`expect(NEW_LIMIT).toBeDefined()` is false against `undefined`), because junit's
+   failure type cannot tell it from a real assertion on a value the change computes. The row is
+   labelled `hollow` so a reviewer sees which shape it might be; closing that one needs a marker the
+   test itself must produce, which changes the gate's contract with every test file.
+2. **appended** — the parent HAS the module, so the gate kept its source byte for byte and appended
+   stand-ins only for the names the change adds. The parent's real code still runs, so a `TypeError`
+   there has a cause the gate cannot see; it stays accepted, and that residual hole is stated here
+   rather than hidden in the code.
 
-Both are pinned as fixtures in `scripts/red-on-parent.test.ts` with the comment `accepted by design,
-not a defect`. The asymmetry is easy to mistake for a bug: `expect(brandNew).toBeDefined()` on a
-**function** export is green on the parent (a hollow function exists) and rejected, while the same
-shape on a **const** export is accepted. What separates them is what a stand-in can be, not an
-inconsistency in the gate. A vacuous assertion is rejected only in the shapes the gate can
-distinguish. Closing the rest needs a discrimination junit's failure type cannot carry, which is a
-design change rather than a fix.
+A file that gets both kinds is judged as hollow: the vacuous dereference is possible, so its
+`TypeError` is unproven, and the row names both kinds.
+
+Both remaining acceptances are pinned as fixtures in `scripts/red-on-parent.test.ts`. The asymmetry
+is easy to mistake for a bug: `expect(brandNew).toBeDefined()` on a **function** export is green on
+the parent (a hollow function exists) and rejected, while the same shape on a **const** export is
+accepted. What separates them is what a stand-in can be, not an inconsistency in the gate. A vacuous
+assertion is rejected only in the shapes the gate can distinguish.
 
 ## 2. The four reasons
 

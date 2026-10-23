@@ -26,9 +26,12 @@ function avatarText(user: ShellUser | null): string | null {
   }
   if (/[a-z]/i.test(name)) {
     const parts = name.trim().split(/\s+/);
-    return parts.length >= 2
-      ? (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase()
-      : name.slice(0, 2).toUpperCase();
+    const first = parts[0]?.[0] ?? "";
+    const last = parts[parts.length - 1]?.[0] ?? "";
+    // Both initials, uppercased together: uppercasing only the second one was a
+    // silent bug the assertion removal exposed ("aB"), and `String(undefined)`
+    // would have turned a missing part into the letter "u".
+    return parts.length >= 2 ? (first + last).toUpperCase() : name.slice(0, 2).toUpperCase();
   }
   return name.slice(0, 2);
 }

@@ -12,7 +12,13 @@ import "./index.css";
 
 const queryClient = new QueryClient();
 
-createRoot(document.getElementById("root")!).render(
+// A missing #root is an index.html that shipped without its mount point — a broken
+// build, not a state the app can run in. Naming it fails at startup with a message
+// that says what is wrong, instead of a non-null assertion that says nothing.
+const rootElement = document.getElementById("root");
+if (rootElement === null) throw new Error("index.html is missing its #root element");
+
+createRoot(rootElement).render(
   <StrictMode>
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>

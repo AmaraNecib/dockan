@@ -64,7 +64,6 @@ export default defineConfig({
     { files: ["apps/api/src/lib/log-events.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/lib/logger.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/lib/port-record.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
-    { files: ["apps/api/src/lib/port-record.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/lib/schema-refusal.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/lib/stock-posting.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/lib/vault/crypto.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },

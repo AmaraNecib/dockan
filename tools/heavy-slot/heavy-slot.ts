@@ -779,8 +779,17 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
         // record forever ("until someone deletes the file by hand"). A record
         // that changed meanwhile is a newer decision this process never probed
         // - not ours to delete, the same rule claimOrFollow enforces.
+        //
+        // [#371 review P1] The `next === null` arm is gone. resolveBase now returns
+        // null for TWO different reasons - every candidate is unusable, or the lock
+        // could not be taken - and only the first is proof about the RECORD. Under
+        // the second, another process may have published a working base during our
+        // final lock wait, and deleting it would hand a later caller a fresh range
+        // while that publisher is still running: exactly the over-admission this
+        // path exists to prevent. So the test is one thing only: does the record
+        // still name the base THIS process proved unusable at bind time?
         const recorded = readPersistedBase();
-        if (recorded !== null && (recorded === before || next === null)) {
+        if (recorded !== null && recorded === before) {
           try {
             rmSync(baseFilePath(), { force: true });
           } catch {

@@ -71,7 +71,6 @@ export default defineConfig({
     { files: ["apps/api/src/lib/vault/lock.integration.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/lib/vault/lock.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/lib/vault/reclaim-retry.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
-    { files: ["apps/api/src/lib/vault/reclaim-retry.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/rpc/activity-tags.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/rpc/router.test.ts"], rules: { "typescript/no-non-null-assertion": "off" } },
     { files: ["apps/api/src/rpc/router.ts"], rules: { "typescript/no-non-null-assertion": "off" } },

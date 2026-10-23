@@ -286,4 +286,26 @@ describe("vault reclaim retry (#277)", () => {
     expect(retry.trigger()).toBe(false);
     expect(clock.pending()).toBe(0);
   });
+
+  it("refuses a schedule with no interval instead of waiting zero milliseconds", () => {
+    const clock = fakeScheduler();
+    const backoff = [10];
+    const retry = new ReclaimRetry({
+      attempt: () => ({ ok: false }),
+      onAcquired: () => {},
+      backoffMs: backoff,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    // the caller empties the array it handed over: the constructor checked it
+    // once, and every tick reads it again
+    backoff.length = 0;
+
+    expect(() => retry.start()).toThrow("the reclaim backoff has no interval to wait");
+    // and nothing was armed: a zero wait would spin the reclaim loop as fast
+    // as the event loop allows
+    expect(clock.delays).toEqual([]);
+    expect(clock.pending()).toBe(0);
+  });
 });

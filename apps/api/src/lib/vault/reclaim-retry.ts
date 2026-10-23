@@ -112,11 +112,24 @@ export class ReclaimRetry {
 
   private scheduleNext(): void {
     if (this.stopped || this.acquired) return;
+    this.pending = this.schedule(() => this.tick(), this.nextDelay());
+  }
+
+  /**
+   * The wait before the next attempt: the schedule's next interval, or its
+   * last one once the schedule is used up (the last entry repeats).
+   *
+   * An interval that is not there is refused, never read as a zero wait: the
+   * schedule is the caller's array, and an empty one would turn the bounded
+   * backoff into a reclaim loop that spins as fast as the event loop allows.
+   */
+  private nextDelay(): number {
     const index = Math.min(this.attempts, this.backoff.length - 1);
-    // SAFETY: index is clamped to the last element's index, which the
-    // constructor guarantees exists (a non-empty schedule)
-    const delay = this.backoff[index]!;
-    this.pending = this.schedule(() => this.tick(), delay);
+    const delay = this.backoff[index];
+    if (delay === undefined) {
+      throw new Error("the reclaim backoff has no interval to wait: the schedule is empty");
+    }
+    return delay;
   }
 
   private tick(): void {

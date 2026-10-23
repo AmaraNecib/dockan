@@ -1295,8 +1295,13 @@ export function createRpcRouter(deps: RpcDeps) {
               }
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {
-              // SAFETY: the contract superRefine guarantees newSupplierName here
-              const candidates = candidatesForName(row.newSupplierName!);
+              const newSupplierName = row.newSupplierName;
+              if (newSupplierName === undefined) {
+                // the contract refuses a row that names neither an existing
+                // supplier nor a new one; the handler proves it too
+                throw new ORPCError("BAD_REQUEST", { message: "OPENING_BALANCE_ROW_INVALID" });
+              }
+              const candidates = candidatesForName(newSupplierName);
               // #177 round 3 (finding 2) — a retry must stay on the account that
               // already holds the signature. Checking only the entry-count winner
               // can pick a different folded-match that has since gained more
@@ -1326,7 +1331,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 }
                 plan.push({ supplierId: resolved.id, name: resolved.name, direction: row.direction, amount: row.amount });
               } else {
-                const party = await tx.createParty("supplier", { name: row.newSupplierName! });
+                const party = await tx.createParty("supplier", { name: newSupplierName });
                 suppliersByName.set(normalizeTextKey(party.name), [{ id: party.id, name: party.name, entries: 0 }]);
                 plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
               }

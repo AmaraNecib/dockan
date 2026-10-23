@@ -59,6 +59,17 @@ Hyper-V changes. Waiting never fixes a reserved range, so the two error families
 `HEAVY_SLOT_BASE` is a preference, not a promise. A recorded, still-binding base outranks it, so
 two processes with different `HEAVY_SLOT_BASE` values agree on the recorded one.
 
+The invariant, in one sentence: **no process may run on a base it did not read from the record.**
+A process therefore re-reads the record immediately before its first bind and adopts what the file
+says (`confirmBase`), which closes the window between resolving a base and taking a port.
+
+What the record cannot fix, and what to do about it: a condition like `EACCES` is **machine-global**,
+so a range reserved here is reserved for every process here. A test or a caller that reports one
+port refused for one process while another binds it is describing a machine that cannot exist; the
+queue answers such contradictory observations by refusing loudly, not by splitting into two ranges.
+That distinction is why the race test marks one shared stale range unusable for both children
+instead of giving each child its own private refusal.
+
 ## Failure mode prevented
 
 Several agents on one box each running a full suite pin every core: every lane's timing tests

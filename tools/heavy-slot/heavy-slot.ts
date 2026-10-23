@@ -22,7 +22,7 @@
 
 import net from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync, statSync } from "node:fs";
 import { homedir, freemem, totalmem, cpus } from "node:os";
 import { join } from "node:path";
 
@@ -325,17 +325,88 @@ function activate(base: number): number {
  * The loop is bounded at two attempts - no probe storm - and every return after
  * a write is the record's own re-read, not this process's choice.
  */
-async function claimOrFollow(base: number): Promise<number> {
+/**
+ * #365 review (Greptile P1) - replacing the record is a mutual-exclusion problem,
+ * not an ordering one.
+ *
+ * Both processes can read the same unusable record, probe it (an async bind each),
+ * and then each write its OWN replacement; the second write wins on disk while the
+ * first process is already binding on its own range. No amount of re-reading after
+ * the write fixes that: the loser never learns it lost.
+ *
+ * So the read-decide-write step runs under one lock. `base.lock` is created with
+ * `wx`, which is atomic on NTFS and POSIX alike; the holder re-reads the record
+ * inside the lock and adopts a usable one instead of overwriting it. The wait is
+ * bounded and a lock older than STALE_LOCK_MS is stolen, because a process killed
+ * while holding it must not wedge the queue - the same reason slots are ports.
+ */
+const STALE_LOCK_MS = 10_000;
+const LOCK_WAIT_MS = 2_000;
+
+async function withRecordLock<T>(dir: string, body: () => Promise<T>): Promise<T | null> {
+  const path = join(dir, "base.lock");
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (true) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path, `${process.pid}
+`, { flag: "wx" });
+      break; // we hold it
+    } catch {
+      // held, or the directory is unwritable. The file's age distinguishes them.
+    }
+    let ageMs = 0;
+    try {
+      ageMs = Date.now() - statSync(path).mtimeMs;
+    } catch {
+      ageMs = 0; // vanished: the holder released it between our attempts
+    }
+    if (ageMs > STALE_LOCK_MS) {
+      // Steal by RENAME, never by delete-then-create. [#365 review P1] Two callers
+      // can both decide a lock is stale; with `rmSync` the slower one deletes the
+      // lock the faster one has already created - which is fresh - and both then
+      // believe they hold it. `rename` has exactly one winner: the loser gets
+      // ENOENT and goes round.
+      const stolen = `${path}.stale-${process.pid}`;
+      try {
+        renameSync(path, stolen);
+        rmSync(stolen, { force: true });
+      } catch {
+        /* another caller stole it first, or it vanished: try again */
+      }
+      continue;
+    }
+    if (Date.now() > deadline) return null; // the caller refuses loudly; it never splits
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  try {
+    return await body();
+  } finally {
+    try {
+      rmSync(path, { force: true });
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+async function claimOrFollow(base: number): Promise<number | null> {
   const dir = stateDir();
   for (let attempt = 0; attempt < 2; attempt++) {
     const current = readPersistedBase(dir);
     if (current !== null) {
       if ((await probePort(current)).status !== "unusable") return current; // follow the live winner
-      // Current content is exactly the record this process probed as stale:
-      // replace the FILE, not the record that may have appeared under the walk.
-      const afterWrite = writeBase(base, dir);
-      if (afterWrite !== null) return afterWrite;
-      continue; // the write could not land; one retry, then disclose
+      // The record this process probed as stale. Replace it ONLY under the lock,
+      // and re-read inside the lock: another process may have replaced it with a
+      // usable range while this one was probing, and adopting that is right while
+      // overwriting it is the split. [#365 review P1]
+      const replaced = await withRecordLock(dir, async () => {
+        const insideNow = readPersistedBase(dir);
+        if (insideNow !== null && (await probePort(insideNow)).status !== "unusable") return insideNow;
+        return writeBase(base, dir);
+      });
+      if (replaced !== null) return replaced;
+      continue; // the lock or the write could not land; one retry, then disclose
     }
     if (claimBase(base, dir)) {
       // Created it. The re-read is still authority: a concurrent writer's
@@ -353,11 +424,16 @@ async function claimOrFollow(base: number): Promise<number> {
     // Otherwise the wx race was lost to a REAL claim: go around, read and
     // probe whatever the file holds now - its winner's content decides.
   }
+  // [#365 review P1] Every route out of here used to end in `return base` - a
+  // private range, which is the split this whole file exists to prevent. A record
+  // that cannot be adopted is a refusal (exit 76), not a second queue: the caller
+  // must learn that this machine cannot agree on a range right now.
   console.error(
-    `[heavy-slot] no shared record could be adopted in ${dir} - every record write failed; ` +
-      `this process runs a PRIVATE base and the queue may split (a portable state dir makes this repeat on every run)`,
+    `[heavy-slot] no shared record could be adopted in ${dir} after ${LOCK_WAIT_MS}ms ` +
+      `(the lock at base.lock may be held by a process that died; it is stolen after ${STALE_LOCK_MS}ms) - ` +
+      `refusing rather than running a second queue (exit 76)`,
   );
-  return base;
+  return null;
 }
 
 /**
@@ -396,7 +472,8 @@ async function resolveBase(): Promise<number | null> {
   // the loop takes the shifts 1..BASE_SHIFT_ATTEMPTS, so the two counts meet
   // exactly and nothing is skipped or probed twice.
   if ((await probePort(portOf(preferred, 1))).status !== "unusable") {
-    return activate(await claimOrFollow(preferred));
+    const claimed = await claimOrFollow(preferred);
+    return claimed === null ? null : activate(claimed);
   }
   for (let shift = 1; shift <= BASE_SHIFT_ATTEMPTS; shift++) {
     const candidate = preferred + shift * BASE_STRIDE;
@@ -405,7 +482,8 @@ async function resolveBase(): Promise<number | null> {
     // would have sent a slot bind past 65535.
     if (candidate >= 65536 || baseRangeFault(candidate) !== null) continue;
     if ((await probePort(portOf(candidate, 1))).status === "unusable") continue;
-    return activate(await claimOrFollow(candidate));
+    const claimed = await claimOrFollow(candidate);
+    return claimed === null ? null : activate(claimed);
   }
   return null;
 }
@@ -608,6 +686,33 @@ export type AcquireResult =
   | { status: "refused"; reason: "unusable" | "config" };
 
 /** Wait for a slot until the queue admits one, the range is refused, or the wait budget runs out. */
+/**
+ * [F1/F2/#365] Confirm the record still names the base this process resolved,
+ * immediately before the first bind.
+ *
+ * The protocol's remaining window is a process that resolved base A while another
+ * process replaced the record with B; the first process then binds A's ports while
+ * the record says B, and the two queues coexist. `writeBase` already returns what
+ * the file holds AFTER a write, so a writer converges; the gap is between the
+ * resolution and the first bind.
+ *
+ * This closes it without a lock: one re-read before any port is taken, and the
+ * record's answer wins. If the two disagree and the record's range is unusable
+ * here, that is a machine that cannot satisfy both observations - refuse loudly
+ * rather than run a private queue (EACCES is machine-global, so a record this
+ * process cannot use is a broken record, not a different opinion).
+ */
+async function confirmBase(): Promise<number | null> {
+  const recorded = readPersistedBase();
+  if (recorded === null) return agreedBase;
+  if ((await probePort(recorded)).status === "unusable") return agreedBase;
+  if (agreedBase !== null && recorded !== agreedBase) {
+    console.error(`[heavy-slot] the shared record moved to ${recorded} while this process resolved ${agreedBase} - adopting the record`);
+    activate(recorded);
+  }
+  return recorded;
+}
+
 export async function acquireSlot(label: string): Promise<AcquireResult> {
   const started = Date.now();
   const urgent = process.env.HEAVY_PRIORITY === "high";
@@ -622,6 +727,7 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
     return { status: "refused", reason: "config" };
   }
   if ((await resolveBase()) === null) return { status: "refused", reason: "unusable" };
+  if ((await confirmBase()) === null) return { status: "refused", reason: "unusable" };
   let redecided = false;
 
   while (true) {
@@ -673,8 +779,17 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
         // record forever ("until someone deletes the file by hand"). A record
         // that changed meanwhile is a newer decision this process never probed
         // - not ours to delete, the same rule claimOrFollow enforces.
+        //
+        // [#371 review P1] The `next === null` arm is gone. resolveBase now returns
+        // null for TWO different reasons - every candidate is unusable, or the lock
+        // could not be taken - and only the first is proof about the RECORD. Under
+        // the second, another process may have published a working base during our
+        // final lock wait, and deleting it would hand a later caller a fresh range
+        // while that publisher is still running: exactly the over-admission this
+        // path exists to prevent. So the test is one thing only: does the record
+        // still name the base THIS process proved unusable at bind time?
         const recorded = readPersistedBase();
-        if (recorded !== null && (recorded === before || next === null)) {
+        if (recorded !== null && recorded === before) {
           try {
             rmSync(baseFilePath(), { force: true });
           } catch {

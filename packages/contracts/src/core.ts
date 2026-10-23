@@ -1642,6 +1642,10 @@ export const debtsByPartyInputSchema = z
     // re-route invoices to another party.
   });
 
+/** The input of one `debtsByParty` read. Exported so the web cache key is typed by
+ * the contract instead of a hand copy of it (#340). */
+export type DebtsByPartyInput = z.infer<typeof debtsByPartyInputSchema>;
+
 export const lowStockOutputSchema = z.object({
   items: z.array(itemSchema),
 });

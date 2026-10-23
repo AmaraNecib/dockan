@@ -19,7 +19,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
-import { invalidatePartyBalance, partyBalanceInput } from "../lib/party-cache-key";
+import { invalidatePartyMoney, partyBalanceInput } from "../lib/party-cache-key";
 import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
 import { combineBusinessDateTime, formatDateTime } from "../lib/dates";
 import { debtOffsetDisplay } from "../lib/return-voucher";
@@ -122,10 +122,8 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
           queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
-          queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
           // #323 — the debts screen shows this customer's total; the payment
           // moved it, so that list is stale too.
-          queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         ]);
         // #256 round 4 — the returns panel derives its refund default from the
         // party's whole tab, so a recorded payment must refresh that read too or
@@ -136,7 +134,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           // id when known, the trimmed typed name otherwise), so this
           // invalidation lands on the SAME key the debts screen reads and the
           // refund preview this screen shows.
-          void invalidatePartyBalance(queryClient, {
+          void invalidatePartyMoney(queryClient, {
             kind: "SALE",
             counterpartyId: invoice.counterpartyId,
             counterpartyName: invoice.counterpartyName,
@@ -408,7 +406,7 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
     }),
     enabled: invoice.kind === "SALE" && hasPartyIdentity,
     // #323 review — the refund preview reads the customer's tab, and a payment
-    // recorded in ANOTHER window moves it. `invalidatePartyBalance` refreshes
+    // recorded in ANOTHER window moves it. `invalidatePartyMoney` refreshes
     // this window's cache only, and two windows side by side never exchange a
     // focus event, so without a bounded tick this preview stays as old as the
     // last read made it. Same lever #295 gave the counters for the #294 gap;
@@ -634,7 +632,6 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
           // the shell badge and dashboard notice read this aggregate (issue #118)
           queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
-          queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
         ]);
       },
       onError: (err) => {

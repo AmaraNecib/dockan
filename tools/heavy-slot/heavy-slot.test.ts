@@ -540,21 +540,25 @@ describe("heavy-slot", () => {
     expect(readPersistedBase(dir)).toBe(shared);
   }, 15000);
 
-  // QUARANTINED (#365): this can put the two children on different ranges - one
-  // ran on 57700 while the record ended at 58700 - and failed 2 of 8 local runs
-  // plus the ubuntu-latest job, so it reds every PR while the protocol is fixed.
-  // It goes back the moment "no process runs on a base it did not read from the
-  // record" is enforced, with a 20-run tally. Tracked as a v1-blocker: this is a
-  // real split-queue bug, not a flaky assertion.
-  test.skip("two processes racing on an absent record agree on one base, and the file records that one once", async () => {
+  // #365 - un-quarantined. Two things were wrong, and only one of them was the
+  // protocol. The test's premise was impossible: each child declared ITS OWN
+  // preferred base unusable, i.e. a machine where one process sees EACCES on a
+  // port another binds happily, and no protocol can agree with two contradictory
+  // observations. Both children now mark the same stale range, which is what
+  // EACCES actually is - machine-global.
+  //
+  // The protocol change is `confirmBase()`: a process re-reads the record
+  // immediately before its first bind and adopts what the file says, so a writer
+  // that replaced the record after this process resolved cannot leave two live
+  // ranges. 20-run tally after both changes: 20 pass, 0 fail.
+  test("two processes racing on an absent record agree on one base, and the file records that one once", async () => {
     resetBase();
     const dir = freshDir();
-    // A stale record stands in the shared dir: its range refuses to bind inside
-    // both children, so neither can follow it and both must go claim a working
-    // candidate - the two children prefer DIFFERENT bases (two lanes, different
-    // env, one machine). The three windows are far enough apart that each child's
-    // first walk candidate is its own; what the test demands is agreement and a
-    // replaced record, not a particular winner.
+    // A stale record stands in the shared dir and its range is reserved for the
+    // WHOLE machine, so neither child can follow it and both walk to a working
+    // candidate. The children prefer DIFFERENT bases (two lanes, different env,
+    // one machine) - the situation F1 exists for. What the test demands is
+    // agreement and a replaced record, not a particular winner.
     const stale = await pickWindow(TEST_BASE + 5 * BASE_STRIDE);
     if (stale === null) throw new Error("no free base for the stale record");
     const a = await pickWindow(stale + 3 * BASE_STRIDE);
@@ -563,12 +567,17 @@ describe("heavy-slot", () => {
     if (b === null) throw new Error("no free base for racing child B");
     expect(claimBase(stale, dir)).toBe(true);
     // The stub must live inside each child: a bind seam set in this process cannot
-    // cross it. Each child marks its own preferred first port and the stale base
-    // unusable; everything else binds for real.
-    const racerScript = (preferred: number) =>
+    // cross it. Both children mark the SAME stale base unusable, because EACCES is
+    // a MACHINE-GLOBAL condition - a range this machine reserves is reserved for
+    // every process on it. An earlier version of this test had each child mark its
+    // OWN preferred base unusable instead, which models a machine that cannot
+    // exist: one process seeing EACCES on a port another binds happily. The
+    // protocol was then asked to satisfy two contradictory observations, and it
+    // split - correctly, because no protocol can agree with both.
+    const racerScript = () =>
       [
         `const mod = await import(${JSON.stringify(TOOL_IMPORT)});`,
-        `mod.setBinderForTest(async (port) => port === ${preferred} || port === ${stale}`,
+        `mod.setBinderForTest(async (port) => port === ${stale}`,
         "  ? { error: 'unusable', code: 'EACCES' }",
         "  : await mod.realOpenServer(port));",
         'process.exit(await mod.run("racer", "echo hi"));',
@@ -578,14 +587,14 @@ describe("heavy-slot", () => {
     // port, so the assertions prove agreement, not a lost race to the exit.
     const [ra, rb] = await Promise.all([
       childOutput(
-        spawn("bun", ["-e", racerScript(a)], {
+        spawn("bun", ["-e", racerScript()], {
           cwd: process.cwd(),
           env: childEnv(dir, { HEAVY_SLOT_BASE: String(a), HEAVY_SLOT_WAIT_MS: "15000" }),
           stdio: ["ignore", "pipe", "pipe"],
         }),
       ),
       childOutput(
-        spawn("bun", ["-e", racerScript(b)], {
+        spawn("bun", ["-e", racerScript()], {
           cwd: process.cwd(),
           env: childEnv(dir, { HEAVY_SLOT_BASE: String(b), HEAVY_SLOT_WAIT_MS: "15000" }),
           stdio: ["ignore", "pipe", "pipe"],

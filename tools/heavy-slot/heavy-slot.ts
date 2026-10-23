@@ -608,6 +608,33 @@ export type AcquireResult =
   | { status: "refused"; reason: "unusable" | "config" };
 
 /** Wait for a slot until the queue admits one, the range is refused, or the wait budget runs out. */
+/**
+ * [F1/F2/#365] Confirm the record still names the base this process resolved,
+ * immediately before the first bind.
+ *
+ * The protocol's remaining window is a process that resolved base A while another
+ * process replaced the record with B; the first process then binds A's ports while
+ * the record says B, and the two queues coexist. `writeBase` already returns what
+ * the file holds AFTER a write, so a writer converges; the gap is between the
+ * resolution and the first bind.
+ *
+ * This closes it without a lock: one re-read before any port is taken, and the
+ * record's answer wins. If the two disagree and the record's range is unusable
+ * here, that is a machine that cannot satisfy both observations - refuse loudly
+ * rather than run a private queue (EACCES is machine-global, so a record this
+ * process cannot use is a broken record, not a different opinion).
+ */
+async function confirmBase(): Promise<number | null> {
+  const recorded = readPersistedBase();
+  if (recorded === null) return agreedBase;
+  if ((await probePort(recorded)).status === "unusable") return agreedBase;
+  if (agreedBase !== null && recorded !== agreedBase) {
+    console.error(`[heavy-slot] the shared record moved to ${recorded} while this process resolved ${agreedBase} - adopting the record`);
+    activate(recorded);
+  }
+  return recorded;
+}
+
 export async function acquireSlot(label: string): Promise<AcquireResult> {
   const started = Date.now();
   const urgent = process.env.HEAVY_PRIORITY === "high";
@@ -622,6 +649,7 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
     return { status: "refused", reason: "config" };
   }
   if ((await resolveBase()) === null) return { status: "refused", reason: "unusable" };
+  if ((await confirmBase()) === null) return { status: "refused", reason: "unusable" };
   let redecided = false;
 
   while (true) {

@@ -22,7 +22,7 @@
 
 import net from "node:net";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync, statSync } from "node:fs";
 import { homedir, freemem, totalmem, cpus } from "node:os";
 import { join } from "node:path";
 
@@ -325,17 +325,81 @@ function activate(base: number): number {
  * The loop is bounded at two attempts - no probe storm - and every return after
  * a write is the record's own re-read, not this process's choice.
  */
+/**
+ * #365 review (Greptile P1) - replacing the record is a mutual-exclusion problem,
+ * not an ordering one.
+ *
+ * Both processes can read the same unusable record, probe it (an async bind each),
+ * and then each write its OWN replacement; the second write wins on disk while the
+ * first process is already binding on its own range. No amount of re-reading after
+ * the write fixes that: the loser never learns it lost.
+ *
+ * So the read-decide-write step runs under one lock. `base.lock` is created with
+ * `wx`, which is atomic on NTFS and POSIX alike; the holder re-reads the record
+ * inside the lock and adopts a usable one instead of overwriting it. The wait is
+ * bounded and a lock older than STALE_LOCK_MS is stolen, because a process killed
+ * while holding it must not wedge the queue - the same reason slots are ports.
+ */
+const STALE_LOCK_MS = 10_000;
+const LOCK_WAIT_MS = 2_000;
+
+async function withRecordLock<T>(dir: string, body: () => Promise<T>): Promise<T | null> {
+  const path = join(dir, "base.lock");
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (true) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path, `${process.pid}
+`, { flag: "wx" });
+      break; // we hold it
+    } catch {
+      // held, or the directory is unwritable. Distinguish by the file's age.
+    }
+    let ageMs = 0;
+    try {
+      ageMs = Date.now() - statSync(path).mtimeMs;
+    } catch {
+      ageMs = 0; // vanished: the holder released it between our attempts
+    }
+    if (ageMs > STALE_LOCK_MS) {
+      try {
+        rmSync(path, { force: true });
+      } catch {
+        /* another process stole it first */
+      }
+      continue;
+    }
+    if (Date.now() > deadline) return null; // the caller refuses rather than splitting
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  try {
+    return await body();
+  } finally {
+    try {
+      rmSync(path, { force: true });
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 async function claimOrFollow(base: number): Promise<number> {
   const dir = stateDir();
   for (let attempt = 0; attempt < 2; attempt++) {
     const current = readPersistedBase(dir);
     if (current !== null) {
       if ((await probePort(current)).status !== "unusable") return current; // follow the live winner
-      // Current content is exactly the record this process probed as stale:
-      // replace the FILE, not the record that may have appeared under the walk.
-      const afterWrite = writeBase(base, dir);
-      if (afterWrite !== null) return afterWrite;
-      continue; // the write could not land; one retry, then disclose
+      // The record this process probed as stale. Replace it ONLY under the lock,
+      // and re-read inside the lock: another process may have replaced it with a
+      // usable range while this one was probing, and adopting that is right while
+      // overwriting it is the split. [#365 review P1]
+      const replaced = await withRecordLock(dir, async () => {
+        const insideNow = readPersistedBase(dir);
+        if (insideNow !== null && (await probePort(insideNow)).status !== "unusable") return insideNow;
+        return writeBase(base, dir);
+      });
+      if (replaced !== null) return replaced;
+      continue; // the lock or the write could not land; one retry, then disclose
     }
     if (claimBase(base, dir)) {
       // Created it. The re-read is still authority: a concurrent writer's

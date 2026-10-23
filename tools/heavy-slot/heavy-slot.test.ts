@@ -612,6 +612,10 @@ describe("heavy-slot", () => {
     expect(rb.out).toContain(`port ${winner}`);
     // Written once, byte for byte: the first claim's line, unchanged by the loser.
     expect(readFileSync(join(dir, "base"), "utf8")).toBe(`${winner}\n`);
+    // The replacement runs under `base.lock` (mutual exclusion, not ordering), so
+    // this also proves the lock was RELEASED: one left behind would wedge the next
+    // process for the whole stale-lock window.
+    expect(existsSync(join(dir, "base.lock"))).toBe(false);
   }, 30000);
 
   test("N+1 concurrent acquires: the extra exits 75 because slots are held", async () => {

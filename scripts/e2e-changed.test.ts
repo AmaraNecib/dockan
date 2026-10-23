@@ -121,15 +121,26 @@ describe("e2e-changed arguments", () => {
     // A caller who typed both meant one of them, and guessing which is how a
     // decision ends up describing a base nobody used.
     const parsed = parseArgs(["--base", "origin/nope", "--files", "apps/web/src/pages/items.tsx"]);
-    expect({ ok: parsed.ok }).toEqual({ ok: false });
-    if (parsed.ok) return;
-    expect(parsed.error).toContain("--files");
-    expect(parsed.error).toContain("--base");
+    // #369: the whole result, with the module's own refusal wording pinned
+    // exactly — a hollow stand-in reds as an AssertionError, not a TypeError.
+    const COMBINED =
+      "--files and --base cannot be combined: --files decides from the paths you give it, so --base would be ignored";
+    expect(parsed).toEqual({ ok: false, error: COMBINED });
     // The attached spelling is the same mistake, so it is refused the same way.
-    expect(parseArgs(["--files=a.ts", "--base=develop"]).ok).toBe(false);
+    expect(parseArgs(["--files=a.ts", "--base=develop"])).toEqual({ ok: false, error: COMBINED });
     // And either flag alone still works.
-    expect(parseArgs(["--files", "a.ts"]).ok).toBe(true);
-    expect(parseArgs(["--base", "develop"]).ok).toBe(true);
+    expect(parseArgs(["--files", "a.ts"])).toEqual({
+      ok: true,
+      base: "origin/develop",
+      files: ["a.ts"],
+      dryRun: false,
+    });
+    expect(parseArgs(["--base", "develop"])).toEqual({
+      ok: true,
+      base: "develop",
+      files: null,
+      dryRun: false,
+    });
   });
 
   test("--files splits on commas and skips git", () => {
@@ -174,9 +185,15 @@ describe("e2e-changed arguments", () => {
   });
 
   test("a flag with no value, an empty list, an unknown flag and a stray argument all fail", () => {
-    for (const argv of [["--base"], ["--files"], ["--files", " , "], ["--nope"], ["stray"]]) {
-      const parsed = parseArgs(argv);
-      expect({ argv, ok: parsed.ok }).toEqual({ argv, ok: false });
+    for (const [argv, error] of [
+      [["--base"], "--base needs a value"],
+      [["--files"], "--files needs a value"],
+      // " , " parses as one value and becomes no path after the split
+      [["--files", " , "], "--files needs at least one path"],
+      [["--nope"], "unknown flag: --nope"],
+      [["stray"], "unexpected argument: stray"],
+    ] as const) {
+      expect(parseArgs(argv)).toEqual({ ok: false, error });
     }
   });
 
@@ -184,31 +201,45 @@ describe("e2e-changed arguments", () => {
     // `--files --dry-run` used to parse as files: ["--dry-run"], dryRun: false,
     // which then decided `full` and SPAWNED the 35-spec suite from an
     // invocation that asked only for a decision.
-    for (const argv of [
-      ["--files", "--dry-run"],
-      ["--base", "--dry-run"],
-      ["--files", "-x"],
-    ]) {
-      const parsed = parseArgs(argv);
-      expect({ argv, ok: parsed.ok }).toEqual({ argv, ok: false });
+    for (const [argv, error] of [
+      [["--files", "--dry-run"], "--files needs a value"],
+      [["--base", "--dry-run"], "--base needs a value"],
+      [["--files", "-x"], "--files needs a value"],
+    ] as const) {
+      expect(parseArgs(argv)).toEqual({ ok: false, error });
     }
   });
 
   test("--files may not be given twice: the second would silently win", () => {
-    expect(parseArgs(["--files", "a.ts", "--files", "b.ts"]).ok).toBe(false);
-    expect(parseArgs(["--files=a.ts", "--files=b.ts"]).ok).toBe(false);
+    expect(parseArgs(["--files", "a.ts", "--files", "b.ts"])).toEqual({
+      ok: false,
+      error: "--files may only be given once",
+    });
+    expect(parseArgs(["--files=a.ts", "--files=b.ts"])).toEqual({
+      ok: false,
+      error: "--files may only be given once",
+    });
   });
 
   test("Windows backslash paths are normalised before the map sees them", () => {
     // From Explorer a lane pastes `apps\web\src\pages\backups.tsx`, which
     // matches no row and silently runs the full suite.
     const parsed = parseArgs(["--files", "apps\\web\\src\\pages\\backups.tsx"]);
-    expect(parsed.ok && parsed.files).toEqual(["apps/web/src/pages/backups.tsx"]);
+    expect(parsed).toEqual({
+      ok: true,
+      base: "origin/develop",
+      files: ["apps/web/src/pages/backups.tsx"],
+      dryRun: false,
+    });
   });
 
   test("any base other than origin/develop is opt-in and reported", () => {
-    const parsed = parseArgs(["--base", "origin/main"]);
-    expect(parsed.ok && parsed.base).toBe("origin/main");
+    expect(parseArgs(["--base", "origin/main"])).toEqual({
+      ok: true,
+      base: "origin/main",
+      files: null,
+      dryRun: false,
+    });
   });
 });
 
@@ -340,9 +371,10 @@ describe("e2e-changed git", () => {
       git(["commit", "--quiet", "-m", "move it out of its mapped path"]);
 
       const diff = changedFilesFromGit("HEAD~1", dir);
-      // SAFETY: `HEAD~1` resolves and every call above exits non-zero otherwise.
-      if (!diff.ok) throw new Error(`expected a diff, got ${diff.reason}`);
-      expect(diff.files).toEqual(["moved.ts", "renamed.ts"]);
+      // `HEAD~1` resolves and every call above exits non-zero otherwise. #369:
+      // the result is asserted whole — no narrowing throw — so a hollow
+      // stand-in reds as an AssertionError, not a TypeError at the `throw`.
+      expect(diff).toEqual({ ok: true, files: ["moved.ts", "renamed.ts"] });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -358,9 +390,17 @@ describe("e2e-changed git", () => {
       diff: () => ({ ok: true, files: ["apps/web/src/pages/backups.tsx"] }),
       dirty: () => ["apps/web/src/pages/backups.tsx"],
     });
-    expect(decision.source).toBe("dirty");
-    expect(decision.scope.mode).toBe("affected");
-    expect(decision.scope.reason).toContain("uncommitted");
+    // #369: the caveat text is the module's own dirtyNote wording, pinned whole
+    // — `| ${note}` appended to the selector's reason, `source` still `dirty`.
+    expect(decision).toEqual({
+      scope: {
+        mode: "affected",
+        specs: ["backups.spec.ts"],
+        reason:
+          "1 spec(s) mapped from 1 file(s) | 1 tracked file(s) have uncommitted edits this decision does not see (apps/web/src/pages/backups.tsx) — commit first, or pass --files",
+      },
+      source: "dirty",
+    });
   });
 
   test("a clean tree is a git decision with no caveat", () => {
@@ -382,8 +422,10 @@ describe("e2e-changed git", () => {
       },
       dirty: () => [],
     });
-    expect(decision.source).toBe("files");
-    expect(decision.scope.mode).toBe("affected");
+    expect(decision).toEqual({
+      scope: { mode: "affected", specs: ["backups.spec.ts"], reason: "1 spec(s) mapped from 1 file(s)" },
+      source: "files",
+    });
   });
 
   test("an unreadable diff is a git failure that widens, with a dirty caveat if there is one", () => {
@@ -391,14 +433,19 @@ describe("e2e-changed git", () => {
       diff: () => ({ ok: false, reason: "fatal: bad revision" }),
       dirty: () => ["docs/ci.md"],
     });
-    expect(decision.scope.mode).toBe("full");
-    expect(decision.scope.reason).toContain("cannot diff against origin/develop");
-    expect(decision.scope.reason).toContain("uncommitted");
     // A dirty tree beside a failed diff used to report `source=dirty`, which said
     // the decision came from the dirty check. It did not: the decision came from
     // git failing, and the dirty check is a caveat on the answer. `dirty` is a
     // provenance value, so it may only describe where the decision came from.
-    expect(decision.source).toBe("git");
+    expect(decision).toEqual({
+      scope: {
+        mode: "full",
+        specs: [],
+        reason:
+          "cannot diff against origin/develop: fatal: bad revision — running the full suite | 1 tracked file(s) have uncommitted edits this decision does not see (docs/ci.md) — commit first, or pass --files",
+      },
+      source: "git",
+    });
   });
 
   test("a git status that cannot answer gets its own caveat, not silence", () => {
@@ -410,10 +457,17 @@ describe("e2e-changed git", () => {
       diff: () => ({ ok: true, files: ["apps/web/src/pages/backups.tsx"] }),
       dirty: () => null,
     });
-    expect(decision.scope.mode).toBe("affected");
-    expect(decision.scope.reason).toContain("could not read the working tree");
-    // Still a git decision: nothing about it came from the dirty check.
-    expect(decision.source).toBe("git");
+    // #369: `unknown` is not clean — the whole decision, unknown-caveat wording
+    // included, and still `source: "git"`.
+    expect(decision).toEqual({
+      scope: {
+        mode: "affected",
+        specs: ["backups.spec.ts"],
+        reason:
+          "1 spec(s) mapped from 1 file(s) | git could not read the working tree, so whether tracked files have uncommitted edits this decision does not see is unknown — the answer covers HEAD only",
+      },
+      source: "git",
+    });
   });
 
   test("an unreadable diff AND an unreadable status say both", () => {
@@ -421,9 +475,15 @@ describe("e2e-changed git", () => {
       diff: () => ({ ok: false, reason: "fatal: bad revision" }),
       dirty: () => null,
     });
-    expect(decision.scope.mode).toBe("full");
-    expect(decision.scope.reason).toContain("cannot diff against origin/develop");
-    expect(decision.scope.reason).toContain("could not read the working tree");
+    expect(decision).toEqual({
+      scope: {
+        mode: "full",
+        specs: [],
+        reason:
+          "cannot diff against origin/develop: fatal: bad revision — running the full suite | git could not read the working tree, so whether tracked files have uncommitted edits this decision does not see is unknown — the answer covers HEAD only",
+      },
+      source: "git",
+    });
   });
 
   test("git status is read with untracked files excluded", () => {

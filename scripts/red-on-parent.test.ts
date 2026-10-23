@@ -74,6 +74,7 @@ import {
   VERDICT_GUIDE,
   type FileRun,
   type GateRun,
+  type StandIns,
   type TestResult,
   type TestStatus,
   type Verdict,
@@ -4312,6 +4313,13 @@ test("real", () => {
     // assertion red. `expect(NEW_LIMIT).toBe(7)` would also pass, for the same
     // reason and with the same limitation.
     //
+    // #348 did not close this shape — junit carries no channel that would — so the
+    // row keeps its verdict and gains a LABEL instead: it names the hollow, which
+    // is the cheapest thing the gate can honestly do. The cost, stated: a vacuous
+    // row like this one is still accepted, and now a reviewer can see that it was
+    // judged against a fake. Closing it needs a marker the test must produce,
+    // which is a change to the gate's contract with every test file.
+    //
     // The asymmetry this produces is worth writing down, because it looks like a
     // bug and is not one: `expect(brandNew).toBeDefined()` on a FUNCTION export is
     // GREEN on the parent (a hollow function exists) and rejected, while the same
@@ -4337,7 +4345,48 @@ test("only checks the export exists", () => {
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain("RIGHT-REASON-RED");
       expect(stdout).not.toContain("GREEN-ON-PARENT");
+      // The label #348 buys: the row a reviewer reads says which stand-in it was
+      // judged against, so the acceptance is visible instead of indistinguishable
+      // from a real assertion red.
+      const row = stdout.split("\n").find((line) => line.includes("only checks the export exists"));
+      expect(row).toContain("hollow");
       expect(status).toBe(0);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 60_000);
+
+  test("a test that dereferences what the hollow returned is rejected as unproven (#348)", () => {
+    // The plant pair's vacuous half, end to end. `turboArgs([], "x").args` on a
+    // hollow is `undefined.args`: a TypeError the gate used to accept as the
+    // test's own red. The `undefined` came from the gate's fake, so the body never
+    // evaluated an assertion about the change, and the row is UNPROVEN.
+    //
+    // This fixture is the one that must stay red. Its twin above — a real
+    // `expect(twice(2)).toBe(4)` — must stay accepted, and the two together are
+    // the proof that the discrimination separates the shapes instead of rejecting
+    // every red that is not an AssertionError.
+    const fixture = createFixture([PKG], [
+      {
+        path: "packages/core/src/args.ts",
+        text: `export function turboArgs(flags: string[], mode: string): { args: string[] } {\n  return { args: [...flags, mode] };\n}\n`,
+      },
+      {
+        path: "packages/core/src/deref.test.ts",
+        text: `import { expect, test } from "bun:test";
+import { turboArgs } from "./args";
+test("dereferences the stand-in", () => {
+  expect(turboArgs([], "x").args).toEqual(["x"]);
+});
+`,
+      },
+    ]);
+    try {
+      const { status, stdout } = runGateFixture(fixture);
+      expect(stdout).toContain("WRONG-REASON-RED");
+      expect(stdout).toContain("#348");
+      expect(stdout).not.toContain("RIGHT-REASON-RED");
+      expect(status).toBe(1);
     } finally {
       fixture.cleanup();
     }
@@ -4456,6 +4505,12 @@ test("real", () => {
 //     HAS and the change extends. No mirror can stand in for that module, so the
 //     file cannot load on the parent at all — and per-test waiver rows made that
 //     one cause into forty lines, which the file-level waiver rule then refused.
+//
+// #348 revisited the first bullet. Accepting a hollow's TypeError was the right
+// call for those twelve rows (their bodies do assert), but as a general rule it
+// accepted a body that only dereferences the gate's fake and never asserts
+// anything. The verdict for that shape is WRONG REASON RED now; the rows above
+// reach their assertions and are AssertionErrors, so they did not move.
 // ---------------------------------------------------------------------------
 
 function failureXml(type: string, name = "case"): string {
@@ -4467,49 +4522,120 @@ function failureXml(type: string, name = "case"): string {
   );
 }
 
-describe("red-on-parent round 24 — a hollowed file's TypeError is the test's own red", () => {
-  test("a TypeError against the hollow passes as a right-reason red", () => {
-    // `turboArgs(...).args` on a hollow is `undefined.args`. The test reached the
-    // module and the red is about what the module does not do yet.
-    const { verdicts } = classifyFileRun(
-      { file: "scripts/mod.test.ts", junit: failureXml("TypeError"), stdout: "", error: "" },
+// ---------------------------------------------------------------------------
+// Round 28 — #348: a stand-in's TypeError is not the test's own red.
+//
+// Round 24 collapsed both stand-in kinds into one `hollowed` flag, so a TypeError
+// was accepted whether the gate had faked a whole module (the change ADDS it) or
+// appended stand-ins to the parent's own module. Only the first shape is the
+// defect: in a hollow, the `undefined` the body dereferenced came from the gate's
+// fake, so no assertion about the change was ever evaluated.
+//
+// The discrimination is structural — junit's failure type plus which stand-in the
+// planner wrote. Nothing here reads a failure message.
+// ---------------------------------------------------------------------------
+
+describe("red-on-parent round 28 — #348: a stand-in's TypeError is unproven, an appended one is not", () => {
+  function classify(type: string, standIns?: StandIns) {
+    return classifyFileRun(
+      { file: "scripts/mod.test.ts", junit: failureXml(type), stdout: "", error: "" },
       [],
       [],
-      { hollowed: true },
-    );
+      standIns === undefined ? {} : { standIns },
+    ).verdicts;
+  }
+
+  const HOLLOW: StandIns = { hollow: true };
+  const APPENDED: StandIns = { augmented: true };
+
+  test("a TypeError against a HOLLOW stand-in is unproven, not the test's own red", () => {
+    // `turboArgs([], "x").args` on a hollow is `undefined.args`, and that
+    // `undefined` is the gate's fake. The body reached for a stand-in; it did not
+    // assert a behaviour. #348.
+    const verdicts = classify("TypeError", HOLLOW);
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+  });
+
+  test("the unproven row says the gate's own fake caused it, and names the issue", () => {
+    const verdicts = classify("TypeError", HOLLOW);
+    expect(verdicts[0]?.detail).toContain("hollow stand-in");
+    expect(verdicts[0]?.detail).toContain("#348");
+  });
+
+  test("a TypeError against an APPENDED stand-in is still accepted", () => {
+    // The ablation in the other direction. The parent HAS this module, so its own
+    // code still runs and a TypeError has a cause the gate cannot see; that is the
+    // residual hole the gate states rather than a defect #348 covers.
+    const verdicts = classify("TypeError", APPENDED);
     expect(verdicts.map((verdict) => verdict.name)).toEqual(["RIGHT_REASON_RED"]);
   });
 
-  test("the same TypeError in a file with no hollow is still a wrong-reason red", () => {
-    // The ablation. Without a hollow in play there is nothing that could have
-    // turned a property read into `undefined`, so the widening does not apply.
-    const { verdicts } = classifyFileRun(
-      { file: "apps/api/src/mod.test.ts", junit: failureXml("TypeError"), stdout: "", error: "" },
-      [],
-    );
+  test("the accepted row says the stand-in was appended to the parent's own module", () => {
+    const verdicts = classify("TypeError", APPENDED);
+    expect(verdicts[0]?.detail).toContain("appended");
+    expect(verdicts[0]?.detail).not.toContain("hollow");
+  });
+
+  test("a TypeError with no stand-in at all is still unproven", () => {
+    // The second ablation. Without a stand-in in play there is nothing the gate
+    // could have turned into `undefined`, so the widening does not apply.
+    expect(classify("TypeError").map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+  });
+
+  test("a TypeError in a file that got both kinds is unproven, because the hollow could have caused it", () => {
+    // Tie-break: `planHollowModules` and `planAugmentedModules` can both write a
+    // module for one test file, and then the gate cannot say which fake produced
+    // the `undefined`. The reject direction is the one that keeps #348 closed; the
+    // row names both kinds so a reviewer sees what was in play.
+    const verdicts = classify("TypeError", { hollow: true, augmented: true });
     expect(verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+    expect(verdicts[0]?.detail).toContain("hollow");
+    expect(verdicts[0]?.detail).toContain("appended");
+  });
+
+  test("an AssertionError against a hollow is accepted, and the row says it was judged against the fake", () => {
+    // The label, and what it costs. An assertion DID evaluate here, so the row
+    // keeps its verdict; but the gate cannot tell `expect(twice(2)).toBe(4)` from
+    // `expect(NEW_LIMIT).toBeDefined()` on a const stand-in, so the reviewer is
+    // told which shape the row might be instead of being told nothing.
+    const verdicts = classify("AssertionError", HOLLOW);
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["RIGHT_REASON_RED"]);
+    expect(verdicts[0]?.detail).toContain("hollow stand-in");
+    expect(verdicts[0]?.detail).toContain("#348");
+  });
+
+  test("an AssertionError against an appended stand-in is accepted and labelled", () => {
+    const verdicts = classify("AssertionError", APPENDED);
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["RIGHT_REASON_RED"]);
+    expect(verdicts[0]?.detail).toContain("appended");
+  });
+
+  test("an AssertionError with no stand-in claims no fake", () => {
+    const verdicts = classify("AssertionError");
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["RIGHT_REASON_RED"]);
+    expect(verdicts[0]?.detail).not.toContain("stand-in");
   });
 
   test("a thrown Error in a hollowed file is still not the test's own red", () => {
     // The hook-throws discrimination survives: a `beforeEach` that throws reports
     // `Error`, and that shape is unchanged by having hollowed the file.
-    const { verdicts } = classifyFileRun(
-      { file: "scripts/mod.test.ts", junit: failureXml("Error"), stdout: "", error: "" },
-      [],
-      [],
-      { hollowed: true },
-    );
-    expect(verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+    expect(classify("Error", HOLLOW).map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
   });
 
-  test("the verdict says it was judged against the stand-in", () => {
+  test("a waiver that excused a hollow TypeError is now honoured instead of misfiled", () => {
+    // A consequence worth pinning rather than discovering in a PR. While the row
+    // was a right-reason red, a waiver on it was WAIVER_MISFILED and failed the
+    // gate. It is unproven now, so a waiver is the documented way to say "this
+    // file needs the change to run at all" — and it prints as waived.
+    const waiver: Waiver = { pattern: "case", reason: "needs the added module", line: 3 };
     const { verdicts } = classifyFileRun(
       { file: "scripts/mod.test.ts", junit: failureXml("TypeError"), stdout: "", error: "" },
+      [waiver],
       [],
-      [],
-      { hollowed: true },
+      { standIns: HOLLOW },
     );
-    expect(verdicts[0]?.detail).toContain("hollow stand-in");
+    expect(verdicts.map((verdict) => verdict.name)).toEqual(["WRONG_REASON_RED"]);
+    expect(verdicts[0]?.waiver?.line).toBe(3);
   });
 });
 
@@ -5050,15 +5176,16 @@ test("existing behaviour", () => {
     // The test dereferences the value the appended stand-in produces. On the
     // parent the stand-in returns `undefined`, so `undefined.mode` is a TypeError
     // before any assertion runs; on the change the real export returns the object
-    // and the assertion passes. The gate reads that TypeError as the test's own
-    // red, because in a HOLLOWED file nothing but the gate's fake could have
-    // produced it.
+    // and the assertion passes.
     //
-    // In an AUGMENTED file the parent's real code is still there and still runs,
-    // so a TypeError has a second possible cause the gate cannot see: the parent's
-    // own code. This is the residual hole, stated rather than hidden. Closing it
-    // needs a stronger discrimination than junit's failure type can carry, which
-    // is a design change, not a fix.
+    // #348 flipped the HOLLOW half of this and left this half alone, and the
+    // difference is the reason the two stand-in kinds are no longer one flag: in a
+    // hollowed file the `undefined` is the gate's own fake and nothing real could
+    // have thrown, so the row is unproven; here the parent's real code is still
+    // there and still runs, so a TypeError has a second possible cause the gate
+    // cannot see — the parent's own code. That is the residual hole, stated rather
+    // than hidden, and the row is labelled `appended` so a reviewer can see which
+    // half of the discrimination it fell on.
     const fixture = createFixture([PKG, HELPER], [
       {
         path: "packages/core/src/helper.ts",
@@ -5078,6 +5205,13 @@ test("dereferences the appended stand-in", () => {
       const { status, stdout } = runGateFixture(fixture);
       expect(stdout).toContain("RIGHT-REASON-RED");
       expect(stdout).not.toContain("WRONG-REASON-RED");
+      // The report distinguishes the two kinds per row: this one was judged
+      // against an APPENDED stand-in, so it keeps the acceptance #348 left alone,
+      // and the row says which kind it was.
+      const row = stdout
+        .split("\n")
+        .find((line) => line.includes("dereferences the appended stand-in"));
+      expect(row).toContain("appended");
       expect(status).toBe(0);
     } finally {
       fixture.cleanup();

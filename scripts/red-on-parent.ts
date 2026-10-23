@@ -605,12 +605,62 @@ function fileLevelWaiverProblems(
     );
 }
 
+/**
+ * Which stand-in kinds the gate wrote for one gated file.
+ *
+ * Two different promises, and #348 is what one boolean covering both produced:
+ *
+ *   - `hollow` — the change ADDS the module, so the parent has none of it and the
+ *     gate wrote a stand-in with the same export names and no behaviour. Nothing
+ *     real can throw there: a `TypeError` in the body is the stand-in's
+ *     `undefined` being dereferenced, so the body never evaluated an assertion
+ *     about the change and the row is UNPROVEN, not the test's own red.
+ *   - `augmented` — the parent HAS the module, so the gate kept its source byte
+ *     for byte and appended stand-ins only for the names the change adds. The
+ *     parent's real code still runs, so a `TypeError` there has a cause the gate
+ *     cannot see; it stays accepted, and the hole is stated rather than hidden.
+ *
+ * A file can get both — a test importing an added module and an edited one. A
+ * `TypeError` then has two possible stand-in causes, so the hollow decides: the
+ * reject direction is the one that keeps #348 closed, and the row names both.
+ */
+export type StandIns = {
+  readonly hollow?: boolean;
+  readonly augmented?: boolean;
+};
+
+/** The stand-in kinds in a row's own words, or null when the gate wrote none. */
+function standInPhrase(standIns: StandIns): string | null {
+  if (standIns.hollow === true && standIns.augmented === true) {
+    return "the hollow stand-in and the stand-in appended to the parent's own module";
+  }
+  if (standIns.hollow === true) return "the hollow stand-in";
+  if (standIns.augmented === true) return "the stand-in appended to the parent's own module";
+  return null;
+}
+
+/**
+ * Why an accepted row judged against a stand-in is still only as strong as the
+ * fake, in the row itself. A reviewer reading a RIGHT-REASON-RED line has to be
+ * able to see which shape it might be; #348 is what happens when the row says
+ * nothing and the reader assumes it was a real assertion.
+ */
+function acceptedStandInCaveat(standIns: StandIns, result: TestResult): string {
+  if (standIns.hollow === true) {
+    return " — an assertion did evaluate, but against the gate's fake, so it cannot tell a real assertion on the stand-in's value from one that only reads a const stand-in (#348)";
+  }
+  if (result.failureType === "TypeError") {
+    return " — the parent's own code still runs in this module, so a TypeError there has a cause the gate cannot see";
+  }
+  return "";
+}
+
 function classifyResult(
   file: string,
   result: TestResult,
   waiver: Waiver | null,
   matching: Waiver[],
-  hollowed: boolean,
+  standIns: StandIns,
 ): Verdict {
   const test = displayName(result);
   if (result.status === "skipped") {
@@ -633,7 +683,7 @@ function classifyResult(
       waivers: matching,
     };
   }
-  if (isOwnRed(result, hollowed)) {
+  if (isOwnRed(result, standIns)) {
     if (waiver !== null) {
       return {
         file,
@@ -644,24 +694,38 @@ function classifyResult(
         waivers: matching,
       };
     }
+    const phrase = standInPhrase(standIns);
     return {
       file,
       test,
       name: "RIGHT_REASON_RED",
-      detail: hollowed
-        ? `fails on the parent against the hollow stand-in, for a reason the test itself produced (${failureReason(result)})`
-        : `fails on the parent with an assertion on the behaviour the change adds`,
+      detail:
+        phrase === null
+          ? `fails on the parent with an assertion on the behaviour the change adds`
+          : `fails on the parent against ${phrase}, for a reason the test itself produced (${failureReason(
+              result,
+            )})${acceptedStandInCaveat(standIns, result)}`,
       waiver: null,
       waivers: [],
     };
   }
+  // The unproven row for #348 says which fake caused it, because "the test body
+  // did not run" is not true of it: the body ran and dereferenced `undefined`.
+  const hollowDereference =
+    standIns.hollow === true && result.failureType === "TypeError";
   return {
     file,
     test,
     name: "WRONG_REASON_RED",
-    detail: `fails on the parent before evaluating the test body (${failureReason(
-      result,
-    )}), so it proves nothing about the change`,
+    detail: hollowDereference
+      ? `fails on the parent against ${standInPhrase(
+          standIns,
+        )} (${failureReason(
+          result,
+        )}): the gate's own fake produced the \`undefined\` the body dereferenced, so the body never evaluated an assertion about the change (#348)`
+      : `fails on the parent before evaluating the test body (${failureReason(
+          result,
+        )}), so it proves nothing about the change`,
     waiver,
     waivers: matching,
   };
@@ -697,40 +761,31 @@ function classifyResult(
  * `expect.fail` on 1.4.3 is not a function at all (TypeError, assertions="0"),
  * so a test that calls it needs a waiver; nothing in this repo does.
  */
-function isOwnRed(result: TestResult, hollowed: boolean): boolean {
+function isOwnRed(result: TestResult, standIns: StandIns): boolean {
   if (result.failureType === "AssertionError") return true;
-  // A hollow module's functions return `undefined` and its consts are
-  // `undefined`, so a test that reads a property of what the module produced dies
-  // with a TypeError before any assertion runs — `turboArgs(...).args` on a hollow
-  // is `undefined.args`. That red is caused by the module the change adds, and the
-  // test only reaches it by using the module, so it is the test's own red on a
-  // hollowed file.
+  if (result.failureType !== "TypeError") return false;
+  // #348. A hollow module's functions return `undefined` and its consts are
+  // `undefined`, so `turboArgs([], "x").args` on a hollow is `undefined.args` —
+  // a TypeError produced by dereferencing the gate's own fake. That proves the
+  // test reached for a stand-in; it does not prove the body evaluated an
+  // assertion about the change, which is what RIGHT-REASON-RED claims. So it is
+  // UNPROVEN, and the row says which fake caused it.
   //
-  // ACCEPTED BY DESIGN, and it is the gate's weakest verdict. `hollowed` covers
-  // both stand-in kinds, so this also accepts the same TypeError in a file whose
-  // module was AUGMENTED — where the parent's real code still runs, so the
-  // TypeError has a second possible cause the gate cannot see. Two shapes pass on
-  // a stand-in that asserts nothing:
+  // An AUGMENTED module is the other shape, and it is deliberately NOT this: the
+  // parent HAS the module, its real code runs, and a TypeError there has a cause
+  // the gate cannot see. Rejecting it would refuse a legitimate "dereference the
+  // new export" test — the second attempt at this issue did exactly that and
+  // broke eleven rows of this suite. The acceptance stays, the row is labelled
+  // with the kind of stand-in, and the residual hole is written down in
+  // `docs/verification-and-merge-gate.md` rather than hidden here.
   //
-  //   1. a test that dereferences what a stand-in returned —
-  //      `turboArgs([], "x").args` is `undefined.args`, a TypeError;
-  //   2. a test that only checks a const stand-in exists —
-  //      `expect(NEW_LIMIT).toBeDefined()` is `undefined` against a
-  //      stand-in whose value is `undefined`, an AssertionError.
-  //
-  // Both are pinned as fixtures (`accepted by design, not a defect`). What the
-  // gate proves is narrower than "this test asserts a behaviour": it proves the
-  // test REACHES the change and fails there. Sharper discrimination needs more
-  // than junit's failure type, which is a design change, not a fix.
-  //
-  // The residual hole, stated because a gate that hides it is the thing this gate
-  // exists against: a `beforeEach` that dereferences the hollow makes every test
-  // in the file read as its own red without a body running, so a vacuous test
-  // behind such a hook passes. RED ON CHANGE still catches a test that is broken
-  // on the change, and the hook is code the reviewer reads in the diff. The
-  // alternative — waiving twelve rows of a file whose only defect is this shape —
-  // buries the same fact in twelve lines nobody reads.
-  return hollowed && result.failureType === "TypeError";
+  // What the gate still cannot catch, in either shape: an `AssertionError` that
+  // only reads a const stand-in (`expect(NEW_LIMIT).toBeDefined()` on `undefined`)
+  // is accepted, because junit's failure type cannot tell it from a real
+  // assertion on a value the change computes. The row is labelled `hollow` so a
+  // reviewer can see it, which is the whole of what the type channel buys.
+  if (standIns.hollow === true) return false;
+  return standIns.augmented === true;
 }
 
 /** Why a failing test is not a right-reason red, in wording bun does not vary. */
@@ -749,9 +804,9 @@ export function classifyFileRun(
   run: FileRun,
   waivers: Waiver[],
   changeResults: TestResult[] = [],
-  options: { hollowed?: boolean } = {},
+  options: { standIns?: StandIns } = {},
 ): Classification {
-  const hollowed = options.hollowed === true;
+  const standIns = options.standIns ?? {};
   const used = new Set<number>();
   const verdicts: Verdict[] = [];
 
@@ -860,7 +915,7 @@ export function classifyFileRun(
     const matching = waivers.filter((candidate) => matches(candidate, result));
     const waiver = matching[0] ?? null;
     if (waiver !== null) used.add(waiver.line);
-    verdicts.push(classifyResult(run.file, result, waiver, matching, hollowed));
+    verdicts.push(classifyResult(run.file, result, waiver, matching, standIns));
   }
   return { verdicts, usedWaiverLines: used, problems: waiverProblems };
 }
@@ -3437,20 +3492,11 @@ function gateBaseWorktree(input: {
             : [editedModuleExportRefusal(fileRun.stdout, touched)].filter(
                 (refusal): refusal is string => refusal !== null,
               );
-      const classified = classifyFileRun(fileRun, parsed.waivers, changeResults, {
-        // Both stand-in kinds answer the same question for `isOwnRed`: did the
-        // gate's own fake turn a property read into `undefined`? A test that
-        // dereferences an appended stand-in dies the same way one that
-        // dereferences a hollow does.
-        //
-        // The residual hole this flag carries, stated rather than narrowed: an
-        // AUGMENTED file still runs the parent's real code, so a TypeError there
-        // has a cause the gate cannot see. Keeping the two kinds together is
-        // deliberate — narrowing the flag would reject a legitimate
-        // "dereference the new export" test — and both accepted shapes are
-        // pinned as fixtures. See `isOwnRed`.
-        hollowed: hollow.modules.length > 0 || augment.modules.length > 0,
-      });
+      const standIns: StandIns = {
+        hollow: hollow.modules.length > 0,
+        augmented: augment.modules.length > 0,
+      };
+      const classified = classifyFileRun(fileRun, parsed.waivers, changeResults, { standIns });
       for (const problem of classified.problems) problems.push(problem);
       const unregistered =
         parentResults.length === 0
@@ -3551,7 +3597,7 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
     fixes: [
       "nothing — keep the test as it is",
       "do not waive it: a waiver on a right-reason red is misfiled and the gate will say so",
-      "this proves the test REACHES the change and fails there, not that it asserts a behaviour: a test that dereferences a stand-in (a TypeError) or only checks a const stand-in exists (an AssertionError) is accepted by design",
+      "this proves the test REACHES the change and fails there, not that it asserts a behaviour: the STAND-IN column says whether the row was judged against a hollow stand-in (the change ADDS the module) or one appended to the parent's own module, and on a hollow the gate cannot tell a real assertion on the stand-in's value from one that only reads a const stand-in (#348)",
     ],
   },
   {
@@ -3580,9 +3626,10 @@ export const VERDICT_GUIDE: ReadonlyArray<{ name: VerdictName; title: string; fi
   },
   {
     name: "WRONG_REASON_RED",
-    title: "the test could not be evaluated on the parent (load error, or a non-assertion throw)",
+    title: "the test could not be evaluated on the parent (load error, a non-assertion throw, or a hollow stand-in dereference)",
     fixes: [
       "land the module/export/fixture the test needs on the base branch in its own change, then rebase — the parent is the merge-base, so a commit inside this change is still after it and the import stays broken",
+      "assert a value the change computes, not a property of one: on a hollow stand-in a TypeError means the body dereferenced the gate's fake, so it never evaluated an assertion about the change (#348) — compare the whole value (`expect(f(x)).toEqual({ args: [\"x\"] })`) instead of `expect(f(x).args).toEqual([\"x\"])`, or, when the dereference is the point, add `// red-on-parent-waive: \"<test name>\" — the parent's hollow returns undefined, so this test cannot reach its assertion there` and the row prints as waived",
       "a module this diff EDITS is different: the gate keeps the parent's copy and appends a stand-in for the names the change adds, so a load failure there is a `CANNOT_HOLLOW` row that names the shape it refused — read that row, not this one",
       "if the missing module IS the change (a rename, a moved file), add `// red-on-parent-waive: \"<test name>\" — rename: the test moved with the file`",
     ],
@@ -3701,15 +3748,41 @@ export function renderReport(run: GateRun, problems: string[]): string {
 
   const fileWidth = Math.max(12, ...run.verdicts.map((v) => v.file.length));
   const testWidth = Math.max(12, ...run.verdicts.map((v) => v.test.length));
-  lines.push(`${pad("FILE", fileWidth)}  ${pad("TEST", testWidth)}  ${pad("VERDICT", 18)}  WAIVED`);
+  // Which fake the row was judged against, per file, in the row a reviewer reads.
+  // The detail line carries the same fact, but it is printed for failing rows
+  // only, and the shape #348 is about is an ACCEPTED row — so the label has to be
+  // in the table or a reviewer never sees it.
+  const standInsByFile = new Map<string, StandIns>();
   for (const verdict of run.verdicts) {
-    // Two patterns can accept the same test, and a reviewer needs each reason.
-    const waived =
-      verdict.waivers.length === 0
-        ? "-"
-        : verdict.waivers.map((waiver) => `line ${waiver.line}`).join(", ");
+    standInsByFile.set(verdict.file, {
+      hollow: run.hollowed.some((entry) => entry.importedBy === verdict.file),
+      augmented: run.augmented.some((entry) => entry.importedBy === verdict.file),
+    });
+  }
+  const standInCell = (standIns: StandIns): string =>
+    standIns.hollow === true && standIns.augmented === true
+      ? "hollow+appended"
+      : standIns.hollow === true
+        ? "hollow"
+        : standIns.augmented === true
+          ? "appended"
+          : "-";
+  // Two patterns can accept the same test, and a reviewer needs each reason.
+  const waivedText = (verdict: Verdict): string =>
+    verdict.waivers.length === 0
+      ? "-"
+      : verdict.waivers.map((waiver) => `line ${waiver.line}`).join(", ");
+  // The column grows with its content: `pad` truncates, and "line 5, line 6" cut
+  // to "line 5…" would drop the second waiver from the report entirely.
+  const waivedWidth = Math.max(7, ...run.verdicts.map((verdict) => waivedText(verdict).length));
+  lines.push(
+    `${pad("FILE", fileWidth)}  ${pad("TEST", testWidth)}  ${pad("VERDICT", 18)}  ${pad("WAIVED", waivedWidth)}  STAND-IN`,
+  );
+  for (const verdict of run.verdicts) {
     lines.push(
-      `${pad(verdict.file, fileWidth)}  ${pad(verdict.test, testWidth)}  ${pad(verdict.name.replaceAll("_", "-"), 18)}  ${waived}`,
+      `${pad(verdict.file, fileWidth)}  ${pad(verdict.test, testWidth)}  ${pad(verdict.name.replaceAll("_", "-"), 18)}  ${pad(waivedText(verdict), waivedWidth)}  ${standInCell(
+        standInsByFile.get(verdict.file) ?? {},
+      )}`,
     );
   }
 

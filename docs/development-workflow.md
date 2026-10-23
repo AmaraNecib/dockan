@@ -308,13 +308,17 @@ section, `docs/verification-and-merge-gate.md` and `VERDICT_GUIDE` in
 only `CANNOT_HOLLOW` takes the whole-file spelling.
 
 What the gate proves is narrower than "this test asserts a behaviour": it proves
-the file **reaches** the change and **fails there**. Two shapes assert nothing and
-are accepted by design — a TypeError from dereferencing a stand-in, and an
-assertion that only reads a const stand-in — and both are pinned as fixtures in
-`scripts/red-on-parent.test.ts`. `docs/verification-and-merge-gate.md` has the
-full statement; the grammar it documents, this section and `VERDICT_GUIDE` in
-`scripts/red-on-parent.ts` name the same four waivable verdicts and the same
-waiver spelling.
+the file **reaches** the change and **fails there**, and the report's `STAND-IN`
+column says which fake a row was judged against. On a **hollow** (the change adds
+the module) a TypeError is the gate's own fake being dereferenced, so the row is
+wrong-reason red, not the test's own red (#348); an assertion that only reads a
+const stand-in is still accepted there, and labelled. On an **appended** stand-in
+(the parent has the module) the parent's real code still runs, so a TypeError has
+a cause the gate cannot see and stays accepted. Both remaining acceptances are
+pinned as fixtures in `scripts/red-on-parent.test.ts`.
+`docs/verification-and-merge-gate.md` has the full statement; the grammar it
+documents, this section and `VERDICT_GUIDE` in `scripts/red-on-parent.ts` name the
+same four waivable verdicts and the same waiver spelling.
 
 Tier 2 is `bun run test:e2e:changed`, the queued spelling;
 `bun scripts/e2e-changed.ts` is the same program and is not queued. It imports

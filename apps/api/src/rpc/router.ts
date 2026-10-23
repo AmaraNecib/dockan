@@ -1012,8 +1012,13 @@ export function createRpcRouter(deps: RpcDeps) {
           if (target.kind === "CREDIT") {
             credit = input.amount;
           } else if (target.kind === "INVOICE") {
-            // SAFETY: the contract superRefine requires an invoiceId for INVOICE
-            credit = (await payInvoice(target.invoiceId!, input.amount)).credit;
+            const targetInvoiceId = target.invoiceId;
+            if (targetInvoiceId === undefined) {
+              // the contract refuses an INVOICE target with no invoice; the
+              // handler proves it too rather than assuming it
+              throw new ORPCError("BAD_REQUEST", { message: "INVOICE_ID_REQUIRED" });
+            }
+            credit = (await payInvoice(targetInvoiceId, input.amount)).credit;
           } else {
             const outstanding = await tx.listOutstandingPurchaseInvoices(input.supplierId);
             const plan = allocateOldestFirst(outstanding, input.amount);
@@ -1045,7 +1050,6 @@ export function createRpcRouter(deps: RpcDeps) {
           const occurredAt = localDateTime();
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
           const returnNumber = await tx.allocateSupplierReturnNumber();
-          const invoiceLinked = input.invoiceId !== undefined && input.lines !== undefined;
 
           // Snapshot every returned line first so the header amounts and the
           // stock movements are computed from one consistent read.
@@ -1053,41 +1057,49 @@ export function createRpcRouter(deps: RpcDeps) {
           let amount = 0;
           let invoiceRemaining: number | null = null;
           let invoiceId: string | null = null;
+          const linkedInvoiceId = input.invoiceId;
+          const linkedLines = input.lines;
+          const invoiceLinked = linkedInvoiceId !== undefined && linkedLines !== undefined;
           if (invoiceLinked) {
-            // SAFETY: the contract superRefine guarantees both fields here
-            const detail = await tx.getInvoiceDetail(input.invoiceId!);
+            const detail = await tx.getInvoiceDetail(linkedInvoiceId);
             if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
               throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
             }
             const linesById = new Map(detail.lines.map((line) => [line.id, line]));
-            for (const entry of input.lines!) {
+            const resolvedLines = linkedLines.map((entry) => {
               const line = linesById.get(entry.invoiceLineId);
               if (line === undefined) throw new ORPCError("BAD_REQUEST", { message: "LINE_NOT_ON_INVOICE" });
               if (line.itemId === null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_LINE_NOT_RETURNABLE" });
-            }
+              return { entry, line, itemId: line.itemId };
+            });
             // cap: bought minus already returned, per original line
             const already = await tx.returnedByPurchaseLine(detail.id);
             const violation = returnCapViolation(
-              input.lines!,
+              linkedLines,
               detail.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
               already,
             );
             if (violation !== null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
             invoiceId = detail.id;
             invoiceRemaining = detail.remainingAmount;
-            for (const entry of input.lines!) {
-              // SAFETY: every requested line was resolved above
-              const line = linesById.get(entry.invoiceLineId)!;
+            for (const { entry, line, itemId } of resolvedLines) {
               const lineAmount = entry.quantity * line.unitPrice;
-              lines.push({ invoiceLineId: line.id, itemId: line.itemId!, description: line.description, quantity: entry.quantity, unitCost: line.unitPrice, amount: lineAmount });
+              lines.push({ invoiceLineId: line.id, itemId, description: line.description, quantity: entry.quantity, unitCost: line.unitPrice, amount: lineAmount });
               amount += lineAmount;
             }
           } else {
-            // SAFETY: the contract superRefine guarantees the free-standing trio
-            const item = (await tx.getItemsByIds([input.itemId!])).get(input.itemId!);
+            const itemId = input.itemId;
+            const quantity = input.quantity;
+            const freeAmount = input.amount;
+            if (itemId === undefined || quantity === undefined || freeAmount === undefined) {
+              // the contract refuses a return that is neither invoice-linked
+              // nor free-standing; the handler proves it too
+              throw new ORPCError("BAD_REQUEST", { message: "RETURN_SHAPE_INVALID" });
+            }
+            const item = (await tx.getItemsByIds([itemId])).get(itemId);
             if (item === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
-            amount = input.amount!;
-            lines.push({ invoiceLineId: null, itemId: item.id, description: item.name, quantity: input.quantity!, unitCost: item.costPrice, amount });
+            amount = freeAmount;
+            lines.push({ invoiceLineId: null, itemId: item.id, description: item.name, quantity, unitCost: item.costPrice, amount });
           }
 
           const split = supplierReturnSplit(amount, invoiceRemaining);

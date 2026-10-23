@@ -16,86 +16,92 @@ const SPECS: FlagSpec[] = [
   { name: "--files", kind: "value" },
 ];
 
+// #369: every row asserts the WHOLE `ParseResult` — the false side is exactly
+// `{ ok: false, message }`, the true side exactly `{ ok, switches, values }` —
+// so a hollow stand-in of this module reds as `expect(undefined).toEqual(...)`
+// (an AssertionError, the row's own reason) instead of a `TypeError` off
+// `parsed.ok` dereferenced before any claim was made.
 describe("parseFlags", () => {
   test("a switch and a separated value", () => {
     const parsed = parseFlags(["--dry-run", "--base", "develop"], SPECS);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect([...parsed.switches]).toEqual(["--dry-run"]);
-    expect(parsed.values.get("--base")).toEqual(["develop"]);
-    expect(parsed.values.get("--files")).toBeUndefined();
+    expect(parsed).toEqual({
+      ok: true,
+      switches: new Set(["--dry-run"]),
+      values: new Map([["--base", ["develop"]]]),
+    });
   });
 
   test("--flag=value is the same as --flag value", () => {
     // The spelling that used to work on tier 2 and fail on tier 1.
     const parsed = parseFlags(["--base=origin/develop", "--files=a.ts,b.ts"], SPECS);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.values.get("--base")).toEqual(["origin/develop"]);
-    expect(parsed.values.get("--files")).toEqual(["a.ts,b.ts"]);
     // The value is not split here: what a comma means is the script's business.
-    expect(parsed.values.get("--files")).toEqual(["a.ts,b.ts"]);
+    expect(parsed).toEqual({
+      ok: true,
+      switches: new Set<string>(),
+      values: new Map([
+        ["--base", ["origin/develop"]],
+        ["--files", ["a.ts,b.ts"]],
+      ]),
+    });
   });
 
   test("a switch refuses an attached value instead of ignoring it", () => {
     const parsed = parseFlags(["--dry-run=yes"], SPECS);
-    expect({ ok: parsed.ok }).toEqual({ ok: false });
-    if (parsed.ok) return;
-    expect(parsed.message).toContain("--dry-run");
-    expect(parsed.message).toContain("no value");
+    expect(parsed).toEqual({ ok: false, message: "--dry-run takes no value" });
   });
 
   test("a value may not be the next flag", () => {
     // `--base --dry-run` used to take the flag as the ref, drop the dry run, and
     // run every package.
-    for (const argv of [
-      ["--base", "--dry-run"],
-      ["--files", "--dry-run"],
-      ["--files", "-x"],
-    ]) {
-      const parsed = parseFlags(argv, SPECS);
-      expect({ argv, ok: parsed.ok }).toEqual({ argv, ok: false });
+    for (const [argv, message] of [
+      [["--base", "--dry-run"], "--base needs a value"],
+      [["--files", "--dry-run"], "--files needs a value"],
+      [["--files", "-x"], "--files needs a value"],
+    ] as const) {
+      expect(parseFlags(argv, SPECS)).toEqual({ ok: false, message });
     }
   });
 
   test("a value flag at the end of argv is a usage failure, not an empty value", () => {
-    for (const argv of [["--base"], ["--files"]]) {
-      const parsed = parseFlags(argv, SPECS);
-      expect({ argv, ok: parsed.ok }).toEqual({ argv, ok: false });
-    }
+    expect(parseFlags(["--base"], SPECS)).toEqual({ ok: false, message: "--base needs a value" });
+    expect(parseFlags(["--files"], SPECS)).toEqual({ ok: false, message: "--files needs a value" });
   });
 
   test("an empty attached value is a usage failure too", () => {
-    expect(parseFlags(["--base="], SPECS).ok).toBe(false);
-    expect(parseFlags(["--files="], SPECS).ok).toBe(false);
+    expect(parseFlags(["--base="], SPECS)).toEqual({
+      ok: false,
+      message: "--base needs a non-empty value",
+    });
+    expect(parseFlags(["--files="], SPECS)).toEqual({
+      ok: false,
+      message: "--files needs a non-empty value",
+    });
   });
 
   test("an unknown flag and a stray argument are both refused, and named", () => {
-    const unknown = parseFlags(["--nope"], SPECS);
-    expect(unknown.ok).toBe(false);
-    if (unknown.ok) return;
-    expect(unknown.message).toContain("unknown flag: --nope");
-
-    const stray = parseFlags(["stray"], SPECS);
-    expect(stray.ok).toBe(false);
-    if (stray.ok) return;
-    expect(stray.message).toContain("unexpected argument: stray");
+    expect(parseFlags(["--nope"], SPECS)).toEqual({ ok: false, message: "unknown flag: --nope" });
+    expect(parseFlags(["stray"], SPECS)).toEqual({
+      ok: false,
+      message: "unexpected argument: stray",
+    });
   });
 
   test("a repeated single-use flag is refused rather than silently keeping the last", () => {
-    const parsed = parseFlags(["--base", "a", "--base", "b"], SPECS);
-    expect({ ok: parsed.ok }).toEqual({ ok: false });
-    if (parsed.ok) return;
-    expect(parsed.message).toContain("--base");
+    expect(parseFlags(["--base", "a", "--base", "b"], SPECS)).toEqual({
+      ok: false,
+      message: "--base may only be given once",
+    });
   });
 
   test("a repeatable flag collects every value in order", () => {
     const parsed = parseFlags(["--files", "a.ts", "--files", "b.ts"], [
       { name: "--files", kind: "value", repeat: true },
     ]);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.values.get("--files")).toEqual(["a.ts", "b.ts"]);
+    expect(parsed).toEqual({
+      ok: true,
+      switches: new Set<string>(),
+      values: new Map([["--files", ["a.ts", "b.ts"]]]),
+    });
   });
 });
 

@@ -12,7 +12,7 @@ import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
-import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
+import { itemStockProjection, recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
@@ -272,25 +272,35 @@ async function resolveOpeningNames(
  * supported returns review scrap is up to 200 lines), reading each item's
  * history and writing its cache once — see `recordStockMovements`.
  */
+const rethrowStockPostingRefusal = (error: Error): never => {
+  if (error instanceof StockItemMissingError) {
+    throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+  }
+  if (error instanceof StockLedgerError) {
+    throw new ORPCError("BAD_REQUEST", { message: error.code });
+  }
+  throw error;
+};
+
 async function postStockBatch(tx: StorePort, specs: readonly StockMovementSpec[]) {
   try {
     return await recordStockMovements(tx, specs);
   } catch (error) {
-    if (error instanceof StockItemMissingError) {
-      throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
-    }
-    if (error instanceof StockLedgerError) {
-      throw new ORPCError("BAD_REQUEST", { message: error.code });
-    }
+    if (error instanceof Error) rethrowStockPostingRefusal(error);
     throw error;
   }
 }
 
 /** The length-one case of `postStockBatch`, for the single-movement call sites. */
 async function postStock(tx: StorePort, spec: StockMovementSpec) {
-  const [posted] = await postStockBatch(tx, [spec]);
-  // SAFETY: the batch returns exactly one result per spec, and we passed one
-  return posted!;
+  try {
+    // the single-movement form of the batch: it posts the one movement and
+    // resyncs the item cache, through the same seam and the same rule
+    return await recordStockMovement(tx, spec);
+  } catch (error) {
+    if (error instanceof Error) rethrowStockPostingRefusal(error);
+    throw error;
+  }
 }
 
 /**

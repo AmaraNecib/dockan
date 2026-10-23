@@ -193,7 +193,8 @@ describe("e2e-changed arguments", () => {
       [["--nope"], "unknown flag: --nope"],
       [["stray"], "unexpected argument: stray"],
     ] as const) {
-      expect(parseArgs(argv)).toEqual({ ok: false, error });
+      // `[...argv]`: the const tuples are readonly, the parser takes string[].
+      expect(parseArgs([...argv])).toEqual({ ok: false, error });
     }
   });
 
@@ -206,7 +207,8 @@ describe("e2e-changed arguments", () => {
       [["--base", "--dry-run"], "--base needs a value"],
       [["--files", "-x"], "--files needs a value"],
     ] as const) {
-      expect(parseArgs(argv)).toEqual({ ok: false, error });
+      // `[...argv]`: the const tuples are readonly, the parser takes string[].
+      expect(parseArgs([...argv])).toEqual({ ok: false, error });
     }
   });
 

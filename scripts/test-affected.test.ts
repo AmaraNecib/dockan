@@ -523,7 +523,9 @@ describe("the impacted filter, live against turbo", () => {
     // merge-base answer ([`//`]), which is exactly the shape the guard exists
     // for; a dry run turbo refused is the other arm. Both wide reasons are
     // reachable from this row, so the note matches either.
-    expect(plan.steps[0].some((arg) => arg.startsWith("--filter="))).toBe(false);
+    // The `?? false` fallback is unreachable: the vouch above already failed
+    // the row if steps[0] were not the turbo argv.
+    expect(plan.steps[0]?.some((arg) => arg.startsWith("--filter=")) ?? false).toBe(false);
     expect(plan.note).toMatch(/selects no package|could not confirm/u);
   });
 

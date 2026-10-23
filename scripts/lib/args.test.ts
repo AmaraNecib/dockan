@@ -58,7 +58,8 @@ describe("parseFlags", () => {
       [["--files", "--dry-run"], "--files needs a value"],
       [["--files", "-x"], "--files needs a value"],
     ] as const) {
-      expect(parseFlags(argv, SPECS)).toEqual({ ok: false, message });
+      // `[...argv]`: the const tuples are readonly, the parser takes string[].
+      expect(parseFlags([...argv], SPECS)).toEqual({ ok: false, message });
     }
   });
 

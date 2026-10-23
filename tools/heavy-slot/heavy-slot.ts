@@ -353,7 +353,7 @@ async function withRecordLock<T>(dir: string, body: () => Promise<T>): Promise<T
 `, { flag: "wx" });
       break; // we hold it
     } catch {
-      // held, or the directory is unwritable. Distinguish by the file's age.
+      // held, or the directory is unwritable. The file's age distinguishes them.
     }
     let ageMs = 0;
     try {
@@ -362,14 +362,21 @@ async function withRecordLock<T>(dir: string, body: () => Promise<T>): Promise<T
       ageMs = 0; // vanished: the holder released it between our attempts
     }
     if (ageMs > STALE_LOCK_MS) {
+      // Steal by RENAME, never by delete-then-create. [#365 review P1] Two callers
+      // can both decide a lock is stale; with `rmSync` the slower one deletes the
+      // lock the faster one has already created - which is fresh - and both then
+      // believe they hold it. `rename` has exactly one winner: the loser gets
+      // ENOENT and goes round.
+      const stolen = `${path}.stale-${process.pid}`;
       try {
-        rmSync(path, { force: true });
+        renameSync(path, stolen);
+        rmSync(stolen, { force: true });
       } catch {
-        /* another process stole it first */
+        /* another caller stole it first, or it vanished: try again */
       }
       continue;
     }
-    if (Date.now() > deadline) return null; // the caller refuses rather than splitting
+    if (Date.now() > deadline) return null; // the caller refuses loudly; it never splits
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   try {
@@ -383,7 +390,7 @@ async function withRecordLock<T>(dir: string, body: () => Promise<T>): Promise<T
   }
 }
 
-async function claimOrFollow(base: number): Promise<number> {
+async function claimOrFollow(base: number): Promise<number | null> {
   const dir = stateDir();
   for (let attempt = 0; attempt < 2; attempt++) {
     const current = readPersistedBase(dir);
@@ -417,11 +424,16 @@ async function claimOrFollow(base: number): Promise<number> {
     // Otherwise the wx race was lost to a REAL claim: go around, read and
     // probe whatever the file holds now - its winner's content decides.
   }
+  // [#365 review P1] Every route out of here used to end in `return base` - a
+  // private range, which is the split this whole file exists to prevent. A record
+  // that cannot be adopted is a refusal (exit 76), not a second queue: the caller
+  // must learn that this machine cannot agree on a range right now.
   console.error(
-    `[heavy-slot] no shared record could be adopted in ${dir} - every record write failed; ` +
-      `this process runs a PRIVATE base and the queue may split (a portable state dir makes this repeat on every run)`,
+    `[heavy-slot] no shared record could be adopted in ${dir} after ${LOCK_WAIT_MS}ms ` +
+      `(the lock at base.lock may be held by a process that died; it is stolen after ${STALE_LOCK_MS}ms) - ` +
+      `refusing rather than running a second queue (exit 76)`,
   );
-  return base;
+  return null;
 }
 
 /**
@@ -460,7 +472,8 @@ async function resolveBase(): Promise<number | null> {
   // the loop takes the shifts 1..BASE_SHIFT_ATTEMPTS, so the two counts meet
   // exactly and nothing is skipped or probed twice.
   if ((await probePort(portOf(preferred, 1))).status !== "unusable") {
-    return activate(await claimOrFollow(preferred));
+    const claimed = await claimOrFollow(preferred);
+    return claimed === null ? null : activate(claimed);
   }
   for (let shift = 1; shift <= BASE_SHIFT_ATTEMPTS; shift++) {
     const candidate = preferred + shift * BASE_STRIDE;
@@ -469,7 +482,8 @@ async function resolveBase(): Promise<number | null> {
     // would have sent a slot bind past 65535.
     if (candidate >= 65536 || baseRangeFault(candidate) !== null) continue;
     if ((await probePort(portOf(candidate, 1))).status === "unusable") continue;
-    return activate(await claimOrFollow(candidate));
+    const claimed = await claimOrFollow(candidate);
+    return claimed === null ? null : activate(claimed);
   }
   return null;
 }

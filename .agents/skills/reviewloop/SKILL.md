@@ -193,8 +193,12 @@ bun tools/reviewloop/render.ts --issue <id>
 `--print` writes the body to stdout; `--json` prints `{ body, created }` for a
 consumer that expects the CLI contract.
 
-**Done when** the renderer exits 0 or 1. Exit 2 is a bad payload; read the
-message, fix the payload, and do not work around the guard.
+**Done when** the renderer exits 0 or 1. Exit 2 is a bad input; read the message,
+fix it, and do not work around the guard. Exit 2 in particular covers a diff that
+could not be read and a diff that is empty: a round with no boundary is not a
+review of anything, and it must not produce a 5/5 artifact. It also covers a
+`findings.json` that is not valid JSON, so a typo cannot look like "findings
+remain".
 
 ### 5. Verify, then fix or dismiss
 

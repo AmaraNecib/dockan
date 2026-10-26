@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -497,6 +497,9 @@ describe("renderBody", () => {
     const f = { ...mergedFinding({ severity: "P1" }), anchored: false };
 
     expect(body({ findings: [f] })).toContain("<!-- greptile_outside_diff -->");
+    expect(body({ findings: [mergedFinding({ severity: "P1" })] })).not.toContain(
+      "<!-- greptile_outside_diff -->",
+    );
   });
 
   test("renders a finding with its badge and its file", () => {
@@ -512,20 +515,37 @@ describe("renderBody", () => {
 // ---------------------------------------------------------------------------
 
 describe("the CLI contract", () => {
-  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  // A throwaway repository, so the cases do not depend on this checkout's
+  // history being deep enough for `HEAD~1`.
+  const script = join(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim(), "tools", "reviewloop", "render.ts");
   const issue = `cli-test-${process.pid}`;
-  const dir = join(root, ".scratch", "reviews", issue);
+  let work = "";
+  let head = "";
+  let dir = "";
+
+  const gitIn = (...cmd: string[]) =>
+    execFileSync("git", cmd, { cwd: work, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 
   beforeAll(() => {
-    mkdirSync(dir, { recursive: true });
+    work = mkdtempSync(join(tmpdir(), "reviewloop-cli-"));
+    dir = join(work, ".scratch", "reviews", issue);
+    gitIn("init", "-q");
+    gitIn("config", "user.email", "test@example.invalid");
+    gitIn("config", "user.name", "reviewloop test");
+    writeFileSync(join(work, "a.txt"), "one\n");
+    gitIn("add", "a.txt");
+    gitIn("commit", "-q", "-m", "first");
+    writeFileSync(join(work, "a.txt"), "one\ntwo\n");
+    gitIn("commit", "-q", "-am", "second");
+    head = gitIn("rev-parse", "HEAD");
   });
 
   afterAll(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true });
   });
 
-  function fixture() {
+  function fixture(findings: Finding[] = [], verdict = "") {
+    mkdirSync(dir, { recursive: true });
     const report = (name: string, model: string) => {
       const path = join(dir, `${head}-${name}.md`);
       writeFileSync(path, header(model));
@@ -547,24 +567,57 @@ describe("the CLI contract", () => {
             report: report("code-review", "opencode/beam-free"),
           },
         ],
-        summary: { impact: "Low", what: "A change.", verdict: "" },
-        findings: [],
+        summary: { impact: "Low", what: "A change.", verdict },
+        findings,
       }),
     );
   }
 
   const run = (base: string) =>
-    spawnSync(process.execPath, ["tools/reviewloop/render.ts", "--issue", issue, "--base", base], {
-      cwd: root,
+    spawnSync(process.execPath, [script, "--issue", issue, "--base", base], {
+      cwd: work,
       encoding: "utf8",
     });
 
-  test("a clean payload exits 0 and leaves the artifact the gate reads", () => {
+  const written = (name: string) => readFileSync(join(dir, `${head}-${name}`), "utf8");
+
+  test("a clean payload exits 0 and writes the artifact the gate reads", () => {
     fixture();
     const result = run("HEAD~1");
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("score      5/5");
+
+    // SAFETY: this file was just written by the renderer from our own fixture.
+    const artifact = JSON.parse(written("greptile-local.json")) as { body: string; created: string };
+    expect(artifact.body).toContain("<!-- greptile_summary -->");
+    expect(artifact.body).toContain("<!-- greptile_confidence_score:5 -->");
+    expect(Number.isNaN(Date.parse(artifact.created))).toBe(false);
+    expect(JSON.parse(written("inline.json"))).toEqual([]);
+  });
+
+  test("an open P1 exits 1 and posts it inline", () => {
+    fixture(
+      [
+        finding({
+          severity: "P1",
+          path: "a.txt",
+          line: 2,
+          title: "The added line is unread",
+          evidence: "self-evident: the added line is not read.",
+        }),
+      ],
+      "One P1 is open.",
+    );
+    const result = run("HEAD~1");
+
+    expect(result.status).toBe(1);
+    expect(written("greptile-local.md")).toContain("p1.svg");
+    // SAFETY: the renderer wrote this array from the one P1 finding in the fixture.
+    const inline = JSON.parse(written("inline.json")) as Array<{ path: string; line: number }>;
+    expect(inline).toHaveLength(1);
+    expect(inline[0]?.path).toBe("a.txt");
+    expect(inline[0]?.line).toBe(2);
   });
 
   test("a base that cannot be read exits 2 instead of rendering clean", () => {
@@ -573,5 +626,22 @@ describe("the CLI contract", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("not a review");
+  });
+
+  test("an empty diff exits 2 instead of scoring a review of nothing", () => {
+    fixture();
+    const result = run("HEAD");
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("is empty");
+  });
+
+  test("a findings file that is not JSON exits 2, not 1", () => {
+    fixture();
+    writeFileSync(join(dir, `${head}-findings.json`), "{ not json");
+    const result = run("HEAD~1");
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("not valid JSON");
   });
 });

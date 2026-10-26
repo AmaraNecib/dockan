@@ -154,10 +154,26 @@ function run() {
     );
   }
 
-  // SAFETY: the file is written from the schema in this skill, and validate()
-  // checks every field it renders before this value is used.
-  const payload = JSON.parse(readFileSync(inputPath, "utf8")) as Payload;
+  const payload = (() => {
+    try {
+      // SAFETY: the file is written from the schema in this skill, and validate()
+      // checks every field it renders before this value is used.
+      return JSON.parse(readFileSync(inputPath, "utf8")) as Payload;
+    } catch (error) {
+      fail(
+        `${inputPath} is not valid JSON.\n  ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  })();
+
+  const boundary = flag("worktree") ? base : `${base}...${head}`;
   const diff = readDiff(base, head, flag("worktree"));
+  if (diff.length === 0) {
+    fail(
+      `the diff ${boundary} is empty.\n` +
+        `  An empty diff is a bad ref, not a clean review; pass the right --base or --head.`,
+    );
+  }
   validate(payload, inputPath, diff, head);
 
   const merged = dedupe(

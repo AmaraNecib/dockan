@@ -148,10 +148,14 @@ reviewer, not a verdict, and it goes in the PR body. The independent lenses read
 Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
 
-Run this lens, `test-audit` and `code-review` on `zen-proxy/minimax-m3.1-flash-free` —
-never on the model that wrote the diff (`zen-proxy/deepseek-v4.1-flash-free`). When MiniMax is down,
-`zen-proxy/beam-free` is the free reviewer, then `zen-proxy/glm-5.3-flash-free` and
-`zen-proxy/mimo-v2.6-flash-free`. The
+Run this lens, `test-audit` and `code-review` on a **different model family** from the
+author, which is the lane's `Model:` trailer, not the parent's. Independence is a family,
+not an ID: free and paid DeepSeek are one opinion. Free first —
+`opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
+`opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
+`opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
+routes are exhausted. With more than one lens, at least two families must appear. Probe a
+route that has not been used this session; an advertised model is not a working one. The
 reviewer is never the author. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.
 

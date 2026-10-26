@@ -31,6 +31,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 
 export type Severity = "P0" | "P1" | "P2";
 type Impact = "Critical" | "High" | "Medium" | "Low";
@@ -68,7 +69,7 @@ export type Finding = {
   permalink?: string;
 };
 
-type Payload = {
+export type Payload = {
   /** The model that wrote the diff, as the lane's commit trailer records it. */
   authorModel: string;
   lenses: Lens[];
@@ -113,11 +114,28 @@ function arg(name: string, fallback?: string) {
 const flag = (name: string) => args.includes(`--${name}`);
 
 const git = (...cmd: string[]) =>
-  execFileSync("git", cmd, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).trim();
+  execFileSync("git", cmd, {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
 
-if (import.meta.main) main();
+/** A refused payload. Thrown so the rules are testable; `main` turns it into exit 2. */
+export class ReviewloopError extends Error {}
 
 function main() {
+  try {
+    run();
+  } catch (error) {
+    if (error instanceof ReviewloopError) {
+      console.error(`reviewloop: ${error.message}`);
+      process.exit(2);
+    }
+    throw error;
+  }
+}
+
+function run() {
   const issue = arg("issue");
   if (!issue) fail("--issue <id> is required; it names `.scratch/reviews/<id>/`.");
   if (!/^[A-Za-z0-9._-]+$/.test(issue)) fail(`--issue "${issue}" is not a plain folder name.`);
@@ -140,11 +158,12 @@ function main() {
   // checks every field it renders before this value is used.
   const payload = JSON.parse(readFileSync(inputPath, "utf8")) as Payload;
   const diff = readDiff(base, head, flag("worktree"));
-  validate(payload, inputPath, diff);
+  validate(payload, inputPath, diff, head);
 
   const merged = dedupe(
     payload.findings.map((f) => ({ ...f, anchored: isAnchored(diff, f) })),
   ).sort(bySeverity);
+  validateMerged(payload, merged, inputPath);
 
   const ruleScore = computeScore(merged);
   const score = scoreOverride(payload, ruleScore);
@@ -196,8 +215,7 @@ function main() {
 // ---------------------------------------------------------------------------
 
 function fail(msg: string): never {
-  console.error(`reviewloop: ${msg}`);
-  process.exit(2);
+  throw new ReviewloopError(msg);
 }
 
 /**
@@ -208,6 +226,16 @@ export function modelFamily(model: string): string {
   const id = model.split("/").pop()?.toLowerCase() ?? model.toLowerCase();
   // A split always yields one segment; the fallback satisfies the indexed-access check.
   return id.replace(/-free$/, "").split(/-[a-z]?\d/)[0] ?? id;
+}
+
+/** A family keeps its name across suffixes: `deepseek` and `deepseek-chat` are one opinion. */
+function familyMatches(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}-`) || b.startsWith(`${a}-`);
+}
+
+/** Same model family, the way the owner's rule means it: a route is not an opinion. */
+export function sameFamily(a: string, b: string): boolean {
+  return familyMatches(modelFamily(a), modelFamily(b));
 }
 
 export type IndependenceStatus = {
@@ -231,30 +259,34 @@ export function independenceOf(
   const ran = lenses.filter((l) => !l.skipped);
   const author = modelFamily(authorModel);
   const lensFamilies = ran.map((l) => modelFamily(l.model));
-  const sameFamily = ran.filter((l) => modelFamily(l.model) === author).map((l) => l.name);
-  const families = new Set(lensFamilies).size;
+  const unique: string[] = [];
+  for (const family of lensFamilies) {
+    if (!unique.some((known) => familyMatches(known, family))) unique.push(family);
+  }
+  const onAuthorFamily = ran.filter((l) => sameFamily(l.model, authorModel)).map((l) => l.name);
+  const families = unique.length;
   const approved = Boolean(approval?.approvedBy.trim() && approval.reason.trim());
 
-  if (sameFamily.length > 0 && !approved) {
+  if (onAuthorFamily.length > 0 && !approved) {
     return {
       allowed: false,
       families,
-      sameFamily,
-      reason: `lens ${sameFamily.map((name) => `"${name}"`).join(", ")} ran on the author's family (${author})`,
+      sameFamily: onAuthorFamily,
+      reason: `lens ${onAuthorFamily.map((name) => `"${name}"`).join(", ")} ran on the author's family (${author})`,
     };
   }
   if (ran.length > 1 && families < 2 && !approved) {
     return {
       allowed: false,
       families,
-      sameFamily,
-      reason: `every lens ran on one family (${[...new Set(lensFamilies)].join(", ")})`,
+      sameFamily: onAuthorFamily,
+      reason: `every lens ran on one family (${unique.join(", ")})`,
     };
   }
-  return { allowed: true, families, sameFamily };
+  return { allowed: true, families, sameFamily: onAuthorFamily };
 }
 
-function validate(p: Payload, where: string, diff: Hunk[]) {
+export function validate(p: Payload, where: string, diff: Hunk[], head: string) {
   if (!p.authorModel?.trim()) {
     fail(`${where}: authorModel is required. The reviewer has to prove it is not the author.`);
   }
@@ -276,6 +308,7 @@ function validate(p: Payload, where: string, diff: Hunk[]) {
           `  Run the lens and save its report, or mark it { "skipped": "<why it does not apply>" }.`,
       );
     }
+    if (!lens.skipped) checkReport(lens, p.authorModel, head, where);
   }
 
   if (p.lenses.every((l) => l.skipped)) {
@@ -305,7 +338,8 @@ function validate(p: Payload, where: string, diff: Hunk[]) {
   if (!Array.isArray(p.findings)) fail(`${where}: findings must be an array; [] is a valid clean run.`);
 
   const touched = new Set(diff.map((h) => h.path));
-  const ran = new Set(p.lenses.map((l) => l.name));
+  // A skipped lens did not read the diff, so it cannot be named as a reviewer.
+  const ran = new Set(p.lenses.filter((l) => !l.skipped).map((l) => l.name));
   for (const [i, f] of p.findings.entries()) {
     const at = `${where}: findings[${i}]`;
     if (!isLensName(f.lens)) {
@@ -350,7 +384,66 @@ function validate(p: Payload, where: string, diff: Hunk[]) {
   }
 }
 
-function scoreOverride(p: Payload, rule: number): number {
+/**
+ * A report is evidence for one head and one pair of models. Without this check a
+ * payload can point at last week's report and still produce a fresh artifact.
+ */
+function checkReport(lens: Lens, authorModel: string, head: string, where: string) {
+  const report = lens.report ?? "";
+  if (!basename(report).includes(head)) {
+    fail(
+      `${where}: lens "${lens.name}" points at ${report}, which is not named for ${head}.\n` +
+        `  A report is evidence for one head only; rerun the lens and save it as <head>-${lens.name}.md.`,
+    );
+  }
+
+  const opening = readFileSync(report, "utf8").split(/\r?\n/).slice(0, 8).join("\n");
+  const reviewer = opening.match(/^\s*Reviewer model:\s*(\S+)\s*$/m)?.[1];
+  const author = opening.match(/^\s*Author model:\s*(\S+)\s*$/m)?.[1];
+  if (!reviewer || !author) {
+    fail(
+      `${where}: ${report} does not open with the two model lines.\n` +
+        `  "Reviewer model: <id>" then "Author model: <id>", nothing between them.`,
+    );
+  }
+  if (!sameModel(reviewer, lens.model)) {
+    fail(`${where}: lens "${lens.name}" says it ran ${lens.model}, but its report says ${reviewer}.`);
+  }
+  if (!sameModel(author, authorModel)) {
+    fail(
+      `${where}: lens "${lens.name}" reviewed ${author}, but the payload claims the author is ${authorModel}.`,
+    );
+  }
+}
+
+/** The commit trailer carries the harness (`pi/opencode-go/...`); the model is what follows. */
+function sameModel(a: string, b: string) {
+  const norm = (m: string) => m.trim().toLowerCase().replace(/^pi\//, "");
+  return norm(a) === norm(b);
+}
+
+/** Agreement promotes inside `dedupe`, so the raw checks are applied again to the merged list. */
+export function validateMerged(p: Payload, merged: Merged[], where: string) {
+  for (const [i, f] of merged.entries()) {
+    if (f.severity !== "P2" && !f.evidence?.trim()) {
+      fail(
+        `${where}: merged finding ${i + 1} is ${f.severity} at ${f.path}:${f.line} with no evidence.\n` +
+          `  Agreement promoted it past the raw check; name the file:line that proves it.`,
+      );
+    }
+  }
+
+  if (p.summary.verdict?.trim()) return;
+  const blocking = merged.find((f) => f.severity !== "P2");
+  if (blocking) {
+    fail(
+      `${where}: summary.verdict is required while a ${blocking.severity} is open.\n` +
+        `  ${blocking.path}:${blocking.line} was promoted by lens agreement; say what blocks the merge.`,
+    );
+  }
+}
+
+export function scoreOverride(p: Payload, rule: number): number {
   if (!p.scoreOverride) return rule;
   if (p.scoreOverride.score > rule) {
     fail(
@@ -376,7 +469,7 @@ export function computeScore(findings: Finding[]): number {
 // Diff anchoring
 // ---------------------------------------------------------------------------
 
-type Hunk = { path: string; ranges: Array<[number, number]> };
+export type Hunk = { path: string; ranges: Array<[number, number]> };
 
 function readDiff(baseRef: string, headRef: string, worktree: boolean): Hunk[] {
   let raw = "";
@@ -384,9 +477,12 @@ function readDiff(baseRef: string, headRef: string, worktree: boolean): Hunk[] {
     raw = worktree
       ? git("diff", "--unified=0", "--no-color", baseRef)
       : git("diff", "--unified=0", "--no-color", `${baseRef}...${headRef}`);
-  } catch {
-    console.warn(`reviewloop: could not diff ${worktree ? baseRef : `${baseRef}...${headRef}`}; every finding goes outside-diff.`);
-    return [];
+  } catch (error) {
+    fail(
+      `could not read the diff ${worktree ? baseRef : `${baseRef}...${headRef}`}.\n` +
+        `  A review with no boundary is not a review; pass --base <ref> or fetch it first.\n` +
+        `  ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+    );
   }
 
   const out: Hunk[] = [];
@@ -408,7 +504,7 @@ function readDiff(baseRef: string, headRef: string, worktree: boolean): Hunk[] {
   return out;
 }
 
-function isAnchored(diff: Hunk[], f: Finding): boolean {
+export function isAnchored(diff: Hunk[], f: Finding): boolean {
   const file = diff.find((h) => h.path === f.path);
   if (!file) return false;
   const end = f.endLine ?? f.line;
@@ -428,12 +524,16 @@ export function dedupe(findings: Array<Finding & { anchored: boolean }>): Merged
   const out: Merged[] = [];
 
   for (const f of sorted) {
-    const near = out.find((o) => o.path === f.path && Math.abs(o.line - f.line) <= 1);
+    // Merging is what "two lenses agree" means, so it is only ever cross-lens.
+    // Two findings from one lens are two defects, however close their lines are.
+    const near = out.find(
+      (o) => o.path === f.path && !o.lenses.includes(f.lens) && Math.abs(o.line - f.line) <= 1,
+    );
     if (!near) {
       out.push({ ...f, lenses: [f.lens] });
       continue;
     }
-    if (!near.lenses.includes(f.lens)) near.lenses.push(f.lens);
+    near.lenses.push(f.lens);
     if (f.body.length > near.body.length) {
       near.body = f.body;
       near.title = f.title;
@@ -442,7 +542,8 @@ export function dedupe(findings: Array<Finding & { anchored: boolean }>): Merged
     }
     near.evidence = f.evidence || near.evidence;
     near.severity = worse(near.severity, f.severity);
-    near.anchored = near.anchored || f.anchored;
+    // `anchored` describes the retained `line`-`endLine`, which this merge never
+    // changes, so it must not be borrowed from the finding that was folded in.
   }
 
   // Agreement is the one signal a single reviewer cannot produce. It promotes a
@@ -473,7 +574,7 @@ function isLensName(name: string): name is (typeof LENS_NAMES)[number] {
 // Render: the artifact the rest of the workflow already reads
 // ---------------------------------------------------------------------------
 
-function renderBody(opts: {
+export function renderBody(opts: {
   payload: Payload;
   head: string;
   base: string;
@@ -670,3 +771,7 @@ function html(s: string) {
 function inlineSafe(s: string) {
   return html(s).replace(/\*/g, "\\*").replace(/_/g, "\\_");
 }
+
+// Runs last: `main` reads classes and consts declared above, so calling it from
+// the top of the module would hit the temporal dead zone.
+if (import.meta.main) main();

@@ -116,8 +116,10 @@ Reviewer model: <provider/model that actually ran>
 Author model:   <the lane's Model: trailer>
 ```
 
-The IDs must be the ones that ran, not the ones the round intended. Each finding
-names a `file:line`; a lens that writes prose without a location has not finished.
+The renderer reads those lines and refuses a report that leaves them out, or
+whose models contradict the payload. The IDs must be the ones that ran, not the
+ones the round intended. Each finding names a `file:line`; a lens that writes
+prose without a location has not finished.
 
 **Done when** every lens listed in the payload has a report, and every finding in
 those reports carries a location.
@@ -125,8 +127,9 @@ those reports carries a location.
 ### 4. Extract the findings
 
 Write `.scratch/reviews/<issue>/<head>-findings.json`. One entry per distinct
-defect, not one per lens comment; `render.ts` merges findings on the same file
-within one line and records which lenses agree.
+defect, not one per lens comment; `render.ts` merges the same file within one line
+**across lenses only**, and records which lenses agree. Two findings from one lens
+stay two findings however close their lines are.
 
 ```json
 {
@@ -170,8 +173,15 @@ P0 and P1 are refused without it.
 
 `lenses` lists what actually ran, one to three. Every finding's `lens` must name
 one of them; the renderer refuses an attribution to a lens that did not read the
-diff. When the owner approved an independence exception, add
+diff, and a skipped lens does not count as having read it. When the owner approved
+an independence exception, add
 `"independence": { "approvedBy": "owner", "reason": "..." }` at the top level.
+
+The renderer also opens each report, because a path is not evidence on its own. It
+refuses a report whose filename does not carry the head SHA, one that does not open
+with the two model lines, and one whose `Reviewer model:` or `Author model:` does
+not match the payload. That is the check that `lens.model` is the model that ran,
+rather than the model the round intended.
 
 Then run:
 

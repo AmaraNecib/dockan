@@ -85,16 +85,17 @@ get the docs-only exemption.
 
 **Standard** (code, CI, workflow, config):
 ```
-[ ] Debate evidence exists and is not stale
-[ ] Test-audit evidence exists and is not stale
-[ ] Code-review evidence exists and is not stale
+[ ] Evidence exists for every lens the round ran, and none is stale
+[ ] A scoped round of one or two lenses is allowed when the change touches one
+      axis; the payload records exactly what ran, and three stays the default
+[ ] The reviewloop payload renders, and its score is the rule's score or lower
 ```
 
 **High-assurance** (auth/RBAC, backup/restore, invoice and debt money math, a schema-version bump):
 ```
-[ ] Debate evidence exists and is not stale
-[ ] Test-audit evidence exists and is not stale
-[ ] Code-review evidence exists and is not stale
+[ ] All three lenses ran: debate, test-audit and code-review
+[ ] Every evidence file exists and is not stale
+[ ] The reviewloop payload renders, and its score is the rule's score or lower
 ```
 
 ## Phase 3 — Pre-report

@@ -32,7 +32,7 @@ const LANE_READERS = [
 // fragment is a single line, so Windows CRLF cannot split one in half.
 const REQUIRED_FACTS: [name: string, fragment: string][] = [
   ["the evidence marker", "<!-- crew-evidence -->"],
-  ["reason 1 (5/5)", "Greptile confidence is 5/5"],
+  ["reason 1 (5/5)", "The review confidence is 5/5"],
   ["reason 2 (the field)", "Last reviewed commit"],
   ["reason 2 (the head anchor)", "equals the current head SHA"],
   ["reason 3 (nothing after the verdict)", "No comment lands after the verdict"],

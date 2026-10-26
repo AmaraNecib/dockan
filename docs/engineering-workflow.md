@@ -12,8 +12,11 @@ mandatory orchestrator; this document is its reference.
 ```bash
 bun run lint        # oxlint (with anti-slop plugin config)
 bun run typecheck   # turbo typecheck across workspaces, plus the scripts/ and tests/ projects
-bun run test        # turbo test across workspaces
-bun run test:e2e    # Playwright
+bun run skills:check           # generated .claude/skills mirror matches .agents/skills
+bun run test        # turbo test across workspaces, plus scripts/ and tools/
+bun run --filter @dokan/web build   # the production bundle the checks job builds
+bun audit --audit-level=high        # fail on high/critical advisories only
+bun run test:e2e    # Playwright (scoped by the selector on a PR)
 ```
 
 Rust changes (`apps/desktop/src-tauri/`) additionally require:

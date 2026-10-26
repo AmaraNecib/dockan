@@ -42,21 +42,34 @@ If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
 This is the gate before the review round and before any push. It never pushes by
 itself. The parent's push runs the Husky pre-push hook when the hook is available.
 
+**Run the CI `checks` job locally, not a subset of it.** A green focused test plus
+typecheck is step 1, not this gate. The full suite and the web build take a heavy
+slot (`bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`).
+
 ```
 [ ] bun run typecheck — passes?
 [ ] bun run lint — 0 errors?
-[ ] bun run test — all tests pass?
-[ ] bun run test:e2e — passes? (when UI flows changed)
-[ ] bun scripts/red-on-parent.ts — every test file this change **adds** fails on the
-      parent, or carries a `red-on-parent-waive` line. New files only; edited test
-      files are not gated. A wrong-reason red (the file cannot load on the parent)
-      fails the gate, and so does a waiver on a test that is already red. So does a
-      test the change registers and the parent's run never reports (`NOT ON PARENT`),
-      and a run that did not finish (`RUN INCOMPLETE` — no waiver covers a missing
-      result).
+[ ] bun run skills:check — the .claude/skills mirror matches .agents/skills?
+[ ] bun run test — the full suite passes (turbo + scripts/ + tools/)
+[ ] bun run --filter @dokan/web build — the production bundle builds?
+[ ] bun audit --audit-level=high — no high/critical advisory?
+[ ] bun scripts/red-on-parent.ts --base <base> — every test file this change
+      **adds** fails on the parent, or carries a `red-on-parent-waive` line. New
+      files only; edited test files are not gated. A wrong-reason red (the file
+      cannot load on the parent) fails the gate, and so does a waiver on a test
+      that is already red. So does a test the change registers and the parent's
+      run never reports (`NOT ON PARENT`), and a run that did not finish
+      (`RUN INCOMPLETE` — no waiver covers a missing result).
+[ ] bun run test:e2e — passes? (only when the selector says the diff reaches a
+      spec, or the change touches a UI flow)
 [ ] git status — working tree clean?
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```
+
+A red check that cannot come from this change (an advisory in a dependency the
+diff does not touch, a suite that is red on `develop`) is still a red push. Record
+it with the evidence and take it to the owner; do not call the branch green
+because the failure is "not ours".
 
 ### Review evidence checks
 

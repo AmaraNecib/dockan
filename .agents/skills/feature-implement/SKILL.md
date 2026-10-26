@@ -177,12 +177,27 @@ Run `code-review` skill against `git diff <base-sha>...HEAD`. Save output to
 
 ### 10. Guard pre-push (Phase 2)
 
-Run `guard` Phase 2. Verifies:
-- All checks pass (typecheck, lint, tests, e2e when UI changed)
+Run `guard` Phase 2. That is the CI `checks` job **locally**, not a subset:
+
+```bash
+bun run typecheck && bun run lint && bun run skills:check
+bun run test                      # full suite — heavy slot
+bun run --filter @dokan/web build # heavy slot
+bun audit --audit-level=high
+bun scripts/red-on-parent.ts --base <base>
+```
+
+- All of the above pass, plus `bun run test:e2e` when the selector says the diff
+  reaches a spec or the change touches a UI flow
 - `bun scripts/red-on-parent.ts` — every test file the change **adds** is red on
   the parent, or carries a `red-on-parent-waive` line. New files only.
 - Review evidence files exist and are not stale
 - Working tree is clean
+
+Do not trade this for a focused test run and a typecheck: that is how a red CI
+run becomes the first place the lane learns a script or the production bundle
+broke. A red check that cannot come from this change is still a red push — record
+it, and take it to the owner instead of calling the branch green.
 
 **Evidence staleness check:**
 - Extract SHA from evidence filenames in `.scratch/reviews/<issue-id>/`

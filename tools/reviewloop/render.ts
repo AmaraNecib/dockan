@@ -501,9 +501,11 @@ type Diff = { hunks: Hunk[]; raw: string };
  * A deletion-only, rename-only, mode-only or binary file still yields an entry
  * with no ranges: `validate` then knows the path was reviewed, and `isAnchored`
  * sends any finding on it outside the diff instead of rejecting the payload.
- * Paths are merged rather than pushed twice, because a rename shows up in the
- * `diff --git` header, the `rename from`/`rename to` lines and the `---`/`+++`
- * pair, and the last of those carries the hunks.
+ *
+ * The `diff --git` header is the only place a mode-only or binary file names
+ * itself, so it is held until the file's `---`/`+++` pair proves whether a
+ * better path is available. Registering it eagerly would turn a path that
+ * contains " b/" into a phantom entry.
  */
 export function parseDiff(raw: string): Hunk[] {
   const files = new Map<string, Hunk>();
@@ -515,33 +517,49 @@ export function parseDiff(raw: string): Hunk[] {
     }
     return hunk;
   };
+  // Git appends a TAB to a `---`/`+++` path that contains a space.
+  const clean = (line: string, prefix: string) => line.slice(prefix.length).replace(/\t$/, "");
 
   let current: Hunk | null = null;
   let removed: string | null = null;
+  let header: { from: string; to: string } | null = null;
+  let paired = false;
+
+  // End the file: a header that never met a `---`/`+++` pair is a mode-only or
+  // binary change, and both of its names were reviewed. Also drop `current`, so
+  // a header the parser cannot read (a quoted path) cannot leak its hunks into
+  // the previous file.
+  const flush = () => {
+    if (header && !paired) {
+      at(header.from);
+      at(header.to);
+    }
+    header = null;
+    paired = false;
+    current = null;
+    removed = null;
+  };
 
   for (const line of raw.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      // Present for every file, including the mode-only and binary cases that
-      // have no `---`/`+++` lines at all.
+      flush();
       const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      if (m?.[1] && m[2]) {
-        at(m[1]);
-        current = at(m[2]);
-      }
-      removed = null;
+      if (m?.[1] && m[2]) header = { from: m[1], to: m[2] };
     } else if (line.startsWith("--- a/")) {
-      removed = line.slice(6);
+      removed = clean(line, "--- a/");
     } else if (line.startsWith("+++ b/")) {
-      current = at(line.slice(6));
+      paired = true;
+      current = at(clean(line, "+++ b/"));
       removed = null;
     } else if (line.startsWith("+++ /dev/null")) {
+      paired = true;
       if (removed) at(removed);
       current = null;
       removed = null;
     } else if (line.startsWith("rename from ")) {
-      at(line.slice(12));
+      at(clean(line, "rename from "));
     } else if (line.startsWith("rename to ")) {
-      at(line.slice(10));
+      at(clean(line, "rename to "));
     } else if (line.startsWith("@@") && current) {
       const m = line.match(/\+(\d+)(?:,(\d+))?/);
       if (!m) continue;
@@ -551,15 +569,19 @@ export function parseDiff(raw: string): Hunk[] {
     }
   }
 
+  flush();
   return [...files.values()];
 }
 
 function readDiff(baseRef: string, headRef: string, worktree: boolean): Diff {
+  // Pin the two settings that change path spelling: a diff must parse the same
+  // on a machine with `core.quotePath=true` or `diff.noprefix=true` configured.
+  const stable = ["-c", "core.quotePath=false", "-c", "diff.noprefix=false"];
   let raw = "";
   try {
     raw = worktree
-      ? git("diff", "--unified=0", "--no-color", baseRef)
-      : git("diff", "--unified=0", "--no-color", `${baseRef}...${headRef}`);
+      ? git(...stable, "diff", "--unified=0", "--no-color", baseRef)
+      : git(...stable, "diff", "--unified=0", "--no-color", `${baseRef}...${headRef}`);
   } catch (error) {
     fail(
       `could not read the diff ${worktree ? baseRef : `${baseRef}...${headRef}`}.\n` +

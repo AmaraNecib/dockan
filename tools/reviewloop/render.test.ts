@@ -530,7 +530,50 @@ describe("parseDiff", () => {
     expect(parseDiff(raw)).toEqual([{ path: "run.sh", ranges: [] }]);
   });
 
-  test("an empty diff parses to nothing, which is how the caller refuses it", () => {
+  test("a spaced path's trailing tab does not split it into two entries", () => {
+    const raw = diff(
+      "diff --git a/with space.txt b/with space.txt",
+      "--- a/with space.txt\t",
+      "+++ b/with space.txt\t",
+      "@@ -1,0 +2,1 @@",
+      "+two",
+    );
+
+    expect(parseDiff(raw)).toEqual([{ path: "with space.txt", ranges: [[2, 2]] }]);
+  });
+
+  test("a path containing ' b/' does not register a phantom file", () => {
+    const raw = diff(
+      "diff --git a/notes b/draft.txt b/notes b/draft.txt",
+      "--- a/notes b/draft.txt\t",
+      "+++ b/notes b/draft.txt\t",
+      "@@ -1,0 +2,1 @@",
+      "+two",
+    );
+
+    expect(parseDiff(raw)).toEqual([{ path: "notes b/draft.txt", ranges: [[2, 2]] }]);
+  });
+
+  test("a quoted path the parser cannot read does not leak hunks into the previous file", () => {
+    const raw = diff(
+      "diff --git a/plain.txt b/plain.txt",
+      "--- a/plain.txt",
+      "+++ b/plain.txt",
+      "@@ -1,0 +2,1 @@",
+      "+two",
+      'diff --git "a/a\\303\\261o.txt" "b/a\\303\\261o.txt"',
+      '--- "a/a\\303\\261o.txt"',
+      '+++ "b/a\\303\\261o.txt"',
+      "@@ -9 +9,2 @@",
+      "-one",
+      "+one",
+      "+two",
+    );
+
+    expect(parseDiff(raw)).toEqual([{ path: "plain.txt", ranges: [[2, 2]] }]);
+  });
+
+  test("an empty diff parses to nothing", () => {
     expect(parseDiff("")).toEqual([]);
   });
 
@@ -700,6 +743,22 @@ describe("the CLI contract", () => {
 
   const written = (name: string) => readFileSync(join(dir, `${head}-${name}`), "utf8");
 
+  /** A private two-commit repository, for cases the shared fixture cannot shape. */
+  function scratchRepo(prefix: string, quotePath = false) {
+    const repoWork = mkdtempSync(join(tmpdir(), prefix));
+    const gitAt = (...cmd: string[]) =>
+      execFileSync("git", cmd, {
+        cwd: repoWork,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    gitAt("init", "-q");
+    gitAt("config", "user.email", "test@example.invalid");
+    gitAt("config", "user.name", "reviewloop test");
+    if (quotePath) gitAt("config", "core.quotePath", "true");
+    return { repoWork, repoDir: join(repoWork, ".scratch", "reviews", issue), gitAt };
+  }
+
   test("a clean payload exits 0 and writes the artifact the gate reads", () => {
     fixture();
     const result = run("HEAD~1");
@@ -758,18 +817,8 @@ describe("the CLI contract", () => {
   test("a deletion-only diff is a review, not an empty diff", () => {
     // The raw diff is non-empty but has no added line, so a guard keyed on
     // parsed hunks would refuse a legitimate commit.
-    const repoWork = mkdtempSync(join(tmpdir(), "reviewloop-delete-"));
-    const repoDir = join(repoWork, ".scratch", "reviews", issue);
-    const gitAt = (...cmd: string[]) =>
-      execFileSync("git", cmd, {
-        cwd: repoWork,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
+    const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-delete-");
     try {
-      gitAt("init", "-q");
-      gitAt("config", "user.email", "test@example.invalid");
-      gitAt("config", "user.name", "reviewloop test");
       writeFileSync(join(repoWork, "gone.txt"), "one\n");
       gitAt("add", "gone.txt");
       gitAt("commit", "-q", "-m", "first");
@@ -784,6 +833,35 @@ describe("the CLI contract", () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("score      5/5");
+    } finally {
+      rmSync(repoWork, { recursive: true, force: true });
+    }
+  });
+
+  test("a non-ASCII filename is reviewed even when git would quote it", () => {
+    // Quoted headers are unreadable to the parser, so `readDiff` pins
+    // core.quotePath=false; without it this round exits 2 on a real change.
+    const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-quoted-", true);
+    try {
+      writeFileSync(join(repoWork, "año.txt"), "one\n");
+      gitAt("add", "año.txt");
+      gitAt("commit", "-q", "-m", "first");
+      writeFileSync(join(repoWork, "año.txt"), "one\ntwo\n");
+      gitAt("add", "-A");
+      gitAt("commit", "-q", "-m", "second");
+      const repoHead = gitAt("rev-parse", "HEAD");
+      const repo = { work: repoWork, head: repoHead, dir: repoDir };
+
+      fixture([finding({ path: "año.txt", line: 2 })], "", repo);
+      const result = run("HEAD~1", repo);
+
+      expect(result.status).toBe(0);
+      // SAFETY: the renderer wrote this array from the one finding in the fixture.
+      const inline = JSON.parse(
+        readFileSync(join(repoDir, `${repoHead}-inline.json`), "utf8"),
+      ) as Array<{ path: string }>;
+      expect(inline).toHaveLength(1);
+      expect(inline[0]?.path).toBe("año.txt");
     } finally {
       rmSync(repoWork, { recursive: true, force: true });
     }

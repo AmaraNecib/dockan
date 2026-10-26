@@ -39,7 +39,7 @@ If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
 
 ## Phase 2 — Pre-review / pre-push
 
-This is the gate before Greptile review and before any push. It never pushes by
+This is the gate before the review round and before any push. It never pushes by
 itself. The parent's push runs the Husky pre-push hook when the hook is available.
 
 ```
@@ -104,7 +104,7 @@ Run before the parent reports a local handoff or remote merge-readiness.
 ```
 [ ] Local checks green (typecheck, lint, tests, e2e when relevant, Rust when relevant)
 [ ] Review evidence current for the selected tier
-[ ] Greptile CLI result is for the final HEAD and has no actionable findings
+[ ] reviewloop result is for the final HEAD and has no actionable findings (while the Greptile A/B runs, Greptile agrees)
 [ ] CI — required checks green on GitHub (when the branch is pushed)
 [ ] The push and the PR came from the parent, and the merge followed the gate's classes — a cheap-to-reverse, no-decision diff merges itself once green, an expensive-to-reverse or decision diff waits for the owner
 [ ] PR description — accurate and complete
@@ -121,5 +121,5 @@ Run before the parent reports a local handoff or remote merge-readiness.
 4. If the user says "fix it", fix it and re-run the check.
 
 **Mandatory gates (never skip):** typecheck, lint, applicable tests, and a
-clean Greptile result. Inspect actual Greptile findings rather than trusting
+clean reviewloop result. Inspect the actual findings rather than trusting
 command exit status; CI only counts once the branch is pushed.

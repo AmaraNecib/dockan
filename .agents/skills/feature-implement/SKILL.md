@@ -9,7 +9,7 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 Read `docs/engineering-workflow.md` first.
 
 **A lane stops at step 10 (Guard Phase 2).** Steps 11-15 are parent-owned: push, PR,
-CI/Greptile, the architecture review, the merge decision and wisdom. The lane's
+CI/review round, the architecture review, the merge decision and wisdom. The lane's
 last act is its **commit**; its completion wakes the parent. It never pushes,
 never opens a PR and never merges.
 
@@ -212,37 +212,45 @@ The reports themselves stay local — `.scratch/reviews/` is gitignored, and a
 committed report makes the reviewer judge our notes instead of our code, burns
 credits, and makes the previous report stale.
 
-### 12. CI + Greptile — parent-owned
+### 12. CI + review round — parent-owned
 
 `.github/workflows/ci.yml` runs three jobs on every PR to
 `develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
 (cargo test + clippy). A PR this thread opened is **watched**, and the watch is
 what reports the run — do not sit in a `gh pr checks` loop for it. Poll only a PR
 nobody here watches, and never poll a lane.
-A lane cannot trigger CI or a Greptile review at all, because it cannot push
+A lane cannot trigger CI or the review round at all, because it cannot push
 (step 11). This wait belongs to the parent, never the lane.
 
-Then the parent triggers Greptile:
-- CLI path (preferred): the parent runs the `cli-review` skill (`greptile review --json`) against the pinned base
-- PR path: the parent comments `@greptile-apps review` in the PR
+Then the parent runs the review round with `reviewloop`:
 
-**Verify every finding against the code before fixing it.** Greptile edits its
-comment in place and can re-list findings a later commit already fixed. On #188 a
-third of the reported findings was already implemented; on #190 and #184 two were.
-Read the cited lines, and when a finding is stale, close it on the PR with the
-line evidence instead of re-implementing the fix.
+- Load `.agents/skills/reviewloop/SKILL.md`, pin the head, write the findings
+  payload, and render. The renderer refuses a lens on the author's family and
+  computes the score as a ceiling.
+- Verify each finding against the code, then fix or dismiss it with a reason.
+- Re-run on the new head until the renderer exits 0 at 5/5.
 
-Repeat until Greptile passes with no actionable findings.
+**While the A/B runs (the first two PRs), the parent also requests Greptile:**
+the `cli-review` skill, or `@greptile-apps review` on the PR when the diff is too
+large for the CLI. Both reviews read the same head. Agreement is evidence; a
+disagreement is a finding for the round, not an average.
+
+**Verify every finding against the code before fixing it.** A review comment can
+re-list findings a later commit already fixed. Read the cited lines, and when a
+finding is stale, close it on the PR with the line evidence instead of
+re-implementing the fix.
+
+Repeat until reviewloop is 5/5 with no actionable findings.
 
 ### 13. Architecture review — parent-owned, only after a 5/5
 
-Load `improve-codebase-architecture`. Run it **after Greptile returns 5/5**, never before: the
-order is lenses → push and PR → Greptile to 5/5 → this review → fold → merge. Running it earlier
+Load `improve-codebase-architecture`. Run it **after reviewloop returns 5/5**, never before: the
+order is lenses → push and PR → reviewloop to 5/5 → this review → fold → merge. Running it earlier
 spends the budget on code whose acceptability is still in question, and a review of code that may
 still be wrong is the expensive way to learn nothing.
 
 **Budget: two passes, and the second one only if the code changed.** One pass on the
-head Greptile scored, then one more on the head that carries the fold — a fold that
+head reviewloop scored, then one more on the head that carries the fold — a fold that
 touched no code needs no second pass, because the first pass still describes the
 tree. That is the same rule `docs/engineering-workflow.md` states as its re-run
 budget, and the two must not disagree.
@@ -259,24 +267,24 @@ does none of those, record the one-line form instead: `architecture: no seam mov
 **What it finds is a loop, not a one-shot.** A finding has exactly three ways out:
 
 ```
-Greptile 5/5?  ── no ──→ fix ──→ ask once more at the new head
+reviewloop 5/5?  ── no ──→ fix ──→ ask once more at the new head
       ↓ yes
 architecture review (this diff only)
       ↓
 finding about this diff?
       ├─ nothing ────→ merge
-      ├─ fixable here ──→ fix → push → Greptile 5/5 → review again (two rounds max)
+      ├─ fixable here ──→ fix → push → reviewloop 5/5 → review again (two rounds max)
       └─ too big for this PR ──→ its own issue + its own PR/lane → merge this one on its 5/5
 ```
 
 **Small fix here, big fix elsewhere.** A finding the diff can absorb is fixed on this branch; the
-head moves, so Greptile is asked once more. A finding that needs its own PR — a seam move, a
+head moves, so reviewloop is asked once more. A finding that needs its own PR — a seam move, a
 deepening across several modules — does not hold this PR hostage: it gets an issue and a lane, and
 this PR merges on the 5/5 it already has. What it does not do is vanish: read the evidence comment
 before merging and confirm the follow-up issue number is in it.
 
 **Stop rule: two rounds, then the owner.** A second review that still finds something is a
-disagreement about the design, not a detail — the owner decides. Round three spends Greptile credit
+disagreement about the design, not a detail — the owner decides. Round three spends review budget
 and never converges.
 
 **Scope is always the diff under review.** A finding about older code becomes an issue, never a loop
@@ -318,16 +326,18 @@ occurred more than once.
 
 ### 15. Report to the owner — parent-owned
 
-The parent reports: PR link, check status (local + CI), Greptile verdict, any deferred items.
+The parent reports: PR link, check status (local + CI), reviewloop score (and the
+Greptile score while the A/B runs), any deferred items.
 
 ## Merge rules
 
 **Parent-only — a lane never merges at all.** The class decides who merges: a
 cheap-to-reverse diff with no decision in it merges itself once the gate is
 clean, and an expensive-to-reverse or decision diff waits for the owner's word.
-A 5/5 Greptile verdict with no findings, anchored to the current head SHA, and
+A 5/5 reviewloop verdict with no findings, anchored to the current head SHA, and
 every CI check green is the **bar to merge at all** — auto-merging below it is
-not allowed, and a REFUSED verdict never merges.
+not allowed, and a REFUSED verdict never merges. While the A/B runs, a Greptile
+verdict that disagrees is investigated before the merge.
 
 The gate is [`docs/verification-and-merge-gate.md`](../../../docs/verification-and-merge-gate.md):
 the four reasons, the evidence form (visual vs measured), the AUTO/OWNER/REFUSED
@@ -343,7 +353,7 @@ gh pr merge <num> --squash --subject "<title> (closes #<issue>)"
 ```
 
 A **CI change** (anything under `.github/`) goes to the owner for the diff before
-it merges, whatever Greptile says.
+it merges, whatever the review says.
 
 ## Where to start
 
@@ -360,6 +370,6 @@ it merges, whatever Greptile says.
 | No code-review | Step 9 — code-review |
 | Guard Phase 2 not run | Step 10 — guard pre-push |
 | Lane done, not pushed | Parent only — Step 11 (push + PR) |
-| Greptile not clean | Parent only — Step 12 (CI + Greptile) |
-| Greptile 5/5, architecture not reviewed | Parent only — Step 13 (architecture review) |
+| Review round not clean | Parent only — Step 12 (CI + review round) |
+| reviewloop 5/5, architecture not reviewed | Parent only — Step 13 (architecture review) |
 | All done | Parent only — Steps 14-15 (guard pre-report, then report to the owner) |

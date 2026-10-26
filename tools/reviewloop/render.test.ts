@@ -9,6 +9,7 @@ import {
   independenceOf,
   isAnchored,
   modelFamily,
+  parseDiff,
   renderBody,
   sameFamily,
   scoreOverride,
@@ -442,6 +443,119 @@ describe("scoreOverride", () => {
   });
 });
 
+describe("parseDiff", () => {
+  const diff = (...lines: string[]) => lines.join("\n");
+
+  test("an added line becomes a one-line range", () => {
+    const raw = diff(
+      "diff --git a/a.txt b/a.txt",
+      "index 111..222 100644",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,0 +2,1 @@",
+      "+two",
+    );
+
+    expect(parseDiff(raw)).toEqual([{ path: "a.txt", ranges: [[2, 2]] }]);
+  });
+
+  test("a multi-line hunk becomes one range", () => {
+    const raw = diff(
+      "diff --git a/a.txt b/a.txt",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1 +2,3 @@",
+      "+two",
+      "+three",
+      "+four",
+    );
+
+    expect(parseDiff(raw)).toEqual([{ path: "a.txt", ranges: [[2, 4]] }]);
+  });
+
+  test("a deletion-only file is still a reviewed path", () => {
+    const raw = diff(
+      "diff --git a/gone.txt b/gone.txt",
+      "deleted file mode 100644",
+      "index 111..000",
+      "--- a/gone.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-one",
+    );
+
+    expect(parseDiff(raw)).toEqual([{ path: "gone.txt", ranges: [] }]);
+  });
+
+  test("a rename-only file lists both paths once and anchors neither", () => {
+    const raw = diff(
+      "diff --git a/old.ts b/new.ts",
+      "similarity index 100%",
+      "rename from old.ts",
+      "rename to new.ts",
+    );
+
+    expect(parseDiff(raw)).toEqual([
+      { path: "old.ts", ranges: [] },
+      { path: "new.ts", ranges: [] },
+    ]);
+  });
+
+  test("a rename with edits anchors the hunks on the new path, not a duplicate", () => {
+    const raw = diff(
+      "diff --git a/old.ts b/new.ts",
+      "similarity index 90%",
+      "rename from old.ts",
+      "rename to new.ts",
+      "--- a/old.ts",
+      "+++ b/new.ts",
+      "@@ -3,0 +4,2 @@",
+      "+four",
+      "+five",
+    );
+
+    expect(parseDiff(raw)).toEqual([
+      { path: "old.ts", ranges: [] },
+      { path: "new.ts", ranges: [[4, 5]] },
+    ]);
+  });
+
+  test("a mode-only change is a reviewed path with no hunks", () => {
+    const raw = diff(
+      "diff --git a/run.sh b/run.sh",
+      "old mode 100644",
+      "new mode 100755",
+    );
+
+    expect(parseDiff(raw)).toEqual([{ path: "run.sh", ranges: [] }]);
+  });
+
+  test("an empty diff parses to nothing, which is how the caller refuses it", () => {
+    expect(parseDiff("")).toEqual([]);
+  });
+
+  test("two files keep their own ranges", () => {
+    const raw = diff(
+      "diff --git a/a.txt b/a.txt",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,0 +2,1 @@",
+      "+two",
+      "diff --git a/b.txt b/b.txt",
+      "--- a/b.txt",
+      "+++ b/b.txt",
+      "@@ -8,0 +9,2 @@",
+      "+nine",
+      "+ten",
+    );
+
+    expect(parseDiff(raw)).toEqual([
+      { path: "a.txt", ranges: [[2, 2]] },
+      { path: "b.txt", ranges: [[9, 10]] },
+    ]);
+  });
+});
+
 describe("isAnchored", () => {
   const hunks: Hunk[] = [{ path: "apps/api/src/main.ts", ranges: [[10, 20], [30, 34]] }];
 
@@ -517,7 +631,12 @@ describe("renderBody", () => {
 describe("the CLI contract", () => {
   // A throwaway repository, so the cases do not depend on this checkout's
   // history being deep enough for `HEAD~1`.
-  const script = join(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim(), "tools", "reviewloop", "render.ts");
+  const script = join(
+    execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim(),
+    "tools",
+    "reviewloop",
+    "render.ts",
+  );
   const issue = `cli-test-${process.pid}`;
   let work = "";
   let head = "";
@@ -544,15 +663,15 @@ describe("the CLI contract", () => {
     rmSync(work, { recursive: true, force: true });
   });
 
-  function fixture(findings: Finding[] = [], verdict = "") {
-    mkdirSync(dir, { recursive: true });
+  function fixture(findings: Finding[] = [], verdict = "", repo = { work, head, dir }) {
+    mkdirSync(repo.dir, { recursive: true });
     const report = (name: string, model: string) => {
-      const path = join(dir, `${head}-${name}.md`);
+      const path = join(repo.dir, `${repo.head}-${name}.md`);
       writeFileSync(path, header(model));
       return path;
     };
     writeFileSync(
-      join(dir, `${head}-findings.json`),
+      join(repo.dir, `${repo.head}-findings.json`),
       JSON.stringify({
         authorModel: "pi/opencode-go/deepseek-v4.1-flash",
         lenses: [
@@ -573,9 +692,9 @@ describe("the CLI contract", () => {
     );
   }
 
-  const run = (base: string) =>
+  const run = (base: string, repo = { work, head, dir }) =>
     spawnSync(process.execPath, [script, "--issue", issue, "--base", base], {
-      cwd: work,
+      cwd: repo.work,
       encoding: "utf8",
     });
 
@@ -634,6 +753,40 @@ describe("the CLI contract", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("is empty");
+  });
+
+  test("a deletion-only diff is a review, not an empty diff", () => {
+    // The raw diff is non-empty but has no added line, so a guard keyed on
+    // parsed hunks would refuse a legitimate commit.
+    const repoWork = mkdtempSync(join(tmpdir(), "reviewloop-delete-"));
+    const repoDir = join(repoWork, ".scratch", "reviews", issue);
+    const gitAt = (...cmd: string[]) =>
+      execFileSync("git", cmd, {
+        cwd: repoWork,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    try {
+      gitAt("init", "-q");
+      gitAt("config", "user.email", "test@example.invalid");
+      gitAt("config", "user.name", "reviewloop test");
+      writeFileSync(join(repoWork, "gone.txt"), "one\n");
+      gitAt("add", "gone.txt");
+      gitAt("commit", "-q", "-m", "first");
+      rmSync(join(repoWork, "gone.txt"));
+      gitAt("add", "-A");
+      gitAt("commit", "-q", "-m", "delete it");
+      const repoHead = gitAt("rev-parse", "HEAD");
+      const repo = { work: repoWork, head: repoHead, dir: repoDir };
+
+      fixture([], "", repo);
+      const result = run("HEAD~1", repo);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("score      5/5");
+    } finally {
+      rmSync(repoWork, { recursive: true, force: true });
+    }
   });
 
   test("a findings file that is not JSON exits 2, not 1", () => {

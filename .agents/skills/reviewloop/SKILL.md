@@ -195,10 +195,12 @@ consumer that expects the CLI contract.
 
 **Done when** the renderer exits 0 or 1. Exit 2 is a bad input; read the message,
 fix it, and do not work around the guard. Exit 2 in particular covers a diff that
-could not be read and a diff that is empty: a round with no boundary is not a
-review of anything, and it must not produce a 5/5 artifact. It also covers a
-`findings.json` that is not valid JSON, so a typo cannot look like "findings
-remain".
+could not be read, one that is empty, and one whose file headers cannot be parsed:
+a round with no readable boundary is not a review of anything, and it must not
+produce a 5/5 artifact. A diff that only deletes files, only renames them or only
+changes their mode is not empty and renders normally — every touched path counts
+as reviewed even when it has no added line. Exit 2 also covers a `findings.json`
+that is not valid JSON, so a typo cannot look like "findings remain".
 
 ### 5. Verify, then fix or dismiss
 

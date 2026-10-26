@@ -167,17 +167,23 @@ function run() {
   })();
 
   const boundary = flag("worktree") ? base : `${base}...${head}`;
-  const diff = readDiff(base, head, flag("worktree"));
-  if (diff.length === 0) {
+  const { hunks, raw } = readDiff(base, head, flag("worktree"));
+  if (raw.length === 0) {
     fail(
       `the diff ${boundary} is empty.\n` +
         `  An empty diff is a bad ref, not a clean review; pass the right --base or --head.`,
     );
   }
-  validate(payload, inputPath, diff, head);
+  if (hunks.length === 0) {
+    fail(
+      `the diff ${boundary} has content but no file header could be read.\n` +
+        `  A review with no readable diff is not a review; check the refs and the path quoting.`,
+    );
+  }
+  validate(payload, inputPath, hunks, head);
 
   const merged = dedupe(
-    payload.findings.map((f) => ({ ...f, anchored: isAnchored(diff, f) })),
+    payload.findings.map((f) => ({ ...f, anchored: isAnchored(hunks, f) })),
   ).sort(bySeverity);
   validateMerged(payload, merged, inputPath);
 
@@ -487,7 +493,68 @@ export function computeScore(findings: Finding[]): number {
 
 export type Hunk = { path: string; ranges: Array<[number, number]> };
 
-function readDiff(baseRef: string, headRef: string, worktree: boolean): Hunk[] {
+type Diff = { hunks: Hunk[]; raw: string };
+
+/**
+ * Hunk ranges for the added lines, keyed by path.
+ *
+ * A deletion-only, rename-only, mode-only or binary file still yields an entry
+ * with no ranges: `validate` then knows the path was reviewed, and `isAnchored`
+ * sends any finding on it outside the diff instead of rejecting the payload.
+ * Paths are merged rather than pushed twice, because a rename shows up in the
+ * `diff --git` header, the `rename from`/`rename to` lines and the `---`/`+++`
+ * pair, and the last of those carries the hunks.
+ */
+export function parseDiff(raw: string): Hunk[] {
+  const files = new Map<string, Hunk>();
+  const at = (path: string) => {
+    let hunk = files.get(path);
+    if (!hunk) {
+      hunk = { path, ranges: [] };
+      files.set(path, hunk);
+    }
+    return hunk;
+  };
+
+  let current: Hunk | null = null;
+  let removed: string | null = null;
+
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      // Present for every file, including the mode-only and binary cases that
+      // have no `---`/`+++` lines at all.
+      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      if (m?.[1] && m[2]) {
+        at(m[1]);
+        current = at(m[2]);
+      }
+      removed = null;
+    } else if (line.startsWith("--- a/")) {
+      removed = line.slice(6);
+    } else if (line.startsWith("+++ b/")) {
+      current = at(line.slice(6));
+      removed = null;
+    } else if (line.startsWith("+++ /dev/null")) {
+      if (removed) at(removed);
+      current = null;
+      removed = null;
+    } else if (line.startsWith("rename from ")) {
+      at(line.slice(12));
+    } else if (line.startsWith("rename to ")) {
+      at(line.slice(10));
+    } else if (line.startsWith("@@") && current) {
+      const m = line.match(/\+(\d+)(?:,(\d+))?/);
+      if (!m) continue;
+      const start = Number(m[1]);
+      const len = m[2] === undefined ? 1 : Number(m[2]);
+      if (len > 0) current.ranges.push([start, start + len - 1]);
+    }
+  }
+
+  return [...files.values()];
+}
+
+function readDiff(baseRef: string, headRef: string, worktree: boolean): Diff {
   let raw = "";
   try {
     raw = worktree
@@ -501,23 +568,7 @@ function readDiff(baseRef: string, headRef: string, worktree: boolean): Hunk[] {
     );
   }
 
-  const out: Hunk[] = [];
-  let current: Hunk | null = null;
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("+++ b/")) {
-      current = { path: line.slice(6), ranges: [] };
-      out.push(current);
-    } else if (line.startsWith("+++ /dev/null")) {
-      current = null;
-    } else if (line.startsWith("@@") && current) {
-      const m = line.match(/\+(\d+)(?:,(\d+))?/);
-      if (!m) continue;
-      const start = Number(m[1]);
-      const len = m[2] === undefined ? 1 : Number(m[2]);
-      if (len > 0) current.ranges.push([start, start + len - 1]);
-    }
-  }
-  return out;
+  return { hunks: parseDiff(raw), raw };
 }
 
 export function isAnchored(diff: Hunk[], f: Finding): boolean {

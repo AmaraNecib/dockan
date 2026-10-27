@@ -12,6 +12,7 @@ type ItemSeed = {
   lowStockThreshold: number;
 };
 
+/** Pager labels must not create document overflow below the content pane. */
 test("products scrolling stays inside the content pane", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await signIn(page);
@@ -20,13 +21,14 @@ test("products scrolling stays inside the content pane", async ({ page }) => {
   for (let i = 0; i < 21; i++) {
     await callRpc<unknown, ItemSeed>(page, "itemsCreate", {
       name: `scroll-${stamp}-${i}`, categoryId, costPrice: 100,
-      sellingPrice: 200, lowStockThreshold: 1,
+      sellingPrice: 200, lowStockThreshold: 0,
     });
   }
   await callRpc<unknown, { key: string; value: string }>(page, "preferencesSet", { key: "ui.pageSize", value: "20" });
   await page.goto("/items");
   const pager = page.getByTestId("items-pager");
   await expect(pager).toBeVisible();
+  await expect(pager).not.toBeInViewport();
   const main = page.locator("main");
   await main.evaluate(element => { element.scrollTop = element.scrollHeight; });
   await expect(pager).toBeInViewport();

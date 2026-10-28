@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "@/lib/i18n";
+import { chooseOption } from "@/tests/select-driver";
 
 import type { Invoice, SupplierReturn } from "@dokan/contracts";
 
@@ -144,33 +145,11 @@ async function submit() {
   });
 }
 
-/** Open a Base UI Select trigger and click the option whose label contains `optionText`. */
+/** Select through the trigger's own listbox, since closed popups can stay mounted. */
 async function openSelect(testId: string, optionText: string) {
   const trigger = host.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
   if (trigger === null) throw new Error(`missing ${testId}`);
-  act(() => {
-    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-  });
-  let option: HTMLElement | undefined;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    // A closing Select can keep its options mounted while this one opens.
-    // Wait for the requested item in this trigger's own listbox.
-    const listId = trigger.getAttribute("aria-controls");
-    const list = listId === null ? null : document.getElementById(listId);
-    option = Array.from(list?.querySelectorAll<HTMLElement>("[role='option']") ?? []).find((element) => element.textContent?.includes(optionText));
-    if (option !== undefined) break;
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-  }
-  if (option === undefined) throw new Error(`missing option ${optionText} in ${testId}`);
-  act(() => {
-    // Base UI items arm mouse selection on pointerdown, then commit on click.
-    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
-    option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
-  });
+  await chooseOption(trigger, optionText);
 }
 
 describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {

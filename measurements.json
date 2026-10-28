@@ -1,0 +1,22 @@
+{
+  "head": "72ae2c0dcd296de088d00ac5fcc61d77f2d2ec30",
+  "viewport": [
+    1920,
+    1080
+  ],
+  "seededItems": 61,
+  "pageSize": 50,
+  "before": "current-head runtime ablation: remove relative from pager buttons",
+  "after": "restore original relative classes; no source edits",
+  "red": {
+    "overflow": 1750,
+    "scrollY": 1750,
+    "sidebarY": -1750
+  },
+  "green": {
+    "overflow": 0,
+    "scrollY": 0,
+    "sidebarY": 0
+  },
+  "recordedMs": 38012
+}

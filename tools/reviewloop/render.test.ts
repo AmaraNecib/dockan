@@ -959,6 +959,12 @@ describe("renderBody", () => {
     expect(text).toContain("\n" + "`".repeat(length + 1) + "markdown\n");
   });
 
+  test("rendering supplied findings does not resolve source paths against local Git objects", () => {
+    const realHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const text = body({ head: realHead, base: "illustrative-base", findings: [mergedFinding({ path: "fixture-only.txt" })] });
+    expect(text).toContain(`/blob/${realHead}/fixture-only.txt#L10`);
+  });
+
   test("blob links encode reserved filename characters", () => {
     const text = body({ findings: [mergedFinding({ path: "folder/a#b?c%.ts" })] });
     expect(text).toContain("/folder/a%23b%3Fc%25.ts#L10");
@@ -1332,6 +1338,56 @@ describe("the CLI contract", () => {
     } finally {
       rmSync(repoWork, { recursive: true, force: true });
     }
+  });
+
+  test("old rename paths link to the merge base while new paths stay at the reviewed head", () => {
+    const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-rename-source-", true);
+    try {
+      const oldPath = "old año#.txt", newPath = "new año#.txt";
+      writeFileSync(join(repoWork, oldPath), "one\n");
+      gitAt("add", oldPath);
+      gitAt("commit", "-q", "-m", "first");
+      const source = gitAt("rev-parse", "HEAD");
+      gitAt("mv", oldPath, newPath);
+      gitAt("commit", "-q", "-m", "rename");
+      const repoHead = gitAt("rev-parse", "HEAD");
+      const repo = { work: repoWork, head: repoHead, dir: repoDir };
+      fixture([finding({ path: oldPath, line: 1 }), finding({ path: newPath, line: 1 })], "", repo);
+      expect(run("HEAD~1", repo).status).toBe(0);
+      const summary = readFileSync(join(repoDir, `${repoHead}-greptile-local.md`), "utf8");
+      expect(summary).toContain(`/blob/${source}/${encodeURIComponent(oldPath)}#L1`);
+      expect(summary).toContain(`/blob/${repoHead}/${encodeURIComponent(newPath)}#L1`);
+      // SAFETY: the CLI produced this native request from the two supplied findings.
+      const review = JSON.parse(readFileSync(join(repoDir, `${repoHead}-review.json`), "utf8")) as { commit_id: string; comments: unknown[] };
+      expect(review.commit_id).toBe(repoHead);
+      expect(review.comments).toEqual([]);
+    } finally { rmSync(repoWork, { recursive: true, force: true }); }
+  });
+
+  test("deleted paths use the common ancestor rather than a diverged base tip", () => {
+    const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-diverged-source-");
+    try {
+      writeFileSync(join(repoWork, "gone.txt"), "one\n");
+      gitAt("add", "gone.txt");
+      gitAt("commit", "-q", "-m", "first");
+      const source = gitAt("rev-parse", "HEAD");
+      gitAt("branch", "target");
+      gitAt("rm", "gone.txt");
+      gitAt("commit", "-q", "-m", "remove on review branch");
+      const repoHead = gitAt("rev-parse", "HEAD");
+      gitAt("checkout", "-q", "target");
+      writeFileSync(join(repoWork, "gone.txt"), "different base content\n");
+      gitAt("commit", "-q", "-am", "advance target independently");
+      const target = gitAt("rev-parse", "HEAD");
+      gitAt("checkout", "-q", repoHead);
+      const repo = { work: repoWork, head: repoHead, dir: repoDir };
+      fixture([finding({ path: "gone.txt", line: 1 })], "", repo);
+      expect(run("target", repo).status).toBe(0);
+      const summary = readFileSync(join(repoDir, `${repoHead}-greptile-local.md`), "utf8");
+      expect(summary).toContain(`/blob/${source}/gone.txt#L1`);
+      expect(summary).not.toContain(`/blob/${target}/gone.txt#L1`);
+      expect(summary).not.toContain(`/blob/${repoHead}/gone.txt#L1`);
+    } finally { rmSync(repoWork, { recursive: true, force: true }); }
   });
 
   test("a non-ASCII filename is reviewed even when git would quote it", () => {

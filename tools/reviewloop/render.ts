@@ -232,7 +232,22 @@ function run() {
   const ruleScore = computeScore(merged);
   const score = scoreOverride(payload, ruleScore);
 
-  const body = renderBody({ payload, head, base, score, findings: merged });
+  const sourceRefs = new Map<string, string>();
+  let sourceBase: string | undefined;
+  for (const path of new Set(merged.map((f) => f.path))) {
+    try {
+      execFileSync("git", ["cat-file", "-e", `${head}:${path}`], { stdio: "ignore" });
+    } catch {
+      try {
+        sourceBase ??= git("merge-base", base, head);
+        execFileSync("git", ["cat-file", "-e", `${sourceBase}:${path}`], { stdio: "ignore" });
+        sourceRefs.set(path, sourceBase);
+      } catch {
+        fail(`could not resolve source for finding ${path} at ${head} or merge-base(${base}, ${head}).`);
+      }
+    }
+  }
+  const body = renderBody({ payload, head, base, score, findings: merged, sourceRefs });
   const json = { body, created: new Date().toISOString() };
 
   mkdirSync(dir, { recursive: true });
@@ -788,8 +803,10 @@ export function renderBody(opts: {
   base: string;
   score: number;
   findings: Merged[];
+  /** CLI-resolved source commits for paths absent at head. Omitted paths use head. */
+  sourceRefs?: ReadonlyMap<string, string>;
 }) {
-  const { payload, head, base, score, findings } = opts;
+  const { payload, head, base, score, findings, sourceRefs } = opts;
   const repo = repoUrl();
   const s = payload.summary;
   const outside = findings.filter((f) => !f.anchored);
@@ -815,7 +832,7 @@ export function renderBody(opts: {
   if (findings.length) {
     L.push("<h2>Findings</h2>", "");
     findings.forEach((f, i) => {
-      const link = ` <a href="${html(findingUrl(repo, head, base, f))}">▶</a>`;
+      const link = ` <a href="${html(findingUrl(repo, sourceRefs?.get(f.path) ?? head, f))}">▶</a>`;
       const agree = f.lenses.length > 1 ? ` <sub>(${f.lenses.join(" + ")})</sub>` : "";
       L.push(`${i + 1}. ${badge(f.severity)}&nbsp;**${inlineSafe(f.title)}**${agree}${link}`);
     });
@@ -867,7 +884,7 @@ export function renderBody(opts: {
     for (const f of outside) {
       L.push(
         `- ${badge(f.severity)}&nbsp;**${inlineSafe(f.title)}** \`${f.path}:${f.line}\` ` +
-          `<a href="${blobUrl(repo, head, base, f)}">▶</a>`,
+          `<a href="${blobUrl(repo, sourceRefs?.get(f.path) ?? head, f)}">▶</a>`,
         "",
       );
       L.push(`  ${oneLine(f.body)}`, "");
@@ -930,7 +947,7 @@ function inlinePayload(f: Merged) {
 // Small utilities
 // ---------------------------------------------------------------------------
 
-function findingUrl(repo: string, head: string, base: string, f: Finding): string {
+function findingUrl(repo: string, head: string, f: Finding): string {
   if (f.permalink && URL.canParse(f.permalink)) {
     const url = new URL(f.permalink);
     if (url.protocol === "https:" || url.protocol === "http:") {
@@ -939,32 +956,13 @@ function findingUrl(repo: string, head: string, base: string, f: Finding): strin
       return url.href;
     }
   }
-  return blobUrl(repo, head, base, f);
+  return blobUrl(repo, head, f);
 }
 
-function blobUrl(repo: string, head: string, base: string, f: Finding) {
-  let source = head;
-  try {
-    execFileSync("git", ["cat-file", "-e", `${head}^{commit}`], { stdio: "ignore" });
-  } catch {
-    // Pure renderBody callers may supply illustrative refs without a Git repository.
-    const range = f.endLine && f.endLine !== f.line ? `L${f.line}-L${f.endLine}` : `L${f.line}`;
-    const path = f.path.split("/").map(encodeURIComponent).join("/");
-    return `${repo}/blob/${head}/${path}#${range}`;
-  }
-  try {
-    execFileSync("git", ["cat-file", "-e", `${head}:${f.path}`], { stdio: "ignore" });
-  } catch {
-    try {
-      source = git("merge-base", base, head);
-      execFileSync("git", ["cat-file", "-e", `${source}:${f.path}`], { stdio: "ignore" });
-    } catch {
-      fail(`could not resolve source for outside-diff finding ${f.path}:${f.line} at ${head} or merge-base(${base}, ${head}).`);
-    }
-  }
+function blobUrl(repo: string, head: string, f: Finding) {
   const range = f.endLine && f.endLine !== f.line ? `L${f.line}-L${f.endLine}` : `L${f.line}`;
   const path = f.path.split("/").map(encodeURIComponent).join("/");
-  return `${repo}/blob/${source}/${path}#${range}`;
+  return `${repo}/blob/${head}/${path}#${range}`;
 }
 
 function lineRange(f: Finding) {
@@ -1011,10 +1009,9 @@ function oneLine(s: string) {
   return s.replace(/\r?\n+/g, " ").trim();
 }
 
-/** The fix block is delimited by five backticks; four inside it is safe, five is not. */
 /** Fence prompts beyond every contained backtick run; keep reviewer text byte-for-byte. */
 function fenceFor(findings: Finding[]) {
-  const content = findings.flatMap((f) => [f.body, f.fix, f.suggestion, f.evidence].filter((text): text is string => text !== undefined));
+  const content = findings.flatMap((f) => [f.path, f.body, f.fix, f.suggestion, f.evidence].filter((text): text is string => text !== undefined));
   const longest = Math.max(4, ...content.flatMap((text) => [...text.matchAll(/`+/g)].map((m) => m[0].length)));
   return "`".repeat(longest + 1);
 }

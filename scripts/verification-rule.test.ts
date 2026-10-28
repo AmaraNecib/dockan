@@ -135,6 +135,10 @@ describe("the verification rule is discoverable (#259)", () => {
     const guide = read("docs/review-diagrams.md");
     for (const fact of [
       "Keep summary.diagram optional",
+      "Include a diagram whenever",
+      "even when it repeats the text summary",
+      "independently collapsible and open by default",
+      "require 5/5 for a pass",
       "control flow, data flow, state transitions or interaction order",
       "Omit the field",
       "Verify every node and edge against the pinned code",

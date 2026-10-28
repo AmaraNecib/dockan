@@ -860,6 +860,20 @@ describe("renderBody", () => {
     expect(text).toContain(`${HEAD}`);
   });
 
+  test("makes the summary collapsible and open by default", () => {
+    const p = payload();
+    p.summary.summary = "Reviewed behavior summary.";
+    p.summary.checks = "Focused checks passed.";
+    const text = body({ payload: p });
+
+    expect(text).toContain(
+      '<details open><summary><h3>Summary</h3></summary>\n\nReviewed behavior summary.',
+    );
+    const summary = text.slice(text.indexOf('<details open><summary><h3>Summary</h3>'));
+    expect(summary).toContain("Checks: Focused checks passed.\n\n</details>");
+    expect(text.indexOf("Confidence Score: 5/5")).toBeLessThan(text.indexOf("<h3>Summary</h3>"));
+  });
+
   test("wraps supplied Mermaid source in the diagram section", () => {
     const p = payload();
     p.summary.diagram = "flowchart TD\n  Input --> Decision\n  Decision --> Output";
@@ -870,6 +884,7 @@ describe("renderBody", () => {
       p.summary.diagram + "\n```\n</details>",
     );
     expect(text).toContain("<!-- greptile_confidence_score:5 -->");
+    expect(text).toMatch(/<h3>Summary<\/h3>[\s\S]*?<\/details>\n\n<details open><summary><h3>Diagram/);
   });
 
   test("omits the diagram section when no source is supplied", () => {

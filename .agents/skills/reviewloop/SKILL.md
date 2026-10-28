@@ -175,8 +175,12 @@ stay separate, however close their lines are.
 
 Choose whether the summary needs a diagram using the
 [diagram guidance](../../../docs/review-diagrams.md). Add Mermaid source to
-`summary.diagram` when it clarifies changed relationships; otherwise omit it
-and record the reason in `summary.checks`. Verify its edges against the pinned code.
+`summary.diagram` whenever an accurate diagram can be made, even if it repeats
+the summary. Omit it only with a reason in `summary.checks` when the pinned code
+cannot support an accurate diagram. Verify its edges. Summary and Diagram are
+independently collapsible and open by default; confidence, findings and fix
+prompts stay enabled, all verified severity levels are included, and passing
+still requires 5/5.
 
 `impact` is the blast radius of the change, not the worst finding: a vault
 migration with one P2 is still `Critical`. `evidence` is the file:line outside

@@ -834,7 +834,7 @@ export function renderBody(opts: {
     L.push("`````", "", "</details>", "");
   }
 
-  L.push("<h3>Summary</h3>", "");
+  L.push("<details open><summary><h3>Summary</h3></summary>", "");
   L.push(s.summary ?? s.what, "");
   if (s.bullets?.length) {
     for (const b of s.bullets) L.push(`- ${b}`);
@@ -847,6 +847,8 @@ export function renderBody(opts: {
     for (const d of s.dismissed) L.push(`- **${inlineSafe(d.title)}** — ${d.reason}`);
     L.push("");
   }
+
+  L.push("</details>", "");
 
   if (s.diagram) {
     L.push("<details open><summary><h3>Diagram</h3></summary>", "");

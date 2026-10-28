@@ -1322,6 +1322,7 @@ mod tests {
             "vault_setup_saved",
             "vault_setup_warning",
             "vault_logout",
+            "backup_reveal",
         ] {
             let allowed = resolved.allowed_commands.get(command).is_some_and(|commands| {
                 commands.iter().any(|resolved| {

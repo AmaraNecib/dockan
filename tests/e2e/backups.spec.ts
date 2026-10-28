@@ -1,7 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import fs from "node:fs";
 import path from "node:path";
+
+test.use({ video: "on" });
 
 /**
  * The manual export button creates today's backup file on
@@ -27,6 +29,11 @@ test("manual export backup creates today's file", async ({ page }) => {
   await page.getByTestId("backup-export").click();
   await expect(page.getByTestId("backup-done")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("backup-done")).toContainText(todayName.replace("dokan-", ""));
+  if (process.env.BACKUP_EVIDENCE === "before") {
+    await page.locator("section").filter({ has: page.getByTestId("backup-export") }).screenshot({
+      path: ".scratch/evidence/401/before.png",
+    });
+  }
 
   // the file really exists and was just rewritten by the manual export
   expect(fs.existsSync(backupPath)).toBe(true);
@@ -40,4 +47,102 @@ test("manual export backup creates today's file", async ({ page }) => {
   const backupRow = page.getByTestId("activity-table").locator("tbody tr").filter({ hasText: todayName });
   await expect(backupRow.first()).toBeVisible();
   await expect(backupRow.first().getByTestId("activity-ref")).toHaveText(todayName);
+});
+
+async function installRevealBridge(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    // SAFETY: this simulates the external IPC seam, not native Windows proof.
+    const target = window as typeof window & {
+      __TAURI_INTERNALS__?: { invoke: (command: string, args?: { path: string }) => Promise<void> };
+      revealCalls: string[];
+      revealFailure?: string;
+    };
+    target.revealCalls = [];
+    target.__TAURI_INTERNALS__ = {
+      invoke: async (command, args) => {
+        if (command !== "backup_reveal") throw new Error("not a vault broker");
+        if (args) target.revealCalls.push(args.path);
+        if (target.revealFailure) throw target.revealFailure;
+      },
+    };
+  });
+}
+
+test.describe("completed backup reveal", () => {
+
+  test("keyboard reveal uses the saved file and presents Arabic native failure and retry", async ({ page }) => {
+    await installRevealBridge(page);
+    await signIn(page);
+    await page.goto("/backups");
+    await expect(page.getByRole("button", { name: "إظهار الملف في المجلد" })).toHaveCount(0);
+    await page.getByTestId("backup-export").focus();
+    await page.keyboard.press("Enter");
+    const done = page.getByTestId("backup-done");
+    await expect(done).toBeVisible();
+    const savedPath = await done.locator('[dir="ltr"]').innerText();
+    expect(fs.existsSync(savedPath)).toBe(true);
+    const reveal = page.getByRole("button", { name: "إظهار الملف في المجلد", exact: true });
+    await page.keyboard.press("Tab");
+    await expect(reveal).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => page.evaluate(() =>
+      // SAFETY: read only this test's simulated IPC calls.
+      (window as typeof window & { revealCalls: string[] }).revealCalls,
+    )).toEqual([savedPath]);
+
+    await page.evaluate(() => {
+      // SAFETY: configure only this test's simulated native refusal.
+      (window as typeof window & { revealFailure?: string }).revealFailure = "BACKUP_REVEAL_FAILED";
+    });
+    await reveal.press("Space");
+    await expect(page.getByRole("alert")).toHaveText(
+      "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
+    );
+    await expect(done).toContainText(savedPath);
+    if (process.env.BACKUP_EVIDENCE === "after") {
+      await page.locator("section").filter({ has: page.getByTestId("backup-export") }).screenshot({
+        path: ".scratch/evidence/401/after-failure.png",
+      });
+    }
+    await page.evaluate(() => {
+      // SAFETY: clear only this test's simulated native refusal.
+      delete (window as typeof window & { revealFailure?: string }).revealFailure;
+    });
+    await reveal.press("Enter");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    if (process.env.BACKUP_EVIDENCE === "after") {
+      await page.locator("section").filter({ has: page.getByTestId("backup-export") }).screenshot({
+        path: ".scratch/evidence/401/after.png",
+      });
+    }
+
+    await page.evaluate(() => {
+      // SAFETY: configure only this test's simulated missing-file refusal.
+      (window as typeof window & { revealFailure?: string }).revealFailure = "BACKUP_REVEAL_MISSING";
+    });
+    await reveal.press("Space");
+    await expect(page.getByRole("alert")).toHaveText(
+      "لم يعد ملف النسخة الاحتياطية موجوداً. أنشئ نسخة جديدة ثم حاول إظهارها.",
+    );
+    await expect(done).toHaveCount(0);
+    await expect(reveal).toHaveCount(0);
+  });
+
+  test("failed creation never exposes a completed backup or reveal action", async ({ page }) => {
+    await installRevealBridge(page);
+    await signIn(page);
+    await page.goto("/backups");
+    await page.getByTestId("backup-export").click();
+    await expect(page.getByTestId("backup-done")).toBeVisible();
+    await page.route("**/api/rpc/backupManual", (route) => route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ json: { defined: false, code: "INTERNAL_SERVER_ERROR", status: 500, message: "UNEXPECTED" } }),
+    }));
+    await page.getByTestId("backup-export").click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByTestId("backup-done")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "إظهار الملف في المجلد" })).toHaveCount(0);
+    await expect(page.getByTestId("backup-export")).toBeEnabled();
+  });
 });

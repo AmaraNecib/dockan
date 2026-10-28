@@ -793,7 +793,7 @@ export function renderBody(opts: {
   L.push(s.verdict || "No blocking defect was found.", "");
 
   if (payload.scoreOverride) {
-    L.push(`<sub>Score override ${score}/5: ${payload.scoreOverride.reason}</sub>`, "");
+    L.push(`<sub>Score override ${score}/5: ${html(payload.scoreOverride.reason)}</sub>`, "");
   }
 
   if (payload.independence) {
@@ -807,7 +807,7 @@ export function renderBody(opts: {
   if (findings.length) {
     L.push("<h2>Findings</h2>", "");
     findings.forEach((f, i) => {
-      const link = ` <a href="${f.permalink ?? blobUrl(repo, head, f)}">▶</a>`;
+      const link = ` <a href="${html(findingUrl(repo, head, f))}">▶</a>`;
       const agree = f.lenses.length > 1 ? ` <sub>(${f.lenses.join(" + ")})</sub>` : "";
       L.push(`${i + 1}. ${badge(f.severity)}&nbsp;**${inlineSafe(f.title)}**${agree}${link}`);
     });
@@ -917,6 +917,18 @@ function inlinePayload(f: Merged) {
 // ---------------------------------------------------------------------------
 // Small utilities
 // ---------------------------------------------------------------------------
+
+function findingUrl(repo: string, head: string, f: Finding): string {
+  if (f.permalink && URL.canParse(f.permalink)) {
+    const url = new URL(f.permalink);
+    if (url.protocol === "https:" || url.protocol === "http:") {
+      url.username = "";
+      url.password = "";
+      return url.href;
+    }
+  }
+  return blobUrl(repo, head, f);
+}
 
 function blobUrl(repo: string, head: string, f: Finding) {
   const range = f.endLine && f.endLine !== f.line ? `L${f.line}-L${f.endLine}` : `L${f.line}`;

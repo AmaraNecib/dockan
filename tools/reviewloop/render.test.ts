@@ -816,6 +816,34 @@ describe("renderBody", () => {
     expect(text).toContain("rule retained");
   });
 
+  test("override reasons render as text, not HTML", () => {
+    const p = payload({ scoreOverride: { score: 5, reason: '</sub><h2>"fake" & override</h2>' } });
+    const text = body({ payload: p });
+    expect(text).toContain("&lt;/sub&gt;&lt;h2&gt;&quot;fake&quot; &amp; override&lt;/h2&gt;");
+    expect(text).not.toContain('</sub><h2>"fake"');
+  });
+
+  test("permalink query values cannot break the HTML attribute", () => {
+    const text = body({ findings: [mergedFinding({ permalink: 'https://example.invalid/review?q="quoted"&next=<tag>' })] });
+    expect(text).toContain('href="https://example.invalid/review?q=%22quoted%22&amp;next=%3Ctag%3E"');
+    expect(text).not.toContain('q="quoted"');
+  });
+
+  test.each([
+    'javascript:alert(1)', 'data:text/html,<h2>fake</h2>', 'file:///tmp/review',
+    '//example.invalid/review', 'not a URL',
+  ])("unsafe or invalid permalink %s falls back to the encoded blob link", (permalink) => {
+    const text = body({ findings: [mergedFinding({ permalink, path: "folder/a#b.ts" })] });
+    expect(text).toContain(`/blob/${HEAD}/folder/a%23b.ts#L10`);
+    expect(text).not.toContain(`href="${permalink}"`);
+  });
+
+  test("permalink credentials are not published", () => {
+    const text = body({ findings: [mergedFinding({ permalink: "https://fixture-user:fixture-secret@example.invalid/review" })] });
+    expect(text).toContain('href="https://example.invalid/review"');
+    expect(text).not.toContain("fixture-secret");
+  });
+
   test("records an independence exception in the body", () => {
     const p = payload({
       independence: { approvedBy: "owner", reason: "no other family left this week" },

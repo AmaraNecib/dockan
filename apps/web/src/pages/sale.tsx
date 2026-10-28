@@ -36,6 +36,8 @@ import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { useSaleDraft } from "@/components/app/sale-draft";
+import { useInvoiceEntryShortcut } from "@/hooks/use-invoice-entry-shortcut";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { CheckoutBar } from "../components/app/checkout-bar";
@@ -221,6 +223,12 @@ export function SalePage() {
     discountType !== "" ||
     quickDraft;
   const savePending = createInvoice.isPending || createItem.isPending || createWithStock.isPending;
+
+  useInvoiceEntryShortcut("sale", () => {
+    if (savePending) return;
+    setSavedSale(null);
+    setPickerOpen(true);
+  });
 
   useEffect(() => {
     setDraftDirty(draftDirty);
@@ -423,7 +431,7 @@ export function SalePage() {
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
             <h2 className="me-auto text-sm font-semibold">{t("invoiceLinesTitle")}</h2>
             {lines.length > 0 && (
-              <Button data-testid="sale-open-picker" onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending}>
+              <Button data-testid="sale-open-picker" title={`${t("saleAddItem")} (${shortcutKeys("onSale")})`} onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending}>
                 {t("saleAddItem")}
               </Button>
             )}
@@ -475,7 +483,7 @@ export function SalePage() {
                   title={t("saleEmptyTitle")}
                   hint={t("saleScanHint")}
                   action={
-                    <Button size="lg" data-testid="sale-open-picker" onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending}>
+                    <Button size="lg" data-testid="sale-open-picker" title={`${t("saleAddItem")} (${shortcutKeys("onSale")})`} onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending}>
                       {t("saleAddItem")}
                     </Button>
                   }

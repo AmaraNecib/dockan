@@ -905,6 +905,8 @@ const resources = {
       shortcutsTitle: "اختصارات لوحة المفاتيح",
       shortcutsHint: "نفّذ الإجراءات الشائعة بدون الفأرة.",
       shortcutSearch: "البحث (قريباً)",
+      shortcutSale: "بدء البيع / التركيز على إدخال المنتجات",
+      shortcutPurchase: "فتح المشتريات",
       shortcutToggleSidebar: "توسيع / طي الشريط الجانبي",
       shortcutHelp: "فتح هذه المساعدة",
       shortcutClose: "إغلاق / رجوع",

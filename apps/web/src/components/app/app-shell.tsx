@@ -9,6 +9,8 @@ import { logoutAndReload } from "@/lib/logout";
 import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { SLOW_REFETCH_MS } from "@/lib/freshness";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { focusInvoiceEntry } from "@/hooks/use-invoice-entry-shortcut";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 import { Button } from "@/components/ui/button";
 import { AppSidebar, type ShellUser } from "./app-sidebar";
 import { DiscardDraftDialog } from "./discard-draft-dialog";
@@ -116,6 +118,9 @@ export function AppShell() {
     ? { name: session.data.user.name ?? null, phone: session.data.user.phoneNumber ?? null }
     : null;
 
+  const navigate = useNavigate();
+  const { draftDirty, savePending } = useSaleDraft();
+  const [purchaseDiscardOpen, setPurchaseDiscardOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
@@ -141,7 +146,28 @@ export function AppShell() {
     else if (helpOpen) setHelpOpen(false);
   }
 
+  function startSale() {
+    if (savePending) return;
+    if (activeKey === "sale") focusInvoiceEntry("sale");
+    else void navigate({ to: "/sale" });
+  }
+
+  function startPurchase() {
+    if (savePending) return;
+    if (activeKey === "purchase") {
+      focusInvoiceEntry("purchase");
+      return;
+    }
+    if (activeKey === "sale" && draftDirty) {
+      setPurchaseDiscardOpen(true);
+      return;
+    }
+    void navigate({ to: "/purchase" });
+  }
+
   useKeyboardShortcuts({
+    onSale: startSale,
+    onPurchase: startPurchase,
     onToggleSidebar: toggleSidebar,
     onHelp: () => setHelpOpen(true),
     onClose: closeTopmost,
@@ -165,7 +191,7 @@ export function AppShell() {
             variant="ghost"
             size="icon"
             aria-label={t("sidebarToggle")}
-            title={t("sidebarToggle")}
+            title={`${t("sidebarToggle")} (${shortcutKeys("onToggleSidebar")})`}
             onClick={toggleSidebar}
             disabled={collapsedPending || collapsedWriting}
           >
@@ -185,7 +211,7 @@ export function AppShell() {
               variant="ghost"
               size="icon"
               aria-label={t("shortcutsTitle")}
-              title={t("shortcutsTitle")}
+              title={`${t("shortcutsTitle")} (${shortcutKeys("onHelp")})`}
               onClick={() => setHelpOpen(true)}
             >
               <CircleHelp size={18} />
@@ -212,6 +238,15 @@ export function AppShell() {
         </main>
       </div>
 
+      <DiscardSaleDialog
+        open={purchaseDiscardOpen}
+        onOpenChange={setPurchaseDiscardOpen}
+        onConfirm={() => {
+          if (savePending) return;
+          setPurchaseDiscardOpen(false);
+          void navigate({ to: "/purchase" });
+        }}
+      />
       <ShortcutsHelp open={helpOpen} onOpenChange={setHelpOpen} />
       <LogoutDialog open={logoutOpen} onOpenChange={setLogoutOpen} onConfirm={() => { void logoutAndReload(() => authClient.signOut()); }} />
     </div>

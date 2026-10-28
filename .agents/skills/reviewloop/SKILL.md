@@ -264,10 +264,13 @@ until the owner decides which path to keep; this renderer does not score Greptil
 Local mode: the head SHA, the score, the finding counts, and the paths the
 renderer wrote. Nothing is committed.
 
-PR mode, parent only: post `{ body }` as a PR comment, post one review whose
-`comments` array is `<head>-inline.json`, and set a check run on the head whose
-conclusion follows the exit code. The check is what makes the score a gate
-instead of a note.
+PR mode, parent only: follow the [native finding-thread protocol](../../../docs/review-findings.md).
+Post `<head>-review.json` as one native GitHub review pinned by `commit_id`, with
+anchored findings as code-linked threads. Reuse existing threads for that head,
+link them from the summary, and verify fixes before resolving them. Outdated is
+not proof of a fix. Keep outside-diff findings visible with pinned source links.
+Publish measured evidence separately with the evidence marker and set the head's
+check from the renderer exit code. A review comment alone is not the scored gate.
 
 ## Reference
 

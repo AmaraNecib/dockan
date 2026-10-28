@@ -1077,6 +1077,26 @@ describe("the CLI contract", () => {
     expect(JSON.parse(written("inline.json"))).toEqual([]);
   });
 
+  test("binds native review threads to the reviewed commit and changed line", () => {
+    fixture([finding({ path: "a.txt", line: 2, severity: "P1" })], "Fix the changed line.");
+    const result = run("HEAD~1");
+
+    expect(result.status).toBe(1);
+    const review: {
+      commit_id: string;
+      event: string;
+      body: string;
+      comments: Array<{ path: string; line: number; side: string; body: string }>;
+    } = JSON.parse(written("review.json"));
+    expect(review.commit_id).toBe(head);
+    expect(review.event).toBe("COMMENT");
+    expect(review.body).toContain("<!-- greptile_confidence_score:4 -->");
+    expect(review.comments).toHaveLength(1);
+    expect(review.comments[0]).toMatchObject({ path: "a.txt", line: 2, side: "RIGHT" });
+    expect(review.comments[0]?.body).toContain("Why it is wrong.");
+    expect(review.comments).toEqual(JSON.parse(written("inline.json")));
+  });
+
   test("the CLI supports equals-form values without guessing a different head", () => {
     fixture();
     const result = spawnSync(process.execPath, [script, `--issue=${issue}`, "--base=HEAD~1", "--head=HEAD"], {

@@ -25,6 +25,7 @@
  *   <head>-greptile-local.json   { body, created }   drop-in for the CLI contract
  *   <head>-greptile-local.md     the body on its own
  *   <head>-inline.json           review-comment payloads for anchored findings
+ *   <head>-review.json           commit-pinned native GitHub review request
  *
  * Exit codes: 0 clean (5/5, no P0/P1) - 1 findings remain - 2 review refused/incomplete.
  */
@@ -237,9 +238,11 @@ function run() {
   mkdirSync(dir, { recursive: true });
   writeFileSync(`${dir}/${head}-greptile-local.json`, JSON.stringify(json));
   writeFileSync(`${dir}/${head}-greptile-local.md`, body);
+  const comments = merged.filter((f) => f.anchored).map(inlinePayload);
+  writeFileSync(`${dir}/${head}-inline.json`, JSON.stringify(comments, null, 2));
   writeFileSync(
-    `${dir}/${head}-inline.json`,
-    JSON.stringify(merged.filter((f) => f.anchored).map(inlinePayload), null, 2),
+    `${dir}/${head}-review.json`,
+    JSON.stringify({ commit_id: head, event: "COMMENT", body, comments }, null, 2),
   );
 
   if (flag("json")) {

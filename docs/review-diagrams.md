@@ -12,6 +12,14 @@ The renderer makes Summary and Diagram independently collapsible and open by def
 
 Keep the reviewloop status check enabled and require 5/5 for a pass. A Greptile settings screenshot with confidence threshold zero does not override the repository's merge gate. During the paired trial, read Greptile's actual score separately even when its check is green. Collapsing a section changes presentation only, never the evidence or pass criteria.
 
+## Source-backed diagram checks
+
+Keep a small source index with the local head-specific review evidence. Map each node and material edge to a pinned `blob/<head>/<path>#Lx-Ly` reference or an explicit design statement. Check every edge against those sources before publishing. Distinguish three checks in the evidence: source references resolve, relationships match the code, and Mermaid renders. A valid citation does not establish that an edge is true, and a successful render proves neither.
+
+For each check, record the reviewed head and what actually ran. Mark a check not run when only static inspection was possible. Keep the diagram in the review comment; source links can accompany it and the detailed edge inventory stays in local evidence.
+
+This borrows a verification discipline from [Archify at d605933](https://github.com/tt-a1i/archify/tree/d6059331abbddb49bca380ff46dca8ce33158b04). It adds no Archify dependency or downloaded-code execution. Its interactive HTML is not a replacement for Mermaid inside a GitHub review.
+
 ## Historical examples
 
 A sample of the 15 most recently updated closed PRs had three summaries with diagrams and twelve without. These were final comment snapshots from GitHub, not per-round edit history. The sample is not a diagram-selection algorithm. PR titles and summaries supplied scope descriptions; this sample did not independently verify their diffs.

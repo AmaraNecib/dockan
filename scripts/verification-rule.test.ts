@@ -146,6 +146,21 @@ describe("the verification rule is discoverable (#259)", () => {
     ]) expect(guide).toContain(fact);
   });
 
+  test("native findings remain commit-linked and are not resolved just for being outdated", () => {
+    expect(read(".agents/skills/reviewloop/SKILL.md")).toContain(
+      "](../../../docs/review-findings.md)",
+    );
+    const protocol = read("docs/review-findings.md");
+    for (const fact of [
+      "native GitHub pull-request review comments",
+      "commit_id",
+      "Outdated is not fixed",
+      "reply with the fixing commit and the regression proof",
+      "before retrying",
+      "Findings outside eligible changed lines",
+    ]) expect(protocol).toContain(fact);
+  });
+
   test("a link to a same-named file elsewhere is not the canonical doc", () => {
     // `endsWith(DOC_FILE)` accepted any existing file with the same basename, so a
     // lane could point its readers at a different file and stay green. The fix

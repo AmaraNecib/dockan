@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-backup-reveal"
+description = "Reveals an existing completed backup in Windows Explorer without opening or changing its contents."
+commands.allow = ["backup_reveal"]

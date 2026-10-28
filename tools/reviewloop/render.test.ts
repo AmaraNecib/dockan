@@ -954,9 +954,20 @@ describe("renderBody", () => {
 
   test.each([6, 10, 15])("a %i-backtick run cannot close the dynamic prompt fence", (length) => {
     const run = "`".repeat(length);
-    const text = body({ findings: [mergedFinding({ body: run })] });
-    expect(text).toContain(run);
+    const literal = `Reviewer literal before\n${run}\nReviewer literal after`;
+    const text = body({ findings: [mergedFinding({ body: literal })] });
+    expect(text).toContain(literal);
     expect(text).toContain("\n" + "`".repeat(length + 1) + "markdown\n");
+    expect(text).toContain("\n" + "`".repeat(length + 1) + "\n\n</details>");
+  });
+
+  test.each(["path", "fix", "evidence"] as const)("prompt fence accounts for literal text in %s", (field) => {
+    const literal = `Sentinel ${field} before ${"`".repeat(17)} after`;
+    const text = body({ findings: [mergedFinding({ [field]: literal }), mergedFinding({ body: "shorter ` run" })] });
+    const fence = "`".repeat(18);
+    expect(text).toContain(literal);
+    expect(text).toContain(`\n${fence}markdown\n`);
+    expect(text).toContain(`\n${fence}\n\n</details>`);
   });
 
   test("rendering supplied findings does not resolve source paths against local Git objects", () => {
@@ -1219,23 +1230,27 @@ describe("the CLI contract", () => {
 
   test.each([5, 10, 15])("CLI artifacts preserve a %i-backtick suggestion verbatim", (length) => {
     const suggestion = `\`\`\`suggestion\nconst value = "${"`".repeat(length)}";\n\`\`\``;
+    const reviewerBody = `Reviewer text includes\n${"`".repeat(length)}\nend.`;
     fixture([finding({
       severity: "P1",
       path: "a.txt",
       line: 2,
       evidence: "self-evident: changed line.",
-      body: `Reviewer text includes\n${"`".repeat(length)}\nend.`,
+      body: reviewerBody,
       suggestion,
     })], "A replacement is proposed.");
     expect(run("HEAD~1").status).toBe(1);
     // SAFETY: inline.json was emitted by the renderer from the one finding above.
     const inline = JSON.parse(written("inline.json")) as Array<{ body: string }>;
     expect(inline[0]?.body).toContain(suggestion);
+    expect(inline[0]?.body).toContain(reviewerBody);
     expect(inline[0]?.body).toContain(`const value = "${"`".repeat(length)}";`);
     expect(written("greptile-local.md")).toContain(suggestion);
+    expect(written("greptile-local.md")).toContain(reviewerBody);
     // SAFETY: review.json was emitted by the renderer from the one finding above.
     const review = JSON.parse(written("review.json")) as { comments: Array<{ body: string }> };
     expect(review.comments[0]?.body).toContain(suggestion);
+    expect(review.comments[0]?.body).toContain(reviewerBody);
   });
 
   test("a lowered clean score exits 1 instead of certifying a 5/5", () => {
@@ -1338,6 +1353,30 @@ describe("the CLI contract", () => {
     } finally {
       rmSync(repoWork, { recursive: true, force: true });
     }
+  });
+
+  test("checkout-only source paths refuse without replacing existing review artifacts", () => {
+    fixture();
+    expect(run("HEAD~1").status).toBe(0);
+    const before = written("review.json");
+    const path = "checkout-only.txt";
+    writeFileSync(join(work, path), "untracked source\n");
+    try {
+      fixture([finding({ path, line: 1 })]);
+      const result = run("HEAD~1");
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("could not resolve source");
+      expect(written("review.json")).toBe(before);
+    } finally { rmSync(join(work, path)); }
+  });
+
+  test("outside-diff source links prefer the head when both revisions contain the path", () => {
+    fixture([finding({ path: "a.txt", line: 1 })]);
+    expect(run("HEAD~1").status).toBe(0);
+    const summary = written("greptile-local.md");
+    expect(summary.split(`/blob/${head}/a.txt#L1`)).toHaveLength(3);
+    expect(summary).not.toContain(`/blob/${gitIn("rev-parse", "HEAD~1")}/a.txt#L1`);
+    expect(JSON.parse(written("inline.json"))).toEqual([]);
   });
 
   test("old rename paths link to the merge base while new paths stay at the reviewed head", () => {

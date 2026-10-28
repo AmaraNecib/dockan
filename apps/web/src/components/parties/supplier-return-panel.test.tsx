@@ -153,14 +153,19 @@ async function openSelect(testId: string, optionText: string) {
     trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
     trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
+  let option: HTMLElement | undefined;
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (document.querySelectorAll("[role='option']").length > 0) break;
+    // A closing Select can keep its options mounted while this one opens.
+    // Wait for the requested item in this trigger's own listbox.
+    const listId = trigger.getAttribute("aria-controls");
+    const list = listId === null ? null : document.getElementById(listId);
+    option = Array.from(list?.querySelectorAll<HTMLElement>("[role='option']") ?? []).find((element) => element.textContent?.includes(optionText));
+    if (option !== undefined) break;
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
   }
-  const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find((element) => element.textContent?.includes(optionText));
-  if (option === undefined) throw new Error(`missing option ${optionText}`);
+  if (option === undefined) throw new Error(`missing option ${optionText} in ${testId}`);
   act(() => {
     // Base UI items arm mouse selection on pointerdown, then commit on click.
     option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));

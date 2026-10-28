@@ -564,7 +564,7 @@ test("editing the typed name away from the confirmed one keeps the batch saveabl
 
   await page.getByTestId("opening-balance-done").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
-  await page.getByRole("link", { name: freshName }).click();
+  await page.getByRole("link", { name: freshName, exact: true }).click();
   await expect(page.getByTestId("supplier-balance-value")).toHaveText("300 دج");
 });
 

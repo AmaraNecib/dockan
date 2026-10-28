@@ -23,6 +23,7 @@ import {
 } from "./render";
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
+  id: "fixture-defect",
   lens: "debate",
   severity: "P2",
   title: "A defect",
@@ -85,9 +86,23 @@ describe("dedupe", () => {
   });
 
   test("keeps two defects two lines apart separate", () => {
-    const merged = dedupe([at({ line: 10 }), at({ line: 12 })]);
+    const merged = dedupe([at({ lens: "debate", line: 10 }), at({ lens: "code-review", line: 12 })]);
 
     expect(merged).toHaveLength(2);
+  });
+
+  test.each([
+    ["without IDs", undefined, undefined],
+    ["with different IDs", "missing-null-guard", "wrong-error-code"],
+  ])("keeps distinct adjacent cross-lens P1s %s", (_name, firstId, secondId) => {
+    const merged = dedupe([
+      at({ lens: "debate", severity: "P1", line: 10, title: "Missing null guard", id: firstId }),
+      at({ lens: "code-review", severity: "P1", line: 11, title: "Wrong error code", id: secondId }),
+    ]);
+
+    expect(merged).toHaveLength(2);
+    expect(computeScore(merged)).toBe(3);
+    expect(merged.map((f) => f.title)).toContain("Wrong error code");
   });
 
   test("keeps two defects from one lens a line apart, and counts both", () => {
@@ -290,7 +305,7 @@ const header = (
 
 const payload = (over: Partial<Payload> = {}): Payload => ({
   authorModel: "pi/opencode-go/deepseek-v4.1-flash",
-  lenses: [
+  lenses: over.lenses ?? [
     { name: "debate", model: "opencode/glm-5.3-flash-free", report: save("debate", header()) },
     {
       name: "code-review",
@@ -332,10 +347,18 @@ describe("validate", () => {
     expect(() => validate(p, "p.json", diff, HEAD)).toThrow(/not named for/);
   });
 
+  test("refuses another lens's report even when its models and head match", () => {
+    const p = payload({
+      lenses: [{ name: "debate", model: "opencode/glm-5.3-flash-free", report: save("code-review", header()) }],
+    });
+
+    expect(() => validate(p, "p.json", diff, HEAD)).toThrow(/not named for/);
+  });
+
   test("refuses a report with no model lines", () => {
     const p = payload({
       lenses: [
-        { name: "debate", model: "opencode/glm-5.3-flash-free", report: save("bare", "# debate\n") },
+        { name: "debate", model: "opencode/glm-5.3-flash-free", report: save("debate", "# debate\n") },
       ],
     });
 
@@ -348,7 +371,7 @@ describe("validate", () => {
         {
           name: "debate",
           model: "opencode/glm-5.3-flash-free",
-          report: save("debate-reviewer", header("opencode/mimo-v2.6-flash-free")),
+          report: save("debate", header("opencode/mimo-v2.6-flash-free")),
         },
       ],
     });
@@ -362,7 +385,7 @@ describe("validate", () => {
         {
           name: "debate",
           model: "opencode/glm-5.3-flash-free",
-          report: save("debate-author", header(undefined, "opencode/deepseek-v4.1-flash-free")),
+          report: save("debate", header(undefined, "opencode/deepseek-v4.1-flash-free")),
         },
       ],
     });
@@ -387,7 +410,7 @@ describe("validate", () => {
         {
           name: "debate",
           model: "opencode-go/deepseek-v4.1-flash",
-          report: save("deepseek", header("opencode-go/deepseek-v4.1-flash")),
+          report: save("debate", header("opencode-go/deepseek-v4.1-flash")),
         },
       ],
     });
@@ -554,7 +577,7 @@ describe("parseDiff", () => {
     expect(parseDiff(raw)).toEqual([{ path: "notes b/draft.txt", ranges: [[2, 2]] }]);
   });
 
-  test("a quoted path the parser cannot read does not leak hunks into the previous file", () => {
+  test("C-quoted UTF-8 paths keep their own hunks without leaking into the previous file", () => {
     const raw = diff(
       "diff --git a/plain.txt b/plain.txt",
       "--- a/plain.txt",
@@ -570,7 +593,49 @@ describe("parseDiff", () => {
       "+two",
     );
 
-    expect(parseDiff(raw)).toEqual([{ path: "plain.txt", ranges: [[2, 2]] }]);
+    expect(parseDiff(raw)).toEqual([
+      { path: "plain.txt", ranges: [[2, 2]] },
+      { path: "año.txt", ranges: [[9, 10]] },
+    ]);
+  });
+
+  test("header-only paths containing ' b/' never create phantom entries", () => {
+    expect(parseDiff(diff(
+      "diff --git a/notes b/draft.txt b/notes b/draft.txt",
+      "old mode 100644",
+      "new mode 100755",
+    ))).toEqual([{ path: "notes b/draft.txt", ranges: [] }]);
+  });
+
+  test("a C-quoted header-only path is still reviewed", () => {
+    expect(parseDiff(diff(
+      'diff --git "a/odd\\\"name.txt" "b/odd\\\"name.txt"',
+      "old mode 100644",
+      "new mode 100755",
+    ))).toEqual([{ path: 'odd"name.txt', ranges: [] }]);
+  });
+
+  test("a C-quoted rename registers decoded source and destination paths", () => {
+    expect(parseDiff(diff(
+      'diff --git "a/old\\tname" "b/new\\tname"',
+      "similarity index 100%",
+      'rename from "old\\tname"',
+      'rename to "new\\tname"',
+    ))).toEqual([
+      { path: "old\tname", ranges: [] },
+      { path: "new\tname", ranges: [] },
+    ]);
+  });
+
+  test("one unreadable header refuses a mixed diff rather than dropping a reviewed path", () => {
+    expect(() => parseDiff(diff(
+      "diff --git a/good.txt b/good.txt",
+      "old mode 100644",
+      "new mode 100755",
+      "diff --git unreadable",
+      "old mode 100644",
+      "new mode 100755",
+    ))).toThrow(/header/);
   });
 
   test("an empty diff parses to nothing", () => {
@@ -640,6 +705,14 @@ describe("renderBody", () => {
 
   test("names the score it was given, not a score of its own", () => {
     expect(body({ score: 3 })).toContain("<h2>Confidence Score: 3/5</h2>");
+  });
+
+  test("an override equal to the rule does not claim the score was lowered", () => {
+    const p = payload({ scoreOverride: { score: 5, reason: "rule retained" } });
+    const text = body({ payload: p });
+
+    expect(text).not.toContain("lowered");
+    expect(text).toContain("rule retained");
   });
 
   test("records an independence exception in the body", () => {
@@ -774,6 +847,48 @@ describe("the CLI contract", () => {
     expect(JSON.parse(written("inline.json"))).toEqual([]);
   });
 
+  test("--head resolves a commit ref before naming the evidence", () => {
+    fixture();
+    const result = spawnSync(process.execPath, [script, "--issue", issue, "--base", "HEAD~1", "--head", "HEAD"], {
+      cwd: work,
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(0);
+    expect(written("greptile-local.md")).toContain(`/commit/${head}`);
+    expect(written("greptile-local.md")).toContain("Last reviewed commit");
+  });
+
+  test.each(["--print", "--json"])("%s exposes the rendered artifact on stdout", (option) => {
+    fixture();
+    const result = spawnSync(process.execPath, [script, "--issue", issue, "--base", "HEAD~1", option], {
+      cwd: work,
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    if (option === "--json") {
+      // SAFETY: the renderer's JSON stdout is the public contract under test.
+      const artifact = JSON.parse(result.stdout) as { body: string; created: string };
+      expect(artifact.body).toBe(written("greptile-local.md"));
+      expect(Number.isNaN(Date.parse(artifact.created))).toBe(false);
+    } else {
+      expect(result.stdout.trimEnd()).toBe(written("greptile-local.md").trimEnd());
+    }
+  });
+
+  test("a lowered clean score exits 1 instead of certifying a 5/5", () => {
+    fixture();
+    const input = join(dir, `${head}-findings.json`);
+    // SAFETY: fixture() just wrote a valid Payload to this file.
+    const valid = JSON.parse(readFileSync(input, "utf8")) as Payload;
+    valid.scoreOverride = { score: 4, reason: "reviewer requests another look" };
+    writeFileSync(input, JSON.stringify(valid));
+    const result = run("HEAD~1");
+
+    expect(result.status).toBe(1);
+    expect(written("greptile-local.md")).toContain("<!-- greptile_confidence_score:4 -->");
+  });
+
   test("an open P1 exits 1 and posts it inline", () => {
     fixture(
       [
@@ -865,6 +980,70 @@ describe("the CLI contract", () => {
     } finally {
       rmSync(repoWork, { recursive: true, force: true });
     }
+  });
+
+  test("worktree mode refuses gate evidence and preserves the committed review", () => {
+    fixture();
+    expect(run("HEAD~1").status).toBe(0);
+    const before = written("greptile-local.json");
+    writeFileSync(join(work, "a.txt"), "one\ntwo\nuncommitted\n");
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [script, "--issue", issue, "--base", "HEAD", "--worktree"],
+        { cwd: work, encoding: "utf8" },
+      );
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("commit");
+      expect(written("greptile-local.json")).toBe(before);
+    } finally {
+      writeFileSync(join(work, "a.txt"), "one\ntwo\n");
+    }
+  });
+
+  const invalidInputs: Array<[string, (p: Payload) => string]> = [
+    ["null", () => "null"],
+    ["array", () => "[]"],
+    ["numeric author", (p) => JSON.stringify({ ...p, authorModel: 42 })],
+    ["null lens", (p) => JSON.stringify({ ...p, lenses: [null] })],
+    ["numeric model", (p) => JSON.stringify({ ...p, lenses: [{ ...p.lenses[0], model: 42 }] })],
+    ["numeric report", (p) => JSON.stringify({ ...p, lenses: [{ ...p.lenses[0], report: 42 }] })],
+    ["null summary", (p) => JSON.stringify({ ...p, summary: null })],
+    ["numeric verdict", (p) => JSON.stringify({ ...p, summary: { ...p.summary, verdict: 42 } })],
+    ["numeric bullet", (p) => JSON.stringify({ ...p, summary: { ...p.summary, bullets: [42] } })],
+    ["null dismissal", (p) => JSON.stringify({ ...p, summary: { ...p.summary, dismissed: [null] } })],
+    ["null finding", (p) => JSON.stringify({ ...p, findings: [null] })],
+    ["numeric body", (p) => JSON.stringify({ ...p, findings: [{ ...finding({ path: "a.txt" }), body: 42 }] })],
+    ["numeric approval", (p) => JSON.stringify({ ...p, independence: { approvedBy: 42, reason: "owner exception" } })],
+    ["numeric override reason", (p) => JSON.stringify({ ...p, scoreOverride: { score: 4, reason: 42 } })],
+  ];
+
+  test.each(invalidInputs)("malformed payload %s exits 2, not 1", (_name, change) => {
+    fixture();
+    const input = join(dir, `${head}-findings.json`);
+    // SAFETY: fixture() just wrote a valid Payload to this file.
+    const valid = JSON.parse(readFileSync(input, "utf8")) as Payload;
+    writeFileSync(input, change(valid));
+    const result = run("HEAD~1");
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("reviewloop:");
+    expect(result.stderr).not.toContain("TypeError");
+  });
+
+  test("a directory report exits 2 instead of an uncaught filesystem error", () => {
+    fixture();
+    const input = join(dir, `${head}-findings.json`);
+    // SAFETY: fixture() just wrote a valid Payload to this file.
+    const valid = JSON.parse(readFileSync(input, "utf8")) as Payload;
+    const lens = valid.lenses[0];
+    if (!lens) throw new Error("fixture has no lens");
+    const folder = join(dir, "not-a-file", `${head}-debate.md`);
+    mkdirSync(folder, { recursive: true });
+    lens.report = folder;
+    writeFileSync(input, JSON.stringify(valid));
+
+    expect(run("HEAD~1").status).toBe(2);
   });
 
   test("a findings file that is not JSON exits 2, not 1", () => {

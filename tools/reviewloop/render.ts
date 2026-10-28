@@ -2,8 +2,8 @@
 /**
  * reviewloop renderer: one to three lens reports in, a Greptile-shaped review out.
  *
- * The point of this file is that a lane cannot talk its way to a clean review.
- * Two things are mechanical, not promptable:
+ * The parent verifies reports, extracts findings and records owner approvals.
+ * This renderer checks declared identities and the following two rules:
  *
  *   1. The lens families are checked against the author's family. A review run on
  *      the author's family is refused, not graded, unless the owner recorded an
@@ -17,7 +17,7 @@
  *
  *   bun tools/reviewloop/render.ts --issue 312
  *   bun tools/reviewloop/render.ts --issue 312 --head <sha> --base develop
- *   bun tools/reviewloop/render.ts --issue 312 --worktree     # uncommitted diff
+ *   Commit named files before reviewing; --worktree is refused as unpinned evidence.
  *   bun tools/reviewloop/render.ts --issue 312 --print        # body to stdout
  *   bun tools/reviewloop/render.ts --issue 312 --json         # {body, created}
  *
@@ -32,6 +32,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
+import { z } from "zod";
 
 export type Severity = "P0" | "P1" | "P2";
 type Impact = "Critical" | "High" | "Medium" | "Low";
@@ -53,6 +54,8 @@ export type Independence = {
 };
 
 export type Finding = {
+  /** Shared defect identity assigned during extraction. Omit it to keep findings separate. */
+  id?: string;
   lens: string;
   severity: Severity;
   title: string;
@@ -64,7 +67,7 @@ export type Finding = {
   /** A ```suggestion block, already fenced. */
   suggestion?: string;
   /** The file:line outside the diff that proves it, or `self-evident: <why>`. */
-  evidence: string;
+  evidence?: string;
   /** Discussion permalink once the review is posted; blob link is used until then. */
   permalink?: string;
 };
@@ -95,6 +98,28 @@ export type Payload = {
   scoreOverride?: { score: number; reason: string };
   findings: Finding[];
 };
+
+const payloadSchema: z.ZodType<Payload> = z.object({
+  authorModel: z.string(),
+  lenses: z.array(z.object({
+    name: z.string(), model: z.string(), report: z.string().optional(), skipped: z.string().optional(),
+  })),
+  independence: z.object({ approvedBy: z.string(), reason: z.string() }).optional(),
+  summary: z.object({
+    impact: z.enum(["Critical", "High", "Medium", "Low"]),
+    what: z.string(), verdict: z.string(), summary: z.string().optional(),
+    bullets: z.array(z.string()).optional(), checks: z.string().optional(),
+    dismissed: z.array(z.object({ title: z.string(), reason: z.string() })).optional(),
+    diagram: z.string().optional(),
+  }),
+  scoreOverride: z.object({ score: z.number(), reason: z.string() }).optional(),
+  findings: z.array(z.object({
+    id: z.string().optional(), lens: z.string(), severity: z.enum(["P0", "P1", "P2"]),
+    title: z.string(), path: z.string(), line: z.number(), endLine: z.number().optional(),
+    body: z.string(), evidence: z.string().optional(), fix: z.string().optional(),
+    suggestion: z.string().optional(), permalink: z.string().optional(),
+  })),
+});
 
 const BADGE = "https://greptile-static-assets.s3.amazonaws.com/badges";
 const LENS_NAMES = ["debate", "test-audit", "code-review"] as const;
@@ -127,11 +152,9 @@ function main() {
   try {
     run();
   } catch (error) {
-    if (error instanceof ReviewloopError) {
-      console.error(`reviewloop: ${error.message}`);
-      process.exit(2);
-    }
-    throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`reviewloop: ${error instanceof ReviewloopError ? detail : `could not complete review: ${detail}`}`);
+    process.exit(2);
   }
 }
 
@@ -140,9 +163,13 @@ function run() {
   if (!issue) fail("--issue <id> is required; it names `.scratch/reviews/<id>/`.");
   if (!/^[A-Za-z0-9._-]+$/.test(issue)) fail(`--issue "${issue}" is not a plain folder name.`);
 
+  if (flag("worktree")) {
+    fail("--worktree cannot produce commit-pinned evidence. Commit the reviewed files and omit --worktree.");
+  }
+
   process.chdir(git("rev-parse", "--show-toplevel"));
 
-  const head = arg("head") || git("rev-parse", "HEAD");
+  const head = git("rev-parse", "--verify", "--end-of-options", `${arg("head") || "HEAD"}^{commit}`);
   const base = arg("base", "develop");
   const dir = `.scratch/reviews/${issue}`;
   const inputPath = `${dir}/${head}-findings.json`;
@@ -154,11 +181,9 @@ function run() {
     );
   }
 
-  const payload = (() => {
+  const parsedJson: unknown = (() => {
     try {
-      // SAFETY: the file is written from the schema in this skill, and validate()
-      // checks every field it renders before this value is used.
-      return JSON.parse(readFileSync(inputPath, "utf8")) as Payload;
+      return JSON.parse(readFileSync(inputPath, "utf8"));
     } catch (error) {
       fail(
         `${inputPath} is not valid JSON.\n  ${error instanceof Error ? error.message : String(error)}`,
@@ -166,8 +191,12 @@ function run() {
     }
   })();
 
-  const boundary = flag("worktree") ? base : `${base}...${head}`;
-  const { hunks, raw } = readDiff(base, head, flag("worktree"));
+  const parsed = payloadSchema.safeParse(parsedJson);
+  if (!parsed.success) fail(`${inputPath} has invalid field types.\n${parsed.error.message}`);
+  const payload = parsed.data;
+
+  const boundary = `${base}...${head}`;
+  const { hunks, raw } = readDiff(base, head);
   if (raw.length === 0) {
     fail(
       `the diff ${boundary} is empty.\n` +
@@ -208,7 +237,7 @@ function run() {
   } else {
     const inlineCount = merged.filter((f) => f.anchored).length;
     console.log(`reviewloop ${issue} @ ${head.slice(0, 7)}  (base ${base})`);
-    console.log(`  score      ${score}/5${payload.scoreOverride ? " (lowered)" : ""}`);
+    console.log(`  score      ${score}/5${payload.scoreOverride ? " (override)" : ""}`);
     console.log(`  findings   ${merged.length}  (${countBy(merged, "P0")} P0, ${countBy(merged, "P1")} P1, ${countBy(merged, "P2")} P2)`);
     console.log(`  anchored   ${inlineCount} inline, ${merged.length - inlineCount} outside diff`);
     console.log(
@@ -374,6 +403,7 @@ export function validate(p: Payload, where: string, diff: Hunk[], head: string) 
       );
     }
     if (!["P0", "P1", "P2"].includes(f.severity)) fail(`${at}.severity must be P0, P1 or P2.`);
+    if (f.id !== undefined && !f.id.trim()) fail(`${at}.id must not be blank.`);
     if (!f.title?.trim()) fail(`${at}.title is required.`);
     if (!f.path) fail(`${at}.path is required.`);
     if (!existsSync(f.path) && !touched.has(f.path)) {
@@ -412,9 +442,9 @@ export function validate(p: Payload, where: string, diff: Hunk[], head: string) 
  */
 function checkReport(lens: Lens, authorModel: string, head: string, where: string) {
   const report = lens.report ?? "";
-  if (!basename(report).includes(head)) {
+  if (basename(report) !== `${head}-${lens.name}.md`) {
     fail(
-      `${where}: lens "${lens.name}" points at ${report}, which is not named for ${head}.\n` +
+      `${where}: lens "${lens.name}" points at ${report}, which is not named for ${head} and ${lens.name}.\n` +
         `  A report is evidence for one head only; rerun the lens and save it as <head>-${lens.name}.md.`,
     );
   }
@@ -495,6 +525,54 @@ export type Hunk = { path: string; ranges: Array<[number, number]> };
 
 type Diff = { hunks: Hunk[]; raw: string };
 
+/** Git quotes control characters, quotes and backslashes even with core.quotePath=false. */
+function decodePath(raw: string): string {
+  if (!raw.startsWith('"')) {
+    if (raw.includes('"') || [...raw].some((char) => char.charCodeAt(0) < 32)) {
+      fail(`unreadable diff path: ${raw}`);
+    }
+    return raw;
+  }
+  if (!/^"(?:[^"\\]|\\(?:[0-7]{1,3}|[abfnrtv"\\]))*"$/.test(raw)) {
+    fail(`unreadable quoted diff path: ${raw}`);
+  }
+  const escapes = new Map([
+    ["a", "\x07"], ["b", "\b"], ["f", "\f"], ["n", "\n"], ["r", "\r"],
+    ["t", "\t"], ["v", "\v"], ['"', '"'], ["\\", "\\"],
+  ]);
+  const chunks: Buffer[] = [];
+  for (const match of raw.slice(1, -1).matchAll(/\\([0-7]{1,3}|[abfnrtv"\\])|([^\\]+)/g)) {
+    const escape = match[1];
+    if (escape && /^[0-7]/.test(escape)) {
+      chunks.push(Buffer.from([Number.parseInt(escape, 8)]));
+    } else if (escape) {
+      chunks.push(Buffer.from(escapes.get(escape) ?? fail(`unknown diff path escape: ${escape}`)));
+    } else {
+      chunks.push(Buffer.from(match[2] ?? ""));
+    }
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+}
+
+/** Spaces are legal in both names. Equal names disambiguate mode-only and binary headers. */
+function headerPaths(raw: string): { from: string; to: string } | null {
+  const candidates: Array<{ from: string; to: string }> = [];
+  for (let i = raw.indexOf(" "); i >= 0; i = raw.indexOf(" ", i + 1)) {
+    try {
+      const from = decodePath(raw.slice(0, i));
+      const to = decodePath(raw.slice(i + 1));
+      if (from.startsWith("a/") && to.startsWith("b/")) {
+        candidates.push({ from: from.slice(2), to: to.slice(2) });
+      }
+    } catch (error) {
+      // A split inside a quoted name is not a candidate boundary.
+      if (!(error instanceof ReviewloopError)) throw error;
+    }
+  }
+  const equal = candidates.filter((pair) => pair.from === pair.to);
+  return equal.length === 1 ? equal[0] ?? null : candidates.length === 1 ? candidates[0] ?? null : null;
+}
+
 /**
  * Hunk ranges for the added lines, keyed by path.
  *
@@ -518,11 +596,12 @@ export function parseDiff(raw: string): Hunk[] {
     return hunk;
   };
   // Git appends a TAB to a `---`/`+++` path that contains a space.
-  const clean = (line: string, prefix: string) => line.slice(prefix.length).replace(/\t$/, "");
+  const clean = (line: string, prefix: string) => decodePath(line.slice(prefix.length).replace(/\t$/, ""));
 
   let current: Hunk | null = null;
   let removed: string | null = null;
   let header: { from: string; to: string } | null = null;
+  let headerRaw: string | null = null;
   let paired = false;
 
   // End the file: a header that never met a `---`/`+++` pair is a mode-only or
@@ -530,11 +609,13 @@ export function parseDiff(raw: string): Hunk[] {
   // a header the parser cannot read (a quoted path) cannot leak its hunks into
   // the previous file.
   const flush = () => {
-    if (header && !paired) {
+    if (headerRaw && !paired) {
+      if (!header) fail(`unreadable or ambiguous diff header: ${headerRaw}`);
       at(header.from);
       at(header.to);
     }
     header = null;
+    headerRaw = null;
     paired = false;
     current = null;
     removed = null;
@@ -543,13 +624,17 @@ export function parseDiff(raw: string): Hunk[] {
   for (const line of raw.split("\n")) {
     if (line.startsWith("diff --git ")) {
       flush();
-      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      if (m?.[1] && m[2]) header = { from: m[1], to: m[2] };
-    } else if (line.startsWith("--- a/")) {
-      removed = clean(line, "--- a/");
-    } else if (line.startsWith("+++ b/")) {
+      headerRaw = line.slice("diff --git ".length);
+      header = headerPaths(headerRaw);
+    } else if (line.startsWith("--- ") && line !== "--- /dev/null") {
+      const path = clean(line, "--- ");
+      if (!path.startsWith("a/")) fail(`unreadable removed path: ${line}`);
+      removed = path.slice(2);
+    } else if (line.startsWith("+++ ") && line !== "+++ /dev/null") {
+      const path = clean(line, "+++ ");
+      if (!path.startsWith("b/")) fail(`unreadable added path: ${line}`);
       paired = true;
-      current = at(clean(line, "+++ b/"));
+      current = at(path.slice(2));
       removed = null;
     } else if (line.startsWith("+++ /dev/null")) {
       paired = true;
@@ -557,8 +642,10 @@ export function parseDiff(raw: string): Hunk[] {
       current = null;
       removed = null;
     } else if (line.startsWith("rename from ")) {
+      paired = true;
       at(clean(line, "rename from "));
     } else if (line.startsWith("rename to ")) {
+      paired = true;
       at(clean(line, "rename to "));
     } else if (line.startsWith("@@") && current) {
       const m = line.match(/\+(\d+)(?:,(\d+))?/);
@@ -573,18 +660,16 @@ export function parseDiff(raw: string): Hunk[] {
   return [...files.values()];
 }
 
-function readDiff(baseRef: string, headRef: string, worktree: boolean): Diff {
+function readDiff(baseRef: string, headRef: string): Diff {
   // Pin the two settings that change path spelling: a diff must parse the same
   // on a machine with `core.quotePath=true` or `diff.noprefix=true` configured.
   const stable = ["-c", "core.quotePath=false", "-c", "diff.noprefix=false"];
   let raw = "";
   try {
-    raw = worktree
-      ? git(...stable, "diff", "--unified=0", "--no-color", baseRef)
-      : git(...stable, "diff", "--unified=0", "--no-color", `${baseRef}...${headRef}`);
+    raw = git(...stable, "diff", "--unified=0", "--no-color", `${baseRef}...${headRef}`);
   } catch (error) {
     fail(
-      `could not read the diff ${worktree ? baseRef : `${baseRef}...${headRef}`}.\n` +
+      `could not read the diff ${baseRef}...${headRef}.\n` +
         `  A review with no boundary is not a review; pass --base <ref> or fetch it first.\n` +
         `  ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
     );
@@ -613,10 +698,11 @@ export function dedupe(findings: Array<Finding & { anchored: boolean }>): Merged
   const out: Merged[] = [];
 
   for (const f of sorted) {
-    // Merging is what "two lenses agree" means, so it is only ever cross-lens.
-    // Two findings from one lens are two defects, however close their lines are.
+    // Nearby lines are not proof of agreement. The extractor assigns a shared
+    // ID only after verifying that the lenses describe the same defect.
     const near = out.find(
-      (o) => o.path === f.path && !o.lenses.includes(f.lens) && Math.abs(o.line - f.line) <= 1,
+      (o) => Boolean(f.id) && o.id === f.id && o.path === f.path &&
+        !o.lenses.includes(f.lens) && Math.abs(o.line - f.line) <= 1,
     );
     if (!near) {
       out.push({ ...f, lenses: [f.lens] });
@@ -682,7 +768,7 @@ export function renderBody(opts: {
   L.push(s.verdict || "No blocking defect was found.", "");
 
   if (payload.scoreOverride) {
-    L.push(`<sub>Score lowered to ${score}/5: ${payload.scoreOverride.reason}</sub>`, "");
+    L.push(`<sub>Score override ${score}/5: ${payload.scoreOverride.reason}</sub>`, "");
   }
 
   if (payload.independence) {

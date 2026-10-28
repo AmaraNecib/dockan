@@ -127,9 +127,11 @@ those reports carries a location.
 ### 4. Extract the findings
 
 Write `.scratch/reviews/<issue>/<head>-findings.json`. One entry per distinct
-defect, not one per lens comment; `render.ts` merges the same file within one line
-**across lenses only**, and records which lenses agree. Two findings from one lens
-stay two findings however close their lines are.
+defect, not one per lens comment. Assign the same optional `id` to entries only
+after verifying that they describe the same defect. The renderer merges entries
+with that shared ID in the same file within one line, across lenses only. Entries
+without IDs or with different IDs stay separate. Two findings from one lens also
+stay separate, however close their lines are.
 
 ```json
 {
@@ -151,6 +153,7 @@ stay two findings however close their lines are.
   },
   "findings": [
     {
+      "id": "stock-draft-refresh",
       "lens": "debate",
       "severity": "P1",
       "title": "Edited stock stops updating",
@@ -177,8 +180,13 @@ diff, and a skipped lens does not count as having read it. When the owner approv
 an independence exception, add
 `"independence": { "approvedBy": "owner", "reason": "..." }` at the top level.
 
+Before rendering, account for every report finding in `findings` or
+`summary.dismissed`. Extraction and verification belong to the parent. The
+renderer does not reconcile report prose with the payload or authenticate an
+`approvedBy` string. It records the owner's decision, not proof of approval.
+
 The renderer also opens each report, because a path is not evidence on its own. It
-refuses a report whose filename does not carry the head SHA, one that does not open
+requires the exact filename `<head>-<lens>.md` and refuses one that does not open
 with the two model lines, and one whose `Reviewer model:` or `Author model:` does
 not match the payload. That is the check that `lens.model` is the model that ran,
 rather than the model the round intended.
@@ -189,9 +197,12 @@ Then run:
 bun tools/reviewloop/render.ts --issue <id>
 ```
 
-`--head` and `--base` override the refs; `--worktree` reviews uncommitted work;
-`--print` writes the body to stdout; `--json` prints `{ body, created }` for a
-consumer that expects the CLI contract.
+`--head` and `--base` override the refs; the head resolves to a full commit SHA
+before naming the input and output files. `--worktree` exits 2 without writing:
+uncommitted content cannot produce commit-pinned evidence. Commit the reviewed
+files and omit that flag. Unrelated dirty files are not part of the committed
+review. `--print` writes the body to stdout; `--json` prints `{ body, created }`
+for a consumer that expects the CLI contract.
 
 **Done when** the renderer exits 0 or 1. Exit 2 is a bad input; read the message,
 fix it, and do not work around the guard. Exit 2 in particular covers a diff that
@@ -199,8 +210,8 @@ could not be read, one that is empty, and one whose file headers cannot be parse
 a round with no readable boundary is not a review of anything, and it must not
 produce a 5/5 artifact. A diff that only deletes files, only renames them or only
 changes their mode is not empty and renders normally — every touched path counts
-as reviewed even when it has no added line. Exit 2 also covers a `findings.json`
-that is not valid JSON, so a typo cannot look like "findings remain".
+as reviewed even when it has no added line. Exit 2 also covers invalid JSON, wrong field types and unreadable reports, so
+an input failure cannot look like "findings remain".
 
 ### 5. Verify, then fix or dismiss
 
@@ -259,8 +270,8 @@ nit is still a P2.
 | one P1 | 4 |
 | P2 only, or none | 5 |
 
-Two lenses flagging the same line promotes a P2 to P1 and stops there; P0 is
-reserved for evidence of real damage. `scoreOverride` may lower the result with a
+Two lenses agreeing on a shared defect ID within one line promote a P2 to P1
+and stop there; P0 is reserved for evidence of real damage. `scoreOverride` may lower the result with a
 written reason and may never raise it.
 
 The rule reproduces the band in the saved reviews — one P2 scored 5/5, one

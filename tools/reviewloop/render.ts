@@ -815,26 +815,27 @@ export function renderBody(opts: {
   if (findings.length) {
     L.push("<h2>Findings</h2>", "");
     findings.forEach((f, i) => {
-      const link = ` <a href="${html(findingUrl(repo, head, f))}">▶</a>`;
+      const link = ` <a href="${html(findingUrl(repo, head, base, f))}">▶</a>`;
       const agree = f.lenses.length > 1 ? ` <sub>(${f.lenses.join(" + ")})</sub>` : "";
       L.push(`${i + 1}. ${badge(f.severity)}&nbsp;**${inlineSafe(f.title)}**${agree}${link}`);
     });
     L.push("");
 
     L.push("<details><summary>Fix with agent prompt</summary>", "");
-    L.push("`````markdown");
+    const promptFence = fenceFor(findings);
+    L.push(`${promptFence}markdown`);
     findings.forEach((f, i) => {
       L.push(`### Issue ${i + 1}`);
       L.push(`${f.path}:${lineRange(f)}`);
-      L.push(uncode(f.body));
-      if (f.fix) L.push("", uncode(f.fix));
-      if (f.suggestion) L.push("", uncode(f.suggestion));
-      if (f.evidence && !/^self-evident/i.test(f.evidence)) L.push("", `Evidence: ${uncode(f.evidence)}`);
+      L.push(f.body);
+      if (f.fix) L.push("", f.fix);
+      if (f.suggestion) L.push("", f.suggestion);
+      if (f.evidence && !/^self-evident/i.test(f.evidence)) L.push("", `Evidence: ${f.evidence}`);
       L.push("");
     });
     L.push("---", "");
     L.push("For each issue above, determine whether it is valid and should be fixed. If so, fix it directly.");
-    L.push("`````", "", "</details>", "");
+    L.push(promptFence, "", "</details>", "");
   }
 
   L.push("<details open><summary><h3>Summary</h3></summary>", "");
@@ -866,7 +867,7 @@ export function renderBody(opts: {
     for (const f of outside) {
       L.push(
         `- ${badge(f.severity)}&nbsp;**${inlineSafe(f.title)}** \`${f.path}:${f.line}\` ` +
-          `<a href="${blobUrl(repo, head, f)}">▶</a>`,
+          `<a href="${blobUrl(repo, head, base, f)}">▶</a>`,
         "",
       );
       L.push(`  ${oneLine(f.body)}`, "");
@@ -889,7 +890,8 @@ export function renderBody(opts: {
 }
 
 function inlinePayload(f: Merged) {
-  const comment = [f.body, f.fix, f.suggestion].filter((part) => part !== undefined).map(uncode).join("\n\n");
+  const comment = [f.body, f.fix, f.suggestion].filter((part) => part !== undefined).join("\n\n");
+  const promptFence = fenceFor([f]);
   const body = [
     `<a href="#">${badge(f.severity)}</a> **${inlineSafe(f.title)}**`,
     "",
@@ -897,7 +899,7 @@ function inlinePayload(f: Merged) {
     "",
     "<details><summary>Prompt To Fix With AI</summary>",
     "",
-    "`````markdown",
+    `${promptFence}markdown`,
     "This is a comment left during a code review.",
     `Path: ${f.path}`,
     `Line: ${lineRange(f)}`,
@@ -908,7 +910,7 @@ function inlinePayload(f: Merged) {
     "---",
     "",
     "For each issue above, determine whether it is valid and should be fixed. If so, fix it directly.",
-    "`````",
+    promptFence,
     "",
     "</details>",
   ].join("\n");
@@ -928,7 +930,7 @@ function inlinePayload(f: Merged) {
 // Small utilities
 // ---------------------------------------------------------------------------
 
-function findingUrl(repo: string, head: string, f: Finding): string {
+function findingUrl(repo: string, head: string, base: string, f: Finding): string {
   if (f.permalink && URL.canParse(f.permalink)) {
     const url = new URL(f.permalink);
     if (url.protocol === "https:" || url.protocol === "http:") {
@@ -937,13 +939,32 @@ function findingUrl(repo: string, head: string, f: Finding): string {
       return url.href;
     }
   }
-  return blobUrl(repo, head, f);
+  return blobUrl(repo, head, base, f);
 }
 
-function blobUrl(repo: string, head: string, f: Finding) {
+function blobUrl(repo: string, head: string, base: string, f: Finding) {
+  let source = head;
+  try {
+    execFileSync("git", ["cat-file", "-e", `${head}^{commit}`], { stdio: "ignore" });
+  } catch {
+    // Pure renderBody callers may supply illustrative refs without a Git repository.
+    const range = f.endLine && f.endLine !== f.line ? `L${f.line}-L${f.endLine}` : `L${f.line}`;
+    const path = f.path.split("/").map(encodeURIComponent).join("/");
+    return `${repo}/blob/${head}/${path}#${range}`;
+  }
+  try {
+    execFileSync("git", ["cat-file", "-e", `${head}:${f.path}`], { stdio: "ignore" });
+  } catch {
+    try {
+      source = git("merge-base", base, head);
+      execFileSync("git", ["cat-file", "-e", `${source}:${f.path}`], { stdio: "ignore" });
+    } catch {
+      fail(`could not resolve source for outside-diff finding ${f.path}:${f.line} at ${head} or merge-base(${base}, ${head}).`);
+    }
+  }
   const range = f.endLine && f.endLine !== f.line ? `L${f.line}-L${f.endLine}` : `L${f.line}`;
   const path = f.path.split("/").map(encodeURIComponent).join("/");
-  return `${repo}/blob/${head}/${path}#${range}`;
+  return `${repo}/blob/${source}/${path}#${range}`;
 }
 
 function lineRange(f: Finding) {
@@ -991,8 +1012,11 @@ function oneLine(s: string) {
 }
 
 /** The fix block is delimited by five backticks; four inside it is safe, five is not. */
-function uncode(s: string) {
-  return s.replace(/`{5,}/g, "````").trim();
+/** Fence prompts beyond every contained backtick run; keep reviewer text byte-for-byte. */
+function fenceFor(findings: Finding[]) {
+  const content = findings.flatMap((f) => [f.body, f.fix, f.suggestion, f.evidence].filter((text): text is string => text !== undefined));
+  const longest = Math.max(4, ...content.flatMap((text) => [...text.matchAll(/`+/g)].map((m) => m[0].length)));
+  return "`".repeat(longest + 1);
 }
 
 function html(s: string) {

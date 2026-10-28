@@ -952,9 +952,11 @@ describe("renderBody", () => {
     );
   });
 
-  test.each([6, 10, 15])("a %i-backtick run cannot close the five-backtick prompt fence", (length) => {
-    const text = body({ findings: [mergedFinding({ body: "`".repeat(length) })] });
-    expect(text).toContain("\n````\n");
+  test.each([6, 10, 15])("a %i-backtick run cannot close the dynamic prompt fence", (length) => {
+    const run = "`".repeat(length);
+    const text = body({ findings: [mergedFinding({ body: run })] });
+    expect(text).toContain(run);
+    expect(text).toContain("\n" + "`".repeat(length + 1) + "markdown\n");
   });
 
   test("blob links encode reserved filename characters", () => {
@@ -1209,6 +1211,27 @@ describe("the CLI contract", () => {
     }
   });
 
+  test.each([5, 10, 15])("CLI artifacts preserve a %i-backtick suggestion verbatim", (length) => {
+    const suggestion = `\`\`\`suggestion\nconst value = "${"`".repeat(length)}";\n\`\`\``;
+    fixture([finding({
+      severity: "P1",
+      path: "a.txt",
+      line: 2,
+      evidence: "self-evident: changed line.",
+      body: `Reviewer text includes\n${"`".repeat(length)}\nend.`,
+      suggestion,
+    })], "A replacement is proposed.");
+    expect(run("HEAD~1").status).toBe(1);
+    // SAFETY: inline.json was emitted by the renderer from the one finding above.
+    const inline = JSON.parse(written("inline.json")) as Array<{ body: string }>;
+    expect(inline[0]?.body).toContain(suggestion);
+    expect(inline[0]?.body).toContain(`const value = "${"`".repeat(length)}";`);
+    expect(written("greptile-local.md")).toContain(suggestion);
+    // SAFETY: review.json was emitted by the renderer from the one finding above.
+    const review = JSON.parse(written("review.json")) as { comments: Array<{ body: string }> };
+    expect(review.comments[0]?.body).toContain(suggestion);
+  });
+
   test("a lowered clean score exits 1 instead of certifying a 5/5", () => {
     fixture();
     const input = join(dir, `${head}-findings.json`);
@@ -1294,6 +1317,7 @@ describe("the CLI contract", () => {
       gitAt("add", "-A");
       gitAt("commit", "-q", "-m", "delete it");
       const repoHead = gitAt("rev-parse", "HEAD");
+      const repoBase = gitAt("rev-parse", "HEAD^");
       const repo = { work: repoWork, head: repoHead, dir: repoDir };
 
       fixture([finding({ path: "gone.txt", line: 1 })], "", repo);
@@ -1301,7 +1325,9 @@ describe("the CLI contract", () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("score      5/5");
-      expect(readFileSync(join(repoDir, `${repoHead}-greptile-local.md`), "utf8")).toContain("Comments Outside Diff");
+      const summary = readFileSync(join(repoDir, `${repoHead}-greptile-local.md`), "utf8");
+      expect(summary).toContain("Comments Outside Diff");
+      expect(summary).toContain(`/blob/${repoBase}/gone.txt#L1`);
       expect(JSON.parse(readFileSync(join(repoDir, `${repoHead}-inline.json`), "utf8"))).toEqual([]);
     } finally {
       rmSync(repoWork, { recursive: true, force: true });

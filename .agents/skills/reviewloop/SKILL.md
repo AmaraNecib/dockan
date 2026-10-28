@@ -101,9 +101,11 @@ The renderer prints the exception in the review and writes
 
 ### 3. Run the lenses
 
-Dispatch the chosen lenses in parallel, each on its chosen model, each loading its
-skill and saving its report to `.scratch/reviews/<issue>/<head>-<lens>.md` with
-the full head SHA in the name. The lens skill spawns its own sub-agents; the
+Run `debate`, then `test-audit`, then `code-review`, each as its own sub-agent.
+Only the critic and defender inside `debate`, and the specialists inside each
+other lens, may run in parallel. Each lens uses its chosen model, loads its skill,
+and saves its report to `.scratch/reviews/<issue>/<head>-<lens>.md` with the full
+head SHA in the name. The lens skill spawns its own sub-agents; the
 model you name is the one they run on. The lenses:
 
 - `debate` — critic and defender, for design and failure modes.
@@ -129,13 +131,18 @@ those reports carries a location.
 
 ### 4. Extract the findings
 
-Write `.scratch/reviews/<issue>/<head>-findings.json`. One entry per distinct
-defect, not one per lens comment. Assign the same optional `id` to entries only
-after verifying that they describe the same defect. The renderer merges entries
-with that shared ID in the same file when their start lines differ by at most
-one, across lenses only. Entries
-without IDs or with different IDs stay separate. Two findings from one lens also
-stay separate, however close their lines are.
+Write `.scratch/reviews/<issue>/<head>-findings.json`. Keep one entry per verified
+defect per lens comment; never collapse agreement during extraction. Assign the
+same `id` to entries from different lenses only after verifying that they describe
+the same defect. The renderer merges entries with that shared ID in the same file
+when their start lines differ by at most one, across lenses only. Entries without
+IDs or with different IDs stay separate. Two findings from one lens also stay
+separate, however close their lines are.
+
+For example, two lenses that independently report the same P2 produce two P2
+entries with one shared ID. `dedupe()` merges them into one P1 finding, so the
+score is 4/5. A single pre-collapsed P2 entry would incorrectly leave the score
+at 5/5.
 
 ```json
 {

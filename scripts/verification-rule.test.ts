@@ -118,6 +118,15 @@ describe("the verification rule is discoverable (#259)", () => {
     );
   });
 
+  test("reviewloop extraction retains cross-lens agreement and ordered lens dispatch", () => {
+    const skill = read(".agents/skills/reviewloop/SKILL.md");
+    expect(skill).toContain("Run `debate`, then `test-audit`, then `code-review`");
+    expect(skill).toContain("one entry per verified");
+    expect(skill).toContain("defect per lens comment; never collapse agreement");
+    expect(skill).toContain("two P2");
+    expect(skill).toContain("score is 4/5");
+  });
+
   test("review entry points link to the A/B protocol", () => {
     for (const [file, link] of [
       ["docs/engineering-workflow.md", "review-comparison.md"],

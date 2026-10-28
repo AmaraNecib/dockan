@@ -313,8 +313,9 @@ cheap to reverse, so it auto-merges too, once its before/after packet is posted 
 A lane never merges at all; squash merges only. A 5/5 reviewloop verdict with no findings,
 anchored to the current head SHA, and every CI check green is the **bar to merge at
 all** — auto-merging below it is not allowed, and a REFUSED verdict never merges.
-While the Greptile A/B runs, a Greptile verdict that disagrees with reviewloop is
-investigated before the merge; it is not averaged away.
+Until the owner ends the [paired review trial](review-comparison.md), both current-head
+reviews must be 5/5 with no actionable findings. Investigate disagreement before
+merging; a missing verdict blocks the gate and scores are not averaged.
 
 The gate itself is [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md):
 the four reasons (5/5, `Last reviewed commit` == head, no comments after the

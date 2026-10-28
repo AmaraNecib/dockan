@@ -113,6 +113,9 @@ describe("the verification rule is discoverable (#259)", () => {
       "elapsed review time",
       "unknown rather than zero",
     ]) expect(comparison).toContain(fact);
+    expect(read(".agents/skills/guard/SKILL.md")).toContain(
+      "Both current-head reviews are 5/5 with no actionable findings",
+    );
   });
 
   test("review entry points link to the A/B protocol", () => {
@@ -121,7 +124,22 @@ describe("the verification rule is discoverable (#259)", () => {
       ["docs/verification-and-merge-gate.md", "review-comparison.md"],
       [".agents/skills/feature-implement/SKILL.md", "../../../docs/review-comparison.md"],
       [".agents/skills/reviewloop/SKILL.md", "../../../docs/review-comparison.md"],
+      [".agents/skills/guard/SKILL.md", "../../../docs/review-comparison.md"],
     ] as const) expect(read(file)).toContain(`](${link})`);
+  });
+
+  test("diagram guidance covers inclusion, omission and code-backed edges", () => {
+    expect(read(".agents/skills/reviewloop/SKILL.md")).toContain(
+      "](../../../docs/review-diagrams.md)",
+    );
+    const guide = read("docs/review-diagrams.md");
+    for (const fact of [
+      "Keep summary.diagram optional",
+      "control flow, data flow, state transitions or interaction order",
+      "Omit the field",
+      "Verify every node and edge against the pinned code",
+      "not a diagram-selection algorithm",
+    ]) expect(guide).toContain(fact);
   });
 
   test("a link to a same-named file elsewhere is not the canonical doc", () => {

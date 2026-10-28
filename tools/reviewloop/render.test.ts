@@ -860,6 +860,26 @@ describe("renderBody", () => {
     expect(text).toContain(`${HEAD}`);
   });
 
+  test("wraps supplied Mermaid source in the diagram section", () => {
+    const p = payload();
+    p.summary.diagram = "flowchart TD\n  Input --> Decision\n  Decision --> Output";
+    const text = body({ payload: p });
+
+    expect(text).toContain(
+      '<details open><summary><h3>Diagram</h3></summary>\n\n```mermaid\n' +
+      p.summary.diagram + "\n```\n</details>",
+    );
+    expect(text).toContain("<!-- greptile_confidence_score:5 -->");
+  });
+
+  test("omits the diagram section when no source is supplied", () => {
+    const text = body();
+
+    expect(text).not.toContain("<h3>Diagram</h3>");
+    expect(text).not.toContain("```mermaid");
+    expect(text).toContain("<!-- greptile_confidence_score:5 -->");
+  });
+
   test("names the score it was given, not a score of its own", () => {
     expect(body({ score: 3 })).toContain("<h2>Confidence Score: 3/5</h2>");
   });

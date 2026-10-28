@@ -114,11 +114,14 @@ get the docs-only exemption.
 ## Phase 3 — Pre-report
 
 Run before the parent reports a local handoff or remote merge-readiness.
+During the trial, use the [comparison protocol](../../../docs/review-comparison.md)
+until the owner chooses which review path to keep. A local-only report is not
+merge-readiness while the hosted verdict is missing.
 
 ```
 [ ] Local checks green (typecheck, lint, tests, e2e when relevant, Rust when relevant)
 [ ] Review evidence current for the selected tier
-[ ] reviewloop result is for the final HEAD and has no actionable findings (while the Greptile A/B runs, Greptile agrees)
+[ ] Both current-head reviews are 5/5 with no actionable findings while the trial is active; a missing verdict blocks merge-readiness
 [ ] CI — required checks green on GitHub (when the branch is pushed)
 [ ] The push and the PR came from the parent, and the merge followed the gate's classes — a cheap-to-reverse, no-decision diff merges itself once green, an expensive-to-reverse or decision diff waits for the owner
 [ ] PR description — accurate and complete

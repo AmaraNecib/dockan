@@ -441,7 +441,7 @@ export function PurchasePage() {
     setSavedInvoice(null);
     setPickerTarget({ kind: "append" });
   });
-  const discardGuard = useDiscardNavigationGuard({ dirty: cartDirty, lineCount: lines.length });
+  const discardGuard = useDiscardNavigationGuard({ dirty: cartDirty, lineCount: lines.length, pending: savePending });
   // #345 review round 4 (Greptile P2) — one dialog at a time. The picker's layer
   // takes Escape before the question can, so an inner dialog under the question
   // makes Escape and the backdrop unreachable. Closing it when the question opens

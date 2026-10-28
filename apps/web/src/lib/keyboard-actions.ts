@@ -33,7 +33,7 @@ export function shortcutKeys(id: keyof KeyboardShortcuts): string {
 
 export function matchKeyboardAction(event: KeyboardEvent) {
   return KEYBOARD_ACTIONS.find((action) => {
-    if (event.altKey) return false;
+    if (event.altKey || (event.ctrlKey && event.metaKey)) return false;
     const keyMatches = event.key.toLowerCase() === action.key.toLowerCase() ||
       (action.modifier !== "none" && event.code === `Key${action.key.toUpperCase()}`);
     if (!keyMatches) return false;
@@ -50,5 +50,14 @@ export function matchKeyboardAction(event: KeyboardEvent) {
 /** Role dialogs include the catalog's custom modal and Base UI's portal. */
 export function navigationDialogOpen(): boolean {
   return Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog[open]'))
-    .some((dialog) => !dialog.closest('[hidden], [aria-hidden="true"], [data-closed]'));
+    .some((dialog) => {
+      if (dialog.closest('[hidden], [aria-hidden="true"], [data-closed]')) return false;
+      const visibility = window.getComputedStyle(dialog).visibility;
+      if (visibility === "hidden" || visibility === "collapse") return false;
+      // Unlike visibility, display:none cannot be overridden by a descendant.
+      for (let element: Element | null = dialog; element !== null; element = element.parentElement) {
+        if (window.getComputedStyle(element).display === "none") return false;
+      }
+      return true;
+    });
 }

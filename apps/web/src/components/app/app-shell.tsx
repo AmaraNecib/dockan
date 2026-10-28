@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
@@ -121,6 +121,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const { draftDirty, savePending } = useSaleDraft();
   const [purchaseDiscardOpen, setPurchaseDiscardOpen] = useState(false);
+  const purchaseDiscardFocus = useRef<HTMLElement | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
@@ -159,6 +160,7 @@ export function AppShell() {
       return;
     }
     if (activeKey === "sale" && draftDirty) {
+      purchaseDiscardFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setPurchaseDiscardOpen(true);
       return;
     }
@@ -238,7 +240,13 @@ export function AppShell() {
         </main>
       </div>
 
-      <DiscardSaleDialog
+      <DiscardDraftDialog
+        title={t("saleToPurchaseDiscardTitle")}
+        description={t("saleToPurchaseDiscardDesc")}
+        confirmLabel={t("saleToPurchaseDiscardConfirm")}
+        cancelLabel={t("dialogClose")}
+        confirmTestId="new-sale-discard-confirm"
+        finalFocus={() => purchaseDiscardFocus.current}
         open={purchaseDiscardOpen}
         onOpenChange={setPurchaseDiscardOpen}
         onConfirm={() => {

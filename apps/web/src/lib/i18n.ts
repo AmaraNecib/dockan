@@ -570,6 +570,9 @@ const resources = {
       saleDiscardTitle: "بدء بيع جديد؟",
       saleDiscardDesc: "سيتم فقدان الأسطر والزبون غير المحفوظين. هل تريد بدء بيع جديد؟",
       saleDiscardConfirm: "بدء بيع جديد",
+      saleToPurchaseDiscardTitle: "فتح المشتريات؟",
+      saleToPurchaseDiscardDesc: "سيتم فقدان مسودة البيع غير المحفوظة. هل تريد فتح المشتريات؟",
+      saleToPurchaseDiscardConfirm: "تجاهل مسودة البيع وفتح المشتريات",
       // ticket 9 — debts screen (who owes whom)
       navDebts: "الديون",
       debtsTitle: "الديون",

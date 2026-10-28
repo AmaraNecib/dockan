@@ -48,11 +48,13 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   await page.keyboard.press("Control+b");
   const discard = page.getByRole("dialog");
   await expect(discard).toBeVisible();
+  await expect(discard).toContainText("فتح المشتريات؟");
+  await expect(discard).toContainText("سيتم فقدان مسودة البيع غير المحفوظة");
   await page.keyboard.press("Control+n");
   await page.keyboard.press("Escape");
   await expect(discard).toBeHidden();
   await expect(customer).toHaveValue("مسودة الاختصار");
-  await customer.focus();
+  await expect(customer).toBeFocused();
   await page.keyboard.press("Control+b");
   await page.getByTestId("new-sale-discard-confirm").click();
   await expect(page.getByTestId("purchase-form")).toBeVisible();
@@ -98,13 +100,24 @@ test("shortcut-entered purchase and sale persist, a refused sale keeps its draft
   await page.keyboard.press("Control+b");
   await expect(page.getByTestId("purchase-form")).toBeVisible();
   await pick(page, name, "purchase");
-  await page.getByTestId("purchase-lines").getByLabel(`${name}: الكمية`).fill("2");
+  const purchaseQuantity = page.getByTestId("purchase-lines").getByLabel(`${name}: الكمية`);
+  await purchaseQuantity.fill("2");
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(purchaseQuantity).toHaveValue("2");
   const purchase = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("purchase-save").click());
   await expect(page.getByTestId("purchase-saved-number")).toContainText(purchase.invoiceNumber);
   expect(purchase.kind).toBe("PURCHASE");
   expect(purchase.totalAmount).toBe(800);
   const storedPurchase = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: purchase.id });
   expect(storedPurchase.lines[0]?.quantity).toBe(2);
+  expect(storedPurchase.totalAmount).toBe(800);
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+  await expect(page.getByTestId("purchase-lines")).toHaveCount(0);
+  await expect(page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…")).toBeFocused();
+  await page.keyboard.press("Escape");
 
   await page.keyboard.press("Control+n");
   await expect(page.getByTestId("sale-form")).toBeVisible();
@@ -178,4 +191,81 @@ test("navigation shortcuts cannot abandon a sale while its real save is pending"
     release();
     await page.unroute("**/api/rpc/invoicesCreate");
   }
+});
+
+
+test("pending purchase refuses navigation and discard until its saved result is visible", async ({ page }) => {
+  await signIn(page);
+  const categoryId = await seedCategoryId(page, "تصنيف حماية الشراء");
+  const name = `شراء-محمي-${Date.now()}`;
+  const item = await callRpc<Item, object>(page, "itemsCreate", {
+    name, categoryId, costPrice: 400, sellingPrice: 1000,
+  });
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+  await pick(page, name, "purchase");
+  const quantity = page.getByTestId("purchase-lines").getByLabel(`${name}: الكمية`);
+  await quantity.fill("2");
+
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reached = () => {};
+  const requested = new Promise<void>((resolve) => { reached = resolve; });
+  await page.route("**/api/rpc/invoicesCreate", async (route) => {
+    reached();
+    await held;
+    await route.continue();
+  });
+  let saved: Promise<InvoiceDetail> | undefined;
+  try {
+    saved = actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("purchase-save").click());
+    void saved.catch(() => undefined);
+    await requested;
+    await expect(page.getByTestId("purchase-save")).toBeDisabled();
+    await page.keyboard.press("Control+n");
+    // A pending request is not discardable work. Do not offer a destructive answer.
+    await expect(page.getByTestId("purchase-discard-confirm")).toHaveCount(0);
+    await page.keyboard.press("Control+b");
+    await expect(page.getByTestId("picker-dialog")).toHaveCount(0);
+    await expect(page).toHaveURL(/\/purchase$/);
+    await page.keyboard.press("Escape");
+    await expect(quantity).toHaveValue("2");
+    await page.getByRole("button", { name: "اختصارات لوحة المفاتيح" }).click();
+    const help = page.getByRole("dialog", { name: "اختصارات لوحة المفاتيح" });
+    await expect(help).toBeVisible();
+    release();
+    const invoice = await saved;
+    await expect(help).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/purchase$/);
+    await expect(page.getByTestId("purchase-saved-number")).toContainText(invoice.invoiceNumber);
+    const persisted = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: invoice.id });
+    expect(persisted.totalAmount).toBe(800);
+    expect(persisted.lines[0]?.quantity).toBe(2);
+    const items = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(items.items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
+    await page.keyboard.press("Control+n");
+    await expect(page.getByTestId("sale-form")).toBeVisible();
+  } finally {
+    release();
+    await saved?.catch(() => undefined);
+    await page.unroute("**/api/rpc/invoicesCreate");
+  }
+});
+
+
+test("cancelling purchase navigation restores the sale field without manual refocus", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  const customer = page.getByTestId("sale-customer");
+  await expect(customer).toBeVisible();
+  await customer.fill("مسودة ترجع إليها الكتابة");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(customer).toBeFocused();
+  await expect(customer).toHaveValue("مسودة ترجع إليها الكتابة");
+  await page.keyboard.type(" بعد الإلغاء");
+  await expect(customer).toHaveValue("مسودة ترجع إليها الكتابة بعد الإلغاء");
 });

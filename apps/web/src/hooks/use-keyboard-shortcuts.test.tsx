@@ -114,6 +114,35 @@ describe("workflow keyboard actions", () => {
     expect(calls).toBe(1);
   });
 
+  it("does not toggle the sidebar for combined Ctrl and Meta modifiers", () => {
+    let calls = 0;
+    const field = mount({ onToggleSidebar: () => { calls++; } });
+    expect(press(field, "B", { ctrlKey: true, metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  it.each(["display: none", "visibility: hidden"])("does not treat a CSS-hidden dialog as active: %s", (style) => {
+    let calls = 0;
+    const field = mount({ onSale: () => { calls++; } });
+    const wrapper = document.createElement("div");
+    wrapper.setAttribute("style", style);
+    wrapper.innerHTML = '<div role="dialog"></div>';
+    document.body.append(wrapper);
+    press(field, "n", { ctrlKey: true });
+    expect(calls).toBe(1);
+  });
+
+  it("still blocks for a dialog that overrides inherited hidden visibility", () => {
+    let calls = 0;
+    const field = mount({ onSale: () => { calls++; } });
+    const wrapper = document.createElement("div");
+    wrapper.style.visibility = "hidden";
+    wrapper.innerHTML = '<div role="dialog" style="visibility: visible"></div>';
+    document.body.append(wrapper);
+    press(field, "n", { ctrlKey: true });
+    expect(calls).toBe(0);
+  });
+
   // red-on-parent-waive: "leaves unavailable and already-handled actions alone" — missing navigation callbacks already leave these keys alone on the parent; this pins refusal and cleanup behavior that must stay unchanged.
   it("leaves unavailable and already-handled actions alone", () => {
     let calls = 0;

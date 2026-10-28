@@ -1,16 +1,6 @@
 mod backup_reveal;
 mod desktop;
 
-#[tauri::command]
-async fn backup_reveal(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        backup_reveal::reveal_backup(std::path::Path::new(&path))
-    })
-    .await
-    .map_err(|_| backup_reveal::FAILED.to_string())?
-    .map_err(str::to_string)
-}
-
 // The sidecar freshness/stamp logic is exercised by `cargo test`; build.rs
 // includes the same file textually.
 #[cfg(test)]
@@ -33,7 +23,7 @@ pub fn run() {
             desktop::vault_setup_saved,
             desktop::vault_setup_warning,
             desktop::vault_logout,
-            backup_reveal
+            desktop::backup_reveal
         ])
         .setup(desktop::setup)
         .on_window_event(|window, event| {

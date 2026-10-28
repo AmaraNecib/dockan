@@ -69,6 +69,7 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/expenses.tsx::dateText === \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
   ["pages/expenses.tsx::dateText !== \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
   ["pages/expenses.tsx::note.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/expenses.tsx::reason !== \"\" [draftReason.trim()]", { verdict: "raw", reason: TEXT }],
   ["pages/invoice.tsx::note.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/invoice.tsx::trimmed === \"\" [draft.trim()]", { verdict: "draftBlank", reason: "converted (#244): returnQuantityError blank → null; customCashError blank → null (all-debt)" }],
   ["pages/invoice.tsx::(drafts[line.id] ?? \"\").trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → not an entered return line" }],

@@ -1,7 +1,15 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 import { actAndAck, saveQuickAdd } from "./rpc-helpers";
+
+test.use({
+  video: process.env.E2E_VIDEO === "1" ? { mode: "on", size: { width: 1920, height: 1080 } } : "off",
+  launchOptions: { slowMo: process.env.E2E_VIDEO === "1" ? 250 : 0 },
+});
 
 /**
  * Expenses + profit reports. Specs share one wiped-at-boot sqlite
@@ -420,4 +428,104 @@ test("custom range controls stack and stay inside their column on a narrow windo
     expect(spill!.left).toBeGreaterThanOrEqual(-1);
     expect(spill!.right).toBeLessThanOrEqual(1);
   }
+});
+
+test("correct and undo an expense without moving it out of its original report period (#408)", async ({ page }) => {
+  test.setTimeout(60_000);
+  await ensureAuthed(page);
+  const stamp = Date.now().toString();
+  const note = `تصحيح-${stamp}`;
+  const originalAmount = 850;
+  const correctedAmount = 650;
+  const expenseDate = "13/02/2001";
+  const from = `${expenseDate} 00:00`;
+  const to = `${expenseDate} 23:59`;
+  const captureEvidence = process.env.E2E_VIDEO === "1";
+  const evidenceDir = path.resolve(".scratch/evidence/408");
+  const holdForReading = async () => {
+    // Evidence playback holds each settled screen long enough to read it.
+    if (captureEvidence) await page.waitForTimeout(1_500);
+  };
+
+  await page.goto("/reports");
+  await chooseSelectOption(page, page.getByTestId("report-range-preset"), "فترة مخصصة");
+  await page.getByTestId("report-custom-from").fill(from);
+  await page.getByTestId("report-custom-to").fill(to);
+  await expect(page.getByTestId("report-range-label")).toHaveText(`${expenseDate} — ${expenseDate}`);
+  const readOperating = async () => parseAmount(await page.getByTestId("report-operating").textContent());
+  const baseline = await readOperating();
+
+  await page.goto("/expenses");
+  await selectExpenseCategory(page, "كراء المحل");
+  await page.getByTestId("expense-amount").fill(String(originalAmount));
+  await page.getByTestId("expense-note").fill(note);
+  await page.getByTestId("expense-date").fill(`${expenseDate} 12:00`);
+  await actAndAck(page, "expensesCreate", async () => {
+    await page.getByTestId("expense-save").click();
+  });
+
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
+  await page.getByTestId("expense-custom-from").fill(from);
+  await page.getByTestId("expense-custom-to").fill(to);
+  const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: note });
+  await expect(row).toContainText(shownAmount(String(originalAmount)));
+  await expect(row.locator("td").first()).toContainText(expenseDate);
+  await row.getByTestId("expense-correction-open-history").click();
+  await expect(page.getByTestId("expense-correction-original")).toContainText(expenseDate);
+  if (captureEvidence) {
+    mkdirSync(evidenceDir, { recursive: true });
+    await page.getByTestId("expense-correction-history").screenshot({ path: path.join(evidenceDir, "expense-correction-before.png") });
+  }
+  await holdForReading();
+
+  await row.getByTestId("expense-correction-open-editor").click();
+  await page.getByTestId("expense-correction-amount").fill(String(correctedAmount));
+  await page.getByTestId("expense-correction-reason").fill("قيمة الإيصال غير صحيحة");
+  await holdForReading();
+  await actAndAck(page, "expensesCorrect", async () => {
+    await page.getByTestId("expense-correction-save").click();
+  });
+  await expect(page.getByTestId("expense-correction-saved")).toContainText("تم تسجيل التصحيح");
+  await expect(row.getByTestId("expense-row-effective-amount")).toHaveAttribute("data-value", String(correctedAmount));
+  await expect(page.getByTestId("expense-correction-entry")).toContainText("قيمة الإيصال غير صحيحة");
+  if (captureEvidence) {
+    await page.getByTestId("expense-correction-history").screenshot({ path: path.join(evidenceDir, "expense-correction-after.png") });
+  }
+  await holdForReading();
+
+  await page.goto("/reports");
+  await chooseSelectOption(page, page.getByTestId("report-range-preset"), "فترة مخصصة");
+  await page.getByTestId("report-custom-from").fill(from);
+  await page.getByTestId("report-custom-to").fill(to);
+  await expect.poll(readOperating).toBe(baseline - correctedAmount);
+  const reportRow = page.getByTestId("report-breakdown").locator("tbody tr", { hasText: "كراء المحل" });
+  await expect.poll(async () => parseAmount(await reportRow.locator("td").nth(2).textContent())).toBe(correctedAmount);
+  await holdForReading();
+
+  await page.goto("/expenses");
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
+  await page.getByTestId("expense-custom-from").fill(from);
+  await page.getByTestId("expense-custom-to").fill(to);
+  const correctedRow = page.getByTestId("expense-history").locator("tbody tr", { hasText: note });
+  await correctedRow.getByTestId("expense-correction-open-history").click();
+  await page.getByTestId("expense-correction-undo").click();
+  await expect(page.getByTestId("expense-correction-undo-confirm")).toBeVisible();
+  await holdForReading();
+  await page.getByTestId("expense-correction-undo-cancel").click();
+  await expect(page.getByTestId("expense-correction-undo-confirm")).toHaveCount(0);
+  await page.getByTestId("expense-correction-undo").click();
+  await actAndAck(page, "expensesCorrectionUndo", async () => {
+    await page.getByTestId("expense-correction-undo-confirm-button").click();
+  });
+  await expect(page.getByTestId("expense-correction-saved")).toContainText("تم تسجيل التراجع");
+  await expect(correctedRow.getByTestId("expense-row-effective-amount")).toHaveAttribute("data-value", String(originalAmount));
+  await expect(page.getByTestId("expense-correction-entry").first()).toContainText("أُلغي بهذا التصحيح");
+  await holdForReading();
+
+  await page.goto("/reports");
+  await chooseSelectOption(page, page.getByTestId("report-range-preset"), "فترة مخصصة");
+  await page.getByTestId("report-custom-from").fill(from);
+  await page.getByTestId("report-custom-to").fill(to);
+  await expect.poll(readOperating).toBe(baseline - originalAmount);
+  await holdForReading();
 });

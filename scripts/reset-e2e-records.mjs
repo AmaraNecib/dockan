@@ -25,7 +25,7 @@ if (!fs.existsSync(dbPath)) throw new Error(`e2e database not found at ${dbPath}
 
 const db = new Database(dbPath);
 /** The tables the reset must empty: the shop's own records, in one list. */
-const SHOP_RECORD_TABLES = ["items", "invoices", "stock_movements"];
+const SHOP_RECORD_TABLES = ["items", "invoices", "stock_movements", "expenses", "expense_corrections"];
 try {
   // busy_timeout: the API holds its own WAL connection while this one writes.
   db.exec("PRAGMA busy_timeout = 5000;");
@@ -51,6 +51,7 @@ try {
     -- defaults and deliberately survive (expenses reference expense_categories)
     DELETE FROM categories;
     DELETE FROM activities;
+    DELETE FROM expense_corrections;
     DELETE FROM expenses;
     DELETE FROM customers;
     DELETE FROM suppliers;

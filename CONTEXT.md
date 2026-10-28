@@ -56,6 +56,15 @@
 - **Reset signing key**. the vendor's key pair. The private half never ships; the public half is embedded in the build. It carries a version, and the build accepts a map of versions so old installs stay resettable.
 - **Schema version**. a number stored in the database that identifies the data format; older versions migrate forward on open, newer ones are refused.
 
+- **Expense correction** (تصحيح مصروف). a recorded change to an expense amount that keeps the original and every later correction in history. It affects the original expense period, while its recording date identifies when the correction was entered. Each change identifies who recorded it and its before/after amounts; a reason is optional.
+- **Expense refund** (استرجاع مصروف). money returned for an expense, distinct from fixing an incorrectly entered amount. It belongs to the date the money actually returned and keeps a separate recording date. The original expense, corrections and refunds remain in history.
+
+## Stock discrepancy and audit vocabulary
+
+- **Count correction** (تصحيح الجرد). correcting an entered quantity that was wrong, such as recording 20 when the actual count was 19. It does not by itself assert physical damage. A genuine unexplained shortage is a different event.
+- **Damaged stock** (مخزون تالف). units physically damaged or unusable. This is distinct from a count-entry mistake; any refund, recovery and report treatment are separate decisions.
+- **Action actor** (منفّذ العملية). the authenticated account that performed an action. A shared account identifies the account, not the individual human using it. The actor is distinct from whoever caused damage or paid a recovery amount.
+
 ## Deferred Concepts
 
 - **Batch / lot tracking**. selling from a specific purchase (first buy vs second buy at different prices). Considered and deferred to after MVP; MVP values stock by average cost.

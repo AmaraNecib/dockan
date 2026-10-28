@@ -1808,6 +1808,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .orderBy(sql`rowid`);
       return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
     },
+    async listItemHistoryLines(itemId) {
+      const rows = await db.select({ line: invoiceLines, number: invoices.invoiceNumber, kind: invoices.kind })
+        .from(invoiceLines).innerJoin(invoices, eq(invoices.id, invoiceLines.invoiceId))
+        .where(eq(invoiceLines.itemId, itemId));
+      return rows.map((row) => ({ ...toInvoiceLine(row.line), invoiceNumber: row.number, invoiceKind: row.kind }));
+    },
     async countStockMovements(itemId) {
       return db.$count(stockMovements, eq(stockMovements.itemId, itemId));
     },

@@ -292,6 +292,8 @@ export interface StorePort {
    */
   listStockMovementsSince(itemId: string, recordedAfter: string): Promise<Array<StockMovement & { seq: number }>>;
   countStockMovements(itemId: string): Promise<number>;
+  /** Recorded invoice facts only, never joined to current item prices. */
+  listItemHistoryLines(itemId: string): Promise<Array<InvoiceLine & { invoiceNumber: string; invoiceKind: InvoiceKind }>>;
 
   // --- purchase linkage (ticket 29) ----------------------------------------
   /** appends an attribution record between a purchase invoice and an earlier

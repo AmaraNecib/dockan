@@ -445,6 +445,7 @@ describe("stock ledger (ticket 27)", () => {
     }
     expect(rejected).toBe(true);
     expect(await client.itemsHistory({ itemId: item.id })).toEqual({
+      item: { id: item.id, name: item.name },
       movements: [],
       total: 0,
       stockOnHand: 0,
@@ -1246,7 +1247,7 @@ describe("purchase intake (ticket 29)", () => {
       code = (err as Error).message;
     }
     expect(code).toContain("PURCHASE_REQUIRES_INFLOW");
-    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], total: 0, stockOnHand: 0 });
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ item: { id: item.id, name: item.name }, movements: [], total: 0, stockOnHand: 0 });
   });
 
   it("proposes FIFO availability, links partially, and reports the unmatched share without minting stock", async () => {
@@ -5635,5 +5636,67 @@ describe("movement posting seam parity (issue 143)", () => {
     expect(history.movements.at(-1)).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 0, unitCost: 250, reason: "COST_CORRECTION" });
     expect(history.stockOnHand).toBe(10);
     expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(250);
+  });
+});
+
+describe("item history 399", () => {
+  it("399 preserves recorded sale prices and exact cost after current price changes", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-snapshots-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    await client.itemsUpdate({ id: item.id, sellingPrice: 999, costPrice: 400 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history).toMatchObject({ item: { id: item.id, name: "history-snapshots-399" } });
+    expect(history.movements.find((m) => m.ref === sale.id)).toMatchObject({
+      details: { sellingPrice: 300, saleTotal: 1800, cost: { unitCost: 117, total: 700 }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+    });
+  });
+
+  it("399 leaves ambiguous sale and manual-outflow facts unknown, preserving zero costs", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-unknown-399", categoryId: category.id, costPrice: 0, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 8, unitCost: 0, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }, { itemId: item.id, quantity: 2 }] });
+    await client.stockAddManual({ itemId: item.id, delta: -1, reason: "damaged" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements[0]?.details).toMatchObject({ sellingPrice: null, cost: { unitCost: 0, total: 0 } });
+    expect(history.movements.filter((m) => m.ref === sale.id).map((m) => m.details)).toEqual([
+      { sellingPrice: null, saleTotal: null, netSaleTotal: null, cost: { unitCost: null, total: null }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+      { sellingPrice: null, saleTotal: null, netSaleTotal: null, cost: { unitCost: null, total: null }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+    ]);
+    expect(history.movements.at(-1)?.details).toMatchObject({ sellingPrice: null, cost: { unitCost: null, total: null } });
+    await expect(unauthed.itemsHistory({ itemId: item.id })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("399 retains original purchase costs, stable backdates and corrections across pages", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-order-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
+    const purchase = await client.invoicesCreate({ kind: "PURCHASE", invoiceDate: "2025-01-02", lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }] });
+    await client.purchasesCorrectLine({ lineId: purchase.lines[0]!.id, quantity: 10, unitCost: 250 });
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 50, kind: "PURCHASE", occurredAt: "2025-01-01T10:00:00" });
+    await client.itemsUpdate({ id: item.id, costPrice: 500 });
+    const full = await client.itemsHistory({ itemId: item.id });
+    expect(full.movements[0]).toMatchObject({ delta: 2, stockAfter: 2 });
+    expect(full.movements[1]).toMatchObject({ delta: 10, details: { cost: { unitCost: 100, total: 1000 }, documents: [{ id: purchase.id, number: purchase.invoiceNumber }] } });
+    expect(full.movements.at(-1)).toMatchObject({ delta: 0, details: { cost: { unitCost: 500, total: null } } });
+    const page1 = await client.itemsHistory({ itemId: item.id, limit: 2 });
+    const page2 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 2 });
+    const page3 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 4 });
+    expect([...page1.movements, ...page2.movements, ...page3.movements]).toEqual(full.movements);
+    expect(full.stockOnHand).toBe(12);
+  });
+
+  it("399 links recorded returns to their original invoice without claiming a new sale price", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-return-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100 });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const returned = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((m) => m.ref === returned.id)).toMatchObject({
+      delta: 1, details: { sellingPrice: null, cost: { unitCost: 100, total: 100 }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+    });
   });
 });

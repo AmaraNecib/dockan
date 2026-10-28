@@ -246,6 +246,12 @@ iteration count.
 
 ### 7. Report
 
+During the trial, run this review beside Greptile using the
+[comparison protocol](../../../docs/review-comparison.md). Preserve each system's
+unexposed findings and record verified defects, false positives, time and cost.
+The parent checks both current-head verdicts before merging. Continue across PRs
+until the owner decides which path to keep; this renderer does not score Greptile.
+
 Local mode: the head SHA, the score, the finding counts, and the paths the
 renderer wrote. Nothing is committed.
 

@@ -99,6 +99,31 @@ describe("the verification rule is discoverable (#259)", () => {
     });
   }
 
+  test("the A/B protocol keeps paired evidence and an owner-controlled end", () => {
+    const comparison = read("docs/review-comparison.md");
+    for (const fact of [
+      "Continue across PRs until the owner chooses",
+      "same base SHA and head SHA",
+      "before reading the other system's findings",
+      "Both current-head reviews must be 5/5",
+      "one request per head",
+      "not an automatic replacement",
+      "verified unique defects",
+      "false positives",
+      "elapsed review time",
+      "unknown rather than zero",
+    ]) expect(comparison).toContain(fact);
+  });
+
+  test("review entry points link to the A/B protocol", () => {
+    for (const [file, link] of [
+      ["docs/engineering-workflow.md", "review-comparison.md"],
+      ["docs/verification-and-merge-gate.md", "review-comparison.md"],
+      [".agents/skills/feature-implement/SKILL.md", "../../../docs/review-comparison.md"],
+      [".agents/skills/reviewloop/SKILL.md", "../../../docs/review-comparison.md"],
+    ] as const) expect(read(file)).toContain(`](${link})`);
+  });
+
   test("a link to a same-named file elsewhere is not the canonical doc", () => {
     // `endsWith(DOC_FILE)` accepted any existing file with the same basename, so a
     // lane could point its readers at a different file and stay green. The fix

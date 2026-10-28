@@ -121,9 +121,10 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   A route unused this session gets a one-line probe first. Free lenses carry no parallelism cap.
   When every non-author family is exhausted, the owner may approve an exception recorded as
   `independence: { approvedBy, reason }`; a lane cannot approve its own.
-- **The first two PRs run both reviews (owner decision, 2026-10-26).** While the A/B runs, the
-  parent requests `reviewloop` and Greptile on the same head. Agreement is evidence; a
-  disagreement is a finding for the round, not a merge. After two PRs the owner picks the path.
+- **Run both reviews until the owner ends the trial.** The parent runs `reviewloop` and
+  Greptile on the same pinned boundary across several PRs. Follow the
+  [comparison protocol](review-comparison.md) for independent first-pass records, verified
+  findings, time and cost. Neither review replaces the other automatically.
 - **All three lenses run at Standard and above.** `debate` is no longer reserved
   for High-assurance (owner decision, 2026-10-18); the tier decides how much
   scrutiny a failure mode earns, not whether the debate happens.

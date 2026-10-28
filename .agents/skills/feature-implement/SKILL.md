@@ -249,10 +249,13 @@ Then the parent runs the review round with `reviewloop`:
 - Verify each finding against the code, then fix or dismiss it with a reason.
 - Re-run on the new head until the renderer exits 0 at 5/5.
 
-**While the A/B runs (the first two PRs), the parent also requests Greptile:**
-the `cli-review` skill, or `@greptile-apps review` on the PR when the diff is too
-large for the CLI. Both reviews read the same head. Agreement is evidence; a
-disagreement is a finding for the round, not an average.
+**Run both reviewloop and Greptile until the owner ends the trial.** Follow the
+[comparison protocol](../../../docs/review-comparison.md): pin the same boundary,
+start both when their prerequisites allow, preserve unexposed first-pass findings,
+and publish verified findings, time and observed cost per head. Request hosted
+Greptile once per head after pushing, unless an automatic run already covers it.
+Both current-head reviews must be 5/5 with no actionable findings. Investigate
+any disagreement; neither score replaces or averages the other.
 
 **Verify every finding against the code before fixing it.** A review comment can
 re-list findings a later commit already fixed. Read the cited lines, and when a

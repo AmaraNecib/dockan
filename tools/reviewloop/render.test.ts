@@ -87,11 +87,21 @@ describe("dedupe", () => {
 
   test("three lenses agreeing on a defect still promote it to P1", () => {
     const merged = dedupe([
-      at({ lens: "debate" }), at({ lens: "test-audit" }), at({ lens: "code-review" }),
+      at({ lens: "debate" }),
+      at({ lens: "test-audit" }),
+      at({
+        lens: "code-review",
+        body: "A longer explanation of the same defect.",
+        endLine: 10,
+        suggestion: "```suggestion\nreplaceSameRange();\n```",
+      }),
     ]);
     expect(merged).toHaveLength(1);
     expect(merged[0]?.lenses).toHaveLength(3);
     expect(merged[0]?.severity).toBe("P1");
+    expect(merged[0]?.line).toBe(10);
+    expect(merged[0]?.endLine).toBeUndefined();
+    expect(merged[0]?.suggestion).toBe("```suggestion\nreplaceSameRange();\n```");
     expect(computeScore(merged)).toBe(4);
   });
 
@@ -166,14 +176,60 @@ describe("dedupe", () => {
     expect(first?.severity).toBe("P1");
   });
 
-  test("keeps the longest body, so the merge does not lose the explanation", () => {
+  test("keeps a retained suggestion when a longer adjacent finding has a different range", () => {
+    const retained = "```suggestion\nreplaceLineTen();\n```";
     const merged = dedupe([
-      at({ lens: "debate", body: "short", line: 10 }),
-      at({ lens: "code-review", body: "a much longer explanation", line: 10 }),
+      at({ lens: "debate", line: 10, suggestion: retained }),
+      at({
+        lens: "code-review",
+        line: 11,
+        body: "A much longer explanation from the adjacent line.",
+        suggestion: "```suggestion\nreplaceLineEleven();\n```",
+      }),
     ]);
 
-    const [first] = merged;
-    expect(first?.body).toBe("a much longer explanation");
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.line).toBe(10);
+    expect(merged[0]?.endLine).toBeUndefined();
+    expect(merged[0]?.suggestion).toBe(retained);
+    expect(merged[0]?.body).toBe("A much longer explanation from the adjacent line.");
+  });
+
+  test("omits a longer finding's suggestion when its end differs from the retained range", () => {
+    const merged = dedupe([
+      at({ lens: "debate", line: 10 }),
+      at({
+        lens: "code-review",
+        line: 10,
+        endLine: 11,
+        body: "A much longer explanation for the two-line range.",
+        suggestion: "```suggestion\nreplaceLinesTenAndEleven();\n```",
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.line).toBe(10);
+    expect(merged[0]?.endLine).toBeUndefined();
+    expect(merged[0]?.suggestion).toBeUndefined();
+    expect(merged[0]?.body).toBe("A much longer explanation for the two-line range.");
+  });
+
+  test("borrows a suggestion when undefined and explicit single-line ends match", () => {
+    const merged = dedupe([
+      at({ lens: "debate", line: 10 }),
+      at({
+        lens: "code-review",
+        line: 10,
+        endLine: 10,
+        body: "A longer explanation for the same single line.",
+        suggestion: "```suggestion\nreplaceLineTen();\n```",
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.line).toBe(10);
+    expect(merged[0]?.endLine).toBeUndefined();
+    expect(merged[0]?.suggestion).toBe("```suggestion\nreplaceLineTen();\n```");
   });
 
   test("keeps findings from different files separate", () => {
@@ -1022,6 +1078,63 @@ describe("the CLI contract", () => {
     expect(result.status).toBe(0);
     expect(written("greptile-local.md")).toContain(`/commit/${head}`);
     expect(written("greptile-local.md")).toContain("Last reviewed commit");
+  });
+
+  test("inline and summary artifacts omit a suggestion from an adjacent retained range", () => {
+    const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-suggestion-range-");
+    try {
+      writeFileSync(join(repoWork, "a.txt"), "one\n");
+      gitAt("add", "a.txt");
+      gitAt("commit", "-q", "-m", "first");
+      writeFileSync(join(repoWork, "a.txt"), "one\ntwo\nthree\n");
+      gitAt("add", "a.txt");
+      gitAt("commit", "-q", "-m", "add adjacent lines");
+      const repoHead = gitAt("rev-parse", "HEAD");
+      const repo = { work: repoWork, head: repoHead, dir: repoDir };
+      const unsafeSuggestion = "```suggestion\nreplaceLineThree();\n```";
+
+      fixture([
+        finding({
+          id: "same-defect",
+          lens: "debate",
+          severity: "P2",
+          path: "a.txt",
+          line: 2,
+          title: "First report",
+          body: "The first report points to line two.",
+          evidence: "self-evident: the changed line is line two.",
+        }),
+        finding({
+          id: "same-defect",
+          lens: "code-review",
+          severity: "P2",
+          path: "a.txt",
+          line: 3,
+          title: "Longer report",
+          body: "This longer explanation comes from the adjacent third line.",
+          suggestion: unsafeSuggestion,
+          evidence: "self-evident: the adjacent changed line is line three.",
+        }),
+      ], "Two lenses agree on one defect.", repo);
+      const result = run("HEAD~1", repo);
+
+      expect(result.status).toBe(1);
+      // SAFETY: inline.json is generated from the two findings in this fixture.
+      const inline = JSON.parse(
+        readFileSync(join(repoDir, `${repoHead}-inline.json`), "utf8"),
+      ) as Array<{ path: string; line: number; body: string }>;
+      expect(inline).toHaveLength(1);
+      expect(inline[0]?.path).toBe("a.txt");
+      expect(inline[0]?.line).toBe(2);
+      expect(inline[0]?.body).not.toContain(unsafeSuggestion);
+
+      const summary = readFileSync(join(repoDir, `${repoHead}-greptile-local.md`), "utf8");
+      expect(summary).toContain("Confidence Score: 4/5");
+      expect(summary).toContain("Two lenses agree on one defect.");
+      expect(summary).not.toContain(unsafeSuggestion);
+    } finally {
+      rmSync(repoWork, { recursive: true, force: true });
+    }
   });
 
   test.each(["--print", "--json"])("%s exposes the rendered artifact on stdout", (option) => {

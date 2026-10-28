@@ -738,7 +738,12 @@ export function dedupe(findings: Array<Finding & { anchored: boolean }>): Merged
       near.body = f.body;
       near.title = f.title;
       near.fix = f.fix ?? near.fix;
-      near.suggestion = f.suggestion ?? near.suggestion;
+      if (
+        f.suggestion && f.line === near.line &&
+        (f.endLine ?? f.line) === (near.endLine ?? near.line)
+      ) {
+        near.suggestion = f.suggestion;
+      }
     }
     near.evidence = f.evidence || near.evidence;
     near.severity = worse(near.severity, f.severity);

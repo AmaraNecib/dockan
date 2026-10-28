@@ -14,7 +14,7 @@ description: >
 A review round that produces the artifact the workflow already greps for: one
 confidence score out of 5, ranked findings, inline comments where a line can be
 anchored, and an outside-diff list where it cannot. The shape is not invented
-here; it is the one in `.scratch/reviews/*/last-greptile.json`, so `cli-review`,
+here; it is the one in `.scratch/reviews/<issue>/<head>-greptile-local.json`, so `cli-review`,
 `greploop`, `guard` and the 5/5 merge gate keep reading it unchanged.
 
 Two things are mechanical rather than promptable, and `tools/reviewloop/render.ts`
@@ -25,7 +25,7 @@ enforces both:
 - **The score is a ceiling.** It is computed from the findings; an override can
   lower it with a reason and cannot raise it.
 
-Use this where `feature-implement` step 12 calls Greptile. The lens steps before
+Use this for the review round in `feature-implement` step 12. The lens steps before
 it stay where they are, unless the tier skipped them and this run is the only
 review.
 
@@ -37,15 +37,18 @@ review.
 | PR | parent only | the rendered body as a PR comment, inline payloads as review comments, a check run on the head |
 
 A lane never pushes and never posts. It stops at the local half of step 7 and
-hands the head SHA and the renderer's exit code to the parent.
+hands the head SHA and the renderer's exit code to the parent. Local artifacts
+from a lane are drafts. Before pushing, the parent reruns the required lenses,
+verifies their findings and renders current evidence. Step 12 publishes that
+review and handles hosted findings; it is not the first local render.
 
 ## Steps
 
 ### 1. Pin the boundary
 
 The issue id, the base (default `develop`), and the head (`git rev-parse HEAD`).
-The tier comes from `docs/engineering-workflow.md`; it decides how far the lenses
-dig, not whether they run.
+The tier comes from `docs/engineering-workflow.md`; it sets the required checks
+and scrutiny.
 
 **Done when** both refs resolve and `git diff <base>...<head> --stat` is non-empty.
 An empty diff is a bad ref, not a clean review.
@@ -129,7 +132,8 @@ those reports carries a location.
 Write `.scratch/reviews/<issue>/<head>-findings.json`. One entry per distinct
 defect, not one per lens comment. Assign the same optional `id` to entries only
 after verifying that they describe the same defect. The renderer merges entries
-with that shared ID in the same file within one line, across lenses only. Entries
+with that shared ID in the same file when their start lines differ by at most
+one, across lenses only. Entries
 without IDs or with different IDs stay separate. Two findings from one lens also
 stay separate, however close their lines are.
 
@@ -181,7 +185,8 @@ an independence exception, add
 `"independence": { "approvedBy": "owner", "reason": "..." }` at the top level.
 
 Before rendering, account for every report finding in `findings` or
-`summary.dismissed`. Extraction and verification belong to the parent. The
+`summary.dismissed`. A lane may extract a local draft; the parent repeats that
+verification before pushing. The
 renderer does not reconcile report prose with the payload or authenticate an
 `approvedBy` string. It records the owner's decision, not proof of approval.
 
@@ -204,14 +209,16 @@ files and omit that flag. Unrelated dirty files are not part of the committed
 review. `--print` writes the body to stdout; `--json` prints `{ body, created }`
 for a consumer that expects the CLI contract.
 
-**Done when** the renderer exits 0 or 1. Exit 2 is a bad input; read the message,
-fix it, and do not work around the guard. Exit 2 in particular covers a diff that
+**Done when** the renderer exits 0 or 1. Exit 2 means the review was refused or
+could not finish; read the message and fix its cause. Partial artifacts from a
+failed run are not approval. Do not work around the guard. Exit 2 in particular covers a diff that
 could not be read, one that is empty, and one whose file headers cannot be parsed:
 a round with no readable boundary is not a review of anything, and it must not
 produce a 5/5 artifact. A diff that only deletes files, only renames them or only
 changes their mode is not empty and renders normally — every touched path counts
 as reviewed even when it has no added line. Exit 2 also covers invalid JSON, wrong field types and unreadable reports, so
-an input failure cannot look like "findings remain".
+an input failure cannot look like "findings remain". A raising score override,
+invalid flag or unsupported filename also exits 2, as does a failed artifact write.
 
 ### 5. Verify, then fix or dismiss
 
@@ -270,7 +277,7 @@ nit is still a P2.
 | one P1 | 4 |
 | P2 only, or none | 5 |
 
-Two lenses agreeing on a shared defect ID within one line promote a P2 to P1
+Two lenses agreeing on a shared defect ID on the same or adjacent lines promote a P2 to P1
 and stop there; P0 is reserved for evidence of real damage. `scoreOverride` may lower the result with a
 written reason and may never raise it.
 

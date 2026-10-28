@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -83,6 +83,26 @@ describe("dedupe", () => {
     expect(merged).toHaveLength(1);
     const [first] = merged;
     expect(first?.lenses).toEqual(["debate", "code-review"]);
+  });
+
+  test("three lenses agreeing on a defect still promote it to P1", () => {
+    const merged = dedupe([
+      at({ lens: "debate" }), at({ lens: "test-audit" }), at({ lens: "code-review" }),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.lenses).toHaveLength(3);
+    expect(merged[0]?.severity).toBe("P1");
+    expect(computeScore(merged)).toBe(4);
+  });
+
+  test("a later, folded P0 cannot be lost behind an earlier P2", () => {
+    const merged = dedupe([
+      at({ lens: "debate", severity: "P2", line: 10 }),
+      at({ lens: "code-review", severity: "P0", line: 11 }),
+    ]);
+    expect(merged[0]?.severity).toBe("P0");
+    expect(computeScore(merged)).toBe(2);
+    expect(worse("P2", "P1")).toBe("P1");
   });
 
   test("keeps two defects two lines apart separate", () => {
@@ -175,6 +195,18 @@ describe("dedupe", () => {
 });
 
 describe("modelFamily", () => {
+  test("hyphenless and hyphenated root-version aliases are the same family", () => {
+    expect(sameFamily("opencode/qwen3-coder", "opencode-go/qwen-3-coder")).toBe(true);
+    expect(sameFamily("opencode/qwen2.5-coder", "opencode-go/qwen-3-coder")).toBe(true);
+  });
+
+  test("case differences cannot make the author's family independent", () => {
+    const result = independenceOf(
+      [{ name: "debate", model: "OPENCODE/DEEPSEEK-V4.1-FLASH-FREE" }],
+      "opencode/deepseek-v4.1-flash-free",
+    );
+    expect(result.allowed).toBe(false);
+  });
   test("free and paid DeepSeek are one family", () => {
     expect(modelFamily("opencode/deepseek-v4.1-flash-free")).toBe("deepseek");
     expect(modelFamily("opencode-go/deepseek-v4.1-flash")).toBe("deepseek");
@@ -325,6 +357,19 @@ describe("validate", () => {
     expect(() => validate(payload(), "p.json", diff, HEAD)).not.toThrow();
   });
 
+  const invalidSemantics: Array<[string, (p: Payload) => Payload, RegExp]> = [
+    ["empty author", (p) => ({ ...p, authorModel: " " }), /authorModel is required/],
+    ["empty lens model", (p) => ({ ...p, lenses: [{ name: "debate", model: " " }] }), /has no model/],
+    ["missing report", (p) => ({ ...p, lenses: [{ name: "debate", model: "glm", report: join(reports, "missing.md") }] }), /has no report/],
+    ["blank defect ID", (p) => ({ ...p, findings: [finding({ id: " " })] }), /id must not be blank/],
+    ["backward range", (p) => ({ ...p, findings: [finding({ line: 15, endLine: 5 })] }), /at or after line/],
+    ["missing P1 evidence", (p) => ({ ...p, findings: [finding({ severity: "P1", evidence: "" })] }), /evidence is required/],
+    ["empty summary", (p) => ({ ...p, summary: { ...p.summary, what: " " } }), /summary.what is required/],
+  ];
+  test.each(invalidSemantics)("refuses semantic input error: %s", (_name, change, message) => {
+    expect(() => validate(change(payload()), "p.json", diff, HEAD)).toThrow(message);
+  });
+
   test("refuses a finding attributed to a skipped lens", () => {
     const p = payload({
       lenses: [
@@ -353,6 +398,17 @@ describe("validate", () => {
     });
 
     expect(() => validate(p, "p.json", diff, HEAD)).toThrow(/not named for/);
+  });
+
+  test.each([
+    "Author model: pi/opencode-go/deepseek-v4.1-flash\nReviewer model: opencode/glm-5.3-flash-free\n",
+    "Reviewer model: opencode/glm-5.3-flash-free\n\nAuthor model: pi/opencode-go/deepseek-v4.1-flash\n",
+    "# report\nReviewer model: opencode/glm-5.3-flash-free\nAuthor model: pi/opencode-go/deepseek-v4.1-flash\n",
+  ])("refuses model headers that are not the opening adjacent reviewer/author pair: %s", (text) => {
+    const p = payload({ lenses: [{
+      name: "debate", model: "opencode/glm-5.3-flash-free", report: save("debate", text),
+    }] });
+    expect(() => validate(p, "p.json", diff, HEAD)).toThrow(/two model lines/);
   });
 
   test("refuses a report with no model lines", () => {
@@ -482,6 +538,29 @@ describe("parseDiff", () => {
     expect(parseDiff(raw)).toEqual([{ path: "a.txt", ranges: [[2, 2]] }]);
   });
 
+  test("header-shaped hunk content never changes the reviewed filename", () => {
+    expect(parseDiff(diff(
+      "diff --git a/query.sql b/query.sql",
+      "--- a/query.sql",
+      "+++ b/query.sql",
+      "@@ -1,2 +1,2 @@",
+      "--- removed comment",
+      "--- a/fake-removed.txt",
+      "+++ added comment",
+      "+++ b/fake-added.txt",
+    ))).toEqual([{ path: "query.sql", ranges: [[1, 2]] }]);
+  });
+
+  test("header-shaped deleted content remains in a deletion-only file", () => {
+    expect(parseDiff(diff(
+      "diff --git a/gone.sql b/gone.sql",
+      "--- a/gone.sql",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "--- removed comment",
+    ))).toEqual([{ path: "gone.sql", ranges: [] }]);
+  });
+
   test("a multi-line hunk becomes one range", () => {
     const raw = diff(
       "diff --git a/a.txt b/a.txt",
@@ -541,6 +620,14 @@ describe("parseDiff", () => {
       { path: "old.ts", ranges: [] },
       { path: "new.ts", ranges: [[4, 5]] },
     ]);
+  });
+
+  test("a binary diff registers its path without added-line ranges", () => {
+    expect(parseDiff(diff(
+      "diff --git a/image.bin b/image.bin",
+      "index 111..222 100644",
+      "Binary files a/image.bin and b/image.bin differ",
+    ))).toEqual([{ path: "image.bin", ranges: [] }]);
   });
 
   test("a mode-only change is a reviewed path with no hunks", () => {
@@ -607,6 +694,14 @@ describe("parseDiff", () => {
     ))).toEqual([{ path: "notes b/draft.txt", ranges: [] }]);
   });
 
+  test("non-UTF-8 quoted paths refuse with a filename diagnostic", () => {
+    expect(() => parseDiff(diff(
+      'diff --git "a/\\377.txt" "b/\\377.txt"',
+      "old mode 100644",
+      "new mode 100755",
+    ))).toThrow(/not a UTF-8 filename/);
+  });
+
   test("a C-quoted header-only path is still reviewed", () => {
     expect(parseDiff(diff(
       'diff --git "a/odd\\\"name.txt" "b/odd\\\"name.txt"',
@@ -666,6 +761,12 @@ describe("parseDiff", () => {
 
 describe("isAnchored", () => {
   const hunks: Hunk[] = [{ path: "apps/api/src/main.ts", ranges: [[10, 20], [30, 34]] }];
+
+  test.each([[9, false], [10, true], [20, true], [21, false]] as const)(
+    "line %i has inclusive-hunk eligibility %s", (line, expected) => {
+      expect(isAnchored(hunks, finding({ line }))).toBe(expected);
+    },
+  );
 
   test("a line inside a changed range goes inline", () => {
     expect(isAnchored(hunks, finding({ line: 15 }))).toBe(true);
@@ -730,6 +831,16 @@ describe("renderBody", () => {
     expect(body({ findings: [mergedFinding({ severity: "P1" })] })).not.toContain(
       "<!-- greptile_outside_diff -->",
     );
+  });
+
+  test.each([6, 10, 15])("a %i-backtick run cannot close the five-backtick prompt fence", (length) => {
+    const text = body({ findings: [mergedFinding({ body: "`".repeat(length) })] });
+    expect(text).toContain("\n````\n");
+  });
+
+  test("blob links encode reserved filename characters", () => {
+    const text = body({ findings: [mergedFinding({ path: "folder/a#b?c%.ts" })] });
+    expect(text).toContain("/folder/a%23b%3Fc%25.ts#L10");
   });
 
   test("renders a finding with its badge and its file", () => {
@@ -847,6 +958,32 @@ describe("the CLI contract", () => {
     expect(JSON.parse(written("inline.json"))).toEqual([]);
   });
 
+  test("the CLI supports equals-form values without guessing a different head", () => {
+    fixture();
+    const result = spawnSync(process.execPath, [script, `--issue=${issue}`, "--base=HEAD~1", "--head=HEAD"], {
+      cwd: work, encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    const parent = gitIn("rev-parse", "HEAD~1");
+    const other = spawnSync(process.execPath, [script, "--issue", issue, "--base", "HEAD~1", "--head=HEAD~1"], {
+      cwd: work, encoding: "utf8",
+    });
+    expect(other.status).toBe(2);
+    expect(other.stderr).toContain(`${parent}-findings.json`);
+  });
+
+  test.each([".", ".."])("issue %s cannot write outside its own reviews folder", (name) => {
+    fixture();
+    const unsafeDir = join(work, ".scratch", "reviews", name);
+    writeFileSync(join(unsafeDir, `${head}-findings.json`), readFileSync(join(dir, `${head}-findings.json`)));
+    const result = spawnSync(process.execPath, [script, "--issue", name, "--base", "HEAD~1"], {
+      cwd: work, encoding: "utf8",
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("plain folder name");
+    expect(existsSync(join(unsafeDir, `${head}-greptile-local.json`))).toBe(false);
+  });
+
   test("--head resolves a commit ref before naming the evidence", () => {
     fixture();
     const result = spawnSync(process.execPath, [script, "--issue", issue, "--base", "HEAD~1", "--head", "HEAD"], {
@@ -898,6 +1035,7 @@ describe("the CLI contract", () => {
           line: 2,
           title: "The added line is unread",
           evidence: "self-evident: the added line is not read.",
+          suggestion: "```suggestion\nreadAddedLine();\n```",
         }),
       ],
       "One P1 is open.",
@@ -907,10 +1045,29 @@ describe("the CLI contract", () => {
     expect(result.status).toBe(1);
     expect(written("greptile-local.md")).toContain("p1.svg");
     // SAFETY: the renderer wrote this array from the one P1 finding in the fixture.
-    const inline = JSON.parse(written("inline.json")) as Array<{ path: string; line: number }>;
+    const inline = JSON.parse(written("inline.json")) as Array<{ path: string; line: number; body: string }>;
     expect(inline).toHaveLength(1);
     expect(inline[0]?.path).toBe("a.txt");
     expect(inline[0]?.line).toBe(2);
+    expect(inline[0]?.body).toContain("```suggestion\nreadAddedLine();\n```");
+  });
+
+  test.each([
+    "https://fixture-user:fixture-secret@github.com/test/repo.git",
+    "ssh://git@github.com/test/repo.git",
+    "git@github.com:test/repo.git",
+  ])("rendered links use a public web URL for remote %s", (remote) => {
+    fixture();
+    gitIn("remote", "add", "origin", remote);
+    try {
+      expect(run("HEAD~1").status).toBe(0);
+      const body = written("greptile-local.md");
+      expect(body).toContain("https://github.com/test/repo/commit/");
+      expect(body).not.toContain("fixture-secret");
+      expect(body).not.toContain("ssh://");
+    } finally {
+      gitIn("remote", "remove", "origin");
+    }
   });
 
   test("a base that cannot be read exits 2 instead of rendering clean", () => {
@@ -943,11 +1100,13 @@ describe("the CLI contract", () => {
       const repoHead = gitAt("rev-parse", "HEAD");
       const repo = { work: repoWork, head: repoHead, dir: repoDir };
 
-      fixture([], "", repo);
+      fixture([finding({ path: "gone.txt", line: 1 })], "", repo);
       const result = run("HEAD~1", repo);
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("score      5/5");
+      expect(readFileSync(join(repoDir, `${repoHead}-greptile-local.md`), "utf8")).toContain("Comments Outside Diff");
+      expect(JSON.parse(readFileSync(join(repoDir, `${repoHead}-inline.json`), "utf8"))).toEqual([]);
     } finally {
       rmSync(repoWork, { recursive: true, force: true });
     }

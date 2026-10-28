@@ -26,13 +26,14 @@
  *   <head>-greptile-local.md     the body on its own
  *   <head>-inline.json           review-comment payloads for anchored findings
  *
- * Exit codes: 0 clean (5/5, no P0/P1) - 1 findings remain - 2 input invalid.
+ * Exit codes: 0 clean (5/5, no P0/P1) - 1 findings remain - 2 review refused/incomplete.
  */
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { z } from "zod";
+import { parseFlags } from "../../scripts/lib/args";
 
 export type Severity = "P0" | "P1" | "P2";
 type Impact = "Critical" | "High" | "Medium" | "Low";
@@ -41,7 +42,7 @@ export type Lens = {
   name: string;
   /** provider/model the lens actually ran on. */
   model: string;
-  /** Raw report, relative to the repo root. */
+  /** Raw report path, absolute or relative to the repo root. */
   report?: string;
   /** Present only when the lens genuinely did not apply. */
   skipped?: string;
@@ -128,15 +129,24 @@ const LENS_NAMES = ["debate", "test-audit", "code-review"] as const;
 // Arguments and repository position
 // ---------------------------------------------------------------------------
 
-const args = process.argv.slice(2);
+const args = parseFlags(process.argv.slice(2), [
+  { name: "--issue", kind: "value" },
+  { name: "--base", kind: "value" },
+  { name: "--head", kind: "value" },
+  { name: "--worktree", kind: "switch" },
+  { name: "--print", kind: "switch" },
+  { name: "--json", kind: "switch" },
+]);
 function arg(name: string): string | undefined;
 function arg(name: string, fallback: string): string;
 function arg(name: string, fallback?: string) {
-  const i = args.indexOf(`--${name}`);
-  const next = i >= 0 ? args[i + 1] : undefined;
-  return next !== undefined && !next.startsWith("--") ? next : fallback;
+  if (!args.ok) fail(args.message);
+  return args.values.get(`--${name}`)?.[0] ?? fallback;
 }
-const flag = (name: string) => args.includes(`--${name}`);
+const flag = (name: string) => {
+  if (!args.ok) fail(args.message);
+  return args.switches.has(`--${name}`);
+};
 
 const git = (...cmd: string[]) =>
   execFileSync("git", cmd, {
@@ -161,7 +171,9 @@ function main() {
 function run() {
   const issue = arg("issue");
   if (!issue) fail("--issue <id> is required; it names `.scratch/reviews/<id>/`.");
-  if (!/^[A-Za-z0-9._-]+$/.test(issue)) fail(`--issue "${issue}" is not a plain folder name.`);
+  if (!/^[A-Za-z0-9._-]+$/.test(issue) || issue === "." || issue === "..") {
+    fail(`--issue "${issue}" is not a plain folder name.`);
+  }
 
   if (flag("worktree")) {
     fail("--worktree cannot produce commit-pinned evidence. Commit the reviewed files and omit --worktree.");
@@ -276,7 +288,8 @@ function fail(msg: string): never {
 export function modelFamily(model: string): string {
   const id = model.split("/").pop()?.toLowerCase() ?? model.toLowerCase();
   // A split always yields one segment; the fallback satisfies the indexed-access check.
-  return id.replace(/-free$/, "").split(/-[a-z]?\d/)[0] ?? id;
+  const versioned = id.replace(/^([a-z]+)(?=\d)/, "$1-");
+  return versioned.replace(/-free$/, "").split(/-[a-z]?\d/)[0] ?? versioned;
 }
 
 /** A family keeps its name across suffixes: `deepseek` and `deepseek-chat` are one opinion. */
@@ -449,9 +462,9 @@ function checkReport(lens: Lens, authorModel: string, head: string, where: strin
     );
   }
 
-  const opening = readFileSync(report, "utf8").split(/\r?\n/).slice(0, 8).join("\n");
-  const reviewer = opening.match(/^\s*Reviewer model:\s*(\S+)\s*$/m)?.[1];
-  const author = opening.match(/^\s*Author model:\s*(\S+)\s*$/m)?.[1];
+  const opening = readFileSync(report, "utf8").split(/\r?\n/);
+  const reviewer = opening[0]?.match(/^Reviewer model:\s*(\S+)\s*$/)?.[1];
+  const author = opening[1]?.match(/^Author model:\s*(\S+)\s*$/)?.[1];
   if (!reviewer || !author) {
     fail(
       `${where}: ${report} does not open with the two model lines.\n` +
@@ -525,7 +538,9 @@ export type Hunk = { path: string; ranges: Array<[number, number]> };
 
 type Diff = { hunks: Hunk[]; raw: string };
 
-/** Git quotes control characters, quotes and backslashes even with core.quotePath=false. */
+const quotedPath = /^"(?:[^"\\]|\\(?:[0-7]{1,3}|[abfnrtv"\\]))*"$/;
+
+/** Decode Git's C-quoted path tokens, including octal UTF-8 bytes. */
 function decodePath(raw: string): string {
   if (!raw.startsWith('"')) {
     if (raw.includes('"') || [...raw].some((char) => char.charCodeAt(0) < 32)) {
@@ -533,7 +548,7 @@ function decodePath(raw: string): string {
     }
     return raw;
   }
-  if (!/^"(?:[^"\\]|\\(?:[0-7]{1,3}|[abfnrtv"\\]))*"$/.test(raw)) {
+  if (!quotedPath.test(raw)) {
     fail(`unreadable quoted diff path: ${raw}`);
   }
   const escapes = new Map([
@@ -551,22 +566,26 @@ function decodePath(raw: string): string {
       chunks.push(Buffer.from(match[2] ?? ""));
     }
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } catch {
+    fail(`not a UTF-8 filename: ${raw}`);
+  }
 }
 
 /** Spaces are legal in both names. Equal names disambiguate mode-only and binary headers. */
 function headerPaths(raw: string): { from: string; to: string } | null {
   const candidates: Array<{ from: string; to: string }> = [];
+  const completeToken = (path: string) => path.startsWith('"') ? quotedPath.test(path) : !path.includes('"');
   for (let i = raw.indexOf(" "); i >= 0; i = raw.indexOf(" ", i + 1)) {
-    try {
-      const from = decodePath(raw.slice(0, i));
-      const to = decodePath(raw.slice(i + 1));
-      if (from.startsWith("a/") && to.startsWith("b/")) {
-        candidates.push({ from: from.slice(2), to: to.slice(2) });
-      }
-    } catch (error) {
-      // A split inside a quoted name is not a candidate boundary.
-      if (!(error instanceof ReviewloopError)) throw error;
+    const left = raw.slice(0, i);
+    const right = raw.slice(i + 1);
+    // A split inside a quoted name is not a candidate boundary.
+    if (!completeToken(left) || !completeToken(right)) continue;
+    const from = decodePath(left);
+    const to = decodePath(right);
+    if (from.startsWith("a/") && to.startsWith("b/")) {
+      candidates.push({ from: from.slice(2), to: to.slice(2) });
     }
   }
   const equal = candidates.filter((pair) => pair.from === pair.to);
@@ -603,6 +622,7 @@ export function parseDiff(raw: string): Hunk[] {
   let header: { from: string; to: string } | null = null;
   let headerRaw: string | null = null;
   let paired = false;
+  let inHunk = false;
 
   // End the file: a header that never met a `---`/`+++` pair is a mode-only or
   // binary change, and both of its names were reviewed. Also drop `current`, so
@@ -617,6 +637,7 @@ export function parseDiff(raw: string): Hunk[] {
     header = null;
     headerRaw = null;
     paired = false;
+    inHunk = false;
     current = null;
     removed = null;
   };
@@ -626,6 +647,16 @@ export function parseDiff(raw: string): Hunk[] {
       flush();
       headerRaw = line.slice("diff --git ".length);
       header = headerPaths(headerRaw);
+    } else if (line.startsWith("@@")) {
+      inHunk = true;
+      const m = line.match(/\+(\d+)(?:,(\d+))?/);
+      if (!m || !current) continue;
+      const start = Number(m[1]);
+      const len = m[2] === undefined ? 1 : Number(m[2]);
+      if (len > 0) current.ranges.push([start, start + len - 1]);
+    } else if (inHunk) {
+      // Added/deleted content can start with +++/---. Only diff headers end a file.
+      continue;
     } else if (line.startsWith("--- ") && line !== "--- /dev/null") {
       const path = clean(line, "--- ");
       if (!path.startsWith("a/")) fail(`unreadable removed path: ${line}`);
@@ -647,12 +678,6 @@ export function parseDiff(raw: string): Hunk[] {
     } else if (line.startsWith("rename to ")) {
       paired = true;
       at(clean(line, "rename to "));
-    } else if (line.startsWith("@@") && current) {
-      const m = line.match(/\+(\d+)(?:,(\d+))?/);
-      if (!m) continue;
-      const start = Number(m[1]);
-      const len = m[2] === undefined ? 1 : Number(m[2]);
-      if (len > 0) current.ranges.push([start, start + len - 1]);
     }
   }
 
@@ -661,9 +686,9 @@ export function parseDiff(raw: string): Hunk[] {
 }
 
 function readDiff(baseRef: string, headRef: string): Diff {
-  // Pin the two settings that change path spelling: a diff must parse the same
-  // on a machine with `core.quotePath=true` or `diff.noprefix=true` configured.
-  const stable = ["-c", "core.quotePath=false", "-c", "diff.noprefix=false"];
+  // Request C-quoted non-ASCII bytes so invalid UTF-8 cannot silently become
+  // replacement characters. Prefix spelling must also ignore user configuration.
+  const stable = ["-c", "core.quotePath=true", "-c", "diff.noprefix=false"];
   let raw = "";
   try {
     raw = git(...stable, "diff", "--unified=0", "--no-color", `${baseRef}...${headRef}`);
@@ -847,14 +872,14 @@ export function renderBody(opts: {
     .join(", ");
   L.push(
     `<sub>Reviews (1) · Last reviewed commit: ["${html(subject)}"](${repo}/commit/${head}) · ` +
-      `reviewloop on ${payload.authorModel} · base \`${base}\` · ${lenses}</sub>`,
+      `reviewloop on ${html(payload.authorModel)} · base \`${html(base)}\` · ${html(lenses)}</sub>`,
   );
 
   return L.join("\n") + "\n";
 }
 
 function inlinePayload(f: Merged) {
-  const comment = uncode(f.body) + (f.fix ? `\n\n${uncode(f.fix)}` : "");
+  const comment = [f.body, f.fix, f.suggestion].filter((part) => part !== undefined).map(uncode).join("\n\n");
   const body = [
     `<a href="#">${badge(f.severity)}</a> **${inlineSafe(f.title)}**`,
     "",
@@ -895,7 +920,8 @@ function inlinePayload(f: Merged) {
 
 function blobUrl(repo: string, head: string, f: Finding) {
   const range = f.endLine && f.endLine !== f.line ? `L${f.line}-L${f.endLine}` : `L${f.line}`;
-  return `${repo}/blob/${head}/${f.path}#${range}`;
+  const path = f.path.split("/").map(encodeURIComponent).join("/");
+  return `${repo}/blob/${head}/${path}#${range}`;
 }
 
 function lineRange(f: Finding) {
@@ -908,9 +934,18 @@ function badge(severity: Severity) {
 
 function repoUrl(): string {
   try {
-    const url = git("remote", "get-url", "origin").replace(/\.git$/, "");
-    const ssh = url.match(/^git@([^:]+):(.+)$/);
-    return ssh ? `https://${ssh[1]}/${ssh[2]}` : url;
+    const remote = git("remote", "get-url", "origin");
+    const scp = remote.match(/^git@([^:]+):(.+)$/);
+    const transport = new URL(scp ? `https://${scp[1]}/${scp[2]}` : remote);
+    const url = transport.protocol === "ssh:"
+      ? new URL(`https://${transport.hostname}${transport.pathname}`)
+      : transport;
+    if (url.protocol !== "https:" && url.protocol !== "http:") return "https://example.invalid/repo";
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href.replace(/\/$/, "").replace(/\.git$/, "");
   } catch {
     return "https://example.invalid/repo";
   }
@@ -935,7 +970,7 @@ function oneLine(s: string) {
 
 /** The fix block is delimited by five backticks; four inside it is safe, five is not. */
 function uncode(s: string) {
-  return s.replace(/`````/g, "````").trim();
+  return s.replace(/`{5,}/g, "````").trim();
 }
 
 function html(s: string) {

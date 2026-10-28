@@ -188,7 +188,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
 
   // 5. the purchased supplier shows the charge
   await page.goto("/suppliers");
-  await page.getByRole("link", { name: supplierName }).click();
+  await page.getByRole("link", { name: supplierName, exact: true }).click();
   await expect(page.getByTestId("supplier-balance-value")).toHaveText("5,000 دج");
 
   // 6. an invoice-linked خصم of 500: the balance and the invoice both drop

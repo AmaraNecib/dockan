@@ -181,6 +181,24 @@ describe("DebtsPage (ticket 9)", () => {
     queryClient.clear();
   });
 
+  it("offers role-specific Details beside each expansion control, never by legacy name (#407)", async () => {
+    owedToUs = [summary({ counterpartyId: "customer-407" }), summary({ counterpartyName: "اسم قديم" })];
+    weOwe = [summary({ kind: "PURCHASE", counterpartyId: "supplier-407", counterpartyName: "مورد" })];
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.personButtons().length === 3)).toBe(true);
+    const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('[data-testid="debts-person-details"]'));
+    expect(links).toHaveLength(2);
+    expect(links.map((link) => link.getAttribute("href"))).toEqual(["/customers/$partyId?partyId=customer-407", "/suppliers/$partyId?partyId=supplier-407"]);
+    for (const link of links) {
+      expect(link.textContent).toBe("تفاصيل");
+      expect(link.closest("button")).toBeNull();
+    }
+    await act(async () => ui.personButtons()[0]?.click());
+    expect(ui.personButtons()[0]?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelectorAll('[data-testid="debts-person-details"]')).toHaveLength(2);
+    await ui.unmount();
+  });
+
   it("renders both debt directions with per-person totals and invoice counts", async () => {
     owedToUs = [summary({ counterpartyName: "زبون مدين", remainingTotal: 600, invoiceCount: 1 })];
     weOwe = [summary({ kind: "PURCHASE", counterpartyName: "مورد مستحق", remainingTotal: 800, invoiceCount: 2 })];

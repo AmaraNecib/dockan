@@ -555,6 +555,29 @@ describe("InvoicePage invoice switch (#171)", () => {
   });
 });
 
+describe("InvoicePage account navigation (#407)", () => {
+  for (const [kind, role] of [["SALE", "customers"], ["PURCHASE", "suppliers"]] as const) {
+    it(`links the stored ${kind} identity to its existing role-specific page`, async () => {
+      await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName: "اسم مكرر" });
+      const link = host.querySelector<HTMLAnchorElement>('[data-testid="invoice-party"] a');
+      expect(link).not.toBeNull();
+      expect(link?.textContent).toBe("اسم مكرر");
+      expect(link?.getAttribute("href")).toBe(`/${role}/$partyId?partyId=party-407`);
+    });
+  }
+
+  it("keeps a typed-only legacy name readable without a guessed link", async () => {
+    await renderPage({ ...makeInvoice(900), counterpartyId: null, counterpartyName: "اسم مكرر" });
+    expect(host.querySelector('[data-testid="invoice-party"]')?.textContent).toBe("اسم مكرر");
+    expect(host.querySelector('[data-testid="invoice-party"] a')).toBeNull();
+  });
+
+  it("offers a readable account action even when the stored name is absent", async () => {
+    await renderPage({ ...makeInvoice(900), counterpartyId: "party-407", counterpartyName: null });
+    expect(host.querySelector('[data-testid="invoice-party"] a')?.textContent).toBe("تفاصيل");
+  });
+});
+
 describe("InvoicePage notes (issue #126)", () => {
   it("shows the notes section with the stored text when present", async () => {
     await renderPage({ ...makeInvoice(900), notes: "الاتصال قبل التسليم" });

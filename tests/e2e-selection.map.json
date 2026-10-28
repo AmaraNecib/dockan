@@ -139,6 +139,7 @@
       ],
       "specs": [
         "invoice-payments.spec.ts",
+        "party-navigation.spec.ts",
         "invoice-print-a4.spec.ts",
         "pagination.spec.ts",
         "purchase-intake.spec.ts",
@@ -174,6 +175,7 @@
       ],
       "specs": [
         "customers.spec.ts",
+        "party-navigation.spec.ts",
         "customer-name-variants.spec.ts",
         "phone-identity.spec.ts",
         "supplier-account.spec.ts",
@@ -195,7 +197,7 @@
     {
       "$comment": "supplier-adjustment.spec.ts drives the supplier-credit label and total on /debts (lines 162-167), so a debts.tsx-only diff must run it (#231)",
       "match": ["apps/web/src/pages/debts.tsx", "apps/web/src/pages/debts.test.tsx"],
-      "specs": ["debts.spec.ts", "supplier-adjustment.spec.ts"]
+      "specs": ["debts.spec.ts", "party-navigation.spec.ts", "supplier-adjustment.spec.ts"]
     },
     {
       "$comment": "profit report and the expense history that feeds it",

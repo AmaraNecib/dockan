@@ -9,7 +9,7 @@ import { displayAlgerianPhone } from "@dokan/contracts";
 import { DeletePartyDialog, PartyFormDialog } from "@/components/parties/party-forms";
 import { filterParties } from "@/components/parties/party-match";
 import { Amount } from "@/components/ui/amount";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -167,6 +167,9 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1">
+                        <Link to={role === "customer" ? "/customers/$partyId" : "/suppliers/$partyId"} params={{ partyId: row.id }} className={buttonVariants({ variant: "outline", size: "sm" })} data-testid="party-row-details" aria-label={`${t("partyDetails")} ${row.name}`}>
+                          {t("partyDetails")}
+                        </Link>
                         <Button variant="ghost" size="sm" onClick={() => setEditing(row)} data-testid="party-row-edit" aria-label={`${t("partyEdit")} ${row.name}`}>
                           {t("partyEdit")}
                         </Button>

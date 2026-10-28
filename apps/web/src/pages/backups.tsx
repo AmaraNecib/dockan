@@ -1,5 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 
@@ -17,6 +18,7 @@ export function BackupsPage() {
   const { t } = useTranslation();
   const backup = useMutation(orpc.backupManual.mutationOptions());
   const reveal = useMutation({ mutationFn: revealBackup });
+  const dispatching = useRef(false);
   const revealError = reveal.error instanceof BackupRevealError ? reveal.error.key : "backupsRevealFailed";
   const missing = reveal.isError && revealError === "backupsRevealMissing";
   const desktop = backupRevealAvailable();
@@ -31,8 +33,10 @@ export function BackupsPage() {
           <Button
             data-testid="backup-export"
             onClick={() => {
+              if (dispatching.current) return;
+              dispatching.current = true;
               reveal.reset();
-              backup.mutate(undefined);
+              backup.mutate(undefined, { onSettled: () => { dispatching.current = false; } });
             }}
             disabled={backup.isPending || reveal.isPending}
           >
@@ -56,7 +60,11 @@ export function BackupsPage() {
             <Button
               className="mt-3"
               variant="outline"
-              onClick={() => reveal.mutate(backup.data.path)}
+              onClick={() => {
+                if (dispatching.current) return;
+                dispatching.current = true;
+                reveal.mutate(backup.data.path, { onSettled: () => { dispatching.current = false; } });
+              }}
               disabled={!desktop || reveal.isPending}
             >
               {reveal.isPending ? t("backupsRevealing") : t("backupsReveal")}

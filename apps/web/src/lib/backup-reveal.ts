@@ -1,4 +1,6 @@
-type RevealInvoke = (command: string, args: { path: string }) => Promise<void>;
+import { readVaultSessionToken } from "./vault-client";
+
+type RevealInvoke = (command: string, args: { path: string; sessionToken: string }) => Promise<void>;
 
 function revealInvoke(): RevealInvoke | undefined {
   // SAFETY: Tauri injects this bridge only into its desktop webview.
@@ -22,7 +24,7 @@ export async function revealBackup(path: string): Promise<void> {
   const invoke = revealInvoke();
   if (!invoke) throw new BackupRevealError("backupsRevealDesktopOnly");
   try {
-    await invoke("backup_reveal", { path });
+    await invoke("backup_reveal", { path, sessionToken: readVaultSessionToken() ?? "" });
   } catch (error) {
     if (error === "BACKUP_REVEAL_MISSING") throw new BackupRevealError("backupsRevealMissing");
     if (error === "BACKUP_REVEAL_UNSUPPORTED") throw new BackupRevealError("backupsRevealDesktopOnly");

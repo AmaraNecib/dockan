@@ -1,18 +1,21 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
+import assert from "node:assert/strict";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
 import "../lib/i18n";
 import { BackupsPage } from "./backups";
+import { clearVaultSessionToken, storeVaultSessionToken } from "../lib/vault-client";
 
 // SAFETY: React's test environment flag is the only global modified here.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 // SAFETY: happy-dom supplies setURL so the real RPC link has a browser origin.
 (window as { happyDOM?: { setURL: (url: string) => void } }).happyDOM?.setURL("http://localhost:5173/");
 
-type RevealCall = { command: string; args: { path: string } };
-type TestBridge = { invoke: (command: string, args: { path: string }) => Promise<void> };
+type RevealCall = { command: string; args: { path: string; sessionToken: string } };
+type TestBridge = { invoke: (command: string, args: { path: string; sessionToken: string }) => Promise<void> };
+const sessionToken = "a".repeat(43);
 const completedPath = "C:/نسخ المحل/backup, completed.db.enc";
 const originalFetch = globalThis.fetch;
 let calls: RevealCall[] = [];
@@ -26,7 +29,7 @@ function bridge(invoke: TestBridge["invoke"]): void {
 
 function button(label: string): HTMLButtonElement {
   const found = Array.from(host.querySelectorAll("button")).find((entry) => entry.textContent === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
+  assert.ok(found, `Missing button: ${label}`);
   return found;
 }
 
@@ -43,6 +46,7 @@ async function click(label: string): Promise<void> {
 
 beforeEach(async () => {
   calls = [];
+  storeVaultSessionToken(sessionToken);
   bridge(async (command, args) => { calls.push({ command, args }); });
   globalThis.fetch = Object.assign(async () => Response.json({ json: {
     path: completedPath, createdAt: "2026-10-28T09:00:00",
@@ -61,6 +65,7 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   globalThis.fetch = originalFetch;
+  clearVaultSessionToken();
   // SAFETY: remove only the bridge installed by this test.
   delete (window as { __TAURI_INTERNALS__?: TestBridge }).__TAURI_INTERNALS__;
 });
@@ -70,7 +75,7 @@ it("reveals only the actual successfully completed backup", async () => {
   await click("إنشاء نسخة احتياطية الآن");
   expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
   await click("إظهار الملف في المجلد");
-  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath } }]);
+  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken } }]);
 });
 
 it("invalidates the completed-file claim when native reveal refuses a missing file", async () => {
@@ -98,7 +103,7 @@ it("reports a native failure in Arabic and allows retry of the same completed pa
   expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
   bridge(async (command, args) => { calls.push({ command, args }); });
   await click("إظهار الملف في المجلد");
-  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath } }]);
+  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken } }]);
   expect(host.querySelector('[role="alert"]')).toBeNull();
 });
 
@@ -129,6 +134,58 @@ it("removes the old success and reveal error while a new creation is pending or 
   expect(host.querySelector('[role="alert"]')).not.toBeNull();
   expect(host.querySelector('[data-testid="backup-done"]')).toBeNull();
   expect(button("إنشاء نسخة احتياطية الآن").disabled).toBe(false);
+});
+
+it("maps unsupported native reveal to the Arabic desktop-only explanation", async () => {
+  bridge(async () => { throw "BACKUP_REVEAL_UNSUPPORTED"; });
+  await click("إنشاء نسخة احتياطية الآن");
+  await click("إظهار الملف في المجلد");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+    "إظهار الملف متاح في تطبيق دكان على Windows فقط. يمكنك فتح المسار الظاهر يدوياً.",
+  );
+  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+});
+
+it("blocks same-turn competing dispatches before React commits pending state", async () => {
+  await click("إنشاء نسخة احتياطية الآن");
+  let finish: (() => void) | undefined;
+  bridge((command, args) => {
+    calls.push({ command, args });
+    return new Promise<void>((resolve) => { finish = resolve; });
+  });
+  let creations = 0;
+  globalThis.fetch = Object.assign(async () => {
+    creations++;
+    return Response.json({ json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } });
+  }, { preconnect: originalFetch.preconnect });
+  const reveal = button("إظهار الملف في المجلد");
+  const create = button("إنشاء نسخة احتياطية الآن");
+  await act(async () => {
+    reveal.click();
+    reveal.click();
+    create.click();
+  });
+  await settle();
+  expect(calls).toHaveLength(1);
+  expect(creations).toBe(0);
+  await act(async () => finish?.());
+  await settle();
+});
+
+it("sends one creation when duplicate clicks arrive in the same turn", async () => {
+  let creations = 0;
+  let complete: ((value: Response) => void) | undefined;
+  globalThis.fetch = Object.assign(() => {
+    creations++;
+    return new Promise<Response>((resolve) => { complete = resolve; });
+  }, { preconnect: originalFetch.preconnect });
+  const create = button("إنشاء نسخة احتياطية الآن");
+  await act(async () => { create.click(); create.click(); });
+  await settle();
+  expect(creations).toBe(1);
+  await act(async () => complete?.(Response.json({ json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } })));
+  await settle();
+  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
 });
 
 it("prevents a new backup or duplicate reveal until the native call settles", async () => {

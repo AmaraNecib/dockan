@@ -259,6 +259,9 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Reveal is not granted by the wildcard-port gate capability. Only this
+    // verified launch's exact origin receives its separate native authority.
+    app.add_capability(backup_reveal_capability(port).to_string())?;
     if let Some(window) = app.get_webview_window("main") {
         navigate(window, &setup_navigation_url(port, &boot_token))?;
     }
@@ -618,6 +621,88 @@ pub async fn vault_logout(app: AppHandle) -> Result<(), String> {
         Ok(())
     })
     .await
+}
+
+fn backup_reveal_capability(port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "identifier": "backup-reveal-sidecar",
+        "description": "Reveal recorded backups from the verified sidecar only",
+        "windows": ["main"],
+        "local": false,
+        "remote": {"urls": [format!("http://127.0.0.1:{port}")]},
+        "permissions": ["allow-backup-reveal"]
+    })
+}
+
+fn reveal_origin_matches(url: &tauri::Url, port: u16) -> bool {
+    url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
+        && url.port_or_known_default() == Some(port)
+        && url.username().is_empty() && url.password().is_none()
+}
+
+/// Read the existing authenticated audit RPC, never a renderer-selected URL.
+/// The body is bounded and every request has connect/read/write deadlines.
+fn backup_audit(port: u16, session_token: &str) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    // VaultManager tokens are 32 random bytes in base64url. This also prevents
+    // a renderer from injecting HTTP headers into the native request.
+    if session_token.len() != 43 || !session_token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
+        return Err(FAILED);
+    }
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).map_err(|_| FAILED)?;
+    stream.set_read_timeout(Some(Duration::from_secs(3))).map_err(|_| FAILED)?;
+    stream.set_write_timeout(Some(Duration::from_secs(3))).map_err(|_| FAILED)?;
+    let body = r#"{"json":{"limit":500,"offset":0}}"#;
+    let request = format!("POST /api/rpc/activitiesList HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {session_token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    stream.write_all(request.as_bytes()).map_err(|_| FAILED)?;
+    const MAX_RESPONSE: u64 = 2 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    stream.take(MAX_RESPONSE + 1).read_to_end(&mut bytes).map_err(|_| FAILED)?;
+    if bytes.len() as u64 > MAX_RESPONSE { return Err(FAILED); }
+    let response = std::str::from_utf8(&bytes).map_err(|_| FAILED)?;
+    let (headers, body) = response.split_once("\r\n\r\n").ok_or(FAILED)?;
+    if headers.lines().next().and_then(|line| line.split_whitespace().nth(1)) != Some("200") {
+        return Err(FAILED);
+    }
+    // HTTP/1.0 with Connection: close asks for an unchunked body. Never accept
+    // redirects or guess a partial/encoded response as completion evidence.
+    serde_json::from_str(body).map_err(|_| FAILED)
+}
+
+/// Native authority comes from SidecarConfig and the authenticated audit, not
+/// the renderer's path. Recheck the launch after HTTP; never hold the lifecycle
+/// mutex across network/Shell work, because shutdown must still kill the child.
+#[tauri::command]
+pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, session_token: String) -> Result<(), String> {
+    use crate::backup_reveal::FAILED;
+    let origin = window.url().map_err(|_| FAILED.to_string())?;
+    let main_window = window.label() == "main";
+    run_broker_task(move || {
+        use crate::backup_reveal::{check_candidate, reveal_backup};
+        if !cfg!(windows) { return Err("BACKUP_REVEAL_UNSUPPORTED".to_string()); }
+        let state = app.state::<SidecarState>();
+        let (config, pid) = {
+            let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
+            let config = guard.config.clone().ok_or(FAILED)?;
+            if !main_window || !reveal_origin_matches(&origin, config.port) { return Err(FAILED.to_string()); }
+            let sidecar = guard.sidecar.as_mut().ok_or(FAILED)?;
+            if shutdown_began() || !sidecar.served || !matches!(sidecar.child.try_wait(), Ok(None)) {
+                return Err(FAILED.to_string());
+            }
+            (config, sidecar.child.id())
+        };
+        let path = Path::new(&path);
+        check_candidate(path, &config.data_dir).map_err(str::to_string)?;
+        let audit = backup_audit(config.port, &session_token).map_err(str::to_string)?;
+        {
+            let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
+            let sidecar = guard.sidecar.as_mut().ok_or(FAILED)?;
+            if shutdown_began() || sidecar.child.id() != pid || !sidecar.served
+                || !matches!(sidecar.child.try_wait(), Ok(None)) { return Err(FAILED.to_string()); }
+        }
+        reveal_backup(path, &config.data_dir, &audit).map_err(str::to_string)
+    }).await
 }
 
 /// The bundled sidecar lands in the resource dir under its plain name; the
@@ -1322,7 +1407,6 @@ mod tests {
             "vault_setup_saved",
             "vault_setup_warning",
             "vault_logout",
-            "backup_reveal",
         ] {
             let allowed = resolved.allowed_commands.get(command).is_some_and(|commands| {
                 commands.iter().any(|resolved| {
@@ -1331,6 +1415,86 @@ mod tests {
             });
             assert!(allowed, "{command} must be allowed from the remote sidecar origin");
         }
+    }
+
+    #[test]
+    fn reveal_capability_is_only_for_the_exact_native_sidecar_origin() {
+        use std::collections::BTreeMap;
+        use tauri::utils::acl::{capability::Capability, manifest::Manifest, resolved::Resolved, ExecutionContext};
+        use tauri::utils::platform::Target;
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |name: &str| std::fs::read_to_string(manifest.join("gen/schemas").join(name)).unwrap();
+        let acl: BTreeMap<String, Manifest> = serde_json::from_str(&read("acl-manifests.json")).unwrap();
+        let mut capabilities: BTreeMap<String, Capability> = serde_json::from_str(&read("capabilities.json")).unwrap();
+        let static_acl = Resolved::resolve(&acl, capabilities.clone(), Target::Windows).unwrap();
+        assert!(!static_acl.allowed_commands.contains_key("backup_reveal"), "no wildcard or asset capability may grant reveal");
+        let cap: Capability = serde_json::from_value(backup_reveal_capability(4318)).unwrap();
+        assert!(!cap.local);
+        assert_eq!(cap.windows, ["main"]);
+        capabilities.insert(cap.identifier.clone(), cap);
+        let resolved = Resolved::resolve(&acl, capabilities, Target::Windows).unwrap();
+        let commands = resolved.allowed_commands.get("backup_reveal").expect("runtime reveal permission resolves");
+        for (text, expected) in [("http://127.0.0.1:4318/backups", true),
+            ("http://127.0.0.1:4319/backups", false), ("http://dokan.localhost:4318/", false),
+            ("http://localhost:4318/", false), ("https://127.0.0.1:4318/", false), ("tauri://localhost/", false)] {
+            let url: tauri::Url = text.parse().unwrap();
+            assert_eq!(commands.iter().any(|command| matches!(&command.context, ExecutionContext::Remote { url: pattern } if pattern.test(&url))), expected, "{text}");
+            assert_eq!(reveal_origin_matches(&url, 4318), expected, "runtime origin: {text}");
+        }
+    }
+
+    #[test]
+    fn reveal_audit_refuses_missing_invalid_and_revoked_sessions() {
+        assert!(backup_audit(1, "").is_err());
+        assert!(backup_audit(1, "injected\r\nx-vault-session: forged").is_err());
+        let (port, responder, _listener) = spawn_responder(|request| {
+            assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+            assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
+            "HTTP/1.0 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+        });
+        assert!(backup_audit(port, &"a".repeat(43)).is_err());
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_uses_only_the_fixed_authenticated_read_rpc() {
+        let (port, responder, _listener) = spawn_responder(|request| {
+            assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+            assert!(request.contains(r#"{"json":{"limit":500,"offset":0}}"#));
+            http200(r#"{"json":{"items":[{"type":"BACKUP_CREATED","ref":"C:/shop/backups/completed.db"}]}}"#)
+        });
+        let audit = backup_audit(port, &"a".repeat(43)).unwrap();
+        assert_eq!(audit["json"]["items"][0]["type"], "BACKUP_CREATED");
+        responder.join().unwrap();
+    }
+
+    /// Opt-in wire/native proof against a real broker-mode API. The harness
+    /// supplies a native-owned root and the session over its process environment.
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "requires a running authenticated API and interactive Windows desktop"]
+    fn recorded_backup_native_wire_proof() {
+        let root = std::env::var("DOKAN_401_NATIVE_ROOT").unwrap();
+        let path = std::env::var("DOKAN_401_NATIVE_PATH").unwrap();
+        let port: u16 = std::env::var("DOKAN_401_NATIVE_PORT").unwrap().parse().unwrap();
+        let token = std::env::var("DOKAN_401_NATIVE_SESSION").unwrap();
+        let path = Path::new(&path);
+        let before = std::fs::read(path).unwrap();
+        let audit = backup_audit(port, &token).expect("live session must read the real API audit");
+        assert_eq!(crate::backup_reveal::reveal_backup(path, Path::new(&root), &audit), Ok(()));
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert!(backup_audit(port, &"x".repeat(43)).is_err(), "invalid session must be refused by the API");
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let logout = format!("POST /api/vault/logout HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {token}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+        stream.write_all(logout.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.lines().next().unwrap().contains(" 200 "), "fixture logout must revoke the real session");
+        assert!(backup_audit(port, &token).is_err(), "the previously valid session must no longer authorize the audit");
+        println!("Authenticated audit read refused the revoked session.");
+        println!("Authenticated native reveal selected completed backup: {}", path.display());
+        println!("Backup bytes unchanged: {}", before.len());
     }
 
     /// Test-only sibling of [`kill_sidecar`] (which needs an AppHandle).

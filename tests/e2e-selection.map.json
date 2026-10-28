@@ -139,6 +139,7 @@
       ],
       "specs": [
         "invoice-payments.spec.ts",
+        "invoice-search.spec.ts",
         "invoice-print-a4.spec.ts",
         "pagination.spec.ts",
         "purchase-intake.spec.ts",

@@ -126,6 +126,50 @@ describe("store pagination (issue 163)", () => {
     expect(all.items.length).toBe(all.total);
   });
 
+  it("searches recorded invoice contents before paging and preserves identity after rename (#405)", async () => {
+    const item = await store.createItem({ name: "الْإِطَار القديم", barcode: "BC-405", categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0 });
+    const target = await makeInvoice(405);
+    for (let i = 0; i < 2; i++) await store.insertInvoiceLine({ invoiceId: target, itemId: item.id, description: "الْإِطَار القديم", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });
+    await store.updateItem(item.id, { id: item.id, name: "اسم جديد" });
+    // Place the target beyond page one using persisted dates, not insertion timing.
+    const newer = await store.insertInvoice({ invoiceNumber: "INV-405-NEW", kind: "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: "2099-01-01", totalAmount: 150, paidAmount: 150, remainingAmount: 0, notes: null });
+    const first = await store.listInvoices({ kind: "SALE", limit: 1, offset: 0 });
+    expect(first.items[0]?.id).toBe(newer.id);
+    const result = await store.listInvoices({ search: "اطار", kind: "SALE", status: "UNPAID", limit: 1, offset: 0 });
+    expect(result.items.map(row => row.id)).toEqual([target]);
+    expect(result.total).toBe(1);
+    expect((await store.listInvoices({ search: "bc-405" })).items.map(row => row.id)).toEqual([target]);
+    expect((await store.listInvoices({ search: "INV-PAGE-0405" })).items.map(row => row.id)).toEqual([target]);
+    expect((await store.listInvoices({ search: "اطار", status: "PAID" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "اطار", kind: "PURCHASE" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "اطار", limit: 1, offset: 1 })).items).toEqual([]);
+    expect((await store.getInvoiceDetail(target))?.id).toBe(target);
+  });
+
+  it("uses the current item only for legacy blank names and unsnapshotted barcodes (#405)", async () => {
+    const item = await store.createItem({ name: "اسم تراثي", barcode: "LEGACY-405", categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0 });
+    const legacy = await makeInvoice(407);
+    await store.insertInvoiceLine({ invoiceId: legacy, itemId: item.id, description: "", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });
+    expect((await store.listInvoices({ search: "تراثي" })).items.map(row => row.id)).toEqual([legacy]);
+    await store.updateItem(item.id, { id: item.id, name: "اسم حالي", barcode: "CURRENT-405" });
+    expect((await store.listInvoices({ search: "تراثي" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "حالي" })).items.map(row => row.id)).toEqual([legacy]);
+    expect((await store.listInvoices({ search: "LEGACY-405" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "CURRENT-405" })).items.map(row => row.id)).toEqual([legacy]);
+  });
+
+  it("treats wildcard and injection-like search as literal text (#405)", async () => {
+    const target = await makeInvoice(406);
+    await store.insertInvoiceLine({ invoiceId: target, itemId: null, description: "100%_ ' OR 1=1 --", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });
+    for (const search of ["%_", "' OR 1=1 --"]) {
+      const result = await store.listInvoices({ search });
+      expect(result.items.map(row => row.id)).toEqual([target]);
+      expect(result.total).toBe(1);
+    }
+    expect((await store.listInvoices({ search: "no-such-405-item" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "   " })).total).toBe((await store.listInvoices({})).total);
+  });
+
   it("pages activities newest-first and counts the whole log", async () => {
     for (let i = 0; i < 15; i++) {
       await store.insertActivity({ type: "ITEM_CREATED", summary: `ITEM_CREATED صفحة ${i}` });

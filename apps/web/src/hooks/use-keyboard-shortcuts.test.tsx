@@ -117,8 +117,10 @@ describe("workflow keyboard actions", () => {
   it("does not toggle the sidebar for combined Ctrl and Meta modifiers", () => {
     let calls = 0;
     const field = mount({ onToggleSidebar: () => { calls++; } });
-    expect(press(field, "B", { ctrlKey: true, metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
-    expect(calls).toBe(0);
+    for (const target of [field, window]) {
+      expect(press(target, "B", { ctrlKey: true, metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+      expect(calls).toBe(0);
+    }
   });
 
   it.each(["display: none", "visibility: hidden"])("does not treat a CSS-hidden dialog as active: %s", (style) => {
@@ -132,6 +134,7 @@ describe("workflow keyboard actions", () => {
     expect(calls).toBe(1);
   });
 
+  // red-on-parent-waive: "still blocks for a dialog that overrides inherited hidden visibility" — the parent has no sale shortcut, so this no-navigation assertion already passes; it guards the visibility-override regression reproduced against the first shortcut implementation.
   it("still blocks for a dialog that overrides inherited hidden visibility", () => {
     let calls = 0;
     const field = mount({ onSale: () => { calls++; } });

@@ -1096,6 +1096,35 @@ describe("the CLI contract", () => {
     expect(JSON.parse(written("inline.json"))).toEqual([]);
   });
 
+  test("configured inter-hunk context cannot turn unchanged lines into native comments", () => {
+    const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-inter-hunk-");
+    try {
+      const lines = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`);
+      writeFileSync(join(repoWork, "a.txt"), lines.join("\n") + "\n");
+      gitAt("add", "a.txt");
+      gitAt("commit", "-qm", "first");
+      lines[1] = "changed second line";
+      lines[8] = "changed ninth line";
+      writeFileSync(join(repoWork, "a.txt"), lines.join("\n") + "\n");
+      gitAt("commit", "-qam", "separate edits");
+      gitAt("config", "diff.interHunkContext", "100");
+      const repoHead = gitAt("rev-parse", "HEAD");
+      const repo = { work: repoWork, head: repoHead, dir: repoDir };
+      fixture([2, 5, 9].map((line) => finding({ path: "a.txt", line })), "", repo);
+      expect(run("HEAD~1", repo).status).toBe(0);
+      // SAFETY: artifacts were emitted by the CLI from these three findings.
+      const inline = JSON.parse(readFileSync(join(repoDir, `${repoHead}-inline.json`), "utf8")) as Array<{ line: number }>;
+      // SAFETY: review.json is the CLI request for the same three-finding fixture.
+      const review = JSON.parse(readFileSync(join(repoDir, `${repoHead}-review.json`), "utf8")) as { commit_id: string; comments: unknown[] };
+      expect(inline.map((comment) => comment.line)).toEqual([2, 9]);
+      expect(review.comments).toEqual(inline);
+      expect(review.commit_id).toBe(repoHead);
+      const summary = readFileSync(join(repoDir, `${repoHead}-greptile-local.md`), "utf8");
+      expect(summary).toContain("Comments Outside Diff");
+      expect(summary).toContain("a.txt:5");
+    } finally { rmSync(repoWork, { recursive: true, force: true }); }
+  });
+
   test("binds native review threads to the reviewed commit and changed line", () => {
     fixture([finding({ path: "a.txt", line: 2, severity: "P1" })], "Fix the changed line.");
     const result = run("HEAD~1");
@@ -1114,6 +1143,31 @@ describe("the CLI contract", () => {
     expect(review.comments[0]).toMatchObject({ path: "a.txt", line: 2, side: "RIGHT" });
     expect(review.comments[0]?.body).toContain("Why it is wrong.");
     expect(review.comments).toEqual(JSON.parse(written("inline.json")));
+  });
+
+  test("multiline native comments retain exact start and end coordinates in both artifacts", () => {
+    const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-multiline-native-");
+    try {
+      writeFileSync(join(repoWork, "a.txt"), "one\n");
+      gitAt("add", "a.txt");
+      gitAt("commit", "-qm", "first");
+      writeFileSync(join(repoWork, "a.txt"), "one\ntwo\nthree\nfour\n");
+      gitAt("commit", "-qam", "add contiguous lines");
+      const repoHead = gitAt("rev-parse", "HEAD");
+      const repo = { work: repoWork, head: repoHead, dir: repoDir };
+      fixture([finding({ path: "a.txt", line: 2, endLine: 4, severity: "P1" })], "Fix this range.", repo);
+      expect(run("HEAD~1", repo).status).toBe(1);
+      // SAFETY: both artifacts were produced from the one multiline finding above.
+      const inline = JSON.parse(readFileSync(join(repoDir, `${repoHead}-inline.json`), "utf8")) as Array<{ path: string; line: number; side: string; start_line: number; start_side: string }>;
+      // SAFETY: review.json is the CLI request for this pinned multiline fixture.
+      const review = JSON.parse(readFileSync(join(repoDir, `${repoHead}-review.json`), "utf8")) as { commit_id: string; comments: typeof inline };
+      expect(inline).toHaveLength(1);
+      expect(inline[0]).toMatchObject({ path: "a.txt", line: 4, side: "RIGHT", start_line: 2, start_side: "RIGHT" });
+      expect(review.comments).toHaveLength(1);
+      expect(review.comments[0]).toMatchObject({ path: "a.txt", line: 4, side: "RIGHT", start_line: 2, start_side: "RIGHT" });
+      expect(review.comments).toEqual(inline);
+      expect(review.commit_id).toBe(repoHead);
+    } finally { rmSync(repoWork, { recursive: true, force: true }); }
   });
 
   test("the CLI supports equals-form values without guessing a different head", () => {
@@ -1430,8 +1484,8 @@ describe("the CLI contract", () => {
   });
 
   test("a non-ASCII filename is reviewed even when git would quote it", () => {
-    // Quoted headers are unreadable to the parser, so `readDiff` pins
-    // core.quotePath=false; without it this round exits 2 on a real change.
+    // readDiff pins core.quotePath=true so quoted paths retain their original
+    // bytes. The parser decodes UTF-8 and refuses invalid filename bytes.
     const { repoWork, repoDir, gitAt } = scratchRepo("reviewloop-quoted-", true);
     try {
       writeFileSync(join(repoWork, "año.txt"), "one\n");

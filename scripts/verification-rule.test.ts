@@ -127,6 +127,14 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(skill).toContain("score is 4/5");
   });
 
+  test("the workflow states the Standard-only scoped lens exception", () => {
+    const workflow = read("docs/engineering-workflow.md").replace(/\s+/g, " ");
+    expect(workflow).toContain("All three lenses are the default at Standard");
+    expect(workflow).toContain("one or two lenses for a single-axis Standard change");
+    expect(workflow).toContain("High-assurance always requires all three lenses");
+    expect(workflow).toContain("all three skipped is not a review");
+  });
+
   test("review entry points link to the A/B protocol", () => {
     for (const [file, link] of [
       ["docs/engineering-workflow.md", "review-comparison.md"],

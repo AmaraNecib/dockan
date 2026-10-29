@@ -59,9 +59,9 @@ Guard Phase 1 — pre-commit checks
     ↓
 Quality check — relevant skills
     ↓
-Debate — Standard + High-assurance (never Lightweight)
+Debate — default at Standard, required at High-assurance
     ↓
-Test audit — Standard + High-assurance
+Test audit — default at Standard, required at High-assurance
     ↓
 Code-review — Standards + Spec axes against pinned base SHA
     ↓
@@ -125,9 +125,12 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   Greptile on the same pinned boundary across several PRs. Follow the
   [comparison protocol](review-comparison.md) for independent first-pass records, verified
   findings, time and cost. Neither review replaces the other automatically.
-- **All three lenses run at Standard and above.** `debate` is no longer reserved
-  for High-assurance (owner decision, 2026-10-18); the tier decides how much
-  scrutiny a failure mode earns, not whether the debate happens.
+- **All three lenses are the default at Standard and required at High-assurance.**
+  The parent may scope a round to one or two lenses for a single-axis Standard change.
+  Record exactly which lenses ran and the reason for each skip in the payload.
+  High-assurance always requires all three lenses; all three skipped is not a review.
+  Run the selected lenses in order: debate, test-audit, code-review. The tier also
+  decides how much scrutiny each failure mode earns.
 - **A lens returns findings, not an essay.** The evidence file holds the detail; the message back to
 the parent holds the finding list, each one line with file:line, severity and the smallest fix. A
 lens that pastes its whole report into the conversation costs the same tokens as ten findings and
@@ -249,8 +252,8 @@ that can bypass a session check is High-assurance.
 | Tier | Decision: what the change can break | Required review |
 | --- | --- | --- |
 | Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
-| Standard | Everything else: code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → debate → test-audit → code-review → guard 2 → reviewloop → guard 3 |
-| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | Standard gates, plus a debate re-run on the final head once the fixes are in |
+| Standard | Everything else: code, tests, config, UI, API, skills, docs | Default Standard gates: guard 1 → quality check → debate → test-audit → code-review → guard 2 → reviewloop → guard 3. The parent may scope a single-axis round as specified in Review invariants. |
+| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | All three lenses required, plus a debate re-run on the final head once the fixes are in; all other Standard gates still apply |
 
 Auth/RBAC, backup/restore, invoice & debt money calculations, security and a
 schema-version bump are **examples that hint at a failure mode, never a test**.

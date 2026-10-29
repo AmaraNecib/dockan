@@ -709,7 +709,7 @@ function readDiff(baseRef: string, headRef: string): Diff {
   const stable = ["-c", "core.quotePath=true", "-c", "diff.noprefix=false"];
   let raw = "";
   try {
-    raw = git(...stable, "diff", "--unified=0", "--no-color", `${baseRef}...${headRef}`);
+    raw = git(...stable, "diff", "--unified=0", "--inter-hunk-context=0", "--no-color", `${baseRef}...${headRef}`);
   } catch (error) {
     fail(
       `could not read the diff ${baseRef}...${headRef}.\n` +

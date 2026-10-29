@@ -4,7 +4,7 @@ import { resolvePagination } from "@dokan/contracts";
 import type { StorePort } from "../store/port";
 import { historyWithRemaining, supersededByCorrectionSeq } from "../lib/stock-ledger";
 
-/** All history facts share a read transaction and one cost-bearing DTO. */
+/** History facts share a read transaction. Redact both row.unitCost and details.cost. */
 export async function readItemHistory(store: StorePort, input: ItemHistoryInput) {
   return store.withReadTransaction(async (tx) => {
     const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);

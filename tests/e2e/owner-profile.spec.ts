@@ -1,6 +1,17 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 
+// These journeys share the operator's persisted preference with later specs.
+test.afterEach(async ({ page }) => {
+  const sidebar = page.locator("aside");
+  if (await sidebar.isVisible() && await sidebar.evaluate((element) => element.getBoundingClientRect().width) === 64) {
+    await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
+    await expect(sidebar).toHaveCSS("width", "240px");
+    await page.reload();
+    await expect(sidebar).toHaveCSS("width", "240px");
+  }
+});
+
 test("verified owner stays visible collapsed, with keyboard account menu and persisted sidebar choice", async ({ page }) => {
   test.setTimeout(120_000);
   await signIn(page);

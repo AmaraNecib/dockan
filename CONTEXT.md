@@ -35,6 +35,7 @@
 - **Payment history**. the list of payments recorded against one invoice, shown on that invoice's screen.
 - **Admin login**. the single password-protected entry to the app, using the owner's phone number (+213…) as the login name, protecting the shop's data when the laptop is shared. Phase 2 (ADR-0008 §4.6) moved this to the **unified vault**: one passphrase opens the encrypted data and signs the owner in; the phone-number login remains only for legacy/plaintext builds. Recovery is per install — a saved recovery key, or a vendor-signed reset token after out-of-band verification; no email.
 - **Activity log** (سجل). the trace of what happened in the app (sales, purchases, payments, edits), so the owner can audit past actions.
+- **Action actor** (منفّذ العملية). the authenticated account that performed an action, distinct from whoever caused damage or paid money to cover it. A shared account identifies the account, not the individual human using it.
 - **Backup**. an automatic daily copy of the shop's data plus a manual export button the owner can copy to a USB stick.
 
 ## Build, Access, and Data Format
@@ -55,6 +56,16 @@
 - **Reset token**. a signed, single-use, short-lived token the vendor produces from a device challenge.
 - **Reset signing key**. the vendor's key pair. The private half never ships; the public half is embedded in the build. It carries a version, and the build accepts a map of versions so old installs stay resettable.
 - **Schema version**. a number stored in the database that identifies the data format; older versions migrate forward on open, newer ones are refused.
+
+## Expense vocabulary
+
+- **Expense correction** (تصحيح مصروف). a recorded change to an expense amount that affects the original expense period, with a separate timestamp recorded by the server when the correction is entered. The original and every later correction remain immutable and visible; each correction identifies the authenticated account and before/after amounts, with an optional reason.
+- **Expense refund** (استرجاع مصروف). money returned for an expense, distinct from correcting an incorrectly entered amount, recorded under the authenticated account with the actual cash-return date separate from the server-recorded timestamp. The original expense, corrections and refunds remain immutable and visible; a reason is optional.
+
+## Stock discrepancy vocabulary
+
+- **Count correction** (تصحيح الجرد). correcting an entered quantity that was wrong, such as recording 20 when the actual count was 19. It does not by itself assert physical damage; a genuine unexplained shortage is a different event.
+- **Damaged stock** (مخزون تالف). units physically damaged or unusable, distinct from a count-entry mistake. Any refund, money recovered and report treatment are separate decisions.
 
 ## Deferred Concepts
 

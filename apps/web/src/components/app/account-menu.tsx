@@ -31,17 +31,19 @@ export function useCurrentOwner() {
     }
     return () => { alive = false; };
   }, [loss, attempt]);
-  return { profile: loss ? null : profile, failed, retry: () => retry((value) => value + 1) };
+  return { profile: loss ? null : profile, failed, blocked: Boolean(loss), retry: () => retry((value) => value + 1) };
 }
 
-export function AccountMenu({ profile, failed, retry, onLogout }: {
+export function AccountMenu({ profile, failed, blocked, retry, onLogout }: {
   profile: CurrentOwner | null;
   failed: boolean;
+  blocked: boolean;
   retry: () => void;
   onLogout: () => void;
 }) {
   const { t } = useTranslation();
   if (!profile) {
+    if (blocked) return <span role="status" className="max-w-40 text-xs text-muted-foreground">{t("accountUnavailable")}</span>;
     return failed ? (
       <button type="button" onClick={retry} className="max-w-40 text-xs text-destructive" title={t("accountUnavailable")}>
         {t("accountUnavailable")}

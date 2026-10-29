@@ -48,7 +48,8 @@ mock.module("@tanstack/react-router", () => ({
 }));
 
 let pendingFetchCount = 0;
-let profileRead = async () => ({ id: "owner-id", name: "عبد الرحمن Amara بن محمد صاحب المتجر ذو الاسم الطويل", phone: "+213550123123", role: "owner" as const });
+const defaultProfileRead = async () => ({ id: "owner-id", name: "عبد الرحمن Amara بن محمد صاحب المتجر ذو الاسم الطويل", phone: "+213550123123", role: "owner" as const });
+let profileRead = defaultProfileRead;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -89,6 +90,11 @@ async function waitFor(check: () => boolean): Promise<boolean> {
 }
 
 describe("AppShell verified identity", () => {
+  afterEach(async () => {
+    profileRead = defaultProfileRead;
+    const { clearAuthLost } = await import("@/lib/auth-refusal");
+    clearAuthLost();
+  });
   it("shows the verified mixed name and role without putting the phone in the header, and clears identity on auth loss", async () => {
     const { markAuthLost, clearAuthLost } = await import("@/lib/auth-refusal");
     clearAuthLost();
@@ -106,6 +112,8 @@ describe("AppShell verified identity", () => {
     await act(async () => markAuthLost());
     expect(header.textContent).not.toContain("عبد الرحمن");
     expect(host.querySelector('[data-testid="account-menu-trigger"]')).toBeNull();
+    expect(header.textContent).not.toContain("جارٍ تحميل الحساب");
+    expect(header.textContent).toContain("تعذّر تحميل الحساب");
     profileRead = async () => { throw new Error("network unavailable"); };
     await act(async () => clearAuthLost());
     expect(await waitFor(() => header.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
@@ -113,7 +121,7 @@ describe("AppShell verified identity", () => {
     await act(async () => root.unmount());
     queryClient.clear();
     host.remove();
-    profileRead = async () => ({ id: "owner-id", name: "مالك الاختبار", phone: "+213550123123", role: "owner" as const });
+    profileRead = defaultProfileRead;
   });
 });
 

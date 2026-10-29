@@ -6,7 +6,7 @@ import { historyWithRemaining, supersededByCorrectionSeq } from "../lib/stock-le
 
 /** All history facts share a read transaction and one cost-bearing DTO. */
 export async function readItemHistory(store: StorePort, input: ItemHistoryInput) {
-  return store.withTransaction(async (tx) => {
+  return store.withReadTransaction(async (tx) => {
     const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);
     if (item === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
     const movements = await tx.listStockMovements(item.id);
@@ -41,11 +41,14 @@ export async function readItemHistory(store: StorePort, input: ItemHistoryInput)
       const documents = [...new Map(lines.filter((line) => documentIds.has(line.invoiceId))
         .map((line) => [line.invoiceId, { id: line.invoiceId, number: line.invoiceNumber }])).values()];
       const recordedCost = sale?.costAtSale ?? row.unitCost;
+      const inflowTotal = row.delta > 0 && row.unitCost !== null ? row.delta * row.unitCost : null;
+      // Valid unit facts can have an unrepresentable total. Never return rounded money.
+      const safeInflowTotal = inflowTotal !== null && Number.isSafeInteger(inflowTotal) ? inflowTotal : null;
       return { ...row, supersededBySeq: superseded[index] ?? null, details: {
         sellingPrice: sale?.unitPrice ?? null,
         saleTotal: sale?.total ?? null,
         netSaleTotal: sale?.netTotal ?? null,
-        cost: { unitCost: recordedCost, total: sale?.cogsExact ?? (row.delta > 0 && row.unitCost !== null ? row.delta * row.unitCost : null) },
+        cost: { unitCost: recordedCost, total: sale?.cogsExact ?? safeInflowTotal },
         documents,
       } };
     });

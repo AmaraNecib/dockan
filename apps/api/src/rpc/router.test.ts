@@ -5640,6 +5640,16 @@ describe("movement posting seam parity (issue 143)", () => {
 });
 
 describe("item history 399", () => {
+  it("399 keeps history readable when an inflow total exceeds exact money range", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-overflow-399", categoryId: category.id, costPrice: Number.MAX_SAFE_INTEGER, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: Number.MAX_SAFE_INTEGER, kind: "PURCHASE" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements[0]?.details?.cost).toEqual({ unitCost: Number.MAX_SAFE_INTEGER, total: null });
+    expect(itemHistoryOutputSchema.safeParse(history).success).toBe(true);
+    expect(history.stockOnHand).toBe(2);
+  });
+
   it("399 preserves recorded sale prices and exact cost after current price changes", async () => {
     const category = (await client.categoriesList()).items[0]!;
     const item = await client.itemsCreate({ name: "history-snapshots-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });

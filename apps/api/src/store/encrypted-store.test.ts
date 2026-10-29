@@ -12,6 +12,7 @@ import { VaultManager } from "../lib/vault/manager";
 import { AppLogger } from "../lib/logger";
 import type { KdfParams } from "../lib/vault/crypto";
 import { createDrizzleStore } from "./drizzle-store";
+import { readItemHistory } from "../rpc/item-history";
 
 /**
  * The whole point of the vault store: a phase-1 plaintext database migrates
@@ -87,6 +88,74 @@ async function freshVault(): Promise<FreshVault> {
 }
 
 describe("vault-mode store", () => {
+  itHeavy("399 history reads leave encrypted snapshot bytes unchanged and later writes durable", async () => {
+    const { vault, vaultId, conn, store } = await freshVault();
+    try {
+      const category = await store.createCategory({ name: "history-read-399" });
+      const item = await store.createItem({ name: "history-item-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
+      const before = fs.readFileSync(conn.dbPath);
+      for (let page = 0; page < 3; page += 1) {
+        expect(await readItemHistory(store, { itemId: item.id, limit: 1, offset: page })).toMatchObject({ item: { id: item.id }, total: 0 });
+      }
+      expect(fs.readFileSync(conn.dbPath).equals(before)).toBe(true);
+      await store.withTransaction(async (tx) => {
+        await tx.createCategory({ name: "durable-after-history-399" });
+      });
+      const reopened = createEncryptedConnection({ vaultId, masterKey: vault.requireMasterKey(), snapshotPath: vault.snapshotPath });
+      try {
+        expect((await createDrizzleStore(reopened).listCategories()).map((row) => row.name)).toContain("durable-after-history-399");
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await conn.close();
+    }
+  });
+  itHeavy("399 read failures and rejected writes preserve the snapshot and release the queue", async () => {
+    const { conn, store } = await freshVault();
+    try {
+      const category = await store.createCategory({ name: "read-guard-399" });
+      const before = fs.readFileSync(conn.dbPath);
+      await expect(store.withReadTransaction(async () => {
+        // Attempt a driver-level write despite the callback's read-only TypeScript view.
+        conn.raw.exec("DELETE FROM categories");
+      })).rejects.toThrow(/readonly/i);
+      await expect(readItemHistory(store, { itemId: "missing-history-399" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(fs.readFileSync(conn.dbPath).equals(before)).toBe(true);
+      expect((await store.listCategories()).map((row) => row.id)).toContain(category.id);
+      await store.createCategory({ name: "write-after-read-failure-399" });
+      expect((await store.listCategories()).map((row) => row.name)).toContain("write-after-read-failure-399");
+    } finally {
+      await conn.close();
+    }
+  });
+
+  itHeavy("399 coherent read holds a queued write until its snapshot completes", async () => {
+    const { conn, store } = await freshVault();
+    try {
+      const category = await store.createCategory({ name: "read-coherence-399" });
+      const item = await store.createItem({ name: "before-399", categoryId: category.id, costPrice: 0, sellingPrice: 0 });
+      let enter = () => {};
+      let release = () => {};
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const read = store.withReadTransaction(async (tx) => {
+        const first = (await tx.getItemsByIds([item.id])).get(item.id)?.name;
+        enter();
+        await held;
+        return [first, (await tx.getItemsByIds([item.id])).get(item.id)?.name];
+      });
+      await entered;
+      const write = store.updateItem(item.id, { id: item.id, name: "after-399" });
+      release();
+      expect(await read).toEqual(["before-399", "before-399"]);
+      await write;
+      expect((await store.getItemsByIds([item.id])).get(item.id)?.name).toBe("after-399");
+    } finally {
+      await conn.close();
+    }
+  });
+
   itHeavy("migrates a plaintext database, preserves the schema version, and survives a reopen", async () => {
     // 1. a phase-1 install writes plaintext (separate process fixture)
     createLegacyInstallOutsideProcess(dir);

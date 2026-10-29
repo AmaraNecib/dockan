@@ -4786,6 +4786,9 @@ describe("purchase return default refund (#256)", () => {
     // the return reduced the debt instead of handing cash back; #260 reads a
     // debt we owe as a NEGATIVE balance
     expect(returned.balance).toBe(-500);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((movement) => movement.reason === "SUPPLIER_RETURN")?.details?.documents)
+      .toContainEqual({ id: purchase.id, number: purchase.invoiceNumber });
   });
 
   it("defaults to cash back when nothing is owed either way", async () => {
@@ -5655,12 +5658,12 @@ describe("item history 399", () => {
     const item = await client.itemsCreate({ name: "history-snapshots-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
-    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 250 }, lines: [{ itemId: item.id, quantity: 6 }] });
     await client.itemsUpdate({ id: item.id, sellingPrice: 999, costPrice: 400 });
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history).toMatchObject({ item: { id: item.id, name: "history-snapshots-399" } });
     expect(history.movements.find((m) => m.ref === sale.id)).toMatchObject({
-      details: { sellingPrice: 300, saleTotal: 1800, cost: { unitCost: 117, total: 700 }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+      details: { sellingPrice: 300, saleTotal: 1800, netSaleTotal: 1550, cost: { unitCost: 117, total: 700 }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
     });
   });
 

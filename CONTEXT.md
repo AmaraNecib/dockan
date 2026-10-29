@@ -59,8 +59,8 @@
 
 ## Expense vocabulary
 
-- **Expense correction** (تصحيح مصروف). a recorded change to an expense amount that affects the original expense period, with a separate timestamp recorded by the server when the correction is entered. The original and every later correction remain immutable and visible, identifying the authenticated account and before/after amounts; a reason is optional.
-- **Expense refund** (استرجاع مصروف). money returned for an expense, distinct from correcting an incorrectly entered amount, with the actual cash-return date separate from the server-recorded timestamp and authenticated account. The original expense, corrections and refunds remain immutable and visible; a reason is optional.
+- **Expense correction** (تصحيح مصروف). a recorded change to an expense amount that affects the original expense period, with a separate timestamp recorded by the server when the correction is entered. The original and every later correction remain immutable and visible; each correction identifies the authenticated account and before/after amounts, with an optional reason.
+- **Expense refund** (استرجاع مصروف). money returned for an expense, distinct from correcting an incorrectly entered amount, recorded under the authenticated account with the actual cash-return date separate from the server-recorded timestamp. The original expense, corrections and refunds remain immutable and visible; a reason is optional.
 
 ## Stock discrepancy vocabulary
 

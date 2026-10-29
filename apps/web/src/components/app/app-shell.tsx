@@ -3,7 +3,8 @@ import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
-import { useSession, authClient } from "@/lib/auth-client";
+import { authClient } from "@/lib/auth-client";
+import { AccountMenu, useCurrentOwner } from "./account-menu";
 import type { MessageKey } from "@/lib/i18n";
 import { logoutAndReload } from "@/lib/logout";
 import { usePendingReturnsCount } from "@/lib/pending-returns";
@@ -111,9 +112,9 @@ function DiscardSaleDialog({ open, onOpenChange, onConfirm }: DiscardSaleDialogP
 
 export function AppShell() {
   const { t } = useTranslation();
-  const session = useSession();
-  const user: ShellUser | null = session.data?.user
-    ? { name: session.data.user.name ?? null, phone: session.data.user.phoneNumber ?? null }
+  const owner = useCurrentOwner();
+  const user: ShellUser | null = owner.profile
+    ? { name: owner.profile.name, phone: null }
     : null;
 
   const [helpOpen, setHelpOpen] = useState(false);
@@ -160,7 +161,7 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar */}
-        <header className="print-hidden flex h-14 shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3">
+        <header className="print-hidden flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-border bg-sidebar px-3 py-1">
           <Button
             variant="ghost"
             size="icon"
@@ -178,7 +179,9 @@ export function AppShell() {
 
           <NewSaleAction activeKey={activeKey} />
 
-          <div className="flex items-center gap-1">
+          <AccountMenu {...owner} onLogout={() => setLogoutOpen(true)} />
+
+          <div className="flex shrink-0 items-center gap-1">
             <ThemeToggle />
 
             <Button

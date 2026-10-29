@@ -315,6 +315,16 @@ test("first run: passphrase → recovery key shown once → owner setup → the 
   await page.getByLabel("رقم الهاتف").fill("0550123123");
   await page.getByRole("button", { name: "إنشاء الحساب" }).click();
   await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
+  const account = page.getByTestId("account-menu-trigger");
+  await expect(account).toContainText("مالك الاختبار");
+  await expect(account).toContainText("المالك");
+  await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
+  await expect(account).toBeVisible();
+  await account.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("menu")).toContainText("+213550123123");
+  await page.keyboard.press("Escape");
+  await expect(account).toBeFocused();
 });
 
 test("after a restart the vault is locked; recovery unlocks it and sets a new working passphrase", async ({ page }) => {

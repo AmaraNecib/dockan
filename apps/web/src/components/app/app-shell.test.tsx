@@ -48,6 +48,7 @@ mock.module("@tanstack/react-router", () => ({
 }));
 
 let pendingFetchCount = 0;
+let profileRead = async () => ({ id: "owner-id", name: "عبد الرحمن Amara بن محمد صاحب المتجر ذو الاسم الطويل", phone: "+213550123123", role: "owner" as const });
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -63,6 +64,7 @@ mock.module("@/lib/rpc", () => ({
   },
   // the sidebar's collapsed preference reads through the same seam
   rpcClient: {
+    currentOwner: () => profileRead(),
     preferencesGet: async () => ({ values: {} }),
     preferencesSet: async (input: { key: string; value: string }) => input,
   },
@@ -85,6 +87,35 @@ async function waitFor(check: () => boolean): Promise<boolean> {
   }
   return false;
 }
+
+describe("AppShell verified identity", () => {
+  it("shows the verified mixed name and role without putting the phone in the header, and clears identity on auth loss", async () => {
+    const { markAuthLost, clearAuthLost } = await import("@/lib/auth-refusal");
+    clearAuthLost();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><ThemeProvider><SaleDraftProvider><AppShell /></SaleDraftProvider></ThemeProvider></QueryClientProvider>));
+    expect(await waitFor(() => host.querySelector('[data-testid="account-menu-trigger"]') !== null)).toBe(true);
+    const header = host.querySelector("header");
+    if (!header) throw new Error("shell header missing");
+    expect(header.textContent).toContain("عبد الرحمن Amara بن محمد");
+    expect(header.textContent).toContain("المالك");
+    expect(header.textContent).not.toContain("+213550123123");
+    await act(async () => markAuthLost());
+    expect(header.textContent).not.toContain("عبد الرحمن");
+    expect(host.querySelector('[data-testid="account-menu-trigger"]')).toBeNull();
+    profileRead = async () => { throw new Error("network unavailable"); };
+    await act(async () => clearAuthLost());
+    expect(await waitFor(() => header.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
+    expect(header.textContent).not.toContain("المالك");
+    await act(async () => root.unmount());
+    queryClient.clear();
+    host.remove();
+    profileRead = async () => ({ id: "owner-id", name: "مالك الاختبار", phone: "+213550123123", role: "owner" as const });
+  });
+});
 
 describe("AppShell pending-returns badge (#295)", () => {
   let queryClient: QueryClient;

@@ -8,7 +8,8 @@
   `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
   `feature-implement` step 11 is parent-only.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
-  lane's branch, opens the PR, requests Greptile review, drives the rounds, and
+  lane's branch, opens the PR, runs the review round (`reviewloop`, plus Greptile
+  while the two are being compared), drives the rounds, and
   merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
   before/after packet is posted), and otherwise only when the owner says so (see `Merging`).
 - **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
@@ -95,8 +96,8 @@ fixed count: measure it. A lane waiting on review, on CI or on a rebase is doing
 nothing while it holds RAM and CPU, so close it the moment the parent has pushed
 its branch and start the next one in the freed slot. Prefer lanes that touch
 disjoint files; when two lanes share a store/router, nominate which one lands
-first and rebase the other onto it. Poll CI and Greptile in-session, never the
-lane.
+first and rebase the other onto it. Poll CI and the review round in-session, never
+the lane.
 
 **A lane ALWAYS gets its own workspace** — never a pane split inside the parent's
 workspace (owner complaint, 2026-10-13: *"why u open the crew here in this panel;
@@ -138,40 +139,43 @@ you are in — do not improvise a process.**
 | Any code-changing issue, start to finish | `feature-implement` (the lifecycle orchestrator — read it first) |
 | Design conversation before code | `grill-with-docs` |
 | Review round, in order | `debate` → `test-audit` → `code-review` |
-| After Greptile's 5/5, before the merge | `improve-codebase-architecture` (parent only; the deep pass when a module, seam, adapter or interface changed) |
+| After reviewloop's 5/5, before the merge | `improve-codebase-architecture` (parent only; the deep pass when a module, seam, adapter or interface changed) |
 | Before the push | `guard` |
-| Greptile, either path | `cli-review` |
+| Review round | `reviewloop` (Greptile via `cli-review` / `greploop` is the A/B reference while both run) |
 | After a repeated failure | `capture-wisdom` (parent only) |
 | Every piece of writing, always | `unslop` |
 
 Three rules that hold across all of them: a lane **reads** wisdom and never writes it, a lane
 **commits and reports** — it never pushes, opens a PR or merges — and `codebase-design` plus
 `domain-modeling` are **always on**, the way TDD is. They supply the words while the code is
-designed and written; the deep architecture pass after Greptile's 5/5 is only the audit that the
-habit happened. The parent owns push, CI, Greptile and the merge decision.
+designed and written; the deep architecture pass after reviewloop's 5/5 is only the audit that the
+habit happened. The parent owns push, CI, the review round and the merge decision.
 
 ## Review lenses
 
-**Every reviewed change runs all three lenses — `debate`, `test-audit`,
-`code-review` — not just High-assurance** (owner decision, 2026-10-18). The tier
-still decides how much scrutiny a failure mode deserves; it no longer decides
-whether the debate happens. Run them in that order, each as its own sub-agent,
-before the lane reports.
+**Every reviewed change runs the lens round — `debate`, `test-audit`,
+`code-review` — and the default at Standard and above is all three** (owner
+decision, 2026-10-18). The parent may scope a single-axis change to one or two;
+the payload records exactly what ran, and all three skipped is not a review. The
+tier still decides how much scrutiny a failure mode deserves; it no longer
+decides whether the debate happens. Run them in that order, each as its own
+sub-agent, before the lane reports.
 
-- **The lenses run on a different model than the author.** Author lanes run
-  `zen-proxy/deepseek-v4.1-flash-free`; the three lenses run
-  `zen-proxy/minimax-m3.1-flash-free`. A model reviewing its own diff shares the blind spots the
-  lens exists to catch, so the reviewer is never the author. The owner named these two on
-  2026-10-19, when the author model was the paid `opencode-go/deepseek-v4.1-flash` on the OpenCode
-  Go subscription; that route left the catalogue, so the author lanes moved to the free DeepSeek
-  route and the split is now a rule about the *model* rather than about who pays. The same MiniMax
-  model is advertised as `opencode-go/minimax-m3.1-flash-free`, but that route answered a CLI probe
-  and then returned `404 status code (no body)` from a real sub-agent run, so use the `zen-proxy`
-  one. `zen-proxy/beam-free` is the next free reviewer to reach for when MiniMax is down or a round
-  wants a third opinion, then `zen-proxy/glm-5.3-flash-free` and `zen-proxy/mimo-v2.6-flash-free`.
-  A DeepSeek route is not a lens fallback any more: it is the author model, and a lens on the
-  author's model reviews its own diff. Free lenses have no parallelism cap, so a review round can
-  go as wide as the work needs.
+- **The lenses run on a different model family than the author. That is the only fixed part.**
+  The author is the lane's model, read from its commit trailer, never the parent's.
+  Independence is a family, not an exact ID: free and paid DeepSeek are one opinion, so a
+  DeepSeek author needs GLM, MiMo or Beam. The ladder is free first —
+  `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
+  `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
+  `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
+  routes are exhausted. With more than one lens, at least two families must appear, so three
+  lenses are not one opinion counted three times. A route unused this session gets a one-line
+  probe first; an advertised model is not a working one. Free lenses have no parallelism cap,
+  so a round can go as wide as the work needs.
+- **The owner's exception is recorded, not assumed.** When every non-author family is
+  exhausted, the owner may approve a round on the author's family; the payload carries
+  `independence: { approvedBy, reason }`, the review states it, and a lane cannot approve its
+  own. `reviewloop` refuses the round without it.
 - **Every reviewed change gets two reviews: the author's own, and an
   independent one** (owner decision, 2026-10-20). The **author review** is a short
   account written by the author's model in a fresh session that reads the diff: what
@@ -179,7 +183,7 @@ before the lane reports.
   was deliberately left out, and where the reviewer should look hardest. It is a brief
   to the reviewer, not a verdict — it approves nothing, and it lives in the PR body so
   the reviewer and the owner both read it.
-  The **independent review** is the three lenses below, on a different model. The
+  The **independent review** is the lens round below, on a different family. The
   lenses read the author review FIRST, so the known-weak list becomes their checklist
   and the author's claims arrive as claims to test rather than facts to agree with.
   Order is author review → lenses → fix → both again at the new head.
@@ -191,7 +195,7 @@ before the lane reports.
   report is a file the reviewer reads instead of the code, it burns the reviewer's
   credits, and writing the next report changes a tracked file, which makes the
   previous one stale and asks for another review. The PR carries a summary comment
-  instead — the three lens names, the SHA they read, the verdict and the counts.
+  instead — the lens names that ran, the SHA they read, the verdict and the counts.
 - **The lenses return findings; they do not author.** Neither reviewer writes to
   the worktree or takes the e2e slot (one full `test:e2e` run at a time). The
   authoring session applies the fixes and re-runs the lens where the tier
@@ -231,14 +235,15 @@ trailers, and the parent repeats them in the PR body and the evidence comment. T
 defect is traced to the model and the thinking effort that produced it; the full form is in the
 gate doc §5. A human commit carries none of them.
 
-## Waiting on CI / Greptile
+## Waiting on CI / review round
 
 Do not hand the wait back to the user. A PR this thread opened is watched, and the
 watch is what reports it: a red check, a new head, a verdict. Never sit in a
 `gh pr checks` loop for a watched PR — that is the same as not watching it, only
 busier. Poll only a PR nobody here watches, and then with `sleep`: start at
 ~5 minutes, then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
-Greptile comment each time, until the verdict appears. Same for CI.
+review comment each time, until the verdict appears. While the A/B runs, watch the
+Greptile comment too. Same for CI.
 
 A lane reports by finishing: its completion wakes the session. Stop and let it
 finish rather than polling it.

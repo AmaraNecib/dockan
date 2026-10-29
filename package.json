@@ -34,7 +34,8 @@
     "husky": "^9.1.7",
     "oxlint": "^1.85.0",
     "turbo": "^2.8.16",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod": "4.6.7"
   },
   "overrides": {
     "brace-expansion": "^5.0.12",

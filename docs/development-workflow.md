@@ -213,8 +213,13 @@ before any of these. Otherwise the first failure reads as a broken script.
 | 0 | `bun run typecheck`, `bun run lint` | after every edit | seconds, no queue |
 | 1 | `bun run test:affected` | per iteration, not per edit | ~2-4 minutes cold, queued |
 | 2 | `bun run test:e2e:changed` | before every push | the mapped specs, ~1-3 minutes, queued |
-| 3 | the PR's CI head | after the push | free; it also runs red-on-parent |
+| 3 | the CI `checks` job **locally**: `bun run typecheck`, `bun run lint`, `bun run skills:check`, `bun run test`, `bun run --filter @dokan/web build`, `bun audit --audit-level=high`, plus `bun scripts/red-on-parent.ts --base <base>` for added test files | before the push; the PR's `checks` run after it is confirmation, not discovery | the suite and build take a slot, ~4-6 minutes |
 | 4 | `bun run test:e2e` | **once per PR**, right before the lane reports | all 35 specs, ~9 minutes, queued |
+
+Tier 3 is the job that actually decides whether the branch is pushable. Replace
+its command list with a subset (`typecheck` plus one test file) and the first full
+run of `scripts/` or the production bundle happens on GitHub, after the push, in
+the slowest possible place to read a failure.
 
 Only tier 0 is free, and the queue's rule is a **string match on the command**, not
 on what the command runs. `bun run test:affected`, `bun run test:e2e:changed` and

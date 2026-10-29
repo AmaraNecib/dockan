@@ -39,24 +39,37 @@ If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
 
 ## Phase 2 — Pre-review / pre-push
 
-This is the gate before Greptile review and before any push. It never pushes by
+This is the gate before the review round and before any push. It never pushes by
 itself. The parent's push runs the Husky pre-push hook when the hook is available.
+
+**Run the CI `checks` job locally, not a subset of it.** A green focused test plus
+typecheck is step 1, not this gate. The full suite and the web build take a heavy
+slot (`bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`).
 
 ```
 [ ] bun run typecheck — passes?
 [ ] bun run lint — 0 errors?
-[ ] bun run test — all tests pass?
-[ ] bun run test:e2e — passes? (when UI flows changed)
-[ ] bun scripts/red-on-parent.ts — every test file this change **adds** fails on the
-      parent, or carries a `red-on-parent-waive` line. New files only; edited test
-      files are not gated. A wrong-reason red (the file cannot load on the parent)
-      fails the gate, and so does a waiver on a test that is already red. So does a
-      test the change registers and the parent's run never reports (`NOT ON PARENT`),
-      and a run that did not finish (`RUN INCOMPLETE` — no waiver covers a missing
-      result).
+[ ] bun run skills:check — the .claude/skills mirror matches .agents/skills?
+[ ] bun run test — the full suite passes (turbo + scripts/ + tools/)
+[ ] bun run --filter @dokan/web build — the production bundle builds?
+[ ] bun audit --audit-level=high — no high/critical advisory?
+[ ] bun scripts/red-on-parent.ts --base <base> — every test file this change
+      **adds** fails on the parent, or carries a `red-on-parent-waive` line. New
+      files only; edited test files are not gated. A wrong-reason red (the file
+      cannot load on the parent) fails the gate, and so does a waiver on a test
+      that is already red. So does a test the change registers and the parent's
+      run never reports (`NOT ON PARENT`), and a run that did not finish
+      (`RUN INCOMPLETE` — no waiver covers a missing result).
+[ ] bun run test:e2e — passes? (only when the selector says the diff reaches a
+      spec, or the change touches a UI flow)
 [ ] git status — working tree clean?
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```
+
+A red check that cannot come from this change (an advisory in a dependency the
+diff does not touch, a suite that is red on `develop`) is still a red push. Record
+it with the evidence and take it to the owner; do not call the branch green
+because the failure is "not ours".
 
 ### Review evidence checks
 
@@ -85,26 +98,30 @@ get the docs-only exemption.
 
 **Standard** (code, CI, workflow, config):
 ```
-[ ] Debate evidence exists and is not stale
-[ ] Test-audit evidence exists and is not stale
-[ ] Code-review evidence exists and is not stale
+[ ] Evidence exists for every lens the round ran, and none is stale
+[ ] A scoped round of one or two lenses is allowed when the change touches one
+      axis; the payload records exactly what ran, and three stays the default
+[ ] The reviewloop payload renders, and its score is the rule's score or lower
 ```
 
 **High-assurance** (auth/RBAC, backup/restore, invoice and debt money math, a schema-version bump):
 ```
-[ ] Debate evidence exists and is not stale
-[ ] Test-audit evidence exists and is not stale
-[ ] Code-review evidence exists and is not stale
+[ ] All three lenses ran: debate, test-audit and code-review
+[ ] Every evidence file exists and is not stale
+[ ] The reviewloop payload renders, and its score is the rule's score or lower
 ```
 
 ## Phase 3 — Pre-report
 
 Run before the parent reports a local handoff or remote merge-readiness.
+During the trial, use the [comparison protocol](../../../docs/review-comparison.md)
+until the owner chooses which review path to keep. A local-only report is not
+merge-readiness while the hosted verdict is missing.
 
 ```
 [ ] Local checks green (typecheck, lint, tests, e2e when relevant, Rust when relevant)
 [ ] Review evidence current for the selected tier
-[ ] Greptile CLI result is for the final HEAD and has no actionable findings
+[ ] Both current-head reviews are 5/5 with no actionable findings while the trial is active; a missing verdict blocks merge-readiness
 [ ] CI — required checks green on GitHub (when the branch is pushed)
 [ ] The push and the PR came from the parent, and the merge followed the gate's classes — a cheap-to-reverse, no-decision diff merges itself once green, an expensive-to-reverse or decision diff waits for the owner
 [ ] PR description — accurate and complete
@@ -121,5 +138,5 @@ Run before the parent reports a local handoff or remote merge-readiness.
 4. If the user says "fix it", fix it and re-run the check.
 
 **Mandatory gates (never skip):** typecheck, lint, applicable tests, and a
-clean Greptile result. Inspect actual Greptile findings rather than trusting
+clean reviewloop result. Inspect the actual findings rather than trusting
 command exit status; CI only counts once the branch is pushed.

@@ -32,7 +32,7 @@ const LANE_READERS = [
 // fragment is a single line, so Windows CRLF cannot split one in half.
 const REQUIRED_FACTS: [name: string, fragment: string][] = [
   ["the evidence marker", "<!-- crew-evidence -->"],
-  ["reason 1 (5/5)", "Greptile confidence is 5/5"],
+  ["reason 1 (5/5)", "The review confidence is 5/5"],
   ["reason 2 (the field)", "Last reviewed commit"],
   ["reason 2 (the head anchor)", "equals the current head SHA"],
   ["reason 3 (nothing after the verdict)", "No comment lands after the verdict"],
@@ -98,6 +98,85 @@ describe("the verification rule is discoverable (#259)", () => {
       expect(readFileSync(DOC, "utf8")).toContain(fragment);
     });
   }
+
+  test("the A/B protocol keeps paired evidence and an owner-controlled end", () => {
+    const comparison = read("docs/review-comparison.md");
+    for (const fact of [
+      "Continue across PRs until the owner chooses",
+      "same base SHA and head SHA",
+      "before reading the other system's findings",
+      "Both current-head reviews must be 5/5",
+      "one request per head",
+      "not an automatic replacement",
+      "verified unique defects",
+      "false positives",
+      "elapsed review time",
+      "unknown rather than zero",
+    ]) expect(comparison).toContain(fact);
+    expect(read(".agents/skills/guard/SKILL.md")).toContain(
+      "Both current-head reviews are 5/5 with no actionable findings",
+    );
+  });
+
+  test("reviewloop extraction retains cross-lens agreement and ordered lens dispatch", () => {
+    const skill = read(".agents/skills/reviewloop/SKILL.md");
+    expect(skill).toContain("Run `debate`, then `test-audit`, then `code-review`");
+    expect(skill).toContain("one entry per verified");
+    expect(skill).toContain("defect per lens comment; never collapse agreement");
+    expect(skill).toContain("two P2");
+    expect(skill).toContain("score is 4/5");
+  });
+
+  test("the workflow states the Standard-only scoped lens exception", () => {
+    const workflow = read("docs/engineering-workflow.md").replace(/\s+/g, " ");
+    expect(workflow).toContain("All three lenses are the default at Standard");
+    expect(workflow).toContain("one or two lenses for a single-axis Standard change");
+    expect(workflow).toContain("High-assurance always requires all three lenses");
+    expect(workflow).toContain("all three skipped is not a review");
+  });
+
+  test("review entry points link to the A/B protocol", () => {
+    for (const [file, link] of [
+      ["docs/engineering-workflow.md", "review-comparison.md"],
+      ["docs/verification-and-merge-gate.md", "review-comparison.md"],
+      [".agents/skills/feature-implement/SKILL.md", "../../../docs/review-comparison.md"],
+      [".agents/skills/reviewloop/SKILL.md", "../../../docs/review-comparison.md"],
+      [".agents/skills/guard/SKILL.md", "../../../docs/review-comparison.md"],
+    ] as const) expect(read(file)).toContain(`](${link})`);
+  });
+
+  test("diagram guidance covers inclusion, omission and code-backed edges", () => {
+    expect(read(".agents/skills/reviewloop/SKILL.md")).toContain(
+      "](../../../docs/review-diagrams.md)",
+    );
+    const guide = read("docs/review-diagrams.md");
+    for (const fact of [
+      "Keep summary.diagram optional",
+      "Include a diagram whenever",
+      "even when it repeats the text summary",
+      "independently collapsible and open by default",
+      "require 5/5 for a pass",
+      "control flow, data flow, state transitions or interaction order",
+      "Omit the field",
+      "Verify every node and edge against the pinned code",
+      "not a diagram-selection algorithm",
+    ]) expect(guide).toContain(fact);
+  });
+
+  test("native findings remain commit-linked and are not resolved just for being outdated", () => {
+    expect(read(".agents/skills/reviewloop/SKILL.md")).toContain(
+      "](../../../docs/review-findings.md)",
+    );
+    const protocol = read("docs/review-findings.md");
+    for (const fact of [
+      "native GitHub pull-request review comments",
+      "commit_id",
+      "Outdated is not fixed",
+      "reply with the fixing commit and the regression proof",
+      "before retrying",
+      "Findings outside eligible changed lines",
+    ]) expect(protocol).toContain(fact);
+  });
 
   test("a link to a same-named file elsewhere is not the canonical doc", () => {
     // `endsWith(DOC_FILE)` accepted any existing file with the same basename, so a

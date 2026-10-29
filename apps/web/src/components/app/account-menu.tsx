@@ -43,7 +43,7 @@ export function AccountMenu({ profile, failed, blocked, retry, onLogout }: {
 }) {
   const { t } = useTranslation();
   if (!profile) {
-    if (blocked) return <span role="status" className="max-w-40 text-xs text-muted-foreground">{t("accountUnavailable")}</span>;
+    if (blocked) return <span role="status" className="max-w-40 text-xs text-muted-foreground">{t("accountBlocked")}</span>;
     return failed ? (
       <button type="button" onClick={retry} className="max-w-40 text-xs text-destructive" title={t("accountUnavailable")}>
         {t("accountUnavailable")}

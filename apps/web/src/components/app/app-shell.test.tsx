@@ -93,7 +93,7 @@ describe("AppShell verified identity", () => {
   afterEach(async () => {
     profileRead = defaultProfileRead;
     const { clearAuthLost } = await import("@/lib/auth-refusal");
-    clearAuthLost();
+    await act(async () => clearAuthLost());
   });
   it("shows the verified mixed name and role without putting the phone in the header, and clears identity on auth loss", async () => {
     const { markAuthLost, clearAuthLost } = await import("@/lib/auth-refusal");
@@ -102,26 +102,30 @@ describe("AppShell verified identity", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={queryClient}><ThemeProvider><SaleDraftProvider><AppShell /></SaleDraftProvider></ThemeProvider></QueryClientProvider>));
-    expect(await waitFor(() => host.querySelector('[data-testid="account-menu-trigger"]') !== null)).toBe(true);
-    const header = host.querySelector("header");
-    if (!header) throw new Error("shell header missing");
-    expect(header.textContent).toContain("عبد الرحمن Amara بن محمد");
-    expect(header.textContent).toContain("المالك");
-    expect(header.textContent).not.toContain("+213550123123");
-    await act(async () => markAuthLost());
-    expect(header.textContent).not.toContain("عبد الرحمن");
-    expect(host.querySelector('[data-testid="account-menu-trigger"]')).toBeNull();
-    expect(header.textContent).not.toContain("جارٍ تحميل الحساب");
-    expect(header.textContent).toContain("تعذّر تحميل الحساب");
-    profileRead = async () => { throw new Error("network unavailable"); };
-    await act(async () => clearAuthLost());
-    expect(await waitFor(() => header.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
-    expect(header.textContent).not.toContain("المالك");
-    await act(async () => root.unmount());
-    queryClient.clear();
-    host.remove();
-    profileRead = defaultProfileRead;
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><ThemeProvider><SaleDraftProvider><AppShell /></SaleDraftProvider></ThemeProvider></QueryClientProvider>));
+      expect(await waitFor(() => host.querySelector('[data-testid="account-menu-trigger"]') !== null)).toBe(true);
+      const header = host.querySelector("header");
+      if (!header) throw new Error("shell header missing");
+      expect(header.textContent).toContain("عبد الرحمن Amara بن محمد");
+      expect(header.textContent).toContain("المالك");
+      expect(header.textContent).not.toContain("+213550123123");
+      await act(async () => markAuthLost());
+      expect(header.textContent).not.toContain("عبد الرحمن");
+      expect(host.querySelector('[data-testid="account-menu-trigger"]')).toBeNull();
+      expect(header.textContent).not.toContain("جارٍ تحميل الحساب");
+      expect(header.textContent).toContain("الحساب غير متاح.");
+      expect(header.textContent).not.toContain("أعد المحاولة");
+      profileRead = async () => { throw new Error("network unavailable"); };
+      await act(async () => clearAuthLost());
+      expect(await waitFor(() => header.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
+      expect(header.textContent).not.toContain("المالك");
+    } finally {
+      await act(async () => root.unmount());
+      queryClient.clear();
+      host.remove();
+      profileRead = defaultProfileRead;
+    }
   });
 });
 

@@ -900,6 +900,7 @@ const resources = {
       accountOwner: "المالك",
       accountLoading: "جارٍ تحميل الحساب…",
       accountUnavailable: "تعذّر تحميل الحساب. أعد المحاولة.",
+      accountBlocked: "الحساب غير متاح.",
       sidebarToggle: "توسيع / طي الشريط الجانبي",
       themeLabel: "المظهر",
       themeLight: "فاتح",

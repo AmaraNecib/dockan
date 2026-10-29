@@ -2376,9 +2376,25 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- UI preferences (issue 97 follow-up) ---------------------------------
     // shell state, not store identity: cheap read/write, no audit entry (the
     // sidebar toggle alone would spam the activity log)
-    preferencesGet: os.preferencesGet.handler(guarded(async () => ({ values: await deps.store.getPreferences() }))),
+    preferencesGet: os.preferencesGet.handler(guarded(async (context) => {
+      const session = await requireSession(context);
+      const stored = await deps.store.getPreferences();
+      // Price mode belongs to the operator, including the vault owner. Never
+      // project another operator's choice into the shared shell preferences.
+      const priceModeKey = `ui.sale.priceMode.${session.user.id}`;
+      const values = Object.fromEntries(Object.entries(stored).filter(([key]) => key !== "ui.sale.priceMode" && !key.startsWith("ui.sale.priceMode.")));
+      if (stored[priceModeKey] !== undefined) values["ui.sale.priceMode"] = stored[priceModeKey];
+      return { values };
+    })),
+
     preferencesSet: os.preferencesSet.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, context) => {
+        if (input.key === "ui.sale.priceMode") {
+          if (input.value !== "AMOUNT" && input.value !== "PERCENTAGE") throw new ORPCError("BAD_REQUEST", { message: "PREFERENCE_NOT_WRITABLE" });
+          const session = await requireSession(context);
+          await deps.store.setPreference(`ui.sale.priceMode.${session.user.id}`, input.value);
+          return { key: input.key, value: input.value };
+        }
         // the completion milestone is derived from shop records, so a client
         // must not be able to set it: setting it would hide the checklist
         // forever with nothing behind it. Only the keys the owner owns pass,

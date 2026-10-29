@@ -113,6 +113,7 @@
       "match": ["apps/web/src/pages/sale.test.tsx"],
       "specs": [
         "sale-checkout.spec.ts",
+        "sale-price-editor.spec.ts",
         "no-write-window.spec.ts",
         "pagination.spec.ts",
         "completion-screens.spec.ts",

@@ -275,7 +275,7 @@ export function saleOverrideInvalid(line: Pick<SaleDraftLine, "overrideType" | "
   if (draftBlank(line.overrideValue)) return true;
   const value = parseLooseNumber(line.overrideValue);
   if (!Number.isFinite(value)) return true;
-  if (line.overrideType === "AMOUNT") return !Number.isInteger(value) || value < 0;
+  if (line.overrideType === "AMOUNT") return !Number.isSafeInteger(value) || value < 0;
   return !Number.isInteger(value) || value < 0 || value > 100;
 }
 

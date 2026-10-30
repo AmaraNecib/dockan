@@ -86,6 +86,30 @@ test("invoice search exposes loading and retry without losing the query", async 
   await expect(page.getByTestId("invoices-empty")).toBeVisible();
   await expect(search).toHaveValue("query-405-retry");
 
+  // Revisit the cached empty search while a fresh response is held.
+  await search.fill("query-405-other");
+  await expect(page.getByTestId("invoices-empty")).toBeVisible();
+  let releaseCached: (() => void) | undefined;
+  const cachedHeld = new Promise<void>(resolve => { releaseCached = resolve; });
+  await page.route("**/api/rpc/invoicesList", async route => {
+    if (!route.request().postData()?.includes("query-405-retry")) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    await cachedHeld;
+    await route.fulfill({ response });
+  });
+  try {
+    await search.fill("query-405-retry");
+    await expect(page.getByRole("status", { name: "جارٍ البحث عن الفواتير" })).toBeVisible();
+    await expect(page.getByTestId("invoices-empty")).toBeVisible();
+  } finally {
+    releaseCached?.();
+  }
+  await expect(page.getByRole("status", { name: "جارٍ البحث عن الفواتير" })).toHaveCount(0);
+  await page.unroute("**/api/rpc/invoicesList");
+
   // Cancel an in-flight no-match search by clearing it. A late response must
   // not replace the unfiltered rows belonging to the new query key.
   let completeOld: (() => void) | undefined;

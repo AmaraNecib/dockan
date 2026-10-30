@@ -40,6 +40,7 @@ const allInvoices: Row[] = [
 ];
 /** the seeded rows are restored after every test; the empty-state specs mutate them */
 const seedInvoices: Row[] = [...allInvoices];
+let refreshGate: Promise<void> | undefined;
 
 // stub the whole seam + Link (rendered as a plain anchor) so the page is
 // testable without a network or a router mount, matching returns.test.tsx
@@ -59,6 +60,7 @@ mock.module("@/lib/rpc", () => ({
         queryKey: ["invoicesList", input],
         queryFn: async () => {
           requests.push(input);
+          await refreshGate;
           const items = allInvoices.filter(
             (row) =>
               (input.kind === undefined || row.kind === input.kind) &&
@@ -82,6 +84,7 @@ beforeEach(() => {
   allInvoices.length = 0;
   allInvoices.push(...seedInvoices);
   requests = [];
+  refreshGate = undefined;
 });
 
 afterEach(() => {
@@ -133,6 +136,7 @@ async function mountPage() {
     emptyPurchaseAction: () => container.querySelector<HTMLElement>("[data-testid='invoices-empty-action-purchase']"),
     kindFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-kind-filter']"),
     statusFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-status-filter']"),
+    loading: () => container.querySelector('[role="status"]'),
   };
 }
 
@@ -150,11 +154,20 @@ describe("InvoicesPage filters", () => {
     expect(requests.at(-1)?.kind).toBe("SALE");
     expect(page.numbers()).toEqual(["INV-0001"]);
 
-    // clear through the empty-valued "All" option: the parameter must disappear
-    await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterAll"));
-    await waitFor(() => page.numbers().length === 2);
-    expect(requests.at(-1)?.kind).toBeUndefined();
-    expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+    // Returning to a cached key must announce refresh without hiding its rows.
+    let release: (() => void) | undefined;
+    refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterAll"));
+      await waitFor(() => page.numbers().length === 2);
+      expect(requests.at(-1)?.kind).toBeUndefined();
+      expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesSearchLoading"));
+    } finally {
+      await act(async () => release?.());
+      refreshGate = undefined;
+    }
+    await waitFor(() => page.loading() === null);
   });
 
   it("narrows by payment status and clears it again", async () => {

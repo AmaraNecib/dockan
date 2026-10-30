@@ -136,8 +136,13 @@ export function InvoicesPage() {
         </label>
       </div>
 
+      {list.isFetching && (
+        <p className="mt-4 text-sm text-muted-foreground" role="status" aria-label={t("invoicesSearchLoading")}>
+          {t("invoicesSearchLoading")}
+        </p>
+      )}
       {list.isPending ? (
-        <div className="mt-4 grid gap-2" role="status" aria-label={t("invoicesSearchLoading")}>
+        <div className="mt-4 grid gap-2" aria-hidden="true">
           <Skeleton className="h-6 w-full" />
           <Skeleton className="h-6 w-full" />
           <Skeleton className="h-6 w-full" />

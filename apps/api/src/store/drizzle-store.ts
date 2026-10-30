@@ -888,6 +888,10 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
  * speaks StorePort (ADR-0003). A postgres adapter replaces this file, not
  * anything above it.
  */
+function requireExpenseActorPair(input: { actorId?: string | null; actorName?: string | null }): void {
+  if (((input.actorId ?? null) === null) !== ((input.actorName ?? null) === null)) throw new Error("expense actor fields must be paired");
+}
+
 export function createDrizzleStore(conn: Connection, logger?: StoreLogger): StorePort {
   const { db } = conn;
 
@@ -945,6 +949,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // SAFETY: same key set and same values; no wrapper is applied
     Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value])) as StorePort;
 
+  let immediateTransaction = false;
+
   /** Shared BEGIN/COMMIT/ROLLBACK body for deferred and write-first units.
    * immediate=true uses BEGIN IMMEDIATE, which takes the write lock BEFORE the
    * first read — see withTransactionImmediate's comment for why money paths
@@ -962,6 +968,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // leave persistence permanently disabled, and the catch below must only
       // run with a real open transaction
       conn.inTransaction = true;
+      immediateTransaction = immediate;
       let committed = false;
       try {
         const result = await fn(tx);
@@ -986,6 +993,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           }
         }
         throw err;
+      } finally {
+        immediateTransaction = false;
       }
     });
   };
@@ -1950,6 +1959,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return toExpenseCategory(row);
     },
     async insertExpense(input) {
+      requireExpenseActorPair(input);
       const row = firstRowOf(
         await db
           .insert(expenses)
@@ -2022,7 +2032,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return row === undefined ? undefined : toExpenseCorrection(row);
     },
     async insertExpenseCorrection(input) {
-      if (!conn.inTransaction) throw new Error("expense correction writes require an immediate transaction");
+      if (!conn.inTransaction || !immediateTransaction) throw new Error("expense correction writes require an immediate transaction");
+      requireExpenseActorPair(input);
       if (
         !Number.isSafeInteger(input.beforeAmount) ||
         !Number.isSafeInteger(input.afterAmount) ||
@@ -2066,17 +2077,15 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         filters.categoryIds === undefined || filters.categoryIds.length === 0
           ? sql``
           : sql`AND e.category_id IN (${sql.join(filters.categoryIds.map((categoryId) => sql`${categoryId}`), sql`, `)})`;
-      // SAFETY: both SELECTs alias the same constrained category, signed integer amount, and local timestamp fields as ExpenseReportEntry.
+      // One report fact per original expense keeps counts independent of edits.
+      // Corrections share the original business date and only change its amount.
+      // SAFETY: fixed aliases match ExpenseReportEntry; all filter values are bound.
       const rows = (await db.all(sql`
-        SELECT e.category_id AS categoryId, e.amount AS amount, e.occurred_at AS occurredAt
+        SELECT e.category_id AS categoryId,
+               e.amount + COALESCE((SELECT SUM(c.difference) FROM expense_corrections c WHERE c.expense_id = e.id), 0) AS amount,
+               e.occurred_at AS occurredAt
         FROM expenses e
         WHERE e.occurred_at >= ${filters.from} AND e.occurred_at <= ${filters.to}
-        ${categoryFilter}
-        UNION ALL
-        SELECT e.category_id AS categoryId, c.difference AS amount, c.effective_at AS occurredAt
-        FROM expense_corrections c
-        JOIN expenses e ON e.id = c.expense_id
-        WHERE c.effective_at >= ${filters.from} AND c.effective_at <= ${filters.to}
         ${categoryFilter}
       `)) as ExpenseReportEntry[];
       return rows;

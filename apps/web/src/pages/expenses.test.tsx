@@ -107,6 +107,8 @@ let correctionHistories = new Map<string, ExpenseCorrectionHistory>();
 let correctionInputs: CorrectionInput[] = [];
 let undoInputs: UndoInput[] = [];
 let correctionFailuresRemaining = 0;
+let loseCorrectionResponse = false;
+let correctionResults = new Map<string, ExpenseCorrection>();
 
 let categoriesFixture: ExpenseCategory[] = [];
 let categoryCreateFails = false;
@@ -251,6 +253,8 @@ mock.module("@/lib/rpc", () => ({
             correctionFailuresRemaining -= 1;
             throw new Error("EXPENSE_CORRECTION_NO_CHANGE");
           }
+          const duplicate = correctionResults.get(input.idempotencyKey);
+          if (duplicate !== undefined) return duplicate;
           const history = correctionHistories.get(input.expenseId);
           if (history === undefined) throw new Error("EXPENSE_NOT_FOUND");
           const correction: ExpenseCorrection = {
@@ -272,6 +276,11 @@ mock.module("@/lib/rpc", () => ({
             corrections: [...history.corrections, { ...correction, reversedByCorrectionId: null }],
           });
           listItems = listItems.map((row) => row.id === input.expenseId ? { ...row, effectiveAmount: input.amount, correctionCount: (row.correctionCount ?? 0) + 1 } : row);
+          correctionResults.set(input.idempotencyKey, correction);
+          if (loseCorrectionResponse) {
+            loseCorrectionResponse = false;
+            throw new Error("response lost after commit");
+          }
           return correction;
         },
         ...opts,
@@ -1591,6 +1600,8 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     correctionInputs = [];
     undoInputs = [];
     correctionFailuresRemaining = 0;
+    loseCorrectionResponse = false;
+    correctionResults = new Map();
   });
 
   afterEach(() => {
@@ -1630,9 +1641,19 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(correctionInputs).toHaveLength(1);
 
     const firstKey = correctionInputs[0]?.idempotencyKey;
+    await ui.click("expense-correction-open-editor");
+    expect(ui.query<HTMLInputElement>("expense-correction-amount")?.value).toBe("800");
+    expect(ui.query<HTMLInputElement>("expense-correction-reason")?.value).toBe("receipt typo");
+    loseCorrectionResponse = true;
     await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && ui.query("expense-correction-error") !== null)).toBe(true);
+    await act(async () => { await queryClient.invalidateQueries(); });
     expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "800")).toBe(true);
-    expect(correctionInputs).toHaveLength(2);
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") === null)).toBe(true);
+    expect(correctionInputs).toHaveLength(3);
+    expect(correctionInputs[2]?.idempotencyKey).toBe(firstKey);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(1);
     expect(correctionInputs[1]?.idempotencyKey).toBe(firstKey);
     expect(correctionInputs[1]?.reason).toBe("receipt typo");
     expect(ui.query("expense-correction-error")).toBeNull();

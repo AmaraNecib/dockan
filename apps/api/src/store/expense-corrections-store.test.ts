@@ -82,6 +82,13 @@ describe("expense correction storage (#408)", () => {
     await store.setup();
     expect(readSchemaVersion(conn.raw)).toBe(8);
     expect((await store.getExpenseCorrectionHistory(expenseId))?.corrections).toEqual([]);
+    await expect(store.insertExpense({
+      categoryId, amount: 100, occurredAt: "2020-01-01T10:00:00", actorId: "missing-name", actorName: null,
+    })).rejects.toThrow("expense actor fields must be paired");
+    await expect(store.insertExpense({
+      categoryId, amount: 100, occurredAt: "2020-01-01T10:00:00", actorId: null, actorName: "missing-id",
+    })).rejects.toThrow("expense actor fields must be paired");
+    expect(await store.listExpenseRecords({})).toHaveLength(1);
   });
 
   it("appends a linked signed row inside an immediate transaction and refuses stale or unlocked writes", async () => {
@@ -120,6 +127,23 @@ describe("expense correction storage (#408)", () => {
         reversesCorrectionId: null,
         idempotencyKey: randomUUID(),
       }),
+    ).rejects.toThrow("immediate transaction");
+    await expect(
+      store.withTransaction((tx) =>
+        tx.insertExpenseCorrection({
+          expenseId,
+          effectiveAt: "2019-12-15T10:00:00",
+          recordedAt: "2026-10-28T13:35:00",
+          beforeAmount: 800,
+          afterAmount: 700,
+          difference: -100,
+          actorId: null,
+          actorName: null,
+          reason: null,
+          reversesCorrectionId: null,
+          idempotencyKey: randomUUID(),
+        }),
+      ),
     ).rejects.toThrow("immediate transaction");
     await expect(
       store.withTransactionImmediate((tx) =>

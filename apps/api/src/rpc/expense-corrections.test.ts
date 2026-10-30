@@ -174,6 +174,9 @@ describe("expense corrections (#408)", () => {
     const businessAfter = await client.reportsProfit(businessWindow);
     const recordingAfter = await client.reportsProfit(recordingWindow);
     expect(businessAfter.operatingExpenses - businessBefore.operatingExpenses).toBe(800);
+    const countBefore = businessBefore.byCategory.find((row) => row.categoryId === category.id)?.count ?? 0;
+    const countAfter = businessAfter.byCategory.find((row) => row.categoryId === category.id)?.count ?? 0;
+    expect(countAfter - countBefore).toBe(1);
     expect(recordingAfter.operatingExpenses - recordingBefore.operatingExpenses).toBe(0);
   });
 

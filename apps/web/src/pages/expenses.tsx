@@ -95,6 +95,7 @@ function ExpenseCorrectionRow({
   );
 
   function openCorrectionEditor(): void {
+    if (editing || correction.isPending) return;
     setExpanded(true);
     setEditing(true);
     setDraftAmount(String(entry.effectiveAmount));
@@ -119,14 +120,15 @@ function ExpenseCorrectionRow({
       setCorrectionError(t("expenseCorrectionAmountInvalid"));
       return;
     }
-    if (amount === entry.effectiveAmount) {
-      setCorrectionError(t("EXPENSE_CORRECTION_NO_CHANGE"));
-      return;
-    }
-
     const reason = draftReason.trim();
     const fingerprint = `${amount}\u0000${reason}`;
     const previous = correctionKeyRef.current;
+    // A refreshed list can already contain a write whose acknowledgement was
+    // lost. Its unchanged retry must reach the server's idempotent response.
+    if (amount === entry.effectiveAmount && previous?.fingerprint !== fingerprint) {
+      setCorrectionError(t("EXPENSE_CORRECTION_NO_CHANGE"));
+      return;
+    }
     const idempotencyKey = previous?.fingerprint === fingerprint ? previous.key : crypto.randomUUID();
     correctionKeyRef.current = { fingerprint, key: idempotencyKey };
     const input: ExpenseCorrect = {

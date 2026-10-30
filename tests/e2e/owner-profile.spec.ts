@@ -1,13 +1,19 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { actAndAck, readRpc } from "./rpc-helpers";
 
 // These journeys share the operator's persisted preference with later specs.
 test.afterEach(async ({ page }) => {
   const sidebar = page.locator("aside");
-  if (await sidebar.isVisible() && await sidebar.evaluate((element) => element.getBoundingClientRect().width) === 64) {
-    await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
-    await expect(sidebar).toHaveCSS("width", "240px");
+  if (await sidebar.isVisible()) {
+    const toggle = page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" });
+    await expect(toggle).toBeEnabled();
+    if (await sidebar.evaluate((element) => element.getBoundingClientRect().width) === 64) {
+      await actAndAck(page, "preferencesSet", () => toggle.click());
+    }
+    await expect.poll(async () => (await readRpc<{ values: Record<string, string> }>(page, "preferencesGet")).values["ui.sidebar.collapsed"]).toBe("false");
     await page.reload();
+    await expect(toggle).toBeEnabled();
     await expect(sidebar).toHaveCSS("width", "240px");
   }
 });

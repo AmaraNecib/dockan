@@ -120,6 +120,26 @@ describe("AppShell verified identity", () => {
       await act(async () => clearAuthLost());
       expect(await waitFor(() => header.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
       expect(header.textContent).not.toContain("المالك");
+
+      let resolveOld = (_owner: Awaited<ReturnType<typeof defaultProfileRead>>) => {};
+      let resolveNew = (_owner: Awaited<ReturnType<typeof defaultProfileRead>>) => {};
+      const oldRead = new Promise<Awaited<ReturnType<typeof defaultProfileRead>>>((resolve) => { resolveOld = resolve; });
+      const newRead = new Promise<Awaited<ReturnType<typeof defaultProfileRead>>>((resolve) => { resolveNew = resolve; });
+      let reads = 0;
+      profileRead = () => { reads += 1; return reads === 1 ? oldRead : newRead; };
+      const retry = header.querySelector("button[title='تعذّر تحميل الحساب. أعد المحاولة.']");
+      if (!(retry instanceof HTMLButtonElement)) throw new Error("account retry missing");
+      await act(async () => retry.click());
+      expect(reads).toBe(1);
+      await act(async () => markAuthLost());
+      await act(async () => clearAuthLost());
+      expect(reads).toBe(2);
+      const owner = await defaultProfileRead();
+      await act(async () => resolveNew({ ...owner, name: "المالك الجديد" }));
+      expect(header.textContent).toContain("المالك الجديد");
+      await act(async () => resolveOld({ ...owner, name: "المالك السابق" }));
+      expect(header.textContent).toContain("المالك الجديد");
+      expect(header.textContent).not.toContain("المالك السابق");
     } finally {
       await act(async () => root.unmount());
       queryClient.clear();

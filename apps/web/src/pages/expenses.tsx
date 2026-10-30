@@ -78,7 +78,10 @@ function ExpenseCorrectionRow({
         correctionKeyRef.current = null;
         void queryClient.invalidateQueries();
       },
-      onError: (error) => setCorrectionError(tError(error.message)),
+      onError: (error) => {
+        setCorrectionError(tError(error.message));
+        void queryClient.invalidateQueries();
+      },
     }),
   );
 
@@ -90,7 +93,10 @@ function ExpenseCorrectionRow({
         setNotice(t("expenseCorrectionUndoSaved"));
         void queryClient.invalidateQueries();
       },
-      onError: (error) => setHistoryActionError(tError(error.message)),
+      onError: (error) => {
+        setHistoryActionError(tError(error.message));
+        void queryClient.invalidateQueries();
+      },
     }),
   );
 

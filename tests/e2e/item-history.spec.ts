@@ -87,11 +87,35 @@ test.describe("item history 399", () => {
     await page.unroute("**/api/rpc/itemsHistory");
     await page.getByRole("button", { name: "إعادة المحاولة" }).click();
     await expect(page.getByTestId("history-table")).toBeVisible();
-    await page.route("**/api/rpc/itemsHistory", (route) => route.abort("failed"));
-    await page.reload();
-    await page.getByRole("navigation", { name: "مسار المنتج" }).getByRole("link", { name: "المنتجات", exact: true }).click();
-    await expect(page).toHaveURL(/\/items$/);
-    await page.unroute("**/api/rpc/itemsHistory");
+    let release = () => {};
+    let responseReady = () => {};
+    let responseDelivered = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { responseReady = resolve; });
+    const delivered = new Promise<void>((resolve) => { responseDelivered = resolve; });
+    await page.route("**/api/rpc/itemsHistory", async (route) => {
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      responseReady();
+      await held;
+      await route.fulfill({ response });
+      responseDelivered();
+    });
+    try {
+      await page.reload();
+      await ready;
+      await page.getByRole("navigation", { name: "مسار المنتج" }).getByRole("link", { name: "المنتجات", exact: true }).click();
+      await expect(page).toHaveURL(/\/items$/);
+      await expect(page.getByRole("table")).toBeVisible();
+      release();
+      await delivered;
+      await expect(page.getByRole("table")).toBeVisible();
+      await expect(page.getByTestId("history-table")).toHaveCount(0);
+      await expect(page).toHaveURL(/\/items$/);
+    } finally {
+      release();
+      await page.unroute("**/api/rpc/itemsHistory");
+    }
     const saved = await rpc<{ stockOnHand: number; total: number }>(page, { procedure: "itemsHistory", input: { itemId: item.id } });
     expect(saved).toMatchObject({ stockOnHand: 4, total: 4 });
   });

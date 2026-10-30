@@ -368,6 +368,14 @@ describe("SalePage effective price editor (#397)", () => {
     await scan("397-read");
     expect(lineOverrideValue(host)?.value).toBe("1000");
     expect(host.textContent).toContain(i18n.t("salePriceModeNotSaved"));
+    preferenceReadFails = false;
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    expect(preferenceValues["ui.sale.priceMode"]).toBe("PERCENTAGE");
+    await scan("397-read-second");
+    expect(lineOverrideType(host, 1).textContent).toContain("نسبة %");
+    const secondPrice = host.querySelectorAll<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]')[1];
+    expect(secondPrice?.value).toBe("100");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
     await act(async () => setElementValue(lineOverrideValue(host)!, "900"));
     await act(async () => saveButton(host).click());
     expect(lastInvoiceInput).not.toBeNull();
@@ -383,6 +391,15 @@ describe("SalePage effective price editor (#397)", () => {
     expect(lineOverrideValue(host)?.value).toBe("1");
     await chooseOption(lineOverrideType(host, 0), "نسبة %");
     expect(lineOverrideValue(host)?.value).toBe("80");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "0"));
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    expect(lineOverrideValue(host)?.value).toBe("0");
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-price-reset"]')!.click());
+    expect(lineOverrideValue(host)?.value).toBe("100");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    expect(lineOverrideValue(host)?.value).toBe("100");
   });
 
   it("edits the default directly, refuses clearing, and explicitly resets without an override", async () => {

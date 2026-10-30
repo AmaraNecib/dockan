@@ -145,15 +145,25 @@ export function usePreference<T>(
     writtenKeys.add(key);
     let failed = false;
     void writePreference(key, serialize(next))
-      .then((stored) => {
+      .then(async (stored) => {
         if (stored === null) {
           // the write failed; the server value stands and the caller is told
           failed = true;
           setWriteFailed(true);
           return;
         }
-        // install only the server's own returned value, and never create a
-        // partial map: the cache holds full server reads only
+        // Discard older reads before installing this acknowledged choice.
+        await queryClient.cancelQueries({ queryKey: PREFERENCES_QUERY_KEY, exact: true });
+        if (queryClient.getQueryData<Preferences>(PREFERENCES_QUERY_KEY) === undefined) {
+          // A failed boot read leaves no full map to merge. Recover that map
+          // rather than creating a cache entry containing only this key.
+          try {
+            await queryClient.fetchQuery({ queryKey: PREFERENCES_QUERY_KEY, queryFn: readPreferences, staleTime: 0 });
+          } catch {
+            setWriteFailed(true);
+            return;
+          }
+        }
         queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) => {
           if (previous === undefined) return previous;
           return { ...previous, [key]: stored };

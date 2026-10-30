@@ -157,8 +157,11 @@ assertion is rejected only in the shapes the gate can distinguish.
 A pull request may be merged when **all four** hold. Not three. Any one missing sends it back to
 the queue or back to a lane.
 
-1. **Greptile confidence is 5/5.** Not 3, not 4. A 3/5 naming two "silent escapes" is a refusal,
-   not a note.
+1. **The review confidence is 5/5.** Not 3, not 4. `reviewloop` writes it; while the Greptile A/B
+   runs, both current-head reviews must be 5/5 with no actionable findings. Follow the
+   [comparison protocol](review-comparison.md) until the owner ends the trial. A missing
+   verdict blocks merging; scores are not averaged. A 3/5 naming two "silent escapes"
+   is a refusal, not a note.
 2. **`Last reviewed commit` equals the current head SHA.** A verdict anchored to an older commit
    says nothing about the code being merged. A rebase or a fix invalidates the previous verdict —
    re-request the review.

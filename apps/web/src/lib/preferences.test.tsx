@@ -12,6 +12,7 @@ let failRead = false;
 let failWrite = false;
 let writeCalls = 0;
 let writeGate: Promise<void> | null = null;
+let readGate: Promise<void> | null = null;
 /** Mimics a server that normalizes the value: the hook must use the echo. */
 let canonicalize: ((value: string) => string) | null = null;
 
@@ -19,7 +20,13 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {
     preferencesGet: async () => {
       if (failRead) throw new Error("PREFERENCES_READ_FAILED");
-      return { values: { ...store } };
+      const values = { ...store };
+      if (readGate !== null) {
+        const gate = readGate;
+        readGate = null;
+        await gate;
+      }
+      return { values };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
       writeCalls += 1;
@@ -79,8 +86,8 @@ interface ProbeHandle {
   unmount: () => Promise<void>;
 }
 
-async function mountProbe(prefKey = "ui.test.a"): Promise<ProbeHandle> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+async function mountProbe(prefKey = "ui.test.a", sharedClient?: QueryClient): Promise<ProbeHandle> {
+  const client = sharedClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -110,6 +117,7 @@ describe("preferences client (issue 97 follow-up)", () => {
     failWrite = false;
     writeCalls = 0;
     writeGate = null;
+    readGate = null;
     canonicalize = null;
     focusManager.setFocused(undefined);
   });
@@ -123,8 +131,28 @@ describe("preferences client (issue 97 follow-up)", () => {
     failRead = true;
     const handle = await mountProbe("ui.test.b");
     expect(await waitFor(() => text(handle.host, "read-error") === "true")).toBe(true);
-    // the caller must be able to tell "not set" from "we could not ask"
-    await handle.unmount();
+    // Two live controls share the missing map after a failed boot read.
+    const other = await mountProbe("ui.sidebar.collapsed", handle.client);
+    let release = () => {};
+    try {
+      failRead = false;
+      readGate = new Promise<void>((resolve) => { release = resolve; });
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(store["ui.test.b"]).toBe("true");
+      expect(text(handle.host, "writing")).toBe("true");
+      await act(async () => other.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(await waitFor(() => text(other.host, "writing") === "false")).toBe(true);
+      expect(text(handle.host, "write-failed")).toBe("false");
+      expect(text(handle.host, "value")).toBe("true");
+      expect(text(other.host, "value")).toBe("true");
+      await act(async () => release());
+      await flush();
+      expect(handle.client.getQueryData<Record<string, string>>(["preferences"])).toEqual({ "ui.test.b": "true", "ui.sidebar.collapsed": "true" });
+    } finally {
+      release();
+      await other.unmount();
+      await handle.unmount();
+    }
   });
 
   it("reports a failed write instead of pretending it landed", async () => {
@@ -245,7 +273,20 @@ describe("preferences client (issue 97 follow-up)", () => {
     const failed = await mountProbe();
     expect(await waitFor(() => text(failed.host, "loading") === "false")).toBe(true);
     expect(text(failed.host, "value")).toBe("false");
-    await failed.unmount();
+    const events: Array<{ key: string; ok: boolean }> = [];
+    const unsubscribe = onPreferenceWriteSettled((key, ok) => events.push({ key, ok }));
+    try {
+      await act(async () => failed.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(await waitFor(() => text(failed.host, "writing") === "false")).toBe(true);
+      expect(store["ui.test.a"]).toBe("true");
+      expect(text(failed.host, "read-error")).toBe("true");
+      expect(text(failed.host, "write-failed")).toBe("false");
+      expect(events).toEqual([{ key: "ui.test.a", ok: true }]);
+      expect(hasPreferenceWrite("ui.test.a")).toBe(true);
+    } finally {
+      unsubscribe();
+      await failed.unmount();
+    }
 
     failRead = false;
     store["ui.test.a"] = "true";

@@ -160,7 +160,9 @@ export function usePreference<T>(
           try {
             await queryClient.fetchQuery({ queryKey: PREFERENCES_QUERY_KEY, queryFn: readPreferences, staleTime: 0 });
           } catch {
-            setWriteFailed(true);
+            // Persistence succeeded. Cancellation means another writer owns
+            // recovery; a real read error is already exposed by query.isError.
+            // Neither outcome is a failed write or should outlive a later read.
             return;
           }
         }

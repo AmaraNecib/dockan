@@ -75,6 +75,12 @@ function ExpenseCorrectionRow({
     enabled: expanded,
   });
 
+  // Corrections and reversals are append-only. Only a history with more entries
+  // can supersede the list snapshot; an older cached history cannot roll it back.
+  const effectiveAmount = history.data !== undefined && history.data.corrections.length > entry.correctionCount
+    ? history.data.effectiveAmount
+    : entry.effectiveAmount;
+
   const correction = useMutation(
     orpc.expensesCorrect.mutationOptions({
       onSuccess: () => {
@@ -110,7 +116,7 @@ function ExpenseCorrectionRow({
     if (editing || correction.isPending) return;
     setExpanded(true);
     setEditing(true);
-    setDraftAmount(String(entry.effectiveAmount));
+    setDraftAmount(String(effectiveAmount));
     setDraftReason("");
     setCorrectionError(null);
     setHistoryActionError(null);
@@ -135,12 +141,8 @@ function ExpenseCorrectionRow({
     const reason = draftReason.trim();
     const fingerprint = `${amount}\u0000${reason}`;
     const previous = correctionKeyRef.current;
-    // A refreshed list can already contain a write whose acknowledgement was
-    // lost. Its unchanged retry must reach the server's idempotent response.
-    if (amount === entry.effectiveAmount && previous?.fingerprint !== fingerprint) {
-      setCorrectionError(t("EXPENSE_CORRECTION_NO_CHANGE"));
-      return;
-    }
+    // Only the server can distinguish replay from no change against current money.
+    // Retained off-page snapshots must not refuse a valid changed request.
     const idempotencyKey = previous?.fingerprint === fingerprint ? previous.key : crypto.randomUUID();
     correctionKeyRef.current = { fingerprint, key: idempotencyKey };
     const input: ExpenseCorrect = {
@@ -176,8 +178,8 @@ function ExpenseCorrectionRow({
           {withdrawal && <span className="mr-2 rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}
         </td>
         <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
-        <td className="p-3 font-semibold" data-testid="expense-row-effective-amount" data-value={entry.effectiveAmount}>
-          <Amount value={entry.effectiveAmount} />
+        <td className="p-3 font-semibold" data-testid="expense-row-effective-amount" data-value={effectiveAmount}>
+          <Amount value={effectiveAmount} />
         </td>
         <td className="p-3">
           <div className="flex flex-wrap gap-2">

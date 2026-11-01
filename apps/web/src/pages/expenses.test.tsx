@@ -131,7 +131,7 @@ interface ListInput {
   categoryIds?: string[];
   sortBy: string;
   sortDir: string;
-  pageSize: number;
+  limit: number;
   offset: number;
 }
 
@@ -141,6 +141,10 @@ let listItems: ExpenseRow[] = [];
 let listTotal = 0;
 /** makes the history read reject, so the error branch is distinguishable from empty */
 let listFails = false;
+let historyFails = false;
+let paginateByAmount = false;
+let failedListReads = 0;
+let lastReturnedIds: string[] = [];
 /** when set, a filtered read is empty while the default window still returns
  * `listItems`: the "filtered empty, but the default month has rows" case that
  * clearing must hand focus out of (issue #96 round 4) */
@@ -200,7 +204,16 @@ mock.module("@/lib/rpc", () => ({
         return {
           queryKey: ["expenses", input],
           queryFn: async () => {
-            if (listFails) throw new Error("LIST_FAILED");
+            if (listFails) {
+              failedListReads += 1;
+              throw new Error("LIST_FAILED");
+            }
+            if (paginateByAmount && input?.sortBy === "amount") {
+              const sorted = [...listItems].sort((a, b) => (a.effectiveAmount! - b.effectiveAmount!) * (input.sortDir === "asc" ? 1 : -1));
+              const items = sorted.slice(input.offset, input.offset + input.limit);
+              lastReturnedIds = items.map((row) => row.id);
+              return { items, total: listTotal };
+            }
             const filtering =
               (input?.categoryIds?.length ?? 0) > 0 ||
               (input?.preset !== undefined && input.preset !== "CURRENT_MONTH");
@@ -224,6 +237,7 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: ({ input }: { input: { expenseId: string } }) => ({
         queryKey: ["expenseCorrectionHistory", input.expenseId],
         queryFn: async (): Promise<ExpenseCorrectionHistory> => {
+          if (historyFails) throw new Error("HISTORY_FAILED");
           const stored = correctionHistories.get(input.expenseId);
           if (stored !== undefined) return stored;
           const row = listItems.find((entry) => entry.id === input.expenseId);
@@ -1615,6 +1629,10 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     correctionResults = new Map();
     loseUndoResponse = false;
     undoResults = new Map();
+    historyFails = false;
+    paginateByAmount = false;
+    failedListReads = 0;
+    lastReturnedIds = [];
     // An active original-period report query uses the same server fixture as
     // the list. This proves query reconciliation, not report arithmetic.
     report = new QueryObserver<{ operatingExpenses: number }>(queryClient, {
@@ -1690,6 +1708,102 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(ui.query("expense-correction-error")).toBeNull();
     expect(correctionHistories.get("exp-1")?.corrections[0]).toMatchObject({ beforeAmount: 1_000, afterAmount: 800, difference: -200 });
 
+    await ui.unmount();
+  });
+
+  it.each(["list error", "page removal", "history error"])("retains exact correction recovery after %s", async (incident) => {
+    queryClient.setDefaultOptions({ queries: { retry: 2, retryDelay: 0 }, mutations: { retry: false } });
+    if (incident === "page removal") {
+      paginateByAmount = true;
+      listItems = [...listItems, ...Array.from({ length: 100 }, (_, index) => ({ ...listItems[0]!, id: `other-${index}`, effectiveAmount: 900 }))];
+      listTotal = listItems.length;
+    }
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    if (incident === "page removal") {
+      await openSelect(ui.query("expense-sort-by")!);
+      await activateOption((await findOption(i18n.t("expensesSortByAmount")))!);
+      expect(await ui.waitFor(() => lastListInput?.sortBy === "amount" && queryClient.isFetching() === 0 && lastReturnedIds[0] === "exp-1")).toBe(true);
+    }
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-original") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    await ui.type("expense-correction-reason", "exact recovery payload");
+    listFails = incident === "list error";
+    historyFails = incident === "history error";
+    loseCorrectionResponse = true;
+    await ui.submit("expense-correction-form");
+    if (incident === "list error") {
+      expect(await ui.waitFor(() => ui.query("expenses-history-error") !== null)).toBe(true);
+      expect(failedListReads).toBe(3);
+    } else if (incident === "page removal") {
+      expect(await ui.waitFor(() => !lastReturnedIds.includes("exp-1"))).toBe(true);
+    } else {
+      expect(await ui.waitFor(() => ui.query("expense-correction-history-error") !== null)).toBe(true);
+    }
+    expect(ui.query("expense-correction-form")).not.toBeNull();
+    expect(ui.query<HTMLInputElement>("expense-correction-amount")?.value).toBe("800");
+    expect(ui.query<HTMLTextAreaElement>("expense-correction-reason")?.value).toBe("exact recovery payload");
+    expect(ui.query("expense-correction-error")).not.toBeNull();
+    expect(ui.query("expense-correction-saved")).toBeNull();
+    expect(correctionInputs).toHaveLength(1);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(1);
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && ui.query("expense-correction-form") === null)).toBe(true);
+    expect(correctionInputs[1]).toEqual(correctionInputs[0]);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(1);
+    expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(800);
+    await ui.unmount();
+  });
+
+  it.each(["list error", "page removal", "history error"])("retains exact undo recovery after %s", async (incident) => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-original") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    if (incident === "page removal") {
+      paginateByAmount = true;
+      listItems = [...listItems, ...Array.from({ length: 100 }, (_, index) => ({ ...listItems[0]!, id: `other-${index}`, effectiveAmount: 900 }))];
+      listTotal = listItems.length;
+      await openSelect(ui.query("expense-sort-dir")!);
+      await activateOption((await findOption(i18n.t("expensesSortAsc")))!);
+      expect(await ui.waitFor(() => queryClient.isFetching() === 0)).toBe(true);
+      await openSelect(ui.query("expense-sort-by")!);
+      await activateOption((await findOption(i18n.t("expensesSortByAmount")))!);
+      expect(await ui.waitFor(() => lastListInput?.sortDir === "asc" && queryClient.isFetching() === 0 && lastReturnedIds[0] === "exp-1")).toBe(true);
+    }
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "700");
+    await ui.type("expense-correction-reason", "next draft");
+    await ui.click("expense-correction-undo");
+    listFails = incident === "list error";
+    historyFails = incident === "history error";
+    loseUndoResponse = true;
+    await ui.click("expense-correction-undo-confirm-button");
+    if (incident === "list error") {
+      expect(await ui.waitFor(() => ui.query("expenses-history-error") !== null)).toBe(true);
+    } else if (incident === "page removal") {
+      expect(await ui.waitFor(() => !lastReturnedIds.includes("exp-1"))).toBe(true);
+    } else {
+      expect(await ui.waitFor(() => ui.query("expense-correction-history-error") !== null)).toBe(true);
+    }
+    expect(ui.query("expense-correction-undo-confirm")).not.toBeNull();
+    expect(ui.query("expense-correction-history")?.querySelector('[role="alert"]')).not.toBeNull();
+    expect(ui.query("expense-correction-saved")).toBeNull();
+    expect(ui.query<HTMLInputElement>("expense-correction-amount")?.value).toBe("700");
+    expect(ui.query<HTMLTextAreaElement>("expense-correction-reason")?.value).toBe("next draft");
+    expect(undoInputs).toHaveLength(1);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(2);
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 2 && ui.query("expense-correction-undo-confirm") === null)).toBe(true);
+    expect(undoInputs[1]).toEqual(undoInputs[0]);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(2);
+    expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(1_000);
+    expect(ui.query("expense-correction-saved")?.textContent).toBe(i18n.t("expenseCorrectionUndoSaved"));
     await ui.unmount();
   });
 

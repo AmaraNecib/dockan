@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { MAX_EXPENSE_AMOUNT, type ExpenseCategory, type ExpenseCorrect, type ExpenseListItem, type ReportRangePreset } from "@dokan/contracts";
@@ -46,10 +46,12 @@ function ExpenseCorrectionRow({
   entry,
   categoryName,
   withdrawal,
+  onRecoveryChange,
 }: {
   entry: ExpenseListItem;
   categoryName: string;
   withdrawal: boolean;
+  onRecoveryChange: (entry: ExpenseListItem, active: boolean) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -63,6 +65,10 @@ function ExpenseCorrectionRow({
   const [undoConfirmationId, setUndoConfirmationId] = useState<string | null>(null);
   const correctionKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const undoKeysRef = useRef(new Map<string, string>());
+
+  useEffect(() => {
+    onRecoveryChange(entry, editing || undoConfirmationId !== null);
+  }, [entry, editing, undoConfirmationId, onRecoveryChange]);
 
   const history = useQuery({
     ...orpc.expenseCorrectionHistory.queryOptions({ input: { expenseId: entry.id } }),
@@ -264,69 +270,69 @@ function ExpenseCorrectionRow({
                             {t("expenseCorrectionUndo")}
                           </Button>
                         )}
-                        {undoConfirmationId === event.id && (
-                          <div className="grid gap-2 rounded border bg-card p-3" role="group" aria-labelledby={`expense-correction-undo-prompt-${event.id}`} data-testid="expense-correction-undo-confirm">
-                            <p id={`expense-correction-undo-prompt-${event.id}`} className="text-sm">{t("expenseCorrectionUndoConfirm")}</p>
-                            <div className="flex flex-wrap gap-2">
-                              <Button type="button" size="sm" variant="outline" disabled={undo.isPending} onClick={() => setUndoConfirmationId(null)} data-testid="expense-correction-undo-cancel">
-                                {t("expenseCorrectionUndoCancel")}
-                              </Button>
-                              <Button type="button" size="sm" disabled={undo.isPending} onClick={() => confirmUndo(event.id)} data-testid="expense-correction-undo-confirm-button">
-                                {undo.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionUndoConfirmButton")}
-                              </Button>
-                            </div>
-                          </div>
-                        )}
                       </li>
                     ))}
                   </ol>
-                  {editing && (
-                    <form className="grid gap-3 rounded border bg-card p-3" onSubmit={submitCorrection} data-testid="expense-correction-form">
-                      <label className="grid gap-1 text-sm font-medium" htmlFor={`expense-correction-amount-${entry.id}`}>
-                        {t("expenseCorrectionNewAmount")}
-                        <input
-                          id={`expense-correction-amount-${entry.id}`}
-                          className={inputClass}
-                          type="text"
-                          inputMode="numeric"
-                          value={draftAmount}
-                          aria-invalid={correctionError !== null}
-                          aria-describedby={correctionError !== null ? `expense-correction-error-${entry.id}` : undefined}
-                          onChange={(event) => { setDraftAmount(event.target.value); setCorrectionError(null); }}
-                          data-testid="expense-correction-amount"
-                        />
-                      </label>
-                      <label className="grid gap-1 text-sm font-medium" htmlFor={`expense-correction-reason-${entry.id}`}>
-                        {t("expenseCorrectionReasonLabel")}
-                        <textarea
-                          id={`expense-correction-reason-${entry.id}`}
-                          className={inputClass}
-                          rows={2}
-                          maxLength={500}
-                          value={draftReason}
-                          onChange={(event) => setDraftReason(event.target.value)}
-                          data-testid="expense-correction-reason"
-                        />
-                      </label>
-                      <div className="flex flex-wrap gap-2">
-                        <Button type="submit" size="sm" disabled={correction.isPending} data-testid="expense-correction-save">
-                          {correction.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionSave")}
-                        </Button>
-                        <Button type="button" size="sm" variant="outline" disabled={correction.isPending} onClick={cancelCorrectionEditor} data-testid="expense-correction-cancel">
-                          {t("expenseCorrectionCancel")}
-                        </Button>
-                      </div>
-                      {correctionError !== null && (
-                        <p id={`expense-correction-error-${entry.id}`} className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-correction-error">
-                          {correctionError}
-                        </p>
-                      )}
-                    </form>
-                  )}
-                  {historyActionError !== null && <p className="text-sm text-destructive" role="alert">{historyActionError}</p>}
-                  {notice !== null && <p className="text-sm text-success" role="status" data-testid="expense-correction-saved">{notice}</p>}
                 </>
               ) : null}
+              {undoConfirmationId !== null && (
+                <div className="grid gap-2 rounded border bg-card p-3" role="group" aria-labelledby={`expense-correction-undo-prompt-${undoConfirmationId}`} data-testid="expense-correction-undo-confirm">
+                  <p id={`expense-correction-undo-prompt-${undoConfirmationId}`} className="text-sm">{t("expenseCorrectionUndoConfirm")}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant="outline" disabled={undo.isPending} onClick={() => setUndoConfirmationId(null)} data-testid="expense-correction-undo-cancel">
+                      {t("expenseCorrectionUndoCancel")}
+                    </Button>
+                    <Button type="button" size="sm" disabled={undo.isPending} onClick={() => confirmUndo(undoConfirmationId)} data-testid="expense-correction-undo-confirm-button">
+                      {undo.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionUndoConfirmButton")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {editing && (
+                <form className="grid gap-3 rounded border bg-card p-3" onSubmit={submitCorrection} data-testid="expense-correction-form">
+                  <label className="grid gap-1 text-sm font-medium" htmlFor={`expense-correction-amount-${entry.id}`}>
+                    {t("expenseCorrectionNewAmount")}
+                    <input
+                      id={`expense-correction-amount-${entry.id}`}
+                      className={inputClass}
+                      type="text"
+                      inputMode="numeric"
+                      value={draftAmount}
+                      aria-invalid={correctionError !== null}
+                      aria-describedby={correctionError !== null ? `expense-correction-error-${entry.id}` : undefined}
+                      onChange={(event) => { setDraftAmount(event.target.value); setCorrectionError(null); }}
+                      data-testid="expense-correction-amount"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-sm font-medium" htmlFor={`expense-correction-reason-${entry.id}`}>
+                    {t("expenseCorrectionReasonLabel")}
+                    <textarea
+                      id={`expense-correction-reason-${entry.id}`}
+                      className={inputClass}
+                      rows={2}
+                      maxLength={500}
+                      value={draftReason}
+                      onChange={(event) => setDraftReason(event.target.value)}
+                      data-testid="expense-correction-reason"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="submit" size="sm" disabled={correction.isPending} data-testid="expense-correction-save">
+                      {correction.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionSave")}
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" disabled={correction.isPending} onClick={cancelCorrectionEditor} data-testid="expense-correction-cancel">
+                      {t("expenseCorrectionCancel")}
+                    </Button>
+                  </div>
+                  {correctionError !== null && (
+                    <p id={`expense-correction-error-${entry.id}`} className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-correction-error">
+                      {correctionError}
+                    </p>
+                  )}
+                </form>
+              )}
+              {historyActionError !== null && <p className="text-sm text-destructive" role="alert">{historyActionError}</p>}
+              {notice !== null && <p className="text-sm text-success" role="status" data-testid="expense-correction-saved">{notice}</p>}
             </section>
           </td>
         </tr>
@@ -343,6 +349,16 @@ export function ExpensesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const categories = useQuery(orpc.expenseCategoriesList.queryOptions());
+  const [recoveryRows, setRecoveryRows] = useState(new Map<string, ExpenseListItem>());
+  const retainRecoveryRow = useCallback((entry: ExpenseListItem, active: boolean) => {
+    setRecoveryRows((current) => {
+      if (active ? current.get(entry.id) === entry : !current.has(entry.id)) return current;
+      const next = new Map(current);
+      if (active) next.set(entry.id, entry);
+      else next.delete(entry.id);
+      return next;
+    });
+  }, []);
 
   // record form
   const [categoryId, setCategoryId] = useState("");
@@ -413,6 +429,12 @@ export function ExpensesPage() {
       },
     }),
   );
+
+  // Active editors and undo confirmations outlive their sorted page membership.
+  const visibleRows = new Map((history.data?.items ?? []).map((entry) => [entry.id, entry]));
+  for (const [id, entry] of recoveryRows) {
+    if (!visibleRows.has(id)) visibleRows.set(id, entry);
+  }
 
   const toggleCategory = (id: string) => {
     pager.reset();
@@ -888,13 +910,14 @@ export function ExpensesPage() {
           </div>
         </div>
 
-        {history.isPending ? (
-          <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-loading">{t("expensesLoading")}</p>
-        ) : history.isError ? (
+        {history.isError && (
           <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="expenses-history-error">
             {tError(history.error instanceof Error ? history.error.message : undefined)}
           </p>
-        ) : history.data === undefined || history.data.total === 0 ? (
+        )}
+        {history.isPending && visibleRows.size === 0 ? (
+          <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-loading">{t("expensesLoading")}</p>
+        ) : !history.isError && visibleRows.size === 0 ? (
           <EmptyState
             testId="expenses-empty"
             card
@@ -929,8 +952,8 @@ export function ExpensesPage() {
               )
             }
           />
-        ) : (
-          <>
+        ) : null}
+        {visibleRows.size > 0 && (
           <table className="w-full rounded border bg-card" data-testid="expense-history">
             <thead>
               <tr className="border-b text-right text-sm text-muted-foreground">
@@ -942,7 +965,7 @@ export function ExpensesPage() {
               </tr>
             </thead>
             <tbody>
-              {history.data.items.map((entry) => {
+              {[...visibleRows.values()].map((entry) => {
                 const category = categories.data?.items.find((row) => row.id === entry.categoryId);
                 return (
                   <ExpenseCorrectionRow
@@ -950,11 +973,14 @@ export function ExpensesPage() {
                     entry={entry}
                     categoryName={category?.name ?? entry.categoryId.slice(0, 8)}
                     withdrawal={category?.isOwnerWithdrawal === true}
+                    onRecoveryChange={retainRecoveryRow}
                   />
                 );
               })}
             </tbody>
           </table>
+        )}
+        {history.data !== undefined && history.data.total > 0 && (
           <Pager
             total={history.data.total}
             pageSize={pager.pageSize}
@@ -963,7 +989,6 @@ export function ExpensesPage() {
             onPageSizeChange={pager.setPageSize}
             testId="expenses-pager"
           />
-          </>
         )}
       </div>
     </section>

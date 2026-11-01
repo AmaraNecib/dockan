@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { expect, test } from "@playwright/test";
+import type { ExpenseCorrection } from "../../packages/contracts/src";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 import { actAndAck, saveQuickAdd } from "./rpc-helpers";
@@ -35,6 +36,12 @@ function parseAmount(text: string | null): number {
  * "5,000". Assertions read the DISPLAYED shape; the input keeps the typed one. */
 function shownAmount(amount: string): string {
   return amount.replace(/\B(?=(\d{3})+$)/u, ",");
+}
+
+function displayedMoment(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (match === null) throw new Error(`unexpected stored date/time: ${value}`);
+  return `${match[3]}/${match[2]}/${match[1]} ${match[4]}:${match[5]}`;
 }
 
 /** Select an expense category by its visible label. The withdrawal category
@@ -482,12 +489,31 @@ test("correct and undo an expense without moving it out of its original report p
   await page.getByTestId("expense-correction-amount").fill(String(correctedAmount));
   await page.getByTestId("expense-correction-reason").fill("قيمة الإيصال غير صحيحة");
   await holdForReading();
-  await actAndAck(page, "expensesCorrect", async () => {
+  const correction = await actAndAck<ExpenseCorrection>(page, "expensesCorrect", async () => {
     await page.getByTestId("expense-correction-save").click();
   });
   await expect(page.getByTestId("expense-correction-saved")).toContainText("تم تسجيل التصحيح");
   await expect(row.getByTestId("expense-row-effective-amount")).toHaveAttribute("data-value", String(correctedAmount));
-  await expect(page.getByTestId("expense-correction-entry")).toContainText("قيمة الإيصال غير صحيحة");
+  const correctionEntry = page.getByTestId("expense-correction-entry").first();
+  await expect(correctionEntry).toContainText("قيمة الإيصال غير صحيحة");
+  expect(correction).toMatchObject({
+    effectiveAt: "2001-02-13T12:00:00",
+    beforeAmount: originalAmount,
+    afterAmount: correctedAmount,
+    difference: correctedAmount - originalAmount,
+    reason: "قيمة الإيصال غير صحيحة",
+  });
+  expect(correction.recordedAt).not.toBe(correction.effectiveAt);
+  await expect(correctionEntry).toContainText(shownAmount(String(originalAmount)));
+  await expect(correctionEntry).toContainText(shownAmount(String(correctedAmount)));
+  await expect(correctionEntry).toContainText(displayedMoment(correction.effectiveAt));
+  await expect(correctionEntry).toContainText(displayedMoment(correction.recordedAt));
+  if (correction.actorId === null) throw new Error("a new correction must carry its actor identity");
+  await expect(correctionEntry).toContainText(correction.actorId);
+  if (correction.actorName !== null) await expect(correctionEntry).toContainText(correction.actorName);
+  const difference = correctionEntry.getByTestId("expense-correction-difference");
+  await expect(difference).toContainText("−");
+  expect(parseAmount(await difference.textContent())).toBe(correction.difference);
   if (captureEvidence) {
     await page.getByTestId("expense-correction-history").screenshot({ path: path.join(evidenceDir, "expense-correction-after.png") });
   }

@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { AUTH_REFUSAL, type DokanClient, type Expense } from "@dokan/contracts";
+import { AUTH_REFUSAL, MAX_EXPENSE_AMOUNT, type DokanClient, type Expense } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -239,6 +239,91 @@ describe("expense corrections (#408)", () => {
     expect(history.corrections[0]?.reversedByCorrectionId).toBe(undo.id);
     expect(history.corrections[1]?.reversedByCorrectionId).toBeNull();
     await verifyProjection(1_100, 3);
+  });
+
+  it("serializes distinct concurrent corrections into one effective amount chain", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const window = { preset: "CUSTOM" as const, customFrom: "2020-08-01T00:00:00", customTo: "2020-08-31T23:59:59" };
+    const reportBefore = await client.reportsProfit(window);
+    const original = await client.expensesCreate({
+      categoryId: category.id,
+      amount: 1_000,
+      occurredAt: "2020-08-15T12:00:00",
+    });
+    const [toward800, toward900] = await Promise.all([
+      client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() }),
+      client.expensesCorrect({ expenseId: original.id, amount: 900, idempotencyKey: randomUUID() }),
+    ]);
+    const history = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    expect(history.corrections).toHaveLength(2);
+    expect(history.corrections.map(({ id }) => id).sort()).toEqual([toward800.id, toward900.id].sort());
+    const first = history.corrections.find((event) => event.beforeAmount === original.amount);
+    if (first === undefined) throw new Error("concurrent corrections have no initial transition");
+    const second = history.corrections.find((event) => event.beforeAmount === first.afterAmount);
+    if (second === undefined) throw new Error("concurrent corrections do not form a continuous chain");
+    expect([800, 900]).toContain(first.afterAmount);
+    expect([800, 900]).toContain(second.afterAmount);
+    expect(second.afterAmount).not.toBe(first.afterAmount);
+    expect(second.afterAmount).toBe(history.effectiveAmount);
+
+    const listed = (await client.expensesList({ ...window, limit: 500 })).items.find((row) => row.id === original.id);
+    expect(listed).toMatchObject({ amount: original.amount, effectiveAmount: history.effectiveAmount, correctionCount: 2 });
+    const reportAfter = await client.reportsProfit(window);
+    expect(reportAfter.operatingExpenses - reportBefore.operatingExpenses).toBe(history.effectiveAmount);
+  });
+
+  it("refuses to undo a reversal without changing history", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({
+      categoryId: category.id,
+      amount: 1_000,
+      occurredAt: "2020-09-15T12:00:00",
+    });
+    const correction = await client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() });
+    const reversal = await client.expensesCorrectionUndo({ correctionId: correction.id, idempotencyKey: randomUUID() });
+    const before = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    await expect(client.expensesCorrectionUndo({ correctionId: reversal.id, idempotencyKey: randomUUID() })).rejects.toThrow(
+      /EXPENSE_CORRECTION_NOT_REVERSIBLE/,
+    );
+    expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
+  });
+
+  it("replays an undo key after a later correction without appending a reversal", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({
+      categoryId: category.id,
+      amount: 1_000,
+      occurredAt: "2020-11-15T12:00:00",
+    });
+    const correction = await client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() });
+    const undoInput = { correctionId: correction.id, idempotencyKey: randomUUID() };
+    const reversal = await client.expensesCorrectionUndo(undoInput);
+    await client.expensesCorrect({ expenseId: original.id, amount: 900, idempotencyKey: randomUUID() });
+    const beforeReplay = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    expect(await client.expensesCorrectionUndo(undoInput)).toEqual(reversal);
+    expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(beforeReplay);
+  });
+
+  it("rejects invalid correction amounts without changing history", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({
+      categoryId: category.id,
+      amount: 1_000,
+      occurredAt: "2020-12-15T12:00:00",
+    });
+    const before = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    for (const amount of [0, -1, 1.5, MAX_EXPENSE_AMOUNT + 1]) {
+      await expect(client.expensesCorrect({ expenseId: original.id, amount, idempotencyKey: randomUUID() })).rejects.toThrow();
+      expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
+    }
   });
 
   it("rejects an undo that would cross the lower expense bound without changing history", async () => {

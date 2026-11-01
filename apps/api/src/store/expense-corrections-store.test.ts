@@ -318,11 +318,12 @@ describe("expense correction storage (#408)", () => {
   it("preserves attributed history and retry identities after reopening the upgraded database", async () => {
     const legacyBefore = await store.getExpenseCorrectionHistory(expenseId);
     expect(legacyBefore?.original).toMatchObject({ actorId: null, actorName: null });
+    const actorId = randomUUID();
     const attributed = await store.insertExpense({
       categoryId,
       amount: 300,
       occurredAt: "2020-02-15T10:00:00",
-      actorId: "current-owner-id",
+      actorId,
       actorName: "Current owner",
     });
     const correctionKey = randomUUID();
@@ -333,7 +334,7 @@ describe("expense correction storage (#408)", () => {
       beforeAmount: 300,
       afterAmount: 250,
       difference: -50,
-      actorId: "current-owner-id",
+      actorId,
       actorName: "Current owner",
       reason: "restart proof",
       reversesCorrectionId: null,
@@ -347,7 +348,7 @@ describe("expense correction storage (#408)", () => {
       beforeAmount: 250,
       afterAmount: 300,
       difference: 50,
-      actorId: "current-owner-id",
+      actorId,
       actorName: "Current owner",
       reason: null,
       reversesCorrectionId: correction.id,
@@ -355,17 +356,17 @@ describe("expense correction storage (#408)", () => {
     }));
     const historyBeforeRestart = await store.getExpenseCorrectionHistory(attributed.id);
     expect(historyBeforeRestart?.corrections[0]?.reversedByCorrectionId).toBe(reversal.id);
-    const correctionReplayBefore = await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey);
-    const undoReplayBefore = await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey);
+    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey)).toEqual(correction);
+    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey)).toEqual(reversal);
 
-    conn.close();
+    await conn.close();
     conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath }));
     store = createDrizzleStore(conn);
     await store.setup();
 
     expect(await store.getExpenseCorrectionHistory(attributed.id)).toEqual(historyBeforeRestart);
-    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey)).toEqual(correctionReplayBefore);
-    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey)).toEqual(undoReplayBefore);
+    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey)).toEqual(correction);
+    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey)).toEqual(reversal);
     expect(await store.getExpenseCorrectionHistory(expenseId)).toEqual(legacyBefore);
     expect(readSchemaVersion(conn.raw)).toBe(8);
   });

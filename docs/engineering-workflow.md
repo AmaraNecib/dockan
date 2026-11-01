@@ -12,8 +12,11 @@ mandatory orchestrator; this document is its reference.
 ```bash
 bun run lint        # oxlint (with anti-slop plugin config)
 bun run typecheck   # turbo typecheck across workspaces, plus the scripts/ and tests/ projects
-bun run test        # turbo test across workspaces
-bun run test:e2e    # Playwright
+bun run skills:check           # generated .claude/skills mirror matches .agents/skills
+bun run test        # turbo test across workspaces, plus scripts/ and tools/
+bun run --filter @dokan/web build   # the production bundle the checks job builds
+bun audit --audit-level=high        # fail on high/critical advisories only
+bun run test:e2e    # Playwright (scoped by the selector on a PR)
 ```
 
 Rust changes (`apps/desktop/src-tauri/`) additionally require:
@@ -56,9 +59,9 @@ Guard Phase 1 — pre-commit checks
     ↓
 Quality check — relevant skills
     ↓
-Debate — Standard + High-assurance (never Lightweight)
+Debate — default at Standard, required at High-assurance
     ↓
-Test audit — Standard + High-assurance
+Test audit — default at Standard, required at High-assurance
     ↓
 Code-review — Standards + Spec axes against pinned base SHA
     ↓
@@ -70,7 +73,7 @@ commit — the lane stops here
     ↓
 Push + open PR
     ↓
-Greptile review (cli-review skill or @greptile-apps on the PR) — to a 5/5
+Review round (reviewloop) — to a 5/5; Greptile runs beside it while the two are compared
     ↓
 Architecture review — improve-codebase-architecture (only once the code is accepted)
     ↓
@@ -95,10 +98,10 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   ablation proof the guard bites, the before/after numbers). The rule, and the
   four-part merge gate it feeds, is written down in
   [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md).
-- **Verify a finding before fixing it.** Greptile edits its comment in place and
-  re-lists findings a later commit already fixed. Read the cited lines first; if
-  the finding is stale, close it on the PR with the line evidence rather than
-  re-implementing a fix that exists.
+- **Verify a finding before fixing it.** A review comment can re-list findings a
+  later commit already fixed. Read the cited lines first; if the finding is stale,
+  close it on the PR with the line evidence rather than re-implementing a fix that
+  exists.
 - **Two reviews per change: the author's, then an independent one** (owner decision,
   2026-10-20). The author review is written by the author's model in a fresh session that
   reads the diff: the intent, the load-bearing part, the known weak spots, what was
@@ -108,18 +111,26 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 - **Reviewers are independent.** `debate`, `test-audit` and `code-review` run as
   separate sub-agents. A child that reports "I ran the gates in-lane" has not run
   them — re-run the lenses where the tool exists, and record the disclosure.
-- **The lenses run on a different model than the author (owner decision, 2026-10-19).** Author
-  lanes run `zen-proxy/deepseek-v4.1-flash-free`; `debate`, `test-audit` and `code-review` run
-  `zen-proxy/minimax-m3.1-flash-free`. A model that reviews its own diff shares the blind spots the lens exists to
-  catch, so the reviewer is never the author. For one stretch on 2026-10-19 the owner required a
-  single model for both roles; that is no longer the rule, and these two are the pair. The author
-  route was the paid `opencode-go/deepseek-v4.1-flash` until it left the catalogue.
-  `zen-proxy/beam-free` is the next free reviewer when MiniMax is down or a round wants a third
-  opinion, then `zen-proxy/glm-5.3-flash-free` and `zen-proxy/mimo-v2.6-flash-free`. Free lenses
-  carry no parallelism cap; a DeepSeek route is not a lens fallback, because it is the author model.
-- **All three lenses run at Standard and above.** `debate` is no longer reserved
-  for High-assurance (owner decision, 2026-10-18); the tier decides how much
-  scrutiny a failure mode earns, not whether the debate happens.
+- **The lenses run on a different model family than the author (owner decision, 2026-10-19; family
+  rule 2026-10-26).** The author is the lane's model, read from its commit trailer, never the
+  parent's. Independence is a family, not an exact ID: free and paid DeepSeek are one opinion.
+  Pick from the free ladder first — `opencode/deepseek-v4.1-flash-free`,
+  `opencode/glm-5.3-flash-free`, `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the
+  cheap paid fallback `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only
+  when the free routes are exhausted. With more than one lens, at least two families must appear.
+  A route unused this session gets a one-line probe first. Free lenses carry no parallelism cap.
+  When every non-author family is exhausted, the owner may approve an exception recorded as
+  `independence: { approvedBy, reason }`; a lane cannot approve its own.
+- **Run both reviews until the owner ends the trial.** The parent runs `reviewloop` and
+  Greptile on the same pinned boundary across several PRs. Follow the
+  [comparison protocol](review-comparison.md) for independent first-pass records, verified
+  findings, time and cost. Neither review replaces the other automatically.
+- **All three lenses are the default at Standard and required at High-assurance.**
+  The parent may scope a round to one or two lenses for a single-axis Standard change.
+  Record exactly which lenses ran and the reason for each skip in the payload.
+  High-assurance always requires all three lenses; all three skipped is not a review.
+  Run the selected lenses in order: debate, test-audit, code-review. The tier also
+  decides how much scrutiny each failure mode earns.
 - **A lens returns findings, not an essay.** The evidence file holds the detail; the message back to
 the parent holds the finding list, each one line with file:line, severity and the smallest fix. A
 lens that pastes its whole report into the conversation costs the same tokens as ten findings and
@@ -150,8 +161,8 @@ the plan names the symbols a resolution must preserve from both sides.
 
 ## Architecture review
 
-**Runs after Greptile says 5/5, and it is parent-owned** (owner decision, 2026-10-20). The order is:
-lenses → push, open the PR → Greptile to a 5/5 → **architecture review** → fold what it found →
+**Runs after reviewloop says 5/5, and it is parent-owned** (owner decision, 2026-10-20). The order is:
+lenses → push, open the PR → reviewloop to a 5/5 → **architecture review** → fold what it found →
 merge. Running it earlier spends the token budget on code whose acceptability is still in question;
 run it once the diff is known to work, and its findings are about quality only.
 
@@ -176,29 +187,29 @@ Both forms are cheap; skipping the question is not. The report **never lands in 
 written to the OS temp dir and its absolute path goes in the PR evidence comment so the review is
 reproducible from the PR alone.
 
-**It is a loop with a fixed point, not a one-shot step.** Greptile's 5/5 and this review have to agree
+**It is a loop with a fixed point, not a one-shot step.** reviewloop's 5/5 and this review have to agree
 on the same head, and a finding has exactly three ways out:
 
 ```
-Greptile 5/5?  ── no ──→ fix ──→ ask once more at the new head
+reviewloop 5/5?  ── no ──→ fix ──→ ask once more at the new head
       ↓ yes
 architecture review (this diff only)
       ↓
 finding about this diff?
       ├─ nothing ────→ merge
-      ├─ fixable here ──→ fix → push → Greptile 5/5 → review again (two rounds max)
+      ├─ fixable here ──→ fix → push → reviewloop 5/5 → review again (two rounds max)
       └─ too big for this PR ──→ its own issue + its own PR/lane → merge this one on its 5/5
 ```
 
 **Small fix here, big fix elsewhere.** A finding the diff can absorb is fixed on the branch, and the
-head moves, so Greptile is asked once more there. A finding that needs its own PR — a seam move, a
+head moves, so reviewloop is asked once more there. A finding that needs its own PR — a seam move, a
 deepening across several modules — does not hold this PR hostage: it gets an issue and a lane, and
 this PR merges on the 5/5 it already has. What it does not do is vanish, so the guardrail is: **read
 the evidence comment before merging and confirm the follow-up issue number is in it.**
 
 **Stop rule: two rounds, then the owner.** If the second review still finds something, it is not a
 detail — it is a disagreement about the design, and it goes to the owner rather than round three. An
-unbounded loop spends Greptile credit and never converges.
+unbounded loop spends review budget and never converges.
 
 **Scope is always the diff under review.** A finding about older code is an issue, never a loop
 iteration; otherwise the loop never terminates. A review that finds nothing about this diff costs
@@ -216,7 +227,7 @@ repository, and it is paid for once per PR.
 | Scope | The modules the diff touches and their direct callers. No repo-wide sweep. |
 | Output | At most five candidates, each with a deletion-test verdict and one sentence of change. |
 | Chat | The report path goes in the PR comment; the HTML is never pasted back into the conversation. |
-| Re-runs | Two passes: one on the head Greptile scored, one on the head that carries the fold. The second is spent only when the fold changed code — a fold that changed nothing leaves the first pass describing the tree. |
+| Re-runs | Two passes: one on the head reviewloop scored, one on the head that carries the fold. The second is spent only when the fold changed code — a fold that changed nothing leaves the first pass describing the tree. |
 | Default | No seam moved means no report at all — the one-line form costs one sentence. |
 
 **What a measured run returns.** On PR #291 the review produced five candidates: two that the
@@ -241,8 +252,8 @@ that can bypass a session check is High-assurance.
 | Tier | Decision: what the change can break | Required review |
 | --- | --- | --- |
 | Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
-| Standard | Everything else: code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → debate → test-audit → code-review → guard 2 → Greptile → guard 3 |
-| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | Standard gates, plus a debate re-run on the final head once the fixes are in |
+| Standard | Everything else: code, tests, config, UI, API, skills, docs | Default Standard gates: guard 1 → quality check → debate → test-audit → code-review → guard 2 → reviewloop → guard 3. The parent may scope a single-axis round as specified in Review invariants. |
+| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | All three lenses required, plus a debate re-run on the final head once the fixes are in; all other Standard gates still apply |
 
 Auth/RBAC, backup/restore, invoice & debt money calculations, security and a
 schema-version bump are **examples that hint at a failure mode, never a test**.
@@ -302,9 +313,12 @@ Stage named source/config/test/evidence files only. Never use `git add -A`.
 once the four reasons hold and every check is green — and only when the owner says so for
 anything expensive to reverse, any decision, or a PR the owner asked to see. A visual PR is
 cheap to reverse, so it auto-merges too, once its before/after packet is posted at the head.
-A lane never merges at all; squash merges only. A 5/5 Greptile verdict with no findings,
+A lane never merges at all; squash merges only. A 5/5 reviewloop verdict with no findings,
 anchored to the current head SHA, and every CI check green is the **bar to merge at
 all** — auto-merging below it is not allowed, and a REFUSED verdict never merges.
+Until the owner ends the [paired review trial](review-comparison.md), both current-head
+reviews must be 5/5 with no actionable findings. Investigate disagreement before
+merging; a missing verdict blocks the gate and scores are not averaged.
 
 The gate itself is [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md):
 the four reasons (5/5, `Last reviewed commit` == head, no comments after the
@@ -312,7 +326,7 @@ verdict except `<!-- crew-evidence -->`, an evidence comment at head), the
 AUTO/OWNER/REFUSED decision, and the queue path when it cannot merge now.
 
 A **CI change** (anything under `.github/`) goes to the owner for the diff before
-it merges, whatever Greptile says. Merge order matters when two PRs share a
+it merges, whatever the review says. Merge order matters when two PRs share a
 store/router: land the one that owns the write path first and rebase the other
 onto the new `develop`.
 

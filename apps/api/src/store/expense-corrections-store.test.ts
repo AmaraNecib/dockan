@@ -11,6 +11,7 @@ import { createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
 
 let dir: string;
+let dbPath: string;
 let conn: Connection;
 let store: StorePort;
 let expenseId: string;
@@ -18,9 +19,10 @@ let categoryId: string;
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-expense-correction-migration-"));
+  dbPath = path.join(dir, "test.db");
   const config = createAppConfig({
     DOKAN_DATA_DIR: dir,
-    DOKAN_DB_PATH: path.join(dir, "test.db"),
+    DOKAN_DB_PATH: dbPath,
   });
   conn = openConnection(config);
   categoryId = randomUUID();
@@ -163,5 +165,208 @@ describe("expense correction storage (#408)", () => {
       ),
     ).rejects.toThrow("current expense state");
     expect((await store.getExpenseCorrectionHistory(expenseId))?.effectiveAmount).toBe(800);
+  });
+
+  it("refuses a correction with the wrong business date and preserves its history", async () => {
+    const original = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-10T10:00:00" });
+    await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }));
+    const before = await store.getExpenseCorrectionHistory(original.id);
+
+    await expect(store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: "2020-01-10T10:00:01",
+      recordedAt: "2026-10-28T13:35:00",
+      beforeAmount: 800,
+      afterAmount: 700,
+      difference: -100,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }))).rejects.toThrow();
+    expect(await store.getExpenseCorrectionHistory(original.id)).toEqual(before);
+  });
+
+  it("refuses a reversal linked to another expense and preserves both histories", async () => {
+    const firstExpense = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-11T10:00:00" });
+    const otherExpense = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-15T10:00:00" });
+    const first = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: firstExpense.id,
+      effectiveAt: firstExpense.occurredAt,
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }));
+    const other = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: otherExpense.id,
+      effectiveAt: otherExpense.occurredAt,
+      recordedAt: "2026-10-28T13:34:57",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }));
+    const before = [await store.getExpenseCorrectionHistory(firstExpense.id), await store.getExpenseCorrectionHistory(otherExpense.id)];
+
+    await expect(store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: firstExpense.id,
+      effectiveAt: firstExpense.occurredAt,
+      recordedAt: "2026-10-28T13:35:00",
+      beforeAmount: 800,
+      afterAmount: 1_000,
+      difference: 200,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: other.id,
+      idempotencyKey: randomUUID(),
+    }))).rejects.toThrow();
+
+    expect([await store.getExpenseCorrectionHistory(firstExpense.id), await store.getExpenseCorrectionHistory(otherExpense.id)]).toEqual(before);
+    expect((await store.getExpenseCorrectionHistory(firstExpense.id))?.corrections[0]?.id).toBe(first.id);
+  });
+
+  it("refuses an unpaired correction actor snapshot without appending a row", async () => {
+    const original = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-12T10:00:00" });
+    await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }));
+    const before = await store.getExpenseCorrectionHistory(original.id);
+
+    await expect(store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-28T13:35:00",
+      beforeAmount: 800,
+      afterAmount: 700,
+      difference: -100,
+      actorId: randomUUID(),
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }))).rejects.toThrow();
+    expect(await store.getExpenseCorrectionHistory(original.id)).toEqual(before);
+  });
+
+  it("refuses a correction with a delta inconsistent with its amounts", async () => {
+    const original = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-13T10:00:00" });
+    await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }));
+    const before = await store.getExpenseCorrectionHistory(original.id);
+
+    await expect(store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-28T13:35:00",
+      beforeAmount: 800,
+      afterAmount: 700,
+      difference: -99,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }))).rejects.toThrow();
+    expect(await store.getExpenseCorrectionHistory(original.id)).toEqual(before);
+  });
+
+  it("preserves attributed history and retry identities after reopening the upgraded database", async () => {
+    const legacyBefore = await store.getExpenseCorrectionHistory(expenseId);
+    expect(legacyBefore?.original).toMatchObject({ actorId: null, actorName: null });
+    const attributed = await store.insertExpense({
+      categoryId,
+      amount: 300,
+      occurredAt: "2020-02-15T10:00:00",
+      actorId: "current-owner-id",
+      actorName: "Current owner",
+    });
+    const correctionKey = randomUUID();
+    const correction = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: attributed.id,
+      effectiveAt: attributed.occurredAt,
+      recordedAt: "2026-10-28T14:00:00",
+      beforeAmount: 300,
+      afterAmount: 250,
+      difference: -50,
+      actorId: "current-owner-id",
+      actorName: "Current owner",
+      reason: "restart proof",
+      reversesCorrectionId: null,
+      idempotencyKey: correctionKey,
+    }));
+    const undoKey = randomUUID();
+    const reversal = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: attributed.id,
+      effectiveAt: attributed.occurredAt,
+      recordedAt: "2026-10-28T14:01:00",
+      beforeAmount: 250,
+      afterAmount: 300,
+      difference: 50,
+      actorId: "current-owner-id",
+      actorName: "Current owner",
+      reason: null,
+      reversesCorrectionId: correction.id,
+      idempotencyKey: undoKey,
+    }));
+    const historyBeforeRestart = await store.getExpenseCorrectionHistory(attributed.id);
+    expect(historyBeforeRestart?.corrections[0]?.reversedByCorrectionId).toBe(reversal.id);
+    const correctionReplayBefore = await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey);
+    const undoReplayBefore = await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey);
+
+    conn.close();
+    conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath }));
+    store = createDrizzleStore(conn);
+    await store.setup();
+
+    expect(await store.getExpenseCorrectionHistory(attributed.id)).toEqual(historyBeforeRestart);
+    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey)).toEqual(correctionReplayBefore);
+    expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey)).toEqual(undoReplayBefore);
+    expect(await store.getExpenseCorrectionHistory(expenseId)).toEqual(legacyBefore);
+    expect(readSchemaVersion(conn.raw)).toBe(8);
   });
 });

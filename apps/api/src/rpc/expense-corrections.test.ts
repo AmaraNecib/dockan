@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { AUTH_REFUSAL, type DokanClient } from "@dokan/contracts";
+import { AUTH_REFUSAL, type DokanClient, type Expense } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -197,17 +197,40 @@ describe("expense corrections (#408)", () => {
     expect(recordingAfter.operatingExpenses - recordingBefore.operatingExpenses).toBe(0);
   });
 
-  it("undoes a non-latest correction against current effective money", async () => {
+  it("undoes a non-latest correction against current effective money and reconciles SQL projections", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
+    const businessWindow = { preset: "CUSTOM" as const, customFrom: "2020-03-01T00:00:00", customTo: "2020-03-31T23:59:59" };
+    const recordingWindow = { preset: "CUSTOM" as const, customFrom: "2026-10-28T00:00:00", customTo: "2026-10-28T23:59:59" };
+    const businessBefore = await client.reportsProfit(businessWindow);
+    const recordingBefore = await client.reportsProfit(recordingWindow);
+    const categoryBefore = businessBefore.byCategory.find((row) => row.categoryId === category.id);
     const original = await client.expensesCreate({
       categoryId: category.id,
       amount: 1_000,
       occurredAt: "2020-03-15T12:00:00",
     });
-    const first = await client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() });
-    await client.expensesCorrect({ expenseId: original.id, amount: 900, idempotencyKey: randomUUID() });
 
+    const verifyProjection = async (effectiveAmount: number, correctionCount: number) => {
+      const rows = await client.expensesList({ ...businessWindow, limit: 500 });
+      const listed = rows.items.find((row) => row.id === original.id);
+      expect(listed).toMatchObject({ amount: 1_000, effectiveAmount, correctionCount });
+      const report = await client.reportsProfit(businessWindow);
+      expect(report.operatingExpenses - businessBefore.operatingExpenses).toBe(effectiveAmount);
+      expect(report.resultAfterExpenses).toBe(report.revenue - report.cogs - report.operatingExpenses - report.ownerWithdrawals);
+      expect(report.byCategory.find((row) => row.categoryId === category.id)).toMatchObject({
+        total: (categoryBefore?.total ?? 0) + effectiveAmount,
+        count: (categoryBefore?.count ?? 0) + 1,
+      });
+      expect(report.byCategory.reduce((sum, row) => sum + row.total, 0)).toBe(report.operatingExpenses + report.ownerWithdrawals);
+      const recordingAfter = await client.reportsProfit(recordingWindow);
+      expect(recordingAfter.operatingExpenses - recordingBefore.operatingExpenses).toBe(0);
+    };
+
+    const first = await client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() });
+    await verifyProjection(800, 1);
+    await client.expensesCorrect({ expenseId: original.id, amount: 900, idempotencyKey: randomUUID() });
+    await verifyProjection(900, 2);
     const undo = await client.expensesCorrectionUndo({ correctionId: first.id, idempotencyKey: randomUUID() });
     const history = await client.expenseCorrectionHistory({ expenseId: original.id });
     expect(undo).toMatchObject({ beforeAmount: 900, afterAmount: 1_100, difference: 200, reversesCorrectionId: first.id });
@@ -215,6 +238,153 @@ describe("expense corrections (#408)", () => {
     expect(history.corrections).toHaveLength(3);
     expect(history.corrections[0]?.reversedByCorrectionId).toBe(undo.id);
     expect(history.corrections[1]?.reversedByCorrectionId).toBeNull();
+    await verifyProjection(1_100, 3);
+  });
+
+  it("rejects an undo that would cross the lower expense bound without changing history", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({
+      categoryId: category.id,
+      amount: 1_000,
+      occurredAt: "2020-05-15T12:00:00",
+    });
+    const first = await client.expensesCorrect({ expenseId: original.id, amount: 1_200, idempotencyKey: randomUUID() });
+    await client.expensesCorrect({ expenseId: original.id, amount: 200, idempotencyKey: randomUUID() });
+    const before = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    await expect(client.expensesCorrectionUndo({ correctionId: first.id, idempotencyKey: randomUUID() })).rejects.toThrow(
+      /EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE/,
+    );
+    const after = await client.expenseCorrectionHistory({ expenseId: original.id });
+    expect(after).toEqual(before);
+    expect(after.effectiveAmount).toBe(200);
+    expect(after.corrections[0]?.reversedByCorrectionId).toBeNull();
+  });
+
+  it("keeps corrected owner withdrawals on inclusive SQL bounds and excludes adjacent rows", async () => {
+    const withdrawal = (await client.expenseCategoriesList()).items.find((row) => row.isOwnerWithdrawal);
+    if (withdrawal === undefined) throw new Error("seeded withdrawal category is missing");
+    const window = { preset: "CUSTOM" as const, customFrom: "2020-04-01T00:00:00", customTo: "2020-04-30T23:59:59" };
+    const recordingWindow = { preset: "CUSTOM" as const, customFrom: "2026-10-28T00:00:00", customTo: "2026-10-28T23:59:59" };
+    const reportBefore = await client.reportsProfit(window);
+    const recordingBefore = await client.reportsProfit(recordingWindow);
+    const withdrawalBefore = reportBefore.byCategory.find((row) => row.categoryId === withdrawal.id);
+    const fixtures = [
+      { amount: 100, correctedAmount: 150, occurredAt: "2020-04-01T00:00:00" },
+      { amount: 200, correctedAmount: 250, occurredAt: "2020-04-30T23:59:59" },
+      { amount: 300, correctedAmount: 350, occurredAt: "2020-03-31T23:59:59" },
+      { amount: 400, correctedAmount: 450, occurredAt: "2020-05-01T00:00:00" },
+    ] as const;
+    const rows: Expense[] = [];
+    for (const fixture of fixtures) {
+      const original = await client.expensesCreate({ categoryId: withdrawal.id, amount: fixture.amount, occurredAt: fixture.occurredAt });
+      await client.expensesCorrect({ expenseId: original.id, amount: fixture.correctedAmount, idempotencyKey: randomUUID() });
+      rows.push(original);
+    }
+
+    const [startBoundaryRow, endBoundaryRow, beforeBoundaryRow, afterBoundaryRow] = rows;
+    if (startBoundaryRow === undefined || endBoundaryRow === undefined || beforeBoundaryRow === undefined || afterBoundaryRow === undefined) {
+      throw new Error("withdrawal boundary fixture is incomplete");
+    }
+    const listed = await client.expensesList({ ...window, categoryIds: [withdrawal.id], sortBy: "occurredAt", sortDir: "asc", limit: 500 });
+    expect(listed.items).toHaveLength(2);
+    expect(listed.items.map((row) => [row.id, row.effectiveAmount])).toEqual([
+      [startBoundaryRow.id, 150],
+      [endBoundaryRow.id, 250],
+    ]);
+    expect(listed.items.some((row) => row.id === beforeBoundaryRow.id || row.id === afterBoundaryRow.id)).toBe(false);
+    const report = await client.reportsProfit(window);
+    expect(report.ownerWithdrawals - reportBefore.ownerWithdrawals).toBe(400);
+    expect(report.byCategory.find((row) => row.categoryId === withdrawal.id)).toMatchObject({
+      total: (withdrawalBefore?.total ?? 0) + 400,
+      count: (withdrawalBefore?.count ?? 0) + 2,
+      isOwnerWithdrawal: true,
+    });
+    expect(report.byCategory.reduce((sum, row) => sum + row.total, 0)).toBe(report.operatingExpenses + report.ownerWithdrawals);
+    const recordingAfter = await client.reportsProfit(recordingWindow);
+    expect(recordingAfter.ownerWithdrawals - recordingBefore.ownerWithdrawals).toBe(0);
+  });
+
+  it("refuses a correction replay whose actor differs", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({ categoryId: category.id, amount: 1_000, occurredAt: "2020-06-15T12:00:00" });
+    const key = randomUUID();
+    await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-27T12:00:00",
+      beforeAmount: 1_000,
+      afterAmount: 900,
+      difference: -100,
+      actorId: randomUUID(),
+      actorName: "سجل المالك السابق",
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: key,
+    }));
+    const before = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    await expect(client.expensesCorrect({ expenseId: original.id, amount: 900, idempotencyKey: key })).rejects.toThrow(
+      /EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED/,
+    );
+    expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
+  });
+
+  it("refuses an undo replay whose actor differs", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({ categoryId: category.id, amount: 1_000, occurredAt: "2020-06-16T12:00:00" });
+    const priorActorId = randomUUID();
+    const target = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-27T12:00:00",
+      beforeAmount: 1_000,
+      afterAmount: 900,
+      difference: -100,
+      actorId: priorActorId,
+      actorName: "سجل المالك السابق",
+      reason: null,
+      reversesCorrectionId: null,
+      idempotencyKey: randomUUID(),
+    }));
+    const key = randomUUID();
+    await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: original.id,
+      effectiveAt: original.occurredAt,
+      recordedAt: "2026-10-27T12:01:00",
+      beforeAmount: 900,
+      afterAmount: 1_000,
+      difference: 100,
+      actorId: priorActorId,
+      actorName: "سجل المالك السابق",
+      reason: null,
+      reversesCorrectionId: target.id,
+      idempotencyKey: key,
+    }));
+    const before = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    await expect(client.expensesCorrectionUndo({ correctionId: target.id, idempotencyKey: key })).rejects.toThrow(
+      /EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED/,
+    );
+    expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
+  });
+
+  it("refuses an undo idempotency key reused as a correction", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({ categoryId: category.id, amount: 1_000, occurredAt: "2020-07-15T12:00:00" });
+    const target = await client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() });
+    const key = randomUUID();
+    const undo = await client.expensesCorrectionUndo({ correctionId: target.id, idempotencyKey: key });
+    const before = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    await expect(client.expensesCorrect({ expenseId: original.id, amount: undo.afterAmount, idempotencyKey: key })).rejects.toThrow(
+      /EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED/,
+    );
+    expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
   });
 
   it("refuses no-op, unauthenticated, reused, and out-of-range corrections without losing history", async () => {

@@ -137,14 +137,31 @@ describe("expense corrections (#408)", () => {
     });
     expect(second).toMatchObject({ beforeAmount: 800, afterAmount: 900, difference: 100 });
     expect(duplicateSecond.id).toBe(second.id);
+    const replayedFirst = await client.expensesCorrect(firstInput);
+    expect(replayedFirst.id).toBe(first.id);
     await expect(client.expensesCorrect({ ...secondInput, amount: 850 })).rejects.toThrow(
       /EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED/,
     );
+    await expect(client.expensesCorrect({ ...secondInput, reason: "سبب مختلف" })).rejects.toThrow(
+      /EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED/,
+    );
+    const afterMismatchedCorrectionReplay = await client.expenseCorrectionHistory({ expenseId: original.id });
+    expect(afterMismatchedCorrectionReplay.corrections).toHaveLength(2);
+    expect(afterMismatchedCorrectionReplay.corrections.map(({ id }) => id)).toEqual([first.id, second.id]);
 
     const undoInput = { correctionId: second.id, idempotencyKey: "40800000-0000-4000-8000-000000000003" };
     const undo = await client.expensesCorrectionUndo(undoInput);
     const duplicateUndo = await client.expensesCorrectionUndo(undoInput);
     expect(duplicateUndo.id).toBe(undo.id);
+    const beforeUndoKeyMismatches = await client.expenseCorrectionHistory({ expenseId: original.id });
+    await expect(client.expensesCorrectionUndo({ correctionId: first.id, idempotencyKey: undoInput.idempotencyKey })).rejects.toThrow(
+      /EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED/,
+    );
+    await expect(client.expensesCorrectionUndo({ correctionId: first.id, idempotencyKey: firstInput.idempotencyKey })).rejects.toThrow(
+      /EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED/,
+    );
+    const afterUndoKeyMismatches = await client.expenseCorrectionHistory({ expenseId: original.id });
+    expect(afterUndoKeyMismatches.corrections).toEqual(beforeUndoKeyMismatches.corrections);
     expect(undo).toMatchObject({
       expenseId: original.id,
       effectiveAt: original.occurredAt,
@@ -180,6 +197,26 @@ describe("expense corrections (#408)", () => {
     expect(recordingAfter.operatingExpenses - recordingBefore.operatingExpenses).toBe(0);
   });
 
+  it("undoes a non-latest correction against current effective money", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({
+      categoryId: category.id,
+      amount: 1_000,
+      occurredAt: "2020-03-15T12:00:00",
+    });
+    const first = await client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() });
+    await client.expensesCorrect({ expenseId: original.id, amount: 900, idempotencyKey: randomUUID() });
+
+    const undo = await client.expensesCorrectionUndo({ correctionId: first.id, idempotencyKey: randomUUID() });
+    const history = await client.expenseCorrectionHistory({ expenseId: original.id });
+    expect(undo).toMatchObject({ beforeAmount: 900, afterAmount: 1_100, difference: 200, reversesCorrectionId: first.id });
+    expect(history.effectiveAmount).toBe(1_100);
+    expect(history.corrections).toHaveLength(3);
+    expect(history.corrections[0]?.reversedByCorrectionId).toBe(undo.id);
+    expect(history.corrections[1]?.reversedByCorrectionId).toBeNull();
+  });
+
   it("refuses no-op, unauthenticated, reused, and out-of-range corrections without losing history", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -201,28 +238,32 @@ describe("expense corrections (#408)", () => {
 
     const first = await client.expensesCorrect({
       expenseId: original.id,
-      amount: 1_000_000_000_000,
+      amount: 1,
       idempotencyKey: randomUUID(),
     });
     const second = await client.expensesCorrect({
       expenseId: original.id,
-      amount: 1,
+      amount: 1_000_000_000_000,
       idempotencyKey: randomUUID(),
     });
+    const historyBeforeOverflowUndo = await client.expenseCorrectionHistory({ expenseId: original.id });
     await expect(client.expensesCorrectionUndo({ correctionId: first.id, idempotencyKey: randomUUID() })).rejects.toThrow(
       /EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE/,
     );
+    const historyAfterOverflowUndo = await client.expenseCorrectionHistory({ expenseId: original.id });
+    expect(historyAfterOverflowUndo.effectiveAmount).toBe(historyBeforeOverflowUndo.effectiveAmount);
+    expect(historyAfterOverflowUndo.corrections).toEqual(historyBeforeOverflowUndo.corrections);
 
     const historyBeforeValidUndo = await client.expenseCorrectionHistory({ expenseId: original.id });
     expect(historyBeforeValidUndo.corrections).toHaveLength(2);
-    expect(historyBeforeValidUndo.effectiveAmount).toBe(1);
+    expect(historyBeforeValidUndo.effectiveAmount).toBe(1_000_000_000_000);
 
     const undoInput = { correctionId: second.id, idempotencyKey: randomUUID() };
     const undo = await client.expensesCorrectionUndo(undoInput);
     await expect(
       client.expensesCorrectionUndo({ correctionId: second.id, idempotencyKey: randomUUID() }),
     ).rejects.toThrow(/EXPENSE_CORRECTION_ALREADY_REVERSED/);
-    expect(undo.afterAmount).toBe(1_000_000_000_000);
+    expect(undo.afterAmount).toBe(1);
     const finalHistory = await client.expenseCorrectionHistory({ expenseId: original.id });
     expect(finalHistory.corrections).toHaveLength(3);
     expect(finalHistory.corrections[0]?.reversedByCorrectionId).toBeNull();

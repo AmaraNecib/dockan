@@ -131,6 +131,7 @@ describe("store pagination (issue 163)", () => {
     const target = await makeInvoice(405);
     for (let i = 0; i < 2; i++) await store.insertInvoiceLine({ invoiceId: target, itemId: item.id, description: "الْإِطَار القديم", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });
     await store.updateItem(item.id, { id: item.id, name: "اسم جديد" });
+    expect((await store.listInvoices({ search: "اسم جديد" })).items.map(row => row.id)).not.toContain(target);
     // Place the target beyond page one using persisted dates, not insertion timing.
     const newer = await store.insertInvoice({ invoiceNumber: "INV-405-NEW", kind: "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: "2099-01-01", totalAmount: 150, paidAmount: 150, remainingAmount: 0, notes: null });
     const first = await store.listInvoices({ kind: "SALE", limit: 1, offset: 0 });

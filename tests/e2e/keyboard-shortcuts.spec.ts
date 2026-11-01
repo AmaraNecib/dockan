@@ -35,6 +35,23 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   await expect(page).toHaveURL(/\/sale\?fresh=[1-9]\d*$/);
   const saleUrl = page.url();
   const customer = page.getByTestId("sale-customer");
+  await page.keyboard.press("Escape");
+  await page.getByTestId("sale-quick-add").click();
+  const quick = page.getByTestId("sale-quick-form");
+  await expect(customer).toHaveValue("");
+  await expect(page.getByTestId("sale-lines")).toHaveCount(0);
+  await expect(quick.getByTestId("sale-quick-name")).toHaveValue("");
+  await expect(quick.getByTestId("sale-quick-barcode")).toHaveValue("");
+  await expect(quick.locator('[name="quickCost"]')).toHaveValue("");
+  await expect(quick.locator('[name="quickSell"]')).toHaveValue("");
+  const stock = quick.getByTestId("sale-quick-stock");
+  await stock.fill("7");
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(saleUrl);
+  await expect(stock).toHaveValue("7");
+  await stock.fill("");
   await customer.fill("مسودة الاختصار");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Control+n");
@@ -128,6 +145,7 @@ test("shortcut-entered purchase and sale persist, a refused sale keeps its draft
   const quantity = page.getByTestId("sale-lines").getByLabel(`${name}: الكمية`);
   await quantity.fill("3");
   const refusal = waitForRpc(page, "invoicesCreate");
+  void refusal.catch(() => undefined);
   await page.getByTestId("sale-save").click();
   expect((await refusal).ok()).toBe(false);
   await expect(page.getByTestId("sale-error")).toBeVisible();
@@ -175,8 +193,9 @@ test("navigation shortcuts cannot abandon a sale while its real save is pending"
     await held;
     await route.continue();
   });
+  let saved: Promise<InvoiceDetail> | undefined;
   try {
-    const saved = actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
+    saved = actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
     void saved.catch(() => undefined);
     await requested;
     await expect(page.getByTestId("sale-save")).toBeDisabled();
@@ -192,6 +211,7 @@ test("navigation shortcuts cannot abandon a sale while its real save is pending"
     expect(persisted.totalAmount).toBe(1000);
   } finally {
     release();
+    await saved?.catch(() => undefined);
     await page.unroute("**/api/rpc/invoicesCreate");
   }
 });

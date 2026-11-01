@@ -147,6 +147,61 @@ describe("store pagination (issue 163)", () => {
     expect((await store.getInvoiceDetail(target))?.id).toBe(target);
   });
 
+  it("counts every searched match across pages and orders persisted timestamp ties by descending ID (#405)", async () => {
+    const day = "2088-06-15";
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const invoice = await store.insertInvoice({ invoiceNumber: `INV-TIE-405-${i}`, kind: "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: day, totalAmount: 300, paidAmount: 300, remainingAmount: 0, notes: null });
+      // InvoiceInsert assigns creation time itself. Pin persisted fixture time,
+      // then observe ordering only through the public list interface.
+      conn.raw.prepare("UPDATE invoices SET created_at = ? WHERE id = ?").run("2088-06-15T12:00:00", invoice.id);
+      await store.insertInvoiceLine({ invoiceId: invoice.id, itemId: null, description: "زمني ترقيم 405", quantity: 1, unitPrice: 300, costAtSale: 0, total: 300 });
+      ids.push(invoice.id);
+    }
+    const expected = [...ids].sort((a, b) => a < b ? 1 : a > b ? -1 : 0);
+    for (const filters of [{ search: "زمني" }, { fromDate: day, toDate: day }]) {
+      const seen: string[] = [];
+      for (let offset = 0; offset < 3; offset++) {
+        const page = await store.listInvoices({ ...filters, limit: 1, offset });
+        expect(page.total).toBe(3);
+        expect(page.items.map(row => row.id)).toEqual([expected[offset]!]);
+        seen.push(...page.items.map(row => row.id));
+      }
+      expect(seen).toEqual(expected);
+      expect(new Set(seen).size).toBe(3);
+      expect(await store.listInvoices({ ...filters, limit: 1, offset: 3 })).toEqual({ items: [], total: 3 });
+    }
+  });
+
+  it("composes an inclusive date range with invoice-number and recorded-description search (#405)", async () => {
+    const day = "2087-03-10";
+    const fixtures = [
+      { invoiceNumber: "INV-BOUND-405-NUMBER", invoiceDate: day, description: "صنف بلا نص البحث" },
+      { invoiceNumber: "INV-PLAIN-405-DESC", invoiceDate: day, description: "BOUND-405 في الوصف" },
+      { invoiceNumber: "INV-BOUND-405-BEFORE", invoiceDate: "2087-03-09", description: "BOUND-405 قبل" },
+      { invoiceNumber: "INV-BOUND-405-AFTER", invoiceDate: "2087-03-11", description: "BOUND-405 بعد" },
+    ];
+    const ids: string[] = [];
+    for (const fixture of fixtures) {
+      const invoice = await store.insertInvoice({ invoiceNumber: fixture.invoiceNumber, invoiceDate: fixture.invoiceDate, kind: "SALE", counterpartyId: null, counterpartyName: null, totalAmount: 100, paidAmount: 100, remainingAmount: 0, notes: null });
+      await store.insertInvoiceLine({ invoiceId: invoice.id, itemId: null, description: fixture.description, quantity: 1, unitPrice: 100, costAtSale: 0, total: 100 });
+      ids.push(invoice.id);
+    }
+    const expected = ids.slice(0, 2).sort();
+    const range = { fromDate: day, toDate: day };
+    const result = await store.listInvoices({ ...range, search: "BOUND-405" });
+    expect(result.total).toBe(2);
+    expect(result.items.map(row => row.id).sort()).toEqual(expected);
+    const first = await store.listInvoices({ ...range, search: "BOUND-405", limit: 1, offset: 0 });
+    const second = await store.listInvoices({ ...range, search: "BOUND-405", limit: 1, offset: 1 });
+    expect([first.total, second.total]).toEqual([2, 2]);
+    expect([...first.items, ...second.items].map(row => row.id).sort()).toEqual(expected);
+    expect(await store.listInvoices({ ...range, search: "BOUND-405", limit: 1, offset: 2 })).toEqual({ items: [], total: 2 });
+    const blank = await store.listInvoices(range);
+    expect(blank.total).toBe(2);
+    expect(blank.items.map(row => row.id).sort()).toEqual(expected);
+  });
+
   it("uses the current item only for legacy blank names and unsnapshotted barcodes (#405)", async () => {
     const item = await store.createItem({ name: "اسم تراثي", barcode: "LEGACY-405", categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0 });
     const legacy = await makeInvoice(407);

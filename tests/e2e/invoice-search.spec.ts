@@ -66,6 +66,9 @@ test("invoice contents search retains historical names, resets paging and opens 
 test("invoice search exposes loading and retry without losing the query", async ({ page }) => {
   test.setTimeout(90_000);
   await signIn(page, { startPath: "/invoices", landingTestId: "invoices-page" });
+  const categoryId = await seedCategoryId(page, "تصنيف عزل التحميل");
+  const item = await callRpc<{ id: string }, unknown>(page, "itemsCreate", { name: "صنف عزل التحميل", barcode: "FIXTURE-ISO-A", categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0 });
+  const fixture = await callRpc<{ id: string; invoiceNumber: string }, unknown>(page, "invoicesCreate", { kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 100 }] });
   await page.goto("/invoices");
   const search = page.getByRole("searchbox", { name: "بحث الفواتير" });
   await expect(search).toBeVisible();
@@ -75,10 +78,12 @@ test("invoice search exposes loading and retry without losing the query", async 
     await blocked;
     await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
   });
-  await search.fill("query-405-retry");
-  await expect(page.getByRole("status")).toBeVisible();
-  if (!release) throw new Error("Loading barrier was not initialized");
-  release();
+  try {
+    await search.fill("query-405-retry");
+    await expect(page.getByRole("status")).toBeVisible();
+  } finally {
+    release?.();
+  }
   await expect(page.getByTestId("invoices-error")).toBeVisible({ timeout: 15_000 });
   await expect(search).toHaveValue("query-405-retry");
   await page.unroute("**/api/rpc/invoicesList");
@@ -129,17 +134,21 @@ test("invoice search exposes loading and retry without losing the query", async 
     await route.fulfill({ response });
     acknowledgeDelivery?.();
   });
-  await search.fill("missing-405-late");
-  await expect(page.getByRole("status")).toBeVisible();
-  await oldReady;
-  await page.getByTestId("invoices-search-clear").click();
-  await expect(page.getByTestId("invoices-table")).toBeVisible();
-  if (!completeOld) throw new Error("Cancellation barrier was not initialized");
-  completeOld();
+  try {
+    await search.fill("missing-405-late");
+    await expect(page.getByRole("status")).toBeVisible();
+    await oldReady;
+    await page.getByTestId("invoices-search-clear").click();
+    await expect(page.getByTestId("invoices-table")).toBeVisible();
+    await expect(page.getByTestId(`invoice-open-${fixture.invoiceNumber}`)).toHaveAttribute("href", `/invoices/${fixture.id}`);
+  } finally {
+    completeOld?.();
+  }
   // Query cancellation may abort the browser request, so observe the network
   // fixture's delivery, not a response event that an aborted fetch cannot emit.
   await oldDelivered;
   await expect(search).toHaveValue("");
   await expect(page.getByTestId("invoices-table")).toBeVisible();
+  await expect(page.getByTestId(`invoice-open-${fixture.invoiceNumber}`)).toHaveAttribute("href", `/invoices/${fixture.id}`);
   await expect(page.getByTestId("invoices-empty")).toHaveCount(0);
 });

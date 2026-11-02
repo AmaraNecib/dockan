@@ -129,22 +129,67 @@ test("invoice search exposes loading and retry without losing the query", async 
   await expect(page.getByTestId("invoices-empty")).toBeVisible();
   await expect(search).toHaveValue("query-405-retry");
 
-  // Revisit the cached empty search while a fresh response is held.
+  // An aborted fetch is a rejected request, unlike the HTTP 500 above.
+  const offlineSearch = fixture.invoiceNumber;
+  let offlineRouteEntered = false;
+  await page.route("**/api/rpc/invoicesList", async route => {
+    if (!route.request().postData()?.includes(offlineSearch)) {
+      await route.continue();
+      return;
+    }
+    offlineRouteEntered = true;
+    await route.abort("internetdisconnected");
+  });
+  try {
+    await search.fill(offlineSearch);
+    await expect.poll(() => offlineRouteEntered).toBe(true);
+    await expect(page.getByTestId("invoices-error")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("invoices-error").getByRole("alert")).toHaveText("تعذّر تحميل السجل، تحقق من الاتصال");
+    await expect(search).toHaveValue(offlineSearch);
+  } finally {
+    await page.unroute("**/api/rpc/invoicesList");
+  }
+  const retryResponse = page.waitForResponse(candidate => {
+    if (candidate.request().method() !== "POST" || !candidate.url().includes("/api/rpc/invoicesList")) return false;
+    try {
+      // SAFETY: invoicesList requests use the shared oRPC `{ json: input }` envelope.
+      const body = candidate.request().postDataJSON() as { json?: { search?: unknown } };
+      return body.json?.search === offlineSearch;
+    } catch {
+      return false;
+    }
+  });
+  await page.getByTestId("invoices-retry").click();
+  const recoveredResponse = await retryResponse;
+  expect(recoveredResponse.ok(), `invoice search retry failed with HTTP ${recoveredResponse.status()}`).toBe(true);
+  await expect(page.getByTestId(`invoice-open-${fixture.invoiceNumber}`)).toHaveAttribute("href", `/invoices/${fixture.id}`);
+  await expect(page.getByTestId("invoice-row")).toHaveCount(1);
+  await expect(search).toHaveValue(offlineSearch);
+
+  // Cache a real matching response, switch to no matches, then hold the refresh
+  // when returning to the cached key. Placeholder data cannot satisfy the row assertion.
+  const cachedSearch = fixture.invoiceNumber.toLowerCase();
+  const cachedInvoice = page.getByTestId(`invoice-open-${fixture.invoiceNumber}`);
+  await searchAndAck(page, search, cachedSearch);
+  await expect(cachedInvoice).toHaveAttribute("href", `/invoices/${fixture.id}`);
+  await expect(page.getByTestId("invoice-row")).toHaveCount(1);
   await searchAndAck(page, search, "query-405-other");
   await expect(page.getByTestId("invoices-empty")).toBeVisible();
   let releaseCached: (() => void) | undefined;
   let cachedRouteEntered = false;
+  let cachedFetchSucceeded = false;
   let cachedDelivered = false;
   let cachedRouteError: unknown;
   const cachedHeld = new Promise<void>(resolve => { releaseCached = resolve; });
   await page.route("**/api/rpc/invoicesList", async route => {
-    if (!route.request().postData()?.includes("query-405-retry")) {
+    if (!route.request().postData()?.includes(cachedSearch)) {
       await route.continue();
       return;
     }
     cachedRouteEntered = true;
     try {
       const response = await route.fetch();
+      cachedFetchSucceeded = true;
       await cachedHeld;
       await route.fulfill({ response });
     } catch (error) {
@@ -154,16 +199,19 @@ test("invoice search exposes loading and retry without losing the query", async 
     }
   });
   try {
-    await search.fill("query-405-retry");
+    await search.fill(cachedSearch);
     await expect.poll(() => cachedRouteEntered).toBe(true);
+    await expect.poll(() => cachedFetchSucceeded).toBe(true);
     await expect(page.getByRole("status", { name: "جارٍ تحميل الفواتير" })).toBeVisible();
-    await expect(page.getByTestId("invoices-empty")).toBeVisible();
+    await expect(cachedInvoice).toHaveAttribute("href", `/invoices/${fixture.id}`);
+    await expect(page.getByTestId("invoice-row")).toHaveCount(1);
   } finally {
     releaseCached?.();
   }
   await expect.poll(() => cachedDelivered).toBe(true);
   expect(cachedRouteError).toBeUndefined();
   await expect(page.getByRole("status", { name: "جارٍ تحميل الفواتير" })).toHaveCount(0);
+  await expect(cachedInvoice).toHaveAttribute("href", `/invoices/${fixture.id}`);
   await page.unroute("**/api/rpc/invoicesList");
 
   // Cancel an in-flight no-match search by clearing it. A late response must
@@ -225,11 +273,13 @@ test("invoice search exposes loading and retry without losing the query", async 
 
   // A late matching response must not replace a newer no-match result.
   let releaseMatching: (() => void) | undefined;
+  let releaseMatchingFetch: (() => void) | undefined;
   let matchingRouteEntered = false;
   let matchingFetchSucceeded = false;
   let matchingDelivered = false;
   let matchingRouteError: unknown;
   const matchingHeld = new Promise<void>(resolve => { releaseMatching = resolve; });
+  const matchingFetchStart = new Promise<void>(resolve => { releaseMatchingFetch = resolve; });
   await page.route("**/api/rpc/invoicesList", async route => {
     if (!route.request().postData()?.includes("FIXTURE-ISO-A")) {
       await route.continue();
@@ -237,6 +287,7 @@ test("invoice search exposes loading and retry without losing the query", async 
     }
     matchingRouteEntered = true;
     try {
+      await matchingFetchStart;
       const response = await route.fetch();
       matchingFetchSucceeded = true;
       await matchingHeld;
@@ -250,7 +301,8 @@ test("invoice search exposes loading and retry without losing the query", async 
   try {
     await search.fill("FIXTURE-ISO-A");
     await expect.poll(() => matchingRouteEntered).toBe(true);
-    expect(matchingFetchSucceeded).toBe(true);
+    releaseMatchingFetch?.();
+    await expect.poll(() => matchingFetchSucceeded).toBe(true);
     await searchAndAck(page, search, "newer-no-match-405");
     await expect(page.getByTestId("invoices-empty")).toBeVisible();
     releaseMatching?.();
@@ -259,6 +311,7 @@ test("invoice search exposes loading and retry without losing the query", async 
     await expect(page.getByTestId("invoices-empty")).toBeVisible();
     await expect(page.getByTestId("invoice-row")).toHaveCount(0);
   } finally {
+    releaseMatchingFetch?.();
     releaseMatching?.();
   }
 });

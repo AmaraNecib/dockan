@@ -61,13 +61,15 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => {
           requests.push(input);
           await refreshGate;
-          const items = allInvoices.filter(
+          const filtered = allInvoices.filter(
             (row) =>
               (input.search === undefined || row.invoiceNumber.includes(input.search)) &&
               (input.kind === undefined || row.kind === input.kind) &&
               (input.status === undefined || row.status === input.status),
           );
-          return { items, total: items.length };
+          const offset = input.offset ?? 0;
+          const items = filtered.slice(offset, offset + (input.limit ?? filtered.length));
+          return { items, total: filtered.length };
         },
       }),
     },
@@ -141,6 +143,7 @@ async function mountPage(waitForInitialData = true) {
     statusFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-status-filter']"),
     loading: () => container.querySelector('[role="status"]'),
     search: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-search']"),
+    nextPage: () => container.querySelector<HTMLButtonElement>("[data-testid='invoices-pager-next']"),
   };
 }
 
@@ -151,6 +154,35 @@ function setNativeValue(input: HTMLInputElement, value: string) {
 }
 
 describe("InvoicesPage search", () => {
+  it("resets pagination with the debounced query, not on the first keystroke", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(...Array.from({ length: 12 }, (_, index) => ({
+      id: `search-page-${index}`,
+      invoiceNumber: `INV-SEARCH-${String(index).padStart(4, "0")}`,
+      kind: "SALE" as const,
+      status: "UNPAID" as const,
+      counterpartyName: null,
+      invoiceDate: "2026-08-01",
+      totalAmount: 100,
+      remainingAmount: 100,
+    })));
+    const page = await mountPage();
+    await act(async () => page.nextPage()?.click());
+    await waitFor(() => requests.at(-1)?.offset === 10 && page.numbers().length === 2);
+    const beforeSearch = requests.length;
+
+    await act(async () => setNativeValue(page.search()!, "SEARCH-0001"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(requests).toHaveLength(beforeSearch);
+    expect(requests.at(-1)?.offset).toBe(10);
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 125)); });
+    await waitFor(() => requests.at(-1)?.search === "SEARCH-0001");
+    expect(requests).toHaveLength(beforeSearch + 1);
+    expect(requests.at(-1)?.offset).toBe(0);
+    await waitFor(() => page.numbers().join() === "INV-SEARCH-0001");
+  });
+
   it("debounces and trims search while retaining rows during refresh", async () => {
     const page = await mountPage();
     let release: (() => void) | undefined;

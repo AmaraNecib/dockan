@@ -43,11 +43,15 @@ export function InvoicesPage() {
     const trimmed = search.trim();
     if (trimmed === "") {
       setDebouncedSearch("");
+      pager.reset();
       return;
     }
-    const timer = window.setTimeout(() => setDebouncedSearch(trimmed), 150);
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(trimmed);
+      pager.reset();
+    }, 150);
     return () => window.clearTimeout(timer);
-  }, [search]);
+  }, [search, pager.reset]);
 
   const list = useQuery({
     ...orpc.invoicesList.queryOptions({
@@ -78,14 +82,12 @@ export function InvoicesPage() {
             onChange={(event) => {
               setSearch(event.target.value);
               lastFilterRef.current = "search";
-              pager.reset();
             }}
           />
         </label>
         {search !== "" && (
           <Button variant="outline" data-testid="invoices-search-clear" onClick={() => {
             setSearch("");
-            pager.reset();
             searchRef.current?.focus();
           }}>{t("invoicesSearchClear")}</Button>
         )}

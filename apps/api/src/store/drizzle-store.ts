@@ -2788,9 +2788,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (search !== "") {
         // Keep the historical description. Only blank legacy names fall back to
         // the linked item; barcodes have no line snapshot and use the current item.
+        const literalSearch = foldArabic(search) === "";
+        const loweredSearch = search.toLowerCase();
         const matches = (text: string | null) => text !== null && (
-          foldArabic(search) === ""
-            ? text.toLowerCase().includes(search.toLowerCase())
+          literalSearch
+            ? text.toLowerCase().includes(loweredSearch)
             : arabicIncludes(text, search)
         );
         const [rows, lines] = await Promise.all([

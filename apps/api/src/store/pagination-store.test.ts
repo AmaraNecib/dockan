@@ -214,6 +214,25 @@ describe("store pagination (issue 163)", () => {
     expect((await store.listInvoices({ search: "CURRENT-405" })).items.map(row => row.id)).toEqual([legacy]);
   });
 
+  it("normalizes the literal-search mode once per request (#405)", async () => {
+    const invoice = await makeInvoice(420);
+    await store.insertInvoiceLine({ invoiceId: invoice, itemId: null, description: "ordinary line text", quantity: 1, unitPrice: 100, costAtSale: 0, total: 100 });
+    const search = "%%%";
+    const originalNormalize = String.prototype.normalize;
+    let queryNormalizations = 0;
+    String.prototype.normalize = function (this: string, form?: "NFC" | "NFD" | "NFKC" | "NFKD") {
+      if (String(this) === search) queryNormalizations++;
+      return originalNormalize.call(this, form);
+    };
+    try {
+      const result = await store.listInvoices({ search });
+      expect(result.total).toBe(0);
+      expect(queryNormalizations).toBe(1);
+    } finally {
+      String.prototype.normalize = originalNormalize;
+    }
+  });
+
   it("treats wildcard and injection-like search as literal text (#405)", async () => {
     const target = await makeInvoice(406);
     await store.insertInvoiceLine({ invoiceId: target, itemId: null, description: "100%_ ' OR 1=1 --", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });

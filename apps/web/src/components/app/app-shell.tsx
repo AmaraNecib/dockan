@@ -43,7 +43,7 @@ interface NewSaleActionProps {
 function NewSaleAction({ activeKey }: NewSaleActionProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { draftDirty, savePending } = useSaleDraft();
+  const { draftDirtyRef, savePending, savePendingRef } = useSaleDraft();
   const [discardOpen, setDiscardOpen] = useState(false);
 
   function goToNewSale() {
@@ -55,8 +55,8 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
   }
 
   function handleNewSale() {
-    if (savePending) return;
-    if (draftDirty) {
+    if (savePendingRef.current) return;
+    if (draftDirtyRef.current) {
       setDiscardOpen(true);
       return;
     }
@@ -79,6 +79,7 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
         open={discardOpen}
         onOpenChange={setDiscardOpen}
         onConfirm={() => {
+          if (savePendingRef.current) return;
           setDiscardOpen(false);
           goToNewSale();
         }}
@@ -119,7 +120,7 @@ export function AppShell() {
     : null;
 
   const navigate = useNavigate();
-  const { draftDirty, savePending } = useSaleDraft();
+  const { draftDirtyRef, savePendingRef } = useSaleDraft();
   const [purchaseDiscardOpen, setPurchaseDiscardOpen] = useState(false);
   const purchaseDiscardFocus = useRef<HTMLElement | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -148,18 +149,18 @@ export function AppShell() {
   }
 
   function startSale() {
-    if (savePending) return;
+    if (savePendingRef.current) return;
     if (activeKey === "sale") focusInvoiceEntry("sale");
     else void navigate({ to: "/sale" });
   }
 
   function startPurchase() {
-    if (savePending) return;
+    if (savePendingRef.current) return;
     if (activeKey === "purchase") {
       focusInvoiceEntry("purchase");
       return;
     }
-    if (activeKey === "sale" && draftDirty) {
+    if (activeKey === "sale" && draftDirtyRef.current) {
       purchaseDiscardFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setPurchaseDiscardOpen(true);
       return;
@@ -250,7 +251,7 @@ export function AppShell() {
         open={purchaseDiscardOpen}
         onOpenChange={setPurchaseDiscardOpen}
         onConfirm={() => {
-          if (savePending) return;
+          if (savePendingRef.current) return;
           setPurchaseDiscardOpen(false);
           void navigate({ to: "/purchase" });
         }}

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ScanBarcode, X } from "lucide-react";
 
@@ -97,6 +97,19 @@ const SALE_QUICK = {
 export function SalePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const {
+    claimOwner,
+    releaseOwner,
+    setDraftDirty: setOwnedDraftDirty,
+    setSavePending: setOwnedSavePending,
+  } = useSaleDraft();
+  const [draftOwner] = useState(() => Symbol("sale-draft"));
+  const setDraftDirty = useCallback((dirty: boolean) => setOwnedDraftDirty(draftOwner, dirty), [draftOwner, setOwnedDraftDirty]);
+  const setSavePending = useCallback((pending: boolean) => setOwnedSavePending(draftOwner, pending), [draftOwner, setOwnedSavePending]);
+  useEffect(() => {
+    claimOwner(draftOwner);
+    return () => releaseOwner(draftOwner);
+  }, [claimOwner, draftOwner, releaseOwner]);
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
@@ -137,6 +150,7 @@ export function SalePage() {
     // an already-open dialog, or a quick-add that settles after Save) so the
     // cart cannot drift from the request.
     if (commitRef.current) return;
+    setDraftDirty(true);
     draft.addItem(item);
     setPickerOpen(false);
   };
@@ -199,7 +213,6 @@ export function SalePage() {
     }),
   );
 
-  const { setDraftDirty, setSavePending } = useSaleDraft();
   // Quick-add inputs count too: a half-created item in that form is live work the
   // header's New Sale action must not silently discard. These `draftDirty` gates
   // stay raw `.trim()` on purpose (#244): this is an unsaved-work indicator, not
@@ -212,17 +225,22 @@ export function SalePage() {
   //
   // `stock` is in the list because it is a real input (`sale-quick-stock`) that is
   // blank until the owner types an opening count — leaving it out loses that count
-  // silently, which is the bug #321 fixed on the purchase screen (#345 review).
-  // `categoryId` is deliberately NOT in the list: it is seeded from the first
-  // category the shop has, so it is never blank and cannot signal work — the same
-  // reason purchase excludes its `qty`.
-  const quickDraft = anyTyped([quick.fields.name, quick.fields.barcode, quick.fields.cost, quick.fields.sell, quick.fields.stock]);
-  const draftDirty =
+  // silently, which was the bug #321 fixed on the purchase screen (#345 review).
+  // The first category is a seeded default, not user work. A different category
+  // is an explicit choice and must count even when it is the only quick-add edit.
+  const quickCategoryDefault = categories.data?.items[0]?.id ?? "";
+  const quickCategory = quick.fields.categoryId || quickCategoryDefault;
+  const quickFieldsDirty = anyTyped([quick.fields.name, quick.fields.barcode, quick.fields.cost, quick.fields.sell, quick.fields.stock]);
+  const quickCategoryDirty = quickCategory !== quickCategoryDefault;
+  const draftDirtyOutsideQuickAdd =
     lines.length > 0 ||
-    anyTyped([customer.name, discountValue, payment.amount]) ||
-    discountType !== "" ||
-    quickDraft;
-  const savePending = createInvoice.isPending || createItem.isPending || createWithStock.isPending;
+    anyTyped([customer.name, discountValue, payment.amount, payment.percentage]) ||
+    discountType !== "";
+  const draftDirtyWithoutQuickCategory = draftDirtyOutsideQuickAdd || quickFieldsDirty;
+  const quickDraft = quickFieldsDirty || quickCategoryDirty;
+  const draftDirty = draftDirtyWithoutQuickCategory || quickCategoryDirty;
+  const quickCreatePending = createItem.isPending || createWithStock.isPending;
+  const savePending = createInvoice.isPending || quickCreatePending;
 
   useInvoiceEntryShortcut("sale", () => {
     if (savePending) return;
@@ -236,15 +254,6 @@ export function SalePage() {
   useEffect(() => {
     setSavePending(savePending);
   }, [savePending, setSavePending]);
-  // Leaving the sale screen (or resetting to a fresh sale) clears both flags so
-  // the header action never warns about a draft that no longer exists.
-  useEffect(
-    () => () => {
-      setDraftDirty(false);
-      setSavePending(false);
-    },
-    [setDraftDirty, setSavePending],
-  );
 
   // Live debt preview for the pending sale — see `saleDebt` for the invariant.
   const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, payment.amount);
@@ -310,19 +319,17 @@ export function SalePage() {
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
     setSubmittedNotice(liveNotice);
     commitRef.current = true;
+    setSavePending(true);
     void createInvoice.mutate(invoiceInput);
   }
 
-  // what the quick-add will save into: the operator's pick, or the first
-  // category the shop has. Display and submit read this one value.
-  const quickCategory = quick.fields.categoryId || categories.data?.items[0]?.id || "";
   /** the list has not answered yet: nothing to pick, nothing to submit */
   const quickCategoriesLoading = categories.data === undefined;
 
   function openQuick(code = "", withStock = false) {
     setQuickStockRequired(withStock);
     if (withStock) setQuickStockFocusRequest((request) => request + 1);
-    quick.openForm({ barcode: code, categoryId: categories.data?.items[0]?.id ?? "" });
+    quick.openForm({ barcode: code, categoryId: quickCategoryDefault });
   }
 
   // "create with stock" always moves focus to the quantity, whether the form is
@@ -357,6 +364,7 @@ export function SalePage() {
         barcode: fields.barcode.trim() === "" ? undefined : fields.barcode.trim(),
       };
       return await new Promise<QuickAddOutcome>((resolve) => {
+        setSavePending(true);
         if (stock.value > 0) {
           createWithStock.mutate(
             { ...input, stockOnHand: stock.value },
@@ -398,7 +406,7 @@ export function SalePage() {
   }
 
   return (
-    <section data-testid="sale-form">
+    <section data-testid="sale-form" onInput={() => setDraftDirty(true)}>
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
 
       <div className="mt-4 grid gap-4">
@@ -407,14 +415,20 @@ export function SalePage() {
             role="customer"
             label={t("saleCustomer")}
             value={customer}
-            onChange={setCustomer}
+            onChange={(value) => {
+              setCustomer(value);
+              setDraftDirty(true);
+            }}
             disabled={createInvoice.isPending}
             testId="sale-customer"
           />
           <AmountPercentageInput
             referenceTotal={total > 0 ? total : null}
             value={{ amount: payment.amount, percentage: payment.percentage }}
-            onChange={payment.onChange}
+            onChange={(value, edited) => {
+              payment.onChange(value, edited);
+              setDraftDirty(true);
+            }}
             amountLabel={t("salePaid")}
             amountTestId="sale-paid"
             percentageTestId="sale-paid-percentage"
@@ -443,17 +457,26 @@ export function SalePage() {
           {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
 
           {quick.open && (
-            <form className="m-4 grid gap-3 rounded bg-accent p-3" onSubmit={quickSubmit} data-testid="sale-quick-form">
+            <form className="m-4 grid gap-3 rounded bg-accent p-3" onSubmit={quickSubmit} data-testid="sale-quick-form" aria-busy={quickCreatePending}>
               <div className="grid grid-cols-2 gap-3">
-                <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" value={quick.fields.name} onChange={(event) => quick.setField("name", event.target.value)} required data-testid="sale-quick-name" /></label>
-                <label className="grid gap-1 text-sm font-medium">{t("saleQuickBarcode")}<input dir="ltr" className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" value={quick.fields.barcode} onChange={(event) => quick.setField("barcode", event.target.value)} data-testid="sale-quick-barcode" /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" disabled={quickCreatePending} value={quick.fields.name} onChange={(event) => quick.setField("name", event.target.value)} required data-testid="sale-quick-name" /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("saleQuickBarcode")}<input dir="ltr" className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" disabled={quickCreatePending} value={quick.fields.barcode} onChange={(event) => quick.setField("barcode", event.target.value)} data-testid="sale-quick-barcode" /></label>
                 <label className="grid gap-1 text-sm font-medium">
                   {t("itemsCategory")}
                   <Select
                     value={quickCategory}
-                    onValueChange={(value) => quick.setField("categoryId", value ?? "")}
+                    onValueChange={(value) => {
+                      const nextCategoryId = value ?? "";
+                      quick.setField("categoryId", nextCategoryId);
+                      // Base UI Select does not emit the form's native input
+                      // event, so keep the shortcut guard in step with this pick.
+                      setDraftDirty(
+                        draftDirtyWithoutQuickCategory ||
+                          (nextCategoryId || quickCategoryDefault) !== quickCategoryDefault,
+                      );
+                    }}
                     name="quickCategory"
-                    disabled={quickCategoriesLoading}
+                    disabled={quickCategoriesLoading || quickCreatePending}
                     items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
                   >
                     <SelectTrigger className="w-full" data-testid="sale-quick-category">
@@ -464,14 +487,14 @@ export function SalePage() {
                     </SelectContent>
                   </Select>
                 </label>
-                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required /></label>
-                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">
                   {quickStockRequired ? t("saleQuickStockRequired") : t("saleQuickStock")}
-                  <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quick.fields.stock} onChange={(event) => quick.setField("stock", event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />
+                  <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.stock} onChange={(event) => quick.setField("stock", event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />
                 </label>
               </div>
-              <div className="flex gap-2"><Button type="submit" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => quick.close()}>{t("dialogClose")}</Button></div>
+              <div className="flex gap-2"><Button type="submit" disabled={quickCreatePending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => quick.close()} disabled={quickCreatePending}>{t("dialogClose")}</Button></div>
             </form>
           )}
 
@@ -492,7 +515,7 @@ export function SalePage() {
             ) : (
               <table className="w-full" data-testid="sale-lines">
                 <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toAmountKind(value ?? ""); if (next === line.overrideType) return; draft.patch(line.item.id, { overrideType: next, overrideValue: "" }); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => draft.patch(line.item.id, { overrideValue: event.target.value })} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); } }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
+                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toAmountKind(value ?? ""); if (next === line.overrideType) return; draft.patch(line.item.id, { overrideType: next, overrideValue: "" }); setDraftDirty(true); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => draft.patch(line.item.id, { overrideValue: event.target.value })} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); } setDraftDirty(lines.length > 1 || anyTyped([customer.name, last ? "" : discountValue, payment.amount, payment.percentage]) || (!last && discountType !== "") || quickDraft); }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
               </table>
             )}
           </div>
@@ -506,7 +529,7 @@ export function SalePage() {
       {lines.length > 0 && (
         <CheckoutBar testId="sale-checkout-bar" className="mt-4">
             <div className="flex flex-wrap items-end gap-3">
-              <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => setDiscountType(toAmountKind(value ?? ""))} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
+              <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => { setDiscountType(toAmountKind(value ?? "")); setDraftDirty(true); }} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
               <label className="grid gap-1 text-sm font-medium">{t("saleDiscountValue")}<input className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm" name="discountValue" autoComplete="off" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label>
               <dl className="ms-auto flex items-center gap-6 text-sm"><div className="flex items-baseline gap-2"><dt className="text-muted-foreground">{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div><div className="flex items-baseline gap-2"><dt className="text-muted-foreground">{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={discountAmount > 0 ? -discountAmount : 0} /></dd></div><div className="flex items-baseline gap-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div></dl>
             </div>

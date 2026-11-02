@@ -2810,9 +2810,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         ).map(line => line.invoiceId));
         // Filter once per invoice, not once per joined line, before count/window.
         const found = rows.filter(row => matches(row.invoiceNumber) || matchedIds.has(row.id));
+        const pagination = resolvePagination(filters);
         const window = filters.limit === undefined && filters.offset === undefined
           ? found
-          : found.slice(resolvePagination(filters).offset, resolvePagination(filters).offset + resolvePagination(filters).limit);
+          : found.slice(pagination.offset, pagination.offset + pagination.limit);
         return { items: window.map(row => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: found.length };
       }
 

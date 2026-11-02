@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceKind } from "@dokan/contracts";
@@ -28,6 +28,7 @@ type StatusFilter = "" | "UNPAID" | "PARTIAL" | "PAID";
 export function InvoicesPage() {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const [kind, setKind] = useState<KindFilter>("");
   const [status, setStatus] = useState<StatusFilter>("");
@@ -38,16 +39,27 @@ export function InvoicesPage() {
   const lastFilterRef = useRef<"kind" | "status" | "search" | null>(null);
   const pager = usePagination();
 
-  const list = useQuery(
-    orpc.invoicesList.queryOptions({
+  useEffect(() => {
+    const trimmed = search.trim();
+    if (trimmed === "") {
+      setDebouncedSearch("");
+      return;
+    }
+    const timer = window.setTimeout(() => setDebouncedSearch(trimmed), 150);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  const list = useQuery({
+    ...orpc.invoicesList.queryOptions({
       input: {
-        search: search.trim() || undefined,
+        search: debouncedSearch || undefined,
         kind: kind === "" ? undefined : kind,
         status: status === "" ? undefined : status,
         ...pager.pagination,
       },
     }),
-  );
+    placeholderData: (previousData) => previousData,
+  });
 
   return (
     <section data-testid="invoices-page">
@@ -136,9 +148,9 @@ export function InvoicesPage() {
         </label>
       </div>
 
-      {list.isFetching && (
-        <p className="mt-4 text-sm text-muted-foreground" role="status" aria-label={t("invoicesSearchLoading")}>
-          {t("invoicesSearchLoading")}
+      {list.isFetching && !list.isPending && (
+        <p className="mt-4 text-sm text-muted-foreground" role="status" aria-label={t("invoicesLoading")}>
+          {t("invoicesLoading")}
         </p>
       )}
       {list.isPending ? (
@@ -148,8 +160,8 @@ export function InvoicesPage() {
           <Skeleton className="h-6 w-full" />
         </div>
       ) : list.isError ? (
-        <div role="alert" className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="invoices-error">
-          <p>{t("activityError")}</p>
+        <div className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="invoices-error">
+          <p role="alert">{t("activityError")}</p>
           <Button variant="outline" data-testid="invoices-retry" onClick={() => { void list.refetch(); }}>{t("itemsSearchRetry")}</Button>
         </div>
       ) : list.data.total === 0 ? (

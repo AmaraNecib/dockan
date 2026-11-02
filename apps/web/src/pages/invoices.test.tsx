@@ -32,7 +32,7 @@ type Row = {
 };
 
 /** every request the page made, in order, so apply-then-clear is provable */
-let requests: Array<{ kind?: string; status?: string; limit?: number; offset?: number }> = [];
+let requests: Array<{ search?: string; kind?: string; status?: string; limit?: number; offset?: number }> = [];
 
 const allInvoices: Row[] = [
   { id: "inv-1", invoiceNumber: "INV-0001", kind: "SALE", status: "UNPAID", counterpartyName: "زبون", invoiceDate: "2026-08-01", totalAmount: 1000, remainingAmount: 1000 },
@@ -56,13 +56,14 @@ mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesList: {
       // SAFETY: mirror the real tanstack-query utils signature ({ input })
-      queryOptions: ({ input }: { input: { kind?: "SALE" | "PURCHASE"; status?: Status; limit?: number; offset?: number } }) => ({
+      queryOptions: ({ input }: { input: { search?: string; kind?: "SALE" | "PURCHASE"; status?: Status; limit?: number; offset?: number } }) => ({
         queryKey: ["invoicesList", input],
         queryFn: async () => {
           requests.push(input);
           await refreshGate;
           const items = allInvoices.filter(
             (row) =>
+              (input.search === undefined || row.invoiceNumber.includes(input.search)) &&
               (input.kind === undefined || row.kind === input.kind) &&
               (input.status === undefined || row.status === input.status),
           );
@@ -107,7 +108,7 @@ const waitFor = async (predicate: () => boolean) => {
   throw new Error("condition not met within timeout");
 };
 
-async function mountPage() {
+async function mountPage(waitForInitialData = true) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -120,11 +121,13 @@ async function mountPage() {
       </QueryClientProvider>,
     );
   });
-  await waitFor(
-    () =>
-      container.querySelector("[data-testid='invoices-table']") !== null ||
-      container.querySelector("[data-testid='invoices-empty']") !== null,
-  );
+  if (waitForInitialData) {
+    await waitFor(
+      () =>
+        container.querySelector("[data-testid='invoices-table']") !== null ||
+        container.querySelector("[data-testid='invoices-empty']") !== null,
+    );
+  }
   return {
     rows: () => Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='invoice-row']")),
     numbers: () =>
@@ -137,8 +140,51 @@ async function mountPage() {
     kindFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-kind-filter']"),
     statusFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-status-filter']"),
     loading: () => container.querySelector('[role="status"]'),
+    search: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-search']"),
   };
 }
+
+function setNativeValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+describe("InvoicesPage search", () => {
+  it("debounces and trims search while retaining rows during refresh", async () => {
+    const page = await mountPage();
+    let release: (() => void) | undefined;
+    refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const beforeSearch = requests.length;
+      await act(async () => setNativeValue(page.search()!, "  INV-0002  "));
+      expect(requests).toHaveLength(beforeSearch);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+      await waitFor(() => requests.at(-1)?.search === "INV-0002");
+      expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesLoading"));
+    } finally {
+      await act(async () => release?.());
+      refreshGate = undefined;
+      await waitFor(() => page.numbers().join() === "INV-0002" && page.loading() === null);
+    }
+  });
+
+  it("offers a clear action when search alone has no matches", async () => {
+    const page = await mountPage();
+    const search = page.search()!;
+    await act(async () => setNativeValue(search, "missing-invoice"));
+    await waitFor(() => requests.at(-1)?.search === "missing-invoice" && page.empty() !== null);
+
+    expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
+    expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 2 && page.loading() === null);
+    expect(search.value).toBe("");
+    expect(document.activeElement).toBe(search);
+    expect(requests.at(-1)?.search).toBeUndefined();
+  });
+});
 
 describe("InvoicesPage filters", () => {
   it("sends no filter initially, then narrows by kind and clears it again", async () => {
@@ -162,7 +208,7 @@ describe("InvoicesPage filters", () => {
       await waitFor(() => page.numbers().length === 2);
       expect(requests.at(-1)?.kind).toBeUndefined();
       expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
-      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesSearchLoading"));
+      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesLoading"));
     } finally {
       await act(async () => release?.());
       refreshGate = undefined;

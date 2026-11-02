@@ -1,9 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
-import { actAndAck, callRpc, seedCategoryId } from "./rpc-helpers";
+import { callRpc, seedCategoryId } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
 const evidence = process.env.INVOICE_SEARCH_EVIDENCE;
+
+async function searchAndAck(page: Page, search: Locator, value: string) {
+  const expected = value.trim();
+  const response = page.waitForResponse((candidate) => {
+    if (candidate.request().method() !== "POST" || !candidate.url().includes("/api/rpc/invoicesList")) return false;
+    try {
+      // SAFETY: invoicesList requests use the shared oRPC `{ json: input }` envelope.
+      const body = candidate.request().postDataJSON() as { json?: { search?: unknown } };
+      return body.json?.search === expected;
+    } catch {
+      return false;
+    }
+  });
+  await search.fill(value);
+  const result = await response;
+  expect(result.ok(), `invoice search ${JSON.stringify(expected)} failed with HTTP ${result.status()}`).toBe(true);
+}
 test.use({ viewport: { width: 1920, height: 1080 } });
 if (evidence) test.use({ video: { mode: "on", size: { width: 1920, height: 1080 } } });
 
@@ -17,7 +34,9 @@ test("invoice contents search retains historical names, resets paging and opens 
   await callRpc(page, "itemsUpdate", { id: item.id, name: "اسم جديد" });
   for (let i = 0; i < 11; i++) await callRpc(page, "invoicesCreate", { kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 100 }] });
   await callRpc(page, "preferencesSet", { key: "ui.pageSize", value: "10" });
+  const initialList = page.waitForResponse(response => response.url().includes("invoicesList"));
   await page.goto("/invoices");
+  expect((await initialList).status()).toBe(200);
   await expect(page.getByTestId("invoice-row")).toHaveCount(10);
   await expect(page.getByTestId(`invoice-open-${target.invoiceNumber}`)).toHaveCount(0);
   if (evidence) await page.getByTestId("invoices-page").screenshot({ path: `.scratch/implementation/405-${evidence}.png` });
@@ -26,7 +45,7 @@ test("invoice contents search retains historical names, resets paging and opens 
   await expect(search).toBeVisible();
   const pause = async (ms = 3000) => { if (evidence === "after") await page.waitForTimeout(ms); };
   await pause();
-  await actAndAck(page, "invoicesList", () => search.fill("اطار"));
+  await searchAndAck(page, search, "اطار");
   await expect(page.getByTestId("invoice-row")).toHaveCount(2);
   await expect(page.getByTestId(`invoice-open-${target.invoiceNumber}`)).toHaveAttribute("href", `/invoices/${target.id}`);
   await pause();
@@ -34,13 +53,13 @@ test("invoice contents search retains historical names, resets paging and opens 
   await chooseSelectOption(page, page.getByTestId("invoices-status-filter"), "غير مدفوعة");
   await expect(page.getByTestId("invoice-row")).toHaveCount(1);
   await pause();
-  await actAndAck(page, "invoicesList", () => search.fill("bc-405"));
+  await searchAndAck(page, search, "bc-405");
   await expect(page.getByTestId("invoice-row")).toHaveCount(1);
   await pause();
-  await actAndAck(page, "invoicesList", () => search.fill(target.invoiceNumber));
+  await searchAndAck(page, search, target.invoiceNumber);
   await expect(page.getByTestId("invoice-row")).toHaveCount(1);
   await pause();
-  await actAndAck(page, "invoicesList", () => search.fill("%_ ' OR 1=1 --"));
+  await searchAndAck(page, search, "%_ ' OR 1=1 --");
   await expect(page.getByTestId("invoices-empty")).toBeVisible();
   await pause();
   await page.getByTestId("invoices-empty-action").click();
@@ -69,22 +88,41 @@ test("invoice search exposes loading and retry without losing the query", async 
   const categoryId = await seedCategoryId(page, "تصنيف عزل التحميل");
   const item = await callRpc<{ id: string }, unknown>(page, "itemsCreate", { name: "صنف عزل التحميل", barcode: "FIXTURE-ISO-A", categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0 });
   const fixture = await callRpc<{ id: string; invoiceNumber: string }, unknown>(page, "invoicesCreate", { kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 100 }] });
-  await page.goto("/invoices");
+  let initialRouteEntered = false;
+  let releaseInitialList: (() => void) | undefined;
+  const initialListHeld = new Promise<void>(resolve => { releaseInitialList = resolve; });
+  await page.route("**/api/rpc/invoicesList", async route => {
+    initialRouteEntered = true;
+    await initialListHeld;
+    await route.continue();
+  });
+  const initialList = page.waitForResponse(response => response.url().includes("invoicesList"));
+  const navigation = page.goto("/invoices");
+  await expect.poll(() => initialRouteEntered).toBe(true);
+  await expect(page.getByRole("status")).toHaveCount(0);
+  releaseInitialList?.();
+  await navigation;
+  expect((await initialList).status()).toBe(200);
+  await page.unroute("**/api/rpc/invoicesList");
   const search = page.getByRole("searchbox", { name: "بحث الفواتير" });
   await expect(search).toBeVisible();
   let release: (() => void) | undefined;
+  let retryRouteEntered = false;
   const blocked = new Promise<void>(resolve => { release = resolve; });
   await page.route("**/api/rpc/invoicesList", async route => {
+    retryRouteEntered = true;
     await blocked;
     await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
   });
   try {
     await search.fill("query-405-retry");
+    await expect.poll(() => retryRouteEntered).toBe(true);
     await expect(page.getByRole("status")).toBeVisible();
   } finally {
     release?.();
   }
   await expect(page.getByTestId("invoices-error")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("invoices-error").getByRole("alert")).toHaveText("تعذّر تحميل السجل، تحقق من الاتصال");
   await expect(search).toHaveValue("query-405-retry");
   await page.unroute("**/api/rpc/invoicesList");
   await page.getByTestId("invoices-retry").click();
@@ -92,27 +130,40 @@ test("invoice search exposes loading and retry without losing the query", async 
   await expect(search).toHaveValue("query-405-retry");
 
   // Revisit the cached empty search while a fresh response is held.
-  await search.fill("query-405-other");
+  await searchAndAck(page, search, "query-405-other");
   await expect(page.getByTestId("invoices-empty")).toBeVisible();
   let releaseCached: (() => void) | undefined;
+  let cachedRouteEntered = false;
+  let cachedDelivered = false;
+  let cachedRouteError: unknown;
   const cachedHeld = new Promise<void>(resolve => { releaseCached = resolve; });
   await page.route("**/api/rpc/invoicesList", async route => {
     if (!route.request().postData()?.includes("query-405-retry")) {
       await route.continue();
       return;
     }
-    const response = await route.fetch();
-    await cachedHeld;
-    await route.fulfill({ response });
+    cachedRouteEntered = true;
+    try {
+      const response = await route.fetch();
+      await cachedHeld;
+      await route.fulfill({ response });
+    } catch (error) {
+      cachedRouteError = error;
+    } finally {
+      cachedDelivered = true;
+    }
   });
   try {
     await search.fill("query-405-retry");
-    await expect(page.getByRole("status", { name: "جارٍ البحث عن الفواتير" })).toBeVisible();
+    await expect.poll(() => cachedRouteEntered).toBe(true);
+    await expect(page.getByRole("status", { name: "جارٍ تحميل الفواتير" })).toBeVisible();
     await expect(page.getByTestId("invoices-empty")).toBeVisible();
   } finally {
     releaseCached?.();
   }
-  await expect(page.getByRole("status", { name: "جارٍ البحث عن الفواتير" })).toHaveCount(0);
+  await expect.poll(() => cachedDelivered).toBe(true);
+  expect(cachedRouteError).toBeUndefined();
+  await expect(page.getByRole("status", { name: "جارٍ تحميل الفواتير" })).toHaveCount(0);
   await page.unroute("**/api/rpc/invoicesList");
 
   // Cancel an in-flight no-match search by clearing it. A late response must
@@ -120,6 +171,8 @@ test("invoice search exposes loading and retry without losing the query", async 
   let completeOld: (() => void) | undefined;
   let acknowledgeOld: (() => void) | undefined;
   let acknowledgeDelivery: (() => void) | undefined;
+  let oldFetchError: unknown;
+  let oldFulfillError: unknown;
   const held = new Promise<void>(resolve => { completeOld = resolve; });
   const oldReady = new Promise<void>(resolve => { acknowledgeOld = resolve; });
   const oldDelivered = new Promise<void>(resolve => { acknowledgeDelivery = resolve; });
@@ -128,16 +181,32 @@ test("invoice search exposes loading and retry without losing the query", async 
       await route.continue();
       return;
     }
-    const response = await route.fetch();
-    acknowledgeOld?.();
+    let response: Awaited<ReturnType<typeof route.fetch>> | undefined;
+    try {
+      response = await route.fetch();
+    } catch (error) {
+      oldFetchError = error;
+    } finally {
+      acknowledgeOld?.();
+    }
+    if (!response) {
+      acknowledgeDelivery?.();
+      return;
+    }
     await held;
-    await route.fulfill({ response });
-    acknowledgeDelivery?.();
+    try {
+      await route.fulfill({ response });
+    } catch (error) {
+      oldFulfillError = error;
+    } finally {
+      acknowledgeDelivery?.();
+    }
   });
   try {
     await search.fill("missing-405-late");
-    await expect(page.getByRole("status")).toBeVisible();
     await oldReady;
+    expect(oldFetchError).toBeUndefined();
+    await expect(page.getByRole("status", { name: "جارٍ تحميل الفواتير" })).toBeVisible();
     await page.getByTestId("invoices-search-clear").click();
     await expect(page.getByTestId("invoices-table")).toBeVisible();
     await expect(page.getByTestId(`invoice-open-${fixture.invoiceNumber}`)).toHaveAttribute("href", `/invoices/${fixture.id}`);
@@ -147,8 +216,49 @@ test("invoice search exposes loading and retry without losing the query", async 
   // Query cancellation may abort the browser request, so observe the network
   // fixture's delivery, not a response event that an aborted fetch cannot emit.
   await oldDelivered;
+  expect(oldFulfillError).toBeUndefined();
   await expect(search).toHaveValue("");
   await expect(page.getByTestId("invoices-table")).toBeVisible();
   await expect(page.getByTestId(`invoice-open-${fixture.invoiceNumber}`)).toHaveAttribute("href", `/invoices/${fixture.id}`);
   await expect(page.getByTestId("invoices-empty")).toHaveCount(0);
+  await page.unroute("**/api/rpc/invoicesList");
+
+  // A late matching response must not replace a newer no-match result.
+  let releaseMatching: (() => void) | undefined;
+  let matchingRouteEntered = false;
+  let matchingFetchSucceeded = false;
+  let matchingDelivered = false;
+  let matchingRouteError: unknown;
+  const matchingHeld = new Promise<void>(resolve => { releaseMatching = resolve; });
+  await page.route("**/api/rpc/invoicesList", async route => {
+    if (!route.request().postData()?.includes("FIXTURE-ISO-A")) {
+      await route.continue();
+      return;
+    }
+    matchingRouteEntered = true;
+    try {
+      const response = await route.fetch();
+      matchingFetchSucceeded = true;
+      await matchingHeld;
+      await route.fulfill({ response });
+    } catch (error) {
+      matchingRouteError = error;
+    } finally {
+      matchingDelivered = true;
+    }
+  });
+  try {
+    await search.fill("FIXTURE-ISO-A");
+    await expect.poll(() => matchingRouteEntered).toBe(true);
+    expect(matchingFetchSucceeded).toBe(true);
+    await searchAndAck(page, search, "newer-no-match-405");
+    await expect(page.getByTestId("invoices-empty")).toBeVisible();
+    releaseMatching?.();
+    await expect.poll(() => matchingDelivered).toBe(true);
+    expect(matchingRouteError).toBeUndefined();
+    await expect(page.getByTestId("invoices-empty")).toBeVisible();
+    await expect(page.getByTestId("invoice-row")).toHaveCount(0);
+  } finally {
+    releaseMatching?.();
+  }
 });

@@ -32,7 +32,7 @@ type Row = {
 };
 
 /** every request the page made, in order, so apply-then-clear is provable */
-let requests: Array<{ kind?: string; status?: string; limit?: number; offset?: number }> = [];
+let requests: Array<{ search?: string; kind?: string; status?: string; limit?: number; offset?: number }> = [];
 
 const allInvoices: Row[] = [
   { id: "inv-1", invoiceNumber: "INV-0001", kind: "SALE", status: "UNPAID", counterpartyName: "زبون", invoiceDate: "2026-08-01", totalAmount: 1000, remainingAmount: 1000 },
@@ -40,6 +40,7 @@ const allInvoices: Row[] = [
 ];
 /** the seeded rows are restored after every test; the empty-state specs mutate them */
 const seedInvoices: Row[] = [...allInvoices];
+let refreshGate: Promise<void> | undefined;
 
 // stub the whole seam + Link (rendered as a plain anchor) so the page is
 // testable without a network or a router mount, matching returns.test.tsx
@@ -55,16 +56,20 @@ mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesList: {
       // SAFETY: mirror the real tanstack-query utils signature ({ input })
-      queryOptions: ({ input }: { input: { kind?: "SALE" | "PURCHASE"; status?: Status; limit?: number; offset?: number } }) => ({
+      queryOptions: ({ input }: { input: { search?: string; kind?: "SALE" | "PURCHASE"; status?: Status; limit?: number; offset?: number } }) => ({
         queryKey: ["invoicesList", input],
         queryFn: async () => {
           requests.push(input);
-          const items = allInvoices.filter(
+          await refreshGate;
+          const filtered = allInvoices.filter(
             (row) =>
+              (input.search === undefined || row.invoiceNumber.includes(input.search)) &&
               (input.kind === undefined || row.kind === input.kind) &&
               (input.status === undefined || row.status === input.status),
           );
-          return { items, total: items.length };
+          const offset = input.offset ?? 0;
+          const items = filtered.slice(offset, offset + (input.limit ?? filtered.length));
+          return { items, total: filtered.length };
         },
       }),
     },
@@ -82,6 +87,7 @@ beforeEach(() => {
   allInvoices.length = 0;
   allInvoices.push(...seedInvoices);
   requests = [];
+  refreshGate = undefined;
 });
 
 afterEach(() => {
@@ -104,7 +110,7 @@ const waitFor = async (predicate: () => boolean) => {
   throw new Error("condition not met within timeout");
 };
 
-async function mountPage() {
+async function mountPage(waitForInitialData = true) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -117,11 +123,13 @@ async function mountPage() {
       </QueryClientProvider>,
     );
   });
-  await waitFor(
-    () =>
-      container.querySelector("[data-testid='invoices-table']") !== null ||
-      container.querySelector("[data-testid='invoices-empty']") !== null,
-  );
+  if (waitForInitialData) {
+    await waitFor(
+      () =>
+        container.querySelector("[data-testid='invoices-table']") !== null ||
+        container.querySelector("[data-testid='invoices-empty']") !== null,
+    );
+  }
   return {
     rows: () => Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='invoice-row']")),
     numbers: () =>
@@ -133,8 +141,82 @@ async function mountPage() {
     emptyPurchaseAction: () => container.querySelector<HTMLElement>("[data-testid='invoices-empty-action-purchase']"),
     kindFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-kind-filter']"),
     statusFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-status-filter']"),
+    loading: () => container.querySelector('[role="status"]'),
+    search: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-search']"),
+    nextPage: () => container.querySelector<HTMLButtonElement>("[data-testid='invoices-pager-next']"),
   };
 }
+
+function setNativeValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+describe("InvoicesPage search", () => {
+  it("resets pagination with the debounced query, not on the first keystroke", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(...Array.from({ length: 12 }, (_, index) => ({
+      id: `search-page-${index}`,
+      invoiceNumber: `INV-SEARCH-${String(index).padStart(4, "0")}`,
+      kind: "SALE" as const,
+      status: "UNPAID" as const,
+      counterpartyName: null,
+      invoiceDate: "2026-08-01",
+      totalAmount: 100,
+      remainingAmount: 100,
+    })));
+    const page = await mountPage();
+    await act(async () => page.nextPage()?.click());
+    await waitFor(() => requests.at(-1)?.offset === 10 && page.numbers().length === 2);
+    const beforeSearch = requests.length;
+
+    await act(async () => setNativeValue(page.search()!, "SEARCH-0001"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(requests).toHaveLength(beforeSearch);
+    expect(requests.at(-1)?.offset).toBe(10);
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 125)); });
+    await waitFor(() => requests.at(-1)?.search === "SEARCH-0001");
+    expect(requests).toHaveLength(beforeSearch + 1);
+    expect(requests.at(-1)?.offset).toBe(0);
+    await waitFor(() => page.numbers().join() === "INV-SEARCH-0001");
+  });
+
+  it("debounces and trims search while retaining rows during refresh", async () => {
+    const page = await mountPage();
+    let release: (() => void) | undefined;
+    refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const beforeSearch = requests.length;
+      await act(async () => setNativeValue(page.search()!, "  INV-0002  "));
+      expect(requests).toHaveLength(beforeSearch);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+      await waitFor(() => requests.at(-1)?.search === "INV-0002");
+      expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesLoading"));
+    } finally {
+      await act(async () => release?.());
+      refreshGate = undefined;
+      await waitFor(() => page.numbers().join() === "INV-0002" && page.loading() === null);
+    }
+  });
+
+  it("offers a clear action when search alone has no matches", async () => {
+    const page = await mountPage();
+    const search = page.search()!;
+    await act(async () => setNativeValue(search, "missing-invoice"));
+    await waitFor(() => requests.at(-1)?.search === "missing-invoice" && page.empty() !== null);
+
+    expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
+    expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 2 && page.loading() === null);
+    expect(search.value).toBe("");
+    expect(document.activeElement).toBe(search);
+    expect(requests.at(-1)?.search).toBeUndefined();
+  });
+});
 
 describe("InvoicesPage filters", () => {
   it("sends no filter initially, then narrows by kind and clears it again", async () => {
@@ -150,11 +232,20 @@ describe("InvoicesPage filters", () => {
     expect(requests.at(-1)?.kind).toBe("SALE");
     expect(page.numbers()).toEqual(["INV-0001"]);
 
-    // clear through the empty-valued "All" option: the parameter must disappear
-    await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterAll"));
-    await waitFor(() => page.numbers().length === 2);
-    expect(requests.at(-1)?.kind).toBeUndefined();
-    expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+    // Returning to a cached key must announce refresh without hiding its rows.
+    let release: (() => void) | undefined;
+    refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterAll"));
+      await waitFor(() => page.numbers().length === 2);
+      expect(requests.at(-1)?.kind).toBeUndefined();
+      expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesLoading"));
+    } finally {
+      await act(async () => release?.());
+      refreshGate = undefined;
+    }
+    await waitFor(() => page.loading() === null);
   });
 
   it("narrows by payment status and clears it again", async () => {

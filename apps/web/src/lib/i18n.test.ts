@@ -280,6 +280,23 @@ describe("every router refusal stays translatable (issue #113)", () => {
   });
 });
 
+describe("defensive router refusals keep specific Arabic copy (#339)", () => {
+  const expected = [
+    ["INVOICE_ID_REQUIRED", "INVOICE_ID_REQUIRED", "اختر الفاتورة التي تخصّها الدفعة."],
+    ["RETURN_SHAPE_INVALID", "RETURN_DETAILS_INVALID", "بيانات المرجوع غير مكتملة. حدّد فاتورة وأسطرها، أو منتجاً وكمية ومبلغاً."],
+    ["OPENING_BALANCE_ROW_INVALID", "OPENING_BALANCE_ROW_INVALID", "اختر مورّداً موجوداً أو أدخل اسم مورّد جديد."],
+  ] as const;
+
+  it("maps each refused input shape to its own copy", () => {
+    for (const [code, key, copy] of expected) {
+      expect(serverErrorKey(code), `${code} lost its named key`).toBe(key);
+      expect(tError(code), `${code} lost its specific copy`).toBe(copy);
+      expect(copy).toMatch(/[\u0600-\u06FF]/);
+    }
+    expect(new Set(expected.map(([, , copy]) => copy)).size).toBe(expected.length);
+  });
+});
+
 describe("party labels (issue 120)", () => {
   it("labels an invoice's party with the canonical زبون/مورّد pair", () => {
     expect(i18n.t("invoiceParty")).toContain("الزبون");

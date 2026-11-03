@@ -2,7 +2,7 @@
 
 ## Scope
 
-Four `apps/api` production files that carry an `oxlint.config.ts` override for
+Four `apps/api` production files initially carried an `oxlint.config.ts` override for
 `typescript/no-non-null-assertion`:
 
 - `apps/api/src/rpc/router.ts`
@@ -10,24 +10,29 @@ Four `apps/api` production files that carry an `oxlint.config.ts` override for
 - `apps/api/src/lib/stock-posting.ts`
 - `apps/api/src/lib/vault/reclaim-retry.ts`
 
-Nothing else. No `apps/web`, no `*.test.ts` override, no `packages/`, `scripts/`,
-`tests/`, `tools/`.
+The overrides for `port-record.ts`, `stock-posting.ts`, and `reclaim-retry.ts`
+have since been removed. `router.ts` still has its override. #339 remains a
+partial burn-down.
+
+The final API slice also includes the defensive refusal-copy repair and its tests in
+`apps/web/src/lib/i18n.ts` and `apps/web/src/lib/i18n.test.ts`. No other
+`apps/web` files, no `*.test.ts` override, no `packages/`, `scripts/`, `tests/`,
+or `tools/`.
 
 ## Measure
 
-The override count in `oxlint.config.ts`: **75 → 71**. A file loses its override
+At the #339 baseline (`e601939`), `oxlint.config.ts` had **75** per-file overrides.
+Current HEAD has **72**, so three have been removed. The `router.ts` override
+remains. This is progress, not completion of #339. A file loses its override
 only in the same commit that leaves it genuinely clean — the rule then protects
 it for good.
 
 ## Review tier
 
-**Standard.** The intended change is a type-level narrowing, not a behaviour
-change: every value the assertions guarded was already proven present by the
-surrounding code, and the rewrite makes the proof visible to the compiler.
-
-**Escalation:** if an assertion turns out to hide a value that can really be
-absent at runtime, the fix is an explicit refusal plus a test, and that case is
-**High-assurance** (money math for `stock-posting.ts`).
+**High-assurance.** This slice touches sale and purchase posting, FIFO stock
+snapshots, and weighted-average cache updates. A bad item resolution could post
+stock against the wrong item or valuation; type-level narrowing does not lower
+that write-path risk.
 
 ## Public interfaces
 
@@ -62,10 +67,11 @@ None added. No new package, no new module, no new seam.
 
 ## Risks
 
-1. **The rewrite changes behaviour.** The parsers and the retry schedule have
-   edge cases (an empty IPv6 half, a single-spec posting batch, a schedule
-   that is exhausted). The existing tests pin them; a silent change would show
-   up there.
+1. **The retry schedule is a construction-time snapshot.** Mutating the
+   caller's array before `start()` or after a timer is armed does not change the
+   cadence. An empty schedule still fails at construction. Runtime retuning is
+   not supported; it would need an explicit API. Tests pin both mutation points,
+   cap repetition, and cancellation.
 2. **An assertion was load-bearing.** Then the "honest fix" is a refusal, not a
    cast, and the refusal needs a test that is red on the parent.
 3. **Router.ts is 2410 lines with 31 assertions.** It is taken in batches, one

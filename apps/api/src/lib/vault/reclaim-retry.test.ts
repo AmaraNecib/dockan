@@ -287,7 +287,7 @@ describe("vault reclaim retry (#277)", () => {
     expect(clock.pending()).toBe(0);
   });
 
-  it("refuses a schedule with no interval instead of waiting zero milliseconds", () => {
+  it("keeps an armed retry when the caller empties its schedule", () => {
     const clock = fakeScheduler();
     const backoff = [10];
     const retry = new ReclaimRetry({
@@ -298,13 +298,50 @@ describe("vault reclaim retry (#277)", () => {
       cancel: clock.cancel,
     });
 
-    // the caller empties the array it handed over: the constructor checked it
-    // once, and every tick reads it again
+    retry.start();
+    expect(clock.delays).toEqual([10]);
+    // A mutation after start must not make the timer callback throw before it
+    // can re-arm. The one-entry schedule repeats its last interval.
     backoff.length = 0;
 
-    expect(() => retry.start()).toThrow("the reclaim backoff has no interval to wait");
-    // and nothing was armed: a zero wait would spin the reclaim loop as fast
-    // as the event loop allows
+    expect(() => clock.fireNext()).not.toThrow();
+    expect(clock.delays).toEqual([10, 10]);
+    expect(clock.pending()).toBe(1);
+    expect(retry.taken).toBe(false);
+  });
+
+  it("snapshots the backoff before start, ignoring later caller mutation", () => {
+    const clock = fakeScheduler();
+    const backoff = [10];
+    const retry = new ReclaimRetry({
+      attempt: () => ({ ok: false }),
+      onAcquired: () => {},
+      backoffMs: backoff,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    backoff.length = 0;
+    retry.start();
+    expect(clock.delays).toEqual([10]);
+    expect(() => clock.fireNext()).not.toThrow();
+    expect(clock.delays).toEqual([10, 10]);
+    expect(clock.pending()).toBe(1);
+  });
+
+  it("rejects an empty backoff schedule at construction", () => {
+    const clock = fakeScheduler();
+
+    expect(
+      () =>
+        new ReclaimRetry({
+          attempt: () => ({ ok: false }),
+          onAcquired: () => {},
+          backoffMs: [],
+          schedule: clock.schedule,
+          cancel: clock.cancel,
+        }),
+    ).toThrow("the reclaim backoff must have at least one interval");
     expect(clock.delays).toEqual([]);
     expect(clock.pending()).toBe(0);
   });

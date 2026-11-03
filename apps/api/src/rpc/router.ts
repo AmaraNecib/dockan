@@ -1410,9 +1410,14 @@ export function createRpcRouter(deps: RpcDeps) {
         // resolution is the first thing inside the unit.
         return deps.store.withTransaction(async (tx) => {
         const itemsById = await tx.getItemsByIds(input.lines.map((line) => line.itemId));
-        for (const line of input.lines) {
-          if (!itemsById.has(line.itemId)) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
-        }
+        // resolve every line's item ONCE, here: a line that names an item that
+        // does not exist refuses now, and the rest of the handler never has to
+        // prove the item is still there
+        const pricedLines = input.lines.map((line) => {
+          const item = itemsById.get(line.itemId);
+          if (item === undefined) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+          return { line, item };
+        });
         // identity integrity (issue 120): a picked party must exist AND belong
         // to the invoice's role. Without this a stale picker id (party deleted
         // in another tab) or a wrong-role id would silently land as an orphan
@@ -1432,22 +1437,18 @@ export function createRpcRouter(deps: RpcDeps) {
             (input.discountType !== undefined && input.discountValue !== undefined
               ? { type: input.discountType, value: input.discountValue }
               : undefined);
-          const totals = calculateSaleTotals(
-            input.lines.map((line) => {
-              const item = itemsById.get(line.itemId)!;
-              return {
-                quantity: line.quantity,
-                price: {
-                  defaultUnitPrice: item.sellingPrice,
-                  unitPrice: line.unitPrice,
-                  priceOverride: line.priceOverride,
-                  priceOverrideType: line.priceOverrideType,
-                  priceOverrideValue: line.priceOverrideValue,
-                },
-              };
-            }),
-            discount,
-          );
+          const saleCalculationInputs = pricedLines.map(({ line, item }) => ({
+            quantity: line.quantity,
+            price: {
+              defaultUnitPrice: item.sellingPrice,
+              unitPrice: line.unitPrice,
+              priceOverride: line.priceOverride,
+              priceOverrideType: line.priceOverrideType,
+              priceOverrideValue: line.priceOverrideValue,
+            },
+            source: { line, item },
+          }));
+          const totals = calculateSaleTotals(saleCalculationInputs, discount);
           const paidAmount = input.initialPaid ?? 0;
           if (paidAmount > totals.totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
           const invoiceDate = input.invoiceDate ?? localDate();
@@ -1477,11 +1478,8 @@ export function createRpcRouter(deps: RpcDeps) {
               notes: input.notes ?? null,
             });
             const insertedLines: InvoiceDetail["lines"] = [];
-            for (const [index, line] of input.lines.entries()) {
-              // SAFETY: every itemId was resolved in itemsById at the start of
-              // this unit, and the map is immutable while it runs.
-              const item = itemsById.get(line.itemId)!;
-              const calculated = totals.lines[index]!;
+            for (const calculated of totals.lines) {
+              const { line, item } = calculated.input.source;
               // The seam owns the FIFO snapshot for the SALE, validation, the
               // movement insert and the cache resync; an explicit invoice date
               // bounds the movement time inside it. The line stamps costAtSale
@@ -1535,7 +1533,7 @@ export function createRpcRouter(deps: RpcDeps) {
         }
         // Existing purchase intake behavior: omitted line prices default to the
         // item's cost because purchase prices are the stock cost basis.
-        const totalAmount = input.lines.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? itemsById.get(line.itemId)!.costPrice), 0);
+        const totalAmount = pricedLines.reduce((sum, { line, item }) => sum + line.quantity * (line.unitPrice ?? item.costPrice), 0);
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
         const invoiceDate = input.invoiceDate ?? localDate();
@@ -1560,10 +1558,7 @@ export function createRpcRouter(deps: RpcDeps) {
             notes: input.notes ?? null,
           });
           const insertedLines: InvoiceDetail["lines"] = [];
-          for (const line of input.lines) {
-            // SAFETY: every itemId was resolved in itemsById at the start of
-            // this unit, and the map is immutable while it runs.
-            const item = itemsById.get(line.itemId)!;
+          for (const { line, item } of pricedLines) {
             const unitCost = line.unitPrice ?? item.costPrice;
             // For PURCHASE, the line price is the cost basis feeding ADR-0002.
             const inserted = await tx.insertInvoiceLine({

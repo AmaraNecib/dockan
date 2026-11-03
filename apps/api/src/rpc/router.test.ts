@@ -4102,6 +4102,59 @@ describe("returns & refunds", () => {
     expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(100);
   });
 
+  it("rolls back an inserted batch movement when a later scrap insert fails", async () => {
+    const item = await makeReturnItem("مرجوع-تراجع-دفعة", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1 }, { itemId: item.id, quantity: 1 }],
+    });
+    const created = await client.returnsCreate({
+      invoiceId: sale.id,
+      lines: sale.lines.map((line) => ({ invoiceLineId: line.id, quantity: 1 })),
+    });
+    const beforeHistory = await client.itemsHistory({ itemId: item.id });
+    const beforeItem = (await client.itemsAll()).items.find((row) => row.id === item.id);
+    const beforeActivities = (await store.listActivities({ limit: MAX_PAGE_SIZE })).items
+      .filter((activity) => activity.type === "RETURN_REVIEWED" && activity.ref === created.id);
+    let movementInsertAttempts = 0;
+    let firstMovementInserted = false;
+
+    const failingStore: StorePort = {
+      ...store,
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransactionImmediate((tx: StorePort) =>
+          fn({
+            ...tx,
+            insertStockMovement: async (input) => {
+              movementInsertAttempts += 1;
+              if (movementInsertAttempts === 2) throw new Error("second-scrap-insert-boom");
+              const inserted = await tx.insertStockMovement(input);
+              firstMovementInserted = true;
+              return inserted;
+            },
+          }),
+        ),
+    };
+
+    await expect(clientForStore(failingStore).returnsReject({ returnId: created.id, reason: "تلف" })).rejects.toThrow();
+    expect(movementInsertAttempts).toBe(2);
+    expect(firstMovementInserted).toBe(true);
+
+    const afterHistory = await client.itemsHistory({ itemId: item.id });
+    const afterItem = (await client.itemsAll()).items.find((row) => row.id === item.id);
+    const afterReturn = await client.returnsGet({ returnId: created.id });
+    const afterActivities = (await store.listActivities({ limit: MAX_PAGE_SIZE })).items
+      .filter((activity) => activity.type === "RETURN_REVIEWED" && activity.ref === created.id);
+    expect(afterHistory.movements).toEqual(beforeHistory.movements);
+    expect(afterHistory.stockOnHand).toBe(beforeHistory.stockOnHand);
+    expect(afterItem?.stockOnHand).toBe(beforeItem?.stockOnHand);
+    expect(afterItem?.costPrice).toBe(beforeItem?.costPrice);
+    expect(afterReturn.status).toBe("PENDING_REVIEW");
+    expect(afterReturn.reason).toBe(created.reason);
+    expect(afterActivities).toEqual(beforeActivities);
+  });
+
   it("reject after some units were resold clamps the removal to available stock and never blocks the review", async () => {
     // returned goods are salable immediately; by review time some may be gone
     const item = await makeReturnItem("مرجوع-إعادة-بيع", 100, 300);

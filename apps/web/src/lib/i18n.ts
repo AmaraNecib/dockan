@@ -602,6 +602,7 @@ const resources = {
       ITEM_NOT_ON_INVOICE: "المنتج ليس على هذه الفاتورة",
       INVOICE_NOT_FOUND: "الفاتورة غير موجودة",
       INVOICE_NOT_PURCHASE: "التصحيح يشترط فاتورة شراء",
+      INVOICE_ID_REQUIRED: "اختر الفاتورة التي تخصّها الدفعة.",
       LINE_NOT_FOUND: "سطر الفاتورة غير موجود",
       PAID_EXCEEDS_TOTAL: "المبلغ المدفوع يتجاوز الإجمالي",
       DISCOUNT_ONLY_SALE: "الخصم متاح لفواتير البيع فقط",
@@ -799,6 +800,7 @@ const resources = {
       RETURN_EXCEEDS_RETURNABLE: "الكمية تتجاوز المتبقي القابل للإرجاع",
       RETURN_NOT_PENDING: "المرجوع سبق أن قُورض",
       RETURN_LINE_NOT_RETURNABLE: "هذا السطر لا يمكن إرجاعه",
+      RETURN_DETAILS_INVALID: "بيانات المرجوع غير مكتملة. حدّد فاتورة وأسطرها، أو منتجاً وكمية ومبلغاً.",
       REFUND_SPLIT_INVALID: "المبلغ النقدي يتجاوز قيمة المرجوع",
       RETURN_DEBT_OFFSET_REFUSED: "تعذر خصم الدين — المبلغ غير متاح",
       // #256 round 2 — both round-1 refusals are answered, so the app never
@@ -1102,6 +1104,7 @@ const resources = {
       ADJUSTMENT_NOT_TRANSACTIONAL: "تعذّر حفظ التسوية؛ أعد المحاولة",
       DUPLICATE_ADJUSTMENT: "سبق تسجيل هذه التسوية بنفس السبب والتاريخ",
       SUPPLIER_ENTRY_UNSIGNABLE: "حركة في حساب مورّد واحد على الأقل لا يمكن ترجيحها، فلا يمكن حساب الرصيد. راجع سجل المورّد وأصلح الحركة التي لا يمكن ترجيحها.",
+      OPENING_BALANCE_ROW_INVALID: "اختر مورّداً موجوداً أو أدخل اسم مورّد جديد.",
       DUPLICATE_OPENING_BALANCE_ROW: "هذا المورّد مكرّر في الدفعة بنفس المبلغ والاتجاه",
       OPENING_BALANCE_EXISTS: "لهذا المورّد حركات سابقة؛ أكّد قبل الإضافة",
       OPENING_BALANCE_TARGET_CHANGED: "تغيّرت وجهة الاسم؛ تحقّق من المورّد المذكور حديثاً قبل التأكيد",
@@ -1216,7 +1219,10 @@ const RETIRED_UNEXPECTED_KEYS = new Set(["UNEXPECTED", "unexpected"]);
  * resource entry (the UI validates the same rule inline, so both paths must
  * render the same sentence).
  */
-const SERVER_ERROR_ALIASES = new Map<string, MessageKey>([["INVALID_PARTY_PHONE", "partyPhoneInvalid"]]);
+const SERVER_ERROR_ALIASES = new Map<string, MessageKey>([
+  ["INVALID_PARTY_PHONE", "partyPhoneInvalid"],
+  ["RETURN_SHAPE_INVALID", "RETURN_DETAILS_INVALID"],
+]);
 
 /**
  * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, SETUP_LOCKED, …).

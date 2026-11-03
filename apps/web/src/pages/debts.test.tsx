@@ -182,21 +182,24 @@ describe("DebtsPage (ticket 9)", () => {
   });
 
   it("offers role-specific Details beside each expansion control, never by legacy name (#407)", async () => {
-    owedToUs = [summary({ counterpartyId: "customer-407" }), summary({ counterpartyName: "اسم قديم" })];
-    weOwe = [summary({ kind: "PURCHASE", counterpartyId: "supplier-407", counterpartyName: "مورد" })];
+    owedToUs = [summary({ counterpartyId: "customer-407" }), summary({ counterpartyName: "اسم قديم" }), summary({ counterpartyId: "", counterpartyName: "هوية فارغة" })];
+    weOwe = [summary({ kind: "PURCHASE", counterpartyId: "supplier-407", counterpartyName: "مورد" }), summary({ kind: "PURCHASE", counterpartyId: "", counterpartyName: "هوية مورد فارغة" })];
     const ui = await mountPage(queryClient);
-    expect(await ui.waitFor(() => ui.personButtons().length === 3)).toBe(true);
-    const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('[data-testid="debts-person-details"]'));
-    expect(links).toHaveLength(2);
-    expect(links.map((link) => link.getAttribute("href"))).toEqual(["/customers/$partyId?partyId=customer-407", "/suppliers/$partyId?partyId=supplier-407"]);
-    for (const link of links) {
-      expect(link.textContent).toBe("تفاصيل");
-      expect(link.closest("button")).toBeNull();
+    try {
+      expect(await ui.waitFor(() => ui.personButtons().length === 5)).toBe(true);
+      const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('[data-testid="debts-person-details"]'));
+      expect(links).toHaveLength(2);
+      expect(links.map((link) => link.getAttribute("href"))).toEqual(["/customers/$partyId?partyId=customer-407", "/suppliers/$partyId?partyId=supplier-407"]);
+      for (const link of links) {
+        expect(link.textContent).toBe("تفاصيل");
+        expect(link.closest("button")).toBeNull();
+      }
+      await act(async () => ui.personButtons()[0]?.click());
+      expect(ui.personButtons()[0]?.getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelectorAll('[data-testid="debts-person-details"]')).toHaveLength(2);
+    } finally {
+      await ui.unmount();
     }
-    await act(async () => ui.personButtons()[0]?.click());
-    expect(ui.personButtons()[0]?.getAttribute("aria-expanded")).toBe("true");
-    expect(document.querySelectorAll('[data-testid="debts-person-details"]')).toHaveLength(2);
-    await ui.unmount();
   });
 
   it("renders both debt directions with per-person totals and invoice counts", async () => {

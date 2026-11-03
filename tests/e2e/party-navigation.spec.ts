@@ -7,8 +7,8 @@ import { callRpc, seedCategoryId } from "./rpc-helpers";
 
 const evidence = process.env.DOKAN_NAV_EVIDENCE;
 test.use({
-  viewport: { width: 1280, height: 800 },
-  video: evidence ? { mode: "on", size: { width: 1280, height: 800 } } : "off",
+  viewport: evidence ? { width: 1920, height: 1080 } : { width: 1280, height: 800 },
+  video: evidence ? { mode: "on", size: { width: 1920, height: 1080 } } : "off",
 });
 
 async function capture(locator: Locator, name: string): Promise<void> {
@@ -25,7 +25,7 @@ for (const role of ["customer", "supplier"] as const) {
     const listPath = role === "customer" ? "/customers" : "/suppliers";
     const createProcedure = role === "customer" ? "customersCreate" : "suppliersCreate";
     const getProcedure = role === "customer" ? "customersGet" : "suppliersGet";
-    const name = `${role === "customer" ? "زبون" : "مورد"} تفاصيل ${Date.now()}`;
+    const name = `${role === "customer" ? "زبون" : "مورد"} تفاصيل Mixed account ${Date.now()}`;
     const categoryId = await seedCategoryId(page, `تنقل ${Date.now()}`);
     // SAFETY: the public create contract returns the saved item's stable id.
     const item = await callRpc<{ id: string }, ItemCreate & { stockOnHand: number }>(page, "itemsCreateWithStock", {
@@ -87,8 +87,22 @@ for (const role of ["customer", "supplier"] as const) {
       await expect(edit).toBeFocused();
       const unchanged = await callRpc<PartyDetail, { id: string }>(page, getProcedure, { id: party.id });
       expect(unchanged.party.name).toBe(name);
-      await details.focus();
+      await page.keyboard.press("Shift+Tab");
       await expect(details).toBeFocused();
+      await page.keyboard.press("Shift+Tab");
+      await expect(row.getByTestId("party-row-link")).toBeFocused();
+      await page.keyboard.press("Tab");
+      await expect(details).toBeFocused();
+      const popupPromise = page.context().waitForEvent("page", { timeout: 10_000 });
+      await details.click({ modifiers: ["ControlOrMeta"] });
+      const popup = await popupPromise;
+      try {
+        await expect(popup).toHaveURL(`${listPath}/${party.id}`);
+        await expect(popup.getByTestId("party-detail-name")).toHaveText(name);
+        await expect(page).toHaveURL(listPath);
+      } finally {
+        await popup.close();
+      }
       await details.press("Enter");
       await expect(page).toHaveURL(`${listPath}/${party.id}`);
       await expect(page.getByTestId("party-detail-name")).toHaveText(name);
@@ -96,7 +110,18 @@ for (const role of ["customer", "supplier"] as const) {
       await expect(page.getByTestId("party-invoices")).toContainText(linked.invoiceNumber);
       await page.getByTestId("party-tab-payments").click();
       const history = page.getByTestId(role === "customer" ? "party-payments" : "supplier-account-entries");
-      await expect(history).toContainText("100");
+      const linkedRows = history.getByRole("row").filter({ has: page.locator(`a[href="/invoices/${linked.id}"]`) });
+      if (role === "customer") {
+        await expect(linkedRows).toHaveCount(1);
+        await expect(linkedRows.getByRole("cell").nth(2)).toHaveText("100 دج");
+        await expect(linkedRows.getByRole("cell").nth(3)).toHaveText("نقداً");
+      } else {
+        const payment = linkedRows.filter({ has: page.getByTestId("supplier-entry-kind-PAYMENT") });
+        await expect(payment).toHaveCount(1);
+        await expect(payment.getByTestId("supplier-entry-kind-PAYMENT")).toHaveText("دفعة");
+        await expect(payment.getByTestId("supplier-entry-amount")).toHaveText("+ 100 دج");
+      }
+      await expect(history.locator(`a[href="/invoices/${legacy.id}"]`)).toHaveCount(0);
       await page.getByTestId("party-tab-invoices").click();
       await page.getByTestId("party-invoices").getByRole("link", { name: linked.invoiceNumber, exact: true }).click();
       await expect(page.getByTestId("invoice-page")).toBeVisible();
@@ -119,10 +144,16 @@ for (const role of ["customer", "supplier"] as const) {
         return { button: button?.getBoundingClientRect().x, link: link?.getBoundingClientRect().x };
       });
       expect(geometry.link).toBeLessThan(geometry.button ?? 0);
-      await expand.click();
+      await expand.focus();
+      await page.keyboard.press("Enter");
       await expect(debtRow.getByTestId("debts-invoices")).toContainText(linked.invoiceNumber);
       await expect(expand).toHaveAttribute("aria-expanded", "true");
-      await debtDetails.focus();
+      await page.keyboard.press("Tab");
+      await expect(debtDetails).toBeFocused();
+      await page.keyboard.press("Shift+Tab");
+      await expect(expand).toBeFocused();
+      await page.keyboard.press("Tab");
+      await expect(debtDetails).toBeFocused();
       await debtDetails.press("Enter");
       await expect(page).toHaveURL(`${listPath}/${party.id}`);
       await expect(page.getByTestId("party-detail-name")).toHaveText(name);
@@ -154,6 +185,31 @@ for (const role of ["customer", "supplier"] as const) {
         await details.click();
         await expect(page).toHaveURL(`${listPath}/${party.id}`);
       }
+
+      const originalViewport = page.viewportSize();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(listPath);
+      await details.scrollIntoViewIfNeeded();
+      await expect(details).toBeInViewport();
+      await expect(edit).toBeInViewport();
+      const narrowPlacement = await row.evaluate((element) => {
+        const detailsLink = element.querySelector('[data-testid="party-row-details"]');
+        const editButton = element.querySelector('[data-testid="party-row-edit"]');
+        if (!detailsLink || !editButton) throw new Error("party actions missing");
+        const detailsBox = detailsLink.getBoundingClientRect();
+        const editBox = editButton.getBoundingClientRect();
+        return { editRight: editBox.right, detailsLeft: detailsBox.left };
+      });
+      expect(narrowPlacement.editRight).toBeLessThanOrEqual(narrowPlacement.detailsLeft);
+      await details.click();
+      await expect(page).toHaveURL(`${listPath}/${party.id}`);
+      await page.goto("/debts");
+      await debtDetails.scrollIntoViewIfNeeded();
+      await expect(debtDetails).toBeInViewport();
+      await expect(expand).toBeInViewport();
+      await debtDetails.click();
+      await expect(page).toHaveURL(`${listPath}/${party.id}`);
+      if (originalViewport) await page.setViewportSize(originalViewport);
     } finally {
       // Restore the shared suite's debt totals even when a UI assertion fails.
       for (const invoice of invoices) {

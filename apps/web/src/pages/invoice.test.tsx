@@ -566,16 +566,23 @@ describe("InvoicePage account navigation (#407)", () => {
     });
   }
 
-  it("keeps a typed-only legacy name readable without a guessed link", async () => {
-    await renderPage({ ...makeInvoice(900), counterpartyId: null, counterpartyName: "اسم مكرر" });
-    expect(host.querySelector('[data-testid="invoice-party"]')?.textContent).toBe("اسم مكرر");
-    expect(host.querySelector('[data-testid="invoice-party"] a')).toBeNull();
-  });
-
-  it("offers a readable account action even when the stored name is absent", async () => {
-    await renderPage({ ...makeInvoice(900), counterpartyId: "party-407", counterpartyName: null });
-    expect(host.querySelector('[data-testid="invoice-party"] a')?.textContent).toBe("تفاصيل");
-  });
+  for (const [kind, role] of [["SALE", "customers"], ["PURCHASE", "suppliers"]] as const) {
+    for (const counterpartyId of [null, ""]) {
+      it(`keeps ${kind} legacy text unlinked with identity ${JSON.stringify(counterpartyId)}`, async () => {
+        await renderPage({ ...makeInvoice(900), kind, counterpartyId, counterpartyName: "اسم مكرر" });
+        expect(host.querySelector('[data-testid="invoice-party"]')?.textContent).toBe("اسم مكرر");
+        expect(host.querySelector('[data-testid="invoice-party"] a')).toBeNull();
+      });
+    }
+    for (const counterpartyName of [null, "", "   ", "\u200e\u200f\u061c"]) {
+      it(`offers ${kind} account navigation for blank name ${JSON.stringify(counterpartyName)}`, async () => {
+        await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName });
+        const link = host.querySelector<HTMLAnchorElement>('[data-testid="invoice-party"] a');
+        expect(link?.textContent).toBe("تفاصيل");
+        expect(link?.getAttribute("href")).toBe(`/${role}/$partyId?partyId=party-407`);
+      });
+    }
+  }
 });
 
 describe("InvoicePage notes (issue #126)", () => {

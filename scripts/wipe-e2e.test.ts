@@ -22,7 +22,7 @@ type Run = { code: number; out: string };
 function runWipe(cwd: string, e2eDataDir: string): Promise<Run> {
   return new Promise((resolve) => {
     let out = "";
-    const child = spawn(process.execPath, [WIPE_SCRIPT], {
+    const child = spawn("node", [WIPE_SCRIPT], {
       cwd,
       env: { ...process.env, E2E_DATA_DIR: e2eDataDir },
       stdio: ["ignore", "pipe", "pipe"],
@@ -67,6 +67,49 @@ describe("wipe-e2e: the data dir the script agrees to delete", () => {
       expect(intact).toBe(true);
     } finally {
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("Node CLI cleans in-worktree data but refuses a final symlink to source", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-internal-link-"));
+    const worktree = join(fixture, "worktree");
+    const contracts = join(worktree, "packages", "contracts");
+    try {
+      mkdirSync(contracts, { recursive: true });
+      const ordinaryData = makeDataDir(join(worktree, "ordinary"));
+      const ordinaryRun = await runWipe(worktree, "ordinary/.e2e-data");
+      expect(ordinaryRun.code).toBe(0);
+      expect(existsSync(join(ordinaryData, "takes", "records.db"))).toBe(false);
+
+      const sentinel = join(contracts, "source.ts");
+      writeFileSync(sentinel, "contract source");
+      symlinkSync(contracts, join(worktree, ".e2e-data"), process.platform === "win32" ? "junction" : "dir");
+
+      const run = await runWipe(worktree, ".e2e-data");
+      expect(run.code).toBe(1);
+      expect(run.out).toContain("refusing");
+      expect(existsSync(sentinel)).toBe(true);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses an in-worktree symlink ancestor and preserves its target", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-internal-ancestor-"));
+    const worktree = join(fixture, "worktree");
+    const contracts = join(worktree, "packages", "contracts");
+    try {
+      mkdirSync(contracts, { recursive: true });
+      const dataDir = makeDataDir(contracts);
+      const sentinel = join(dataDir, "takes", "records.db");
+      symlinkSync(contracts, join(worktree, "alias"), process.platform === "win32" ? "junction" : "dir");
+
+      const run = await runWipe(worktree, "alias/.e2e-data");
+      expect(run.code).toBe(1);
+      expect(run.out).toContain("refusing");
+      expect(existsSync(sentinel)).toBe(true);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
     }
   });
 
@@ -128,18 +171,25 @@ describe("wipe-e2e: the data dir the script agrees to delete", () => {
     expect(intact).toBe(true);
   });
 
-  test("refuses a traversal step that resolves outside the working directory", async () => {
-    // cwd = WALLET/wd; `..` resolves to WALLET, outside this command's
-    // working directory but inside the test-owned fixture.
-    mkdirSync(WALLET, { recursive: true }); // a prior test's cleanup may have taken it
-    const wd = mkdtempSync(join(WALLET, "wd-"));
-    writeFileSync(join(WALLET, "sentinel.db"), "keep me");
-    const run = await runWipe(wd, "..");
-    const intact = existsSync(join(WALLET, "sentinel.db"));
-    rmSync(WALLET, { recursive: true, force: true });
-    expect(run.code).toBe(1);
-    expect(run.out).toContain("refusing");
-    expect(intact).toBe(true);
+  test("refuses a traversal target outside the working directory and preserves it", async () => {
+    // Keep the target outside cwd but separate from cwd's ancestors. The old
+    // script deletes the disposable target, without deleting its own cwd while
+    // the child process and test runner still need it.
+    const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-traversal-"));
+    const wd = join(fixture, "worktree");
+    const outside = join(fixture, "outside");
+    mkdirSync(wd);
+    mkdirSync(outside);
+    const dataDir = makeDataDir(outside);
+    const sentinel = join(dataDir, "takes", "records.db");
+    try {
+      const run = await runWipe(wd, "../outside/.e2e-data");
+      expect(run.code).toBe(1);
+      expect(run.out).toContain("refusing");
+      expect(existsSync(sentinel)).toBe(true);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   afterAll(() => {

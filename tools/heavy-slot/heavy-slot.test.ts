@@ -31,6 +31,7 @@ import {
   TASKKILL_TIMEOUT_MS,
   cancellationBudgetRemaining,
   setTaskkillRunnerForTest,
+  setCancellationTimerForTest,
   taskkillTree,
   unusableBanner,
   writeBase,
@@ -1016,6 +1017,119 @@ describe("heavy-slot", () => {
     expect(freed).toBe(true);
   }, 15000);
 
+  test.skipIf(process.platform === "win32")("a POSIX wrapper that ignores SIGTERM is killed before its slot is released", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    const pidFile = join(dir, "ignoring-wrapper.pid");
+    const command = `echo $$ > "${pidFile}"; trap '' TERM; exec sleep 30`;
+    let runDone = false;
+    let runPromise: Promise<number> | undefined;
+    let pid: number | undefined;
+    try {
+      runPromise = run("ignore-term", command).finally(() => { runDone = true; });
+      for (const deadline = Date.now() + 5000; Date.now() < deadline && !existsSync(pidFile); ) await sleep(25);
+      expect(existsSync(pidFile)).toBe(true);
+      pid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+
+      process.emit("SIGINT");
+      const result = await runPromise;
+      expect(result).toBe(1);
+      expect(runDone).toBe(true);
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch (error) {
+        alive = !(error instanceof Error && "code" in error && error.code === "ESRCH");
+      }
+      expect(alive).toBe(false);
+    } finally {
+      if (!runDone && runPromise) {
+        process.emit("SIGINT");
+        await runPromise;
+      }
+      if (pid !== undefined) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* the test process already stopped it */ }
+      }
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      resetBase();
+    }
+  }, 15000);
+
+  // This injected Windows run-path test verifies the kill order and timer budget,
+  // not that taskkill actually removed an OS process; the POSIX test above checks
+  // real signal behavior on hosts that support process groups.
+  test.skipIf(process.platform !== "win32")("run schedules forced kill before the cancellation deadline", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    const script = join(ROOT, `cancel-timer-${process.pid}-${Date.now()}.mjs`);
+    const pidFile = join(dir, "cancel-fixture.pid");
+    const callbacks: { delay: number; callback: () => void }[] = [];
+    const killCalls: string[] = [];
+    let probe: "present" | "absent" = "present";
+    let runDone = false;
+    let runPromise: Promise<number> | undefined;
+    let pid: number | undefined;
+    try {
+      writeFileSync(script, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
+      setTaskkillRunnerForTest(() => {
+        killCalls.push(`taskkill-${killCalls.length + 1}`);
+        return { status: 0 };
+      });
+      setProcessProbeForTest(() => probe);
+      setCancellationTimerForTest((callback, delay) => {
+        callbacks.push({ callback, delay });
+        return setTimeout(() => {}, 60_000);
+      });
+
+      runPromise = run("cancel-deadline", `"${process.execPath}" "${script}"`).finally(() => { runDone = true; });
+      for (const deadline = Date.now() + 5000; Date.now() < deadline && !existsSync(pidFile); ) await sleep(25);
+      expect(existsSync(pidFile)).toBe(true);
+      pid = Number(readFileSync(pidFile, "utf8").trim());
+      process.emit("SIGINT");
+
+      expect(callbacks).toHaveLength(2);
+      const forcedKillDelay = callbacks[0]?.delay;
+      const deadlineDelay = callbacks[1]?.delay;
+      if (forcedKillDelay === undefined || deadlineDelay === undefined) {
+        throw new Error("run must schedule both forced kill and final cancellation timers");
+      }
+      expect(deadlineDelay - forcedKillDelay).toBe(TASKKILL_TIMEOUT_MS);
+      expect(forcedKillDelay).toBeLessThan(deadlineDelay);
+      expect(deadlineDelay).toBeLessThanOrEqual(10_000);
+      expect(killCalls).toEqual(["taskkill-1"]);
+      callbacks[0]?.callback();
+      expect(killCalls).toEqual(["taskkill-1", "taskkill-2"]);
+      probe = "absent";
+      callbacks[1]?.callback();
+      expect(await runPromise).toBe(1);
+      expect(runDone).toBe(true);
+    } finally {
+      probe = "absent";
+      if (!runDone && runPromise) {
+        process.emit("SIGINT");
+        callbacks[callbacks.length - 1]?.callback();
+        await runPromise;
+      }
+      if (pid !== undefined) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* fixture already exited */ }
+      }
+      setCancellationTimerForTest(null);
+      setProcessProbeForTest(null);
+      setTaskkillRunnerForTest(null);
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      rmSync(script, { force: true });
+      resetBase();
+    }
+  }, 15000);
+
   test("a cancelled run's tree is confirmed dead before the slot could release", async () => {
     // The same spawn shape run() uses: a wrapper shell whose pid is the group
     // leader (POSIX, detached), and a real descendant beneath it that a plain
@@ -1045,10 +1159,9 @@ describe("heavy-slot", () => {
   // runner itself being killed leaves the fixture running - and it used to live
   // forever (issue #342: two bun.exe children from this very test were still
   // serving their sockets ~20 hours later, gripping a port and a cwd whose tree
-  // the parent had already stripped). A bounded lifetime plus a pid file the
-  // launcher can delete close both ends: the fixture dies by itself at its TTL
-  // even when nothing ever cleans up, and dies within a poll interval when the
-  // launcher removes the pid file.
+  // the parent had already stripped). A bounded lifetime plus a unique shutdown
+  // file close both ends: the fixture dies by itself at its TTL even when no
+  // cleanup runs, and exits after the launcher creates the shutdown file.
   test("the grandchild fixture dies by itself at its time-to-live", async () => {
     const port = (await chooseFreeBase(TEST_BASE + 5 * BASE_STRIDE, 4)) ?? TEST_BASE;
     const script = join(ROOT, `gc-ttl-${process.pid}-${Date.now()}.mjs`);
@@ -1094,7 +1207,7 @@ describe("heavy-slot", () => {
       writeFileSync(script, buildGcFixtureScript(port, { ttlMs: 60000, pidFile, shutdownFile }));
       child = spawn(process.execPath, [script], { stdio: "ignore" });
       // The fixture writes its own pid on boot; wait until it has actually done so
-      // before deleting, so the signal cannot race the write.
+      // before signaling shutdown, so cleanup does not race fixture startup.
       let wrote = false;
       for (const deadline = Date.now() + 3000; Date.now() < deadline && !wrote; ) {
         wrote = existsSync(pidFile);

@@ -9,9 +9,9 @@
  * outlived every `finally` it had. Two self-owned death paths close that, and
  * neither weakens what the cancel test verifies:
  *
- * - the pid file: the fixture writes its OWN pid on boot and exits when the
- *   launcher deletes the file. The test's `finally` deletes it, so an early
- *   throw between launch and cancel still cleans up on the runner's side.
+ * - the shutdown file: the fixture polls for this unique signal and exits when
+ *   the launcher creates it. The pid file only records ownership; deleting it
+ *   does not stop the fixture. The test's `finally` creates the shutdown file.
  * - the TTL: a killed runner runs no cleanup at all, so the fixture carries a
  *   clock of its own and is gone within the TTL no matter who forgot about it.
  *

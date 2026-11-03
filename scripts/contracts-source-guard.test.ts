@@ -236,7 +236,6 @@ describe("contracts source pre-commit guard", () => {
     }
   });
 
-  // red-on-parent-waive: "refuses a worktree symlink with a regular index mode" — this host cannot create file symlinks, so the capability control is intentionally green on the parent; capable hosts still exercise the guard below
   test("refuses a worktree symlink with a regular index mode", () => {
     if (!FILE_SYMLINK_SUPPORTED) {
       expect(FILE_SYMLINK_SUPPORTED).toBe(false);

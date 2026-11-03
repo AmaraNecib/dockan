@@ -841,6 +841,8 @@ const realTaskkillRunner: TaskkillRunner = (pid, options) => {
   return { status: result.status, error: result.error ?? undefined };
 };
 let taskkillRunner = realTaskkillRunner;
+type CancellationTimer = (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
+let cancellationTimer: CancellationTimer = (callback, delay) => globalThis.setTimeout(callback, delay);
 let processProbe = (pid: number): "present" | "absent" | "unknown" => {
   try {
     process.kill(pid, 0);
@@ -854,6 +856,11 @@ let processProbe = (pid: number): "present" | "absent" | "unknown" => {
 /** Replace the synchronous taskkill process in tests; null restores the OS runner. */
 export function setTaskkillRunnerForTest(impl: TaskkillRunner | null): void {
   taskkillRunner = impl ?? realTaskkillRunner;
+}
+
+/** Replace cancellation timers in run-path tests; null restores the real clock. */
+export function setCancellationTimerForTest(impl: CancellationTimer | null): void {
+  cancellationTimer = impl ?? ((callback, delay) => globalThis.setTimeout(callback, delay));
 }
 
 /** Inject the OS existence probe in tests; null restores process.kill(pid, 0). */
@@ -990,6 +997,7 @@ export async function run(label: string, command: string): Promise<number> {
   let cancelled = false;
   let cancelStartedAt: number | undefined;
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+  let escalationTimer: ReturnType<typeof setTimeout> | undefined;
   let settleCancellation: (() => void) | undefined;
   // Hoisted out of the promise so the handlers can be removed once the child is
   // gone: a library caller running several commands through run() would otherwise
@@ -1000,7 +1008,10 @@ export async function run(label: string, command: string): Promise<number> {
     cancelStartedAt = Date.now();
     if (child) killTree(child, "SIGTERM");
     const remaining = cancellationBudgetRemaining(cancelStartedAt);
-    cancelTimer = setTimeout(() => settleCancellation?.(), remaining);
+    escalationTimer = cancellationTimer(() => {
+      if (child && treeAlive(child)) killTree(child, "SIGKILL");
+    }, Math.max(0, remaining - TASKKILL_TIMEOUT_MS));
+    cancelTimer = cancellationTimer(() => settleCancellation?.(), remaining);
   };
   // SAFETY: process is an EventEmitter at runtime; bun's NodeJS.Process augmentation
   // declares off() only for its own "memoryPressure" event, which is what narrows the
@@ -1033,6 +1044,7 @@ export async function run(label: string, command: string): Promise<number> {
         if (settled) return;
         settled = true;
         if (cancelTimer !== undefined) clearTimeout(cancelTimer);
+        if (escalationTimer !== undefined) clearTimeout(escalationTimer);
         resolve(outcome);
       };
       settleCancellation = () => finish(1);
@@ -1077,6 +1089,7 @@ export async function run(label: string, command: string): Promise<number> {
     emitter.off("SIGINT", stop);
     emitter.off("SIGTERM", stop);
     if (cancelTimer !== undefined) clearTimeout(cancelTimer);
+    if (escalationTimer !== undefined) clearTimeout(escalationTimer);
     settleCancellation = undefined;
     release(slot);
     console.error(`[heavy-slot] slot ${slot.index} released, exit ${code}`);

@@ -1434,6 +1434,7 @@ export const returnsGetInputSchema = z.object({
 });
 
 export const invoiceListInputSchema = paginationInputSchema.extend({
+  search: z.string().trim().max(200).optional(),
   kind: invoiceKindSchema.optional(),
   /** UNPAID | PARTIAL | PAID — derived from remainingAmount */
   status: z.enum(["UNPAID", "PARTIAL", "PAID"]).optional(),

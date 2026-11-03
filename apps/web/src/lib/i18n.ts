@@ -616,6 +616,10 @@ const resources = {
       invoicesStatusUnpaid: "غير مدفوعة",
       invoicesStatusPartial: "مدفوعة جزئياً",
       invoicesStatusPaid: "مسدّدة بالكامل",
+      invoicesSearch: "بحث الفواتير",
+      invoicesSearchHint: "رقم الفاتورة أو اسم الصنف المسجّل في الفاتورة أو الباركود",
+      invoicesSearchClear: "مسح البحث",
+      invoicesLoading: "جارٍ تحميل الفواتير",
       invoicesEmpty: "لا توجد فواتير",
       invoicesEmptyHint: "تظهر هنا فواتير البيع والشراء بعد إنشائها.",
       invoicesEmptyFilteredHint: "لا توجد فواتير مطابقة للتصفية الحالية.",
@@ -1190,9 +1194,64 @@ const resources = {
       supplierOpeningRemovedDismiss: "فهمت، تابع الحفظ",
     },
   },
+  /**
+   * The type trade recorded for issue #331.
+   *
+   * `satisfies { ar: { translation: Record<string, string> } }` widens the
+   * resource values to `string`, so `t()` returns `string`. The property names
+   * still form an exact `MessageKey` union. Key construction and return typing
+   * are separate: widening values does not enable dynamic key construction.
+   *
+   * `as const` would preserve each Arabic literal and let i18next check
+   * interpolation names. The #322 catalogue had 66 interpolated keys. The saved
+   * #331 report says restoring `as const` produced 19 type errors across 8 files.
+   * Its reported breakdown was 14 numbers passed to unformatted, non-count
+   * placeholders typed as `string`, 4 plural-aware literal-return errors in
+   * `i18n.test.ts`, and 1 `t()` result widened into `useState`. This historical
+   * breakdown was not rerun here. It does not mean every interpolation value
+   * is a string; numeric `count` and formatter-specific values have their own
+   * types.
+   *
+   * Those rejects are fixable, so `as const` remains a viable alternative.
+   * Explicit `useState<string>(t(...))` or `let value: string` annotations fix
+   * literal-return narrowing; numeric placeholder arguments must also match
+   * their declared types. The trade is avoiding 19 reported typing fixes
+   * versus per-key option checking on the then-66 interpolated keys, not a
+   * requirement to widen the catalogue.
+   *
+   * The current catalogue has 67 property strings with `{{...}}` interpolations,
+   * counted from six-space-indented declarations. Comments and `<money/>`
+   * markers are not interpolation declarations. Runtime checks live in
+   * `i18n.test.ts`; they exercise dynamic-key families and real i18next
+   * interpolation, but do not replace per-key interpolation checking.
+   */
 } satisfies { ar: { translation: Record<string, string> } };
 
 export type MessageKey = keyof (typeof resources)["ar"]["translation"];
+
+/**
+ * The catalogue's keys as a VALUE, next to the same list as a type.
+ *
+ * `MessageKey` is a compile-time fact; this is the same list at run time, so
+ * a test can hold the catalogue and the loaded bundle side by side instead of
+ * asking the i18next instance about its own bundle (issue #331).
+ */
+export const CATALOGUE_KEYS =
+  // SAFETY: `Object.keys` types its result as `string[]`, and every key it
+  // returns here is a key of the catalogue literal this line reads — the type
+  // system cannot see that, so the assertion states it.
+  Object.keys(resources.ar.translation) as ReadonlyArray<MessageKey>;
+
+/**
+ * The narrow translator a view helper takes (issue #331).
+ *
+ * `TFunction` is i18next's whole surface — a namespace type, a set of
+ * overloads and about fifty members — and a helper that passes three literals
+ * and one `{ note }` needs none of it. This is the part it uses: the
+ * catalogue's key union, and the variables the copy interpolates. Narrowing it
+ * also lets a test stub `t` without importing i18next at all.
+ */
+export type Translate = (key: MessageKey, vars?: Record<string, string>) => string;
 
 /**
  * The translation surface is the catalogue (issue #322). Augmenting i18next's

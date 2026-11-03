@@ -44,7 +44,7 @@ import type {
   SupplierEntryKind,
   SupplierReturnRecord,
 } from "@dokan/contracts";
-import { MAX_EXPENSE_AMOUNT, ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
+import { MAX_EXPENSE_AMOUNT, arabicIncludes, foldArabic, ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SnapshotPersistenceError } from "../db/encrypted-connection";
 import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
@@ -2998,16 +2998,52 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (filters.toDate) conds.push(sql`${invoices.invoiceDate} <= ${filters.toDate}`);
       const where = conds.length ? and(...conds) : undefined;
 
+      const search = filters.search?.trim() ?? "";
+      const order = [desc(invoices.invoiceDate), desc(invoices.createdAt), desc(invoices.id)];
+      if (search !== "") {
+        // Keep the historical description. Only blank legacy names fall back to
+        // the linked item; barcodes have no line snapshot and use the current item.
+        const literalSearch = foldArabic(search) === "";
+        const loweredSearch = search.toLowerCase();
+        const matches = (text: string | null) => text !== null && (
+          literalSearch
+            ? text.toLowerCase().includes(loweredSearch)
+            : arabicIncludes(text, search)
+        );
+        const [rows, lines] = await Promise.all([
+          db.select(invoiceCols).from(invoices).where(where).orderBy(...order),
+          db.select({
+            invoiceId: invoiceLines.invoiceId,
+            description: invoiceLines.description,
+            currentName: items.name,
+            barcode: items.barcode,
+          }).from(invoiceLines)
+            .innerJoin(invoices, eq(invoiceLines.invoiceId, invoices.id))
+            .leftJoin(items, eq(invoiceLines.itemId, items.id))
+            .where(where),
+        ]);
+        const matchedIds = new Set(lines.filter(line =>
+          matches(line.description.trim() === "" ? line.currentName : line.description) || matches(line.barcode),
+        ).map(line => line.invoiceId));
+        // Filter once per invoice, not once per joined line, before count/window.
+        const found = rows.filter(row => matches(row.invoiceNumber) || matchedIds.has(row.id));
+        const pagination = resolvePagination(filters);
+        const window = filters.limit === undefined && filters.offset === undefined
+          ? found
+          : found.slice(pagination.offset, pagination.offset + pagination.limit);
+        return { items: window.map(row => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: found.length };
+      }
+
       // no pagination keys = an internal full read (tests, aggregates); a
       // concrete limit/offset comes from resolvePagination at the router
       if (filters.limit === undefined && filters.offset === undefined) {
-        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt));
+        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(...order);
         return { items: rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: rows.length };
       }
       const { limit, offset } = resolvePagination(filters);
       const [total, itemsRows] = await Promise.all([
         db.$count(invoices, where),
-        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(limit).offset(offset),
+        db.select(invoiceCols).from(invoices).where(where).orderBy(...order).limit(limit).offset(offset),
       ]);
       return {
         items: itemsRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),

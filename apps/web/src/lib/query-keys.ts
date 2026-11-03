@@ -28,3 +28,8 @@ export const PARTY_PAYMENTS_QUERY_KEY = [["partyPayments"]] as const;
 
 /** every supplier account-entries tab page result (issue 174) */
 export const SUPPLIER_ENTRIES_QUERY_KEY = [["supplierEntries"]] as const;
+
+/** local expense-correction recovery state, scoped further by the active session */
+export const EXPENSE_CORRECTION_RECOVERY_QUERY_KEY = ["expenseCorrectionRecovery"] as const;
+export const expenseCorrectionRecoveryQueryKey = (sessionScope: string) =>
+  [...EXPENSE_CORRECTION_RECOVERY_QUERY_KEY, sessionScope] as const;

@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react
 
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import { parseDateTimeText } from "../lib/dates";
+import { SessionCacheScopeProvider } from "../lib/session-query-scope";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
 import { focusedTestId } from "../tests/page-harness";
 
@@ -108,6 +109,8 @@ let correctionInputs: CorrectionInput[] = [];
 let undoInputs: UndoInput[] = [];
 let correctionFailuresRemaining = 0;
 let loseCorrectionResponse = false;
+let deferCorrectionResponses = false;
+let deferredCorrectionResponses: Array<() => void> = [];
 let correctionResults = new Map<string, ExpenseCorrection>();
 let loseUndoResponse = false;
 let undoResults = new Map<string, ExpenseCorrection>();
@@ -142,6 +145,7 @@ let listTotal = 0;
 /** makes the history read reject, so the error branch is distinguishable from empty */
 let listFails = false;
 let historyFails = false;
+let historyResponseOverride: ExpenseCorrectionHistory | null = null;
 let paginateByAmount = false;
 let failedListReads = 0;
 let lastReturnedIds: string[] = [];
@@ -238,6 +242,7 @@ mock.module("@/lib/rpc", () => ({
         queryKey: ["expenseCorrectionHistory", input.expenseId],
         queryFn: async (): Promise<ExpenseCorrectionHistory> => {
           if (historyFails) throw new Error("HISTORY_FAILED");
+          if (historyResponseOverride !== null) return historyResponseOverride;
           const stored = correctionHistories.get(input.expenseId);
           if (stored !== undefined) return stored;
           const row = listItems.find((entry) => entry.id === input.expenseId);
@@ -293,6 +298,11 @@ mock.module("@/lib/rpc", () => ({
           });
           listItems = listItems.map((row) => row.id === input.expenseId ? { ...row, effectiveAmount: input.amount, correctionCount: (row.correctionCount ?? 0) + 1 } : row);
           correctionResults.set(input.idempotencyKey, correction);
+          if (deferCorrectionResponses) {
+            return await new Promise<ExpenseCorrection>((resolve) => {
+              deferredCorrectionResponses.push(() => resolve(correction));
+            });
+          }
           if (loseCorrectionResponse) {
             loseCorrectionResponse = false;
             throw new Error("response lost after commit");
@@ -358,14 +368,16 @@ async function typeInto(input: HTMLInputElement | HTMLTextAreaElement, text: str
   });
 }
 
-async function mountPage(queryClient: QueryClient) {
+async function mountPage(queryClient: QueryClient, scopeId = "test-session") {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <ExpensesPage />
+        <SessionCacheScopeProvider scopeId={scopeId}>
+          <ExpensesPage />
+        </SessionCacheScopeProvider>
       </QueryClientProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -373,9 +385,12 @@ async function mountPage(queryClient: QueryClient) {
 
   const query = <T extends Element = HTMLElement>(testid: string) =>
     container.querySelector<T>(`[data-testid="${testid}"]`);
+  const queryAll = <T extends Element = HTMLElement>(testid: string) =>
+    container.querySelectorAll<T>(`[data-testid="${testid}"]`);
 
   return {
     query,
+    queryAll,
     text: () => container.textContent ?? "",
     selectValue: () => container.querySelector('[data-slot="select-value"]')?.textContent ?? "",
     type: async (testid: string, value: string) => {
@@ -1626,10 +1641,13 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     undoInputs = [];
     correctionFailuresRemaining = 0;
     loseCorrectionResponse = false;
+    deferCorrectionResponses = false;
+    deferredCorrectionResponses = [];
     correctionResults = new Map();
     loseUndoResponse = false;
     undoResults = new Map();
     historyFails = false;
+    historyResponseOverride = null;
     paginateByAmount = false;
     failedListReads = 0;
     lastReturnedIds = [];
@@ -1661,6 +1679,221 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(original.textContent).toContain("16/12/2019");
     expect(original.textContent).toContain(i18n.t("expenseActorUnknown"));
     expect(original.textContent).toContain("1,000");
+
+    await ui.unmount();
+  });
+
+  it.each(["correction", "undo"])("uses the acknowledged %s amount when both reads fail", async (action) => {
+    if (action === "undo") {
+      const priorCorrection: ExpenseCorrectionHistoryEntry = {
+        id: "correction-1",
+        expenseId: "exp-1",
+        effectiveAt: "2019-12-15T10:00:00",
+        recordedAt: "2026-10-28T13:34:56",
+        beforeAmount: 1_000,
+        afterAmount: 800,
+        difference: -200,
+        actorId: "actor-1",
+        actorName: "مالك المتجر",
+        reason: "receipt typo",
+        reversesCorrectionId: null,
+        reversedByCorrectionId: null,
+      };
+      correctionHistories.set("exp-1", {
+        original: { id: "exp-1", categoryId: "cat-1", amount: 1_000, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+        effectiveAmount: 800,
+        corrections: [priorCorrection],
+      });
+      listItems[0] = { ...listItems[0]!, effectiveAmount: 800, correctionCount: 1 };
+    }
+    const expectedAmount = action === "correction" ? 800 : 1_000;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-history") !== null)).toBe(true);
+
+    if (action === "correction") {
+      await ui.click("expense-correction-open-editor");
+      expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null)).toBe(true);
+      await ui.type("expense-correction-amount", String(expectedAmount));
+      listFails = true;
+      historyFails = true;
+      await ui.submit("expense-correction-form");
+      expect(await ui.waitFor(() => ui.query("expense-correction-saved") !== null && ui.query("expenses-history-error") !== null && ui.query("expense-correction-history-error") !== null)).toBe(true);
+    } else {
+      await ui.click("expense-correction-open-history");
+      expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+      await ui.click("expense-correction-undo");
+      listFails = true;
+      historyFails = true;
+      await ui.click("expense-correction-undo-confirm-button");
+      expect(await ui.waitFor(() => ui.query("expense-correction-saved") !== null && ui.query("expenses-history-error") !== null && ui.query("expense-correction-history-error") !== null)).toBe(true);
+    }
+
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).toBe(String(expectedAmount));
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+    expect(action === "correction" ? correctionInputs : undoInputs).toHaveLength(1);
+
+    await ui.unmount();
+  });
+
+  it("keeps an off-page acknowledgement after its notice is dismissed", async () => {
+    paginateByAmount = true;
+    listItems = [...listItems, ...Array.from({ length: 100 }, (_, index) => ({ ...listItems[0]!, id: `other-${index}`, note: "other expense", effectiveAmount: 900 }))];
+    listTotal = listItems.length;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await openSelect(ui.query("expense-sort-by")!);
+    await activateOption((await findOption(i18n.t("expensesSortByAmount")))!);
+    expect(await ui.waitFor(() => lastListInput?.sortBy === "amount" && queryClient.isFetching() === 0 && lastReturnedIds[0] === "exp-1")).toBe(true);
+
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null && ui.query("expense-correction-original") !== null)).toBe(true);
+    const staleHistory = queryClient.getQueryData<ExpenseCorrectionHistory>(["expenseCorrectionHistory", "exp-1"])!;
+    await ui.type("expense-correction-amount", "800");
+    loseCorrectionResponse = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && ui.query("expense-correction-error") !== null && !lastReturnedIds.includes("exp-1") && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-correction-history")).not.toBeNull();
+
+    queryClient.setQueryData(["expenseCorrectionHistory", "exp-1"], staleHistory);
+    listFails = true;
+    historyFails = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && ui.query("expense-correction-history-error") !== null && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-correction-saved")).not.toBeNull();
+    expect(lastReturnedIds).not.toContain("exp-1");
+    const acknowledgedRow = [...ui.queryAll<HTMLElement>("expense-row-note")].find((note) => note.textContent === "إيصال قديم")?.parentElement;
+    expect(acknowledgedRow?.querySelector('[data-testid="expense-row-effective-amount"]')?.getAttribute("data-value")).toBe("800");
+    const dismiss = ui.query<HTMLButtonElement>("expense-correction-dismiss")!;
+    expect(dismiss.getAttribute("aria-label")).toBe(i18n.t("expenseCorrectionDismiss"));
+    await ui.click("expense-correction-dismiss");
+    expect(ui.query("expense-correction-saved")).toBeNull();
+    expect(acknowledgedRow?.querySelector('[data-testid="expense-row-effective-amount"]')?.getAttribute("data-value")).toBe("800");
+    expect(acknowledgedRow?.querySelector<HTMLButtonElement>('[data-testid="expense-correction-open-editor"]')?.disabled).toBe(true);
+    expect(correctionInputs).toHaveLength(2);
+
+    await ui.unmount();
+  });
+
+  it("keeps the success notice after its acknowledged row leaves the sorted page", async () => {
+    paginateByAmount = true;
+    listItems = [...listItems, ...Array.from({ length: 100 }, (_, index) => ({ ...listItems[0]!, id: `other-${index}`, note: "other expense", effectiveAmount: 900 }))];
+    listTotal = listItems.length;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await openSelect(ui.query("expense-sort-by")!);
+    await activateOption((await findOption(i18n.t("expensesSortByAmount")))!);
+    expect(await ui.waitFor(() => lastListInput?.sortBy === "amount" && queryClient.isFetching() === 0 && lastReturnedIds[0] === "exp-1")).toBe(true);
+
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-original") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    loseCorrectionResponse = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && ui.query("expense-correction-error") !== null && !lastReturnedIds.includes("exp-1") && queryClient.isFetching() === 0)).toBe(true);
+
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && ui.query("expense-correction-saved") !== null && !lastReturnedIds.includes("exp-1") && queryClient.isFetching() === 0)).toBe(true);
+    expect([...ui.queryAll<HTMLElement>("expense-row-note")].some((note) => note.textContent === "إيصال قديم")).toBe(false);
+    expect(ui.query("expense-correction-saved")?.textContent).toBe(i18n.t("expenseCorrectionSaved"));
+
+    await ui.click("expense-correction-dismiss");
+    expect(ui.query("expense-correction-saved")).toBeNull();
+    expect(correctionInputs).toHaveLength(2);
+    await ui.unmount();
+  });
+
+  it("keeps an undo acknowledgement after its retried row leaves the sorted page without an editor", async () => {
+    const priorCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-1",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_200,
+      afterAmount: 800,
+      difference: -400,
+      actorId: "actor-1",
+      actorName: "مالك المتجر",
+      reason: "receipt typo",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      original: { id: "exp-1", categoryId: "cat-1", amount: 1_200, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+      effectiveAmount: 800,
+      corrections: [priorCorrection],
+    });
+    listItems[0] = { ...listItems[0]!, amount: 1_200, effectiveAmount: 800, correctionCount: 1 };
+    paginateByAmount = true;
+    listItems = [...listItems, ...Array.from({ length: 100 }, (_, index) => ({ ...listItems[0]!, id: `other-${index}`, effectiveAmount: 900 }))];
+    listTotal = listItems.length;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-history") !== null)).toBe(true);
+    await openSelect(ui.query("expense-sort-dir")!);
+    await activateOption((await findOption(i18n.t("expensesSortAsc")))!);
+    await openSelect(ui.query("expense-sort-by")!);
+    await activateOption((await findOption(i18n.t("expensesSortByAmount")))!);
+    expect(await ui.waitFor(() => lastListInput?.sortBy === "amount" && lastListInput.sortDir === "asc" && queryClient.isFetching() === 0 && lastReturnedIds[0] === "exp-1")).toBe(true);
+    await ui.click("expense-correction-open-history");
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    await ui.click("expense-correction-undo");
+    loseUndoResponse = true;
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 1 && ui.query("expense-correction-undo-confirm") !== null && !lastReturnedIds.includes("exp-1") && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-correction-form")).toBeNull();
+
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 2 && ui.query("expense-correction-history") === null && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-correction-saved")).not.toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("renders the correction difference sign inside the Amount figures isolate", async () => {
+    const priorCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-1",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: "actor-1",
+      actorName: "مالك المتجر",
+      reason: "receipt typo",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      original: { id: "exp-1", categoryId: "cat-1", amount: 1_000, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+      effectiveAmount: 800,
+      corrections: [priorCorrection],
+    });
+    listItems[0] = { ...listItems[0]!, effectiveAmount: 800, correctionCount: 1 };
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-history") !== null)).toBe(true);
+    await ui.click("expense-correction-open-history");
+    expect(await ui.waitFor(() => ui.query("expense-correction-difference") !== null)).toBe(true);
+    const figures = ui.query("expense-correction-difference")?.querySelector('[data-testid="money-figures"]');
+    expect(figures?.textContent).toContain("−");
+
+    await ui.unmount();
+  });
+
+  it("re-expands history from Correct without replacing the active draft", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    await ui.type("expense-correction-reason", "keep this draft");
+    await ui.click("expense-correction-open-history");
+    expect(ui.query("expense-correction-history")).toBeNull();
+    expect(ui.query("expense-correction-form")).toBeNull();
+
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-history") !== null && ui.query("expense-correction-form") !== null)).toBe(true);
+    expect(ui.query<HTMLInputElement>("expense-correction-amount")?.value).toBe("800");
+    expect(ui.query<HTMLTextAreaElement>("expense-correction-reason")?.value).toBe("keep this draft");
 
     await ui.unmount();
   });
@@ -1753,6 +1986,436 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(correctionInputs[1]).toEqual(correctionInputs[0]);
     expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(1);
     expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(800);
+    await ui.unmount();
+  });
+
+  it.each(["history", "list"] as const)("keeps the newer amount when a replay arrives with stale %s data", async (staleRead) => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    loseCorrectionResponse = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && ui.query("expense-correction-error") !== null && queryClient.isFetching() === 0)).toBe(true);
+    const firstKey = correctionInputs[0]!.idempotencyKey;
+
+    const firstHistory = correctionHistories.get("exp-1")!;
+    const laterCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-2",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:40:00",
+      beforeAmount: 800,
+      afterAmount: 900,
+      difference: 100,
+      actorId: "actor-2",
+      actorName: "مالك المتجر",
+      reason: "second verified amount",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      ...firstHistory,
+      effectiveAmount: 900,
+      corrections: [...firstHistory.corrections, laterCorrection],
+    });
+    if (staleRead === "history") {
+      historyResponseOverride = firstHistory;
+      listItems = [{ ...listItems[0]!, effectiveAmount: 900, correctionCount: 2 }];
+    }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
+    if (staleRead === "list") {
+      await ui.click("expense-correction-open-history");
+      await ui.click("expense-correction-open-history");
+    }
+    expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "900")).toBe(true);
+
+    // The unchanged draft retries the first request with its original key.
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && queryClient.isFetching() === 0)).toBe(true);
+    expect(correctionInputs[1]?.idempotencyKey).toBe(firstKey);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(2);
+    expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(900);
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).toBe("900");
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).not.toBe("800");
+
+    await ui.unmount();
+  });
+
+  it("requires a post-ack history read before a cached replay can reconcile current money", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null && ui.query("expense-correction-original") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+
+    loseCorrectionResponse = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && ui.query("expense-correction-error") !== null && queryClient.isFetching() === 0)).toBe(true);
+    const firstInput = correctionInputs[0]!;
+    const firstHistory = correctionHistories.get("exp-1")!;
+    const laterCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-2",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:40:00",
+      beforeAmount: 800,
+      afterAmount: 900,
+      difference: 100,
+      actorId: "actor-2",
+      actorName: "مالك المتجر",
+      reason: "other session correction",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      ...firstHistory,
+      effectiveAmount: 900,
+      corrections: [...firstHistory.corrections, laterCorrection],
+    });
+    listItems = [{ ...listItems[0]!, effectiveAmount: 900, correctionCount: 2 }];
+    listFails = true;
+    historyFails = true;
+
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && ui.query("expenses-history-error") !== null && ui.query("expense-correction-history-error") !== null && queryClient.isFetching() === 0)).toBe(true);
+    expect(correctionInputs[1]?.idempotencyKey).toBe(firstInput.idempotencyKey);
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).toBe("800");
+    expect(ui.query("expense-correction-amount-unverified")).not.toBeNull();
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+
+    listFails = false;
+    historyFails = false;
+    await ui.click("expense-correction-amount-retry");
+    expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "900")).toBe(true);
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(false);
+    expect(ui.queryAll("expense-correction-entry")).toHaveLength(2);
+
+    await ui.unmount();
+  });
+
+  it("does not let a delayed correction acknowledgement replace an undo acknowledgement", async () => {
+    deferCorrectionResponses = true;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null && ui.query("expense-correction-original") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && deferredCorrectionResponses.length === 1)).toBe(true);
+
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
+    await ui.click("expense-correction-open-history");
+    await ui.click("expense-correction-open-history");
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).toBe("800");
+
+    listFails = true;
+    historyFails = true;
+    await ui.click("expense-correction-undo");
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 1 && ui.query("expense-correction-history-error") !== null && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).toBe("1000");
+
+    await act(async () => {
+      deferredCorrectionResponses[0]!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).not.toBe("800");
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("restores an off-page acknowledgement after unmount without sharing it across sessions", async () => {
+    paginateByAmount = true;
+    const originalExpense = listItems[0]!;
+    listItems = [...listItems, ...Array.from({ length: 100 }, (_, index) => ({ ...originalExpense, id: `other-${index}`, note: "other expense", effectiveAmount: 900 }))];
+    listTotal = listItems.length;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await openSelect(ui.query("expense-sort-by")!);
+    await activateOption((await findOption(i18n.t("expensesSortByAmount")))!);
+    expect(await ui.waitFor(() => lastListInput?.sortBy === "amount" && queryClient.isFetching() === 0 && lastReturnedIds[0] === "exp-1")).toBe(true);
+
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null && ui.query("expense-correction-original") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    listFails = true;
+    historyFails = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => ui.query("expense-correction-saved") !== null && ui.query("expenses-history-error") !== null && ui.query("expense-correction-history-error") !== null)).toBe(true);
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+
+    await ui.click("expense-correction-dismiss");
+    expect(ui.query("expense-correction-saved")).toBeNull();
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+    listFails = false;
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
+    expect(await ui.waitFor(() => lastReturnedIds[0] !== "exp-1" && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-row-note")?.textContent).toBe("إيصال قديم");
+
+    listItems = [];
+    listTotal = 0;
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
+    expect(ui.query("expense-row-note")?.textContent).toBe("إيصال قديم");
+    await ui.unmount();
+
+    const remounted = await mountPage(queryClient);
+    expect(await remounted.waitFor(() => remounted.query("expense-row-note")?.textContent === "إيصال قديم")).toBe(true);
+    expect(remounted.query("expense-correction-saved")).toBeNull();
+    expect(remounted.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+    await remounted.click("expense-correction-open-history");
+    expect(await remounted.waitFor(() => remounted.query("expense-correction-history-error") !== null)).toBe(true);
+    expect(remounted.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+    await remounted.unmount();
+
+    const otherSession = await mountPage(queryClient, "another-session");
+    expect(await otherSession.waitFor(() => queryClient.isFetching() === 0)).toBe(true);
+    expect(otherSession.query("expense-row-note")).toBeNull();
+    await otherSession.unmount();
+
+    const recovered = await mountPage(queryClient);
+    expect(await recovered.waitFor(() => recovered.query("expense-row-note")?.textContent === "إيصال قديم")).toBe(true);
+    expect(recovered.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+
+    const firstHistory = correctionHistories.get("exp-1")!;
+    const laterCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-2",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:40:00",
+      beforeAmount: 800,
+      afterAmount: 900,
+      difference: 100,
+      actorId: "actor-2",
+      actorName: "مالك المتجر",
+      reason: "other session correction",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", { ...firstHistory, effectiveAmount: 900, corrections: [...firstHistory.corrections, laterCorrection] });
+    listItems = [{ ...originalExpense, effectiveAmount: 900, correctionCount: 2 }];
+    listTotal = 1;
+    historyFails = false;
+    await recovered.click("expense-correction-amount-retry");
+    expect(await recovered.waitFor(() => recovered.query("expense-row-effective-amount")?.getAttribute("data-value") === "900")).toBe(true);
+    expect(recovered.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(false);
+
+    await recovered.unmount();
+  });
+
+  it.each([false, true])("fails closed for three interposed events when responses arrive in order %s", async (laterResponseFirst) => {
+    deferCorrectionResponses = true;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null && ui.query("expense-correction-original") !== null)).toBe(true);
+    await ui.type("expense-correction-amount", "800");
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && deferredCorrectionResponses.length === 1)).toBe(true);
+
+    const firstHistory = correctionHistories.get("exp-1")!;
+    const interposedCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-2",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:40:00",
+      beforeAmount: 800,
+      afterAmount: 900,
+      difference: 100,
+      actorId: "actor-2",
+      actorName: "مالك المتجر",
+      reason: "other session correction",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", { ...firstHistory, effectiveAmount: 900, corrections: [...firstHistory.corrections, interposedCorrection] });
+    listItems = [{ ...listItems[0]!, effectiveAmount: 900, correctionCount: 2 }];
+    await ui.type("expense-correction-amount", "700");
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && deferredCorrectionResponses.length === 2)).toBe(true);
+    expect(correctionInputs[0]?.amount).toBe(800);
+    expect(correctionInputs[1]?.amount).toBe(700);
+
+    listFails = true;
+    historyFails = true;
+    const responseIndexes = laterResponseFirst ? [1, 0] : [0, 1];
+    for (const index of responseIndexes) {
+      await act(async () => {
+        deferredCorrectionResponses[index]!();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(await ui.waitFor(() => ui.query("expenses-history-error") !== null && ui.query("expense-correction-history-error") !== null && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-row-effective-amount")?.hasAttribute("data-value")).toBe(false);
+    expect(ui.query("expense-correction-amount-unverified")).not.toBeNull();
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+
+    listFails = false;
+    historyFails = false;
+    await ui.click("expense-correction-amount-retry");
+    expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "700")).toBe(true);
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(false);
+    expect(ui.queryAll("expense-correction-entry")).toHaveLength(3);
+
+    await ui.unmount();
+  });
+
+  it("does not choose the list amount when list and history counts tie but money conflicts", async () => {
+    const correction: ExpenseCorrectionHistoryEntry = {
+      id: "correction-1",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: "actor-1",
+      actorName: "مالك المتجر",
+      reason: "first correction",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      original: { id: "exp-1", categoryId: "cat-1", amount: 1_000, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+      effectiveAmount: 800,
+      corrections: [correction],
+    });
+    listItems[0] = { ...listItems[0]!, effectiveAmount: 900, correctionCount: 1 };
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-history") !== null)).toBe(true);
+    await ui.click("expense-correction-open-history");
+    expect(await ui.waitFor(() => ui.query("expense-correction-entry") !== null)).toBe(true);
+    expect(ui.query("expense-row-effective-amount")?.hasAttribute("data-value")).toBe(false);
+    expect(ui.query("expense-correction-amount-conflict")).not.toBeNull();
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+
+    listItems[0] = { ...listItems[0]!, effectiveAmount: 800, correctionCount: 1 };
+    await ui.click("expense-correction-amount-conflict-retry");
+    expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "800")).toBe(true);
+    expect(ui.query("expense-correction-amount-conflict")).toBeNull();
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(false);
+
+    await ui.unmount();
+  });
+
+  it("keeps the later correction when concurrent responses arrive out of order", async () => {
+    deferCorrectionResponses = true;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    expect(await ui.waitFor(() => ui.query("expense-correction-form") !== null && ui.query("expense-correction-original") !== null)).toBe(true);
+
+    await ui.type("expense-correction-amount", "800");
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && deferredCorrectionResponses.length === 1)).toBe(true);
+    await ui.type("expense-correction-amount", "900");
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 2 && deferredCorrectionResponses.length === 2)).toBe(true);
+    expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(900);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(2);
+
+    listFails = true;
+    historyFails = true;
+    await act(async () => {
+      deferredCorrectionResponses[1]!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "900" && queryClient.isFetching() === 0)).toBe(true);
+    expect(ui.query("expense-correction-amount-unverified")).not.toBeNull();
+
+    await act(async () => {
+      deferredCorrectionResponses[0]!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(ui.query("expense-row-effective-amount")?.hasAttribute("data-value")).toBe(false);
+    expect(ui.query("expense-correction-amount-unverified")).not.toBeNull();
+    expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
+    expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(900);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(2);
+
+    listFails = false;
+    historyFails = false;
+    await ui.click("expense-correction-amount-retry");
+    expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "900")).toBe(true);
+    expect(correctionInputs).toHaveLength(2);
+
+    await ui.unmount();
+  });
+
+  it.each(["history", "list"] as const)("keeps the newer amount when an undo replay arrives with stale %s data", async (staleRead) => {
+    const correction: ExpenseCorrectionHistoryEntry = {
+      id: "correction-1",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: "actor-1",
+      actorName: "مالك المتجر",
+      reason: "first correction",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    const correctedHistory: ExpenseCorrectionHistory = {
+      original: { id: "exp-1", categoryId: "cat-1", amount: 1_000, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+      effectiveAmount: 800,
+      corrections: [correction],
+    };
+    correctionHistories.set("exp-1", correctedHistory);
+    listItems[0] = { ...listItems[0]!, effectiveAmount: 800, correctionCount: 1 };
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-history") !== null)).toBe(true);
+    await ui.click("expense-correction-open-history");
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    await ui.click("expense-correction-undo");
+    loseUndoResponse = true;
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 1 && ui.query("expense-correction-undo-confirm") !== null && queryClient.isFetching() === 0)).toBe(true);
+    const originalUndoKey = undoInputs[0]!.idempotencyKey;
+    const undoneHistory = correctionHistories.get("exp-1")!;
+    const laterCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-3",
+      expenseId: "exp-1",
+      effectiveAt: "2019-12-15T10:00:00",
+      recordedAt: "2026-10-28T13:45:00",
+      beforeAmount: 1_000,
+      afterAmount: 900,
+      difference: -100,
+      actorId: "actor-2",
+      actorName: "مالك المتجر",
+      reason: "later verified amount",
+      reversesCorrectionId: null,
+      reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      ...undoneHistory,
+      effectiveAmount: 900,
+      corrections: [...undoneHistory.corrections, laterCorrection],
+    });
+    if (staleRead === "history") {
+      historyResponseOverride = undoneHistory;
+      listItems[0] = { ...listItems[0]!, effectiveAmount: 900, correctionCount: 3 };
+    }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
+    if (staleRead === "list") {
+      listItems[0] = { ...listItems[0]!, effectiveAmount: 1_000, correctionCount: 2 };
+      await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
+      await ui.click("expense-correction-open-history");
+      await ui.click("expense-correction-open-history");
+    }
+    expect(await ui.waitFor(() => ui.query("expense-row-effective-amount")?.getAttribute("data-value") === "900")).toBe(true);
+
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 2 && queryClient.isFetching() === 0)).toBe(true);
+    expect(undoInputs[1]?.idempotencyKey).toBe(originalUndoKey);
+    expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(3);
+    expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(900);
+    expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).toBe("900");
+
     await ui.unmount();
   });
 

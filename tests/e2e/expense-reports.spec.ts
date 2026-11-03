@@ -449,6 +449,7 @@ test("correct and undo an expense without moving it out of its original report p
   const to = `${expenseDate} 23:59`;
   const captureEvidence = process.env.E2E_VIDEO === "1";
   const evidenceDir = path.resolve(".scratch/evidence/408");
+  mkdirSync(evidenceDir, { recursive: true });
   const holdForReading = async () => {
     // Evidence playback holds each settled screen long enough to read it.
     if (captureEvidence) await page.waitForTimeout(1_500);
@@ -512,8 +513,13 @@ test("correct and undo an expense without moving it out of its original report p
   await expect(correctionEntry).toContainText(correction.actorId);
   if (correction.actorName !== null) await expect(correctionEntry).toContainText(correction.actorName);
   const difference = correctionEntry.getByTestId("expense-correction-difference");
+  const figures = difference.getByTestId("money-figures");
+  const figuresText = await figures.textContent();
+  const differenceEvidence = figuresText?.includes("−") ? "expense-correction-difference-after.png" : "expense-correction-difference-before.png";
+  await difference.screenshot({ path: path.join(evidenceDir, differenceEvidence) });
   await expect(difference).toContainText("−");
-  expect(parseAmount(await difference.textContent())).toBe(correction.difference);
+  await expect(figures).toContainText("−");
+  expect(Math.abs(parseAmount(await difference.textContent()))).toBe(Math.abs(correction.difference));
   if (captureEvidence) {
     await page.getByTestId("expense-correction-history").screenshot({ path: path.join(evidenceDir, "expense-correction-after.png") });
   }

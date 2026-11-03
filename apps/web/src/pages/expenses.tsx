@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { MAX_EXPENSE_AMOUNT, type ExpenseCategory, type ExpenseCorrect, type ExpenseListItem, type ReportRangePreset } from "@dokan/contracts";
+import { MAX_EXPENSE_AMOUNT, type ExpenseCategory, type ExpenseCorrect, type ExpenseCorrection, type ExpenseCorrectionHistory, type ExpenseListItem, type ReportRangePreset } from "@dokan/contracts";
 import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
@@ -11,6 +11,8 @@ import { Pager } from "@/components/ui/pager";
 import { DateField } from "@/components/ui/date-field";
 import { inputClass } from "@/components/ui/input";
 import { focusByTestId } from "../lib/focus";
+import { expenseCorrectionRecoveryQueryKey } from "../lib/query-keys";
+import { useSessionCacheScope } from "../lib/session-query-scope";
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
 import { editDateBound, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTimeText, type DateBound } from "../lib/dates";
@@ -35,6 +37,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 const PRESET_KEYS: ReportRangePreset[] = ["24H", "7D", "28D", "30D", "CURRENT_MONTH", "3M", "6M", "CURRENT_YEAR", "LAST_YEAR", "CUSTOM"];
 
+type ExpenseCorrectionAcknowledgement = {
+  correction: ExpenseCorrection;
+  historyDataUpdateCountAtAck: number;
+};
+type ExpenseCorrectionRecovery = {
+  row: ExpenseListItem | null;
+  acknowledgements: ExpenseCorrectionAcknowledgement[];
+  notice: string | null;
+};
+type ExpenseCorrectionRecoveryStore = Record<string, ExpenseCorrectionRecovery>;
+const EMPTY_EXPENSE_CORRECTION_RECOVERY: ExpenseCorrectionRecovery = {
+  row: null,
+  acknowledgements: [],
+  notice: null,
+};
+
 function toPreset(value: string): ReportRangePreset {
   for (const preset of PRESET_KEYS) {
     if (value === preset) return preset;
@@ -47,11 +65,19 @@ function ExpenseCorrectionRow({
   categoryName,
   withdrawal,
   onRecoveryChange,
+  onAcknowledged,
+  onHistoryConfirmed,
+  onClearNotice,
+  recovery,
 }: {
   entry: ExpenseListItem;
   categoryName: string;
   withdrawal: boolean;
   onRecoveryChange: (entry: ExpenseListItem, active: boolean) => void;
+  onAcknowledged: (expenseId: string, entry: ExpenseListItem, correction: ExpenseCorrection, historyDataUpdateCountAtAck: number, notice: string) => void;
+  onHistoryConfirmed: (expenseId: string, history: ExpenseCorrectionHistory) => void;
+  onClearNotice: (expenseId: string) => void;
+  recovery: ExpenseCorrectionRecovery;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -61,66 +87,108 @@ function ExpenseCorrectionRow({
   const [draftReason, setDraftReason] = useState("");
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [historyActionError, setHistoryActionError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [undoConfirmationId, setUndoConfirmationId] = useState<string | null>(null);
   const correctionKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const undoKeysRef = useRef(new Map<string, string>());
+  const historyOptions = useMemo(
+    () => orpc.expenseCorrectionHistory.queryOptions({ input: { expenseId: entry.id } }),
+    [entry.id],
+  );
+  const history = useQuery({ ...historyOptions, enabled: expanded });
+  const historyDataUpdateCount = queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0;
+
+  const listCorrectionCount = entry.correctionCount ?? 0;
+  const historyCorrectionCount = history.data?.corrections.length ?? 0;
+  const pendingAcknowledgements = recovery.acknowledgements;
+  const pendingAcknowledgementSignature = pendingAcknowledgements.map((pending) => `${pending.correction.id}:${pending.historyDataUpdateCountAtAck}`).join("|");
+  const pendingAcknowledgementsInHistory = history.data !== undefined
+    && pendingAcknowledgements.length > 0
+    && pendingAcknowledgements.every((pending) => history.data?.corrections.some((event) => event.id === pending.correction.id) === true);
+  const amountConflict = history.data !== undefined
+    && historyCorrectionCount === listCorrectionCount
+    && history.data.effectiveAmount !== entry.effectiveAmount;
+  const unorderedAcknowledgements = pendingAcknowledgements.length > 1 && !pendingAcknowledgementsInHistory;
+  const latestKnownAmount = historyCorrectionCount > listCorrectionCount
+    ? history.data?.effectiveAmount ?? entry.effectiveAmount
+    : entry.effectiveAmount;
+  const effectiveAmount = amountConflict || unorderedAcknowledgements
+    ? undefined
+    : pendingAcknowledgements.length === 1 && !pendingAcknowledgementsInHistory
+      ? pendingAcknowledgements[0]?.correction.afterAmount
+      : latestKnownAmount;
+  const amountNeedsVerification = pendingAcknowledgements.length > 0;
+  const editingBlocked = amountConflict || amountNeedsVerification;
+
+  const refreshCorrectionHistory = useCallback(async () => {
+    await queryClient.cancelQueries({ queryKey: historyOptions.queryKey, exact: true });
+    try {
+      const freshHistory = await queryClient.fetchQuery({ ...historyOptions, staleTime: 0 });
+      onHistoryConfirmed(entry.id, freshHistory);
+    } catch {
+      // A failed read leaves every acknowledgement unresolved and edits blocked.
+    }
+  }, [entry.id, historyOptions, onHistoryConfirmed, queryClient]);
 
   useEffect(() => {
-    onRecoveryChange(entry, editing || undoConfirmationId !== null);
-  }, [entry, editing, undoConfirmationId, onRecoveryChange]);
+    const freshHistory = history.data;
+    if (!history.isSuccess || freshHistory === undefined || pendingAcknowledgements.length === 0) return;
+    const eventIds = new Set(freshHistory.corrections.map((event) => event.id));
+    const readStartedAfterEveryAck = pendingAcknowledgements.every(
+      (pending) => historyDataUpdateCount > pending.historyDataUpdateCountAtAck,
+    );
+    if (readStartedAfterEveryAck && pendingAcknowledgements.every((pending) => eventIds.has(pending.correction.id))) {
+      onHistoryConfirmed(entry.id, freshHistory);
+    }
+  }, [entry.id, history.data, historyDataUpdateCount, history.isSuccess, onHistoryConfirmed, pendingAcknowledgementSignature]);
 
-  const history = useQuery({
-    ...orpc.expenseCorrectionHistory.queryOptions({ input: { expenseId: entry.id } }),
-    enabled: expanded,
-  });
-
-  // Corrections and reversals are append-only. Only a history with more entries
-  // can supersede the list snapshot; an older cached history cannot roll it back.
-  const effectiveAmount = history.data !== undefined && history.data.corrections.length > entry.correctionCount
-    ? history.data.effectiveAmount
-    : entry.effectiveAmount;
+  useEffect(() => {
+    onRecoveryChange(entry, editing || undoConfirmationId !== null || amountNeedsVerification);
+  }, [entry, editing, undoConfirmationId, amountNeedsVerification, onRecoveryChange]);
 
   const correction = useMutation(
     orpc.expensesCorrect.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (savedCorrection) => {
         setEditing(false);
         setCorrectionError(null);
-        setNotice(t("expenseCorrectionSaved"));
+        onAcknowledged(entry.id, entry, savedCorrection, queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0, t("expenseCorrectionSaved"));
         correctionKeyRef.current = null;
         void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
       },
       onError: (error) => {
         setCorrectionError(tError(error.message));
         void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
       },
     }),
   );
 
   const undo = useMutation(
     orpc.expensesCorrectionUndo.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (savedUndo) => {
         setUndoConfirmationId(null);
         setHistoryActionError(null);
-        setNotice(t("expenseCorrectionUndoSaved"));
+        onAcknowledged(entry.id, entry, savedUndo, queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0, t("expenseCorrectionUndoSaved"));
         void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
       },
       onError: (error) => {
         setHistoryActionError(tError(error.message));
         void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
       },
     }),
   );
 
   function openCorrectionEditor(): void {
-    if (editing || correction.isPending) return;
     setExpanded(true);
+    if (editing || correction.isPending || editingBlocked) return;
     setEditing(true);
     setDraftAmount(String(effectiveAmount));
     setDraftReason("");
     setCorrectionError(null);
     setHistoryActionError(null);
-    setNotice(null);
+    onClearNotice(entry.id);
     correctionKeyRef.current = null;
   }
 
@@ -140,6 +208,7 @@ function ExpenseCorrectionRow({
     }
     const reason = draftReason.trim();
     const fingerprint = `${amount}\u0000${reason}`;
+    if (editingBlocked) return;
     const previous = correctionKeyRef.current;
     // Only the server can distinguish replay from no change against current money.
     // Retained off-page snapshots must not refuse a valid changed request.
@@ -155,9 +224,15 @@ function ExpenseCorrectionRow({
   }
 
   function confirmUndo(correctionId: string): void {
+    if (editingBlocked) return;
     const key = undoKeysRef.current.get(correctionId) ?? crypto.randomUUID();
     undoKeysRef.current.set(correctionId, key);
     undo.mutate({ correctionId, idempotencyKey: key });
+  }
+
+  function retryCurrentAmountReads(): void {
+    void queryClient.invalidateQueries();
+    void refreshCorrectionHistory();
   }
 
   function actorLabel(name: string | null, id: string | null) {
@@ -179,7 +254,23 @@ function ExpenseCorrectionRow({
         </td>
         <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
         <td className="p-3 font-semibold" data-testid="expense-row-effective-amount" data-value={effectiveAmount}>
-          <Amount value={effectiveAmount} />
+          {effectiveAmount === undefined ? <span>—</span> : <Amount value={effectiveAmount} />}
+          {amountNeedsVerification && (
+            <div className="mt-1 grid gap-1 text-xs font-normal" role="status" data-testid="expense-correction-amount-unverified">
+              <p>{t("expenseCorrectionAmountUnverified")}</p>
+              <Button type="button" size="sm" variant="outline" onClick={retryCurrentAmountReads} data-testid="expense-correction-amount-retry">
+                {t("expenseCorrectionRetry")}
+              </Button>
+            </div>
+          )}
+          {amountConflict && (
+            <div className="mt-1 grid gap-1 text-xs font-normal" role="alert" data-testid="expense-correction-amount-conflict">
+              <p>{t("expenseCorrectionAmountConflict")}</p>
+              <Button type="button" size="sm" variant="outline" onClick={retryCurrentAmountReads} data-testid="expense-correction-amount-conflict-retry">
+                {t("expenseCorrectionRetry")}
+              </Button>
+            </div>
+          )}
         </td>
         <td className="p-3">
           <div className="flex flex-wrap gap-2">
@@ -194,7 +285,7 @@ function ExpenseCorrectionRow({
             >
               {t("expenseCorrectionHistoryButton")}
             </Button>
-            <Button type="button" size="sm" variant="outline" onClick={openCorrectionEditor} data-testid="expense-correction-open-editor">
+            <Button type="button" size="sm" variant="outline" disabled={editingBlocked} onClick={openCorrectionEditor} data-testid="expense-correction-open-editor">
               {t("expenseCorrectionEditButton")}
             </Button>
           </div>
@@ -214,7 +305,7 @@ function ExpenseCorrectionRow({
               ) : history.isError ? (
                 <div className="grid gap-2 rounded border border-destructive/20 bg-destructive/10 p-3" role="alert">
                   <p className="text-sm text-destructive" data-testid="expense-correction-history-error">{t("expenseCorrectionLoadError")}</p>
-                  <Button type="button" size="sm" variant="outline" onClick={() => void history.refetch()} data-testid="expense-correction-history-retry">
+                  <Button type="button" size="sm" variant="outline" onClick={retryCurrentAmountReads} data-testid="expense-correction-history-retry">
                     {t("expenseCorrectionRetry")}
                   </Button>
                 </div>
@@ -244,7 +335,7 @@ function ExpenseCorrectionRow({
                           <div>
                             <dt className="text-muted-foreground">{t("expenseCorrectionDifference")}</dt>
                             <dd data-testid="expense-correction-difference">
-                              {event.difference > 0 ? "+" : "−"}<Amount value={Math.abs(event.difference)} />
+                              <Amount value={Math.abs(event.difference)} sign={event.difference > 0 ? "+" : "−"} />
                             </dd>
                           </div>
                           <div><dt className="text-muted-foreground">{t("expenseCorrectionEffectiveDate")}</dt><dd>{formatDateTime(event.effectiveAt)}</dd></div>
@@ -265,7 +356,7 @@ function ExpenseCorrectionRow({
                             type="button"
                             size="sm"
                             variant="outline"
-                            disabled={undo.isPending}
+                            disabled={undo.isPending || editingBlocked}
                             onClick={() => { setHistoryActionError(null); setUndoConfirmationId(event.id); }}
                             data-testid="expense-correction-undo"
                           >
@@ -284,7 +375,7 @@ function ExpenseCorrectionRow({
                     <Button type="button" size="sm" variant="outline" disabled={undo.isPending} onClick={() => setUndoConfirmationId(null)} data-testid="expense-correction-undo-cancel">
                       {t("expenseCorrectionUndoCancel")}
                     </Button>
-                    <Button type="button" size="sm" disabled={undo.isPending} onClick={() => confirmUndo(undoConfirmationId)} data-testid="expense-correction-undo-confirm-button">
+                    <Button type="button" size="sm" disabled={undo.isPending || editingBlocked} onClick={() => confirmUndo(undoConfirmationId)} data-testid="expense-correction-undo-confirm-button">
                       {undo.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionUndoConfirmButton")}
                     </Button>
                   </div>
@@ -319,7 +410,7 @@ function ExpenseCorrectionRow({
                     />
                   </label>
                   <div className="flex flex-wrap gap-2">
-                    <Button type="submit" size="sm" disabled={correction.isPending} data-testid="expense-correction-save">
+                    <Button type="submit" size="sm" disabled={correction.isPending || editingBlocked} data-testid="expense-correction-save">
                       {correction.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionSave")}
                     </Button>
                     <Button type="button" size="sm" variant="outline" disabled={correction.isPending} onClick={cancelCorrectionEditor} data-testid="expense-correction-cancel">
@@ -334,7 +425,6 @@ function ExpenseCorrectionRow({
                 </form>
               )}
               {historyActionError !== null && <p className="text-sm text-destructive" role="alert">{historyActionError}</p>}
-              {notice !== null && <p className="text-sm text-success" role="status" data-testid="expense-correction-saved">{notice}</p>}
             </section>
           </td>
         </tr>
@@ -350,17 +440,45 @@ type RecordError = { message: string; field: "amount" | "category" | "date" | "s
 export function ExpensesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const sessionCacheScope = useSessionCacheScope();
+  const correctionRecoveryKey = useMemo(() => expenseCorrectionRecoveryQueryKey(sessionCacheScope), [sessionCacheScope]);
+  const correctionRecoveryQuery = useQuery({
+    queryKey: correctionRecoveryKey,
+    queryFn: async (): Promise<ExpenseCorrectionRecoveryStore> => ({}),
+    initialData: (): ExpenseCorrectionRecoveryStore => ({}),
+    enabled: false,
+    gcTime: Infinity,
+  });
+  const correctionRecoveryStore = correctionRecoveryQuery.data;
+  const correctionNotices = Object.entries(correctionRecoveryStore).flatMap(([expenseId, state]) =>
+    state.notice === null ? [] : [[expenseId, state.notice] as const],
+  );
   const categories = useQuery(orpc.expenseCategoriesList.queryOptions());
-  const [recoveryRows, setRecoveryRows] = useState(new Map<string, ExpenseListItem>());
-  const retainRecoveryRow = useCallback((entry: ExpenseListItem, active: boolean) => {
-    setRecoveryRows((current) => {
-      if (active ? current.get(entry.id) === entry : !current.has(entry.id)) return current;
-      const next = new Map(current);
-      if (active) next.set(entry.id, entry);
-      else next.delete(entry.id);
+  const clearCorrectionNotice = useCallback((expenseId: string) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      if (current === undefined) return current;
+      const existing = current[expenseId];
+      if (existing === undefined || existing.notice === null) return current;
+      const updated = { ...existing, notice: null };
+      const next = { ...current };
+      if (updated.row === null && updated.acknowledgements.length === 0) delete next[expenseId];
+      else next[expenseId] = updated;
       return next;
     });
-  }, []);
+  }, [correctionRecoveryKey, queryClient]);
+  const retainRecoveryRow = useCallback((entry: ExpenseListItem, active: boolean) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      if (current === undefined) return current;
+      const existing = current[entry.id] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
+      if (active && existing.row === entry) return current;
+      if (!active && existing.row === null) return current;
+      const updated = { ...existing, row: active ? entry : null };
+      const next = { ...current };
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null) delete next[entry.id];
+      else next[entry.id] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
 
   // record form
   const [categoryId, setCategoryId] = useState("");
@@ -418,24 +536,47 @@ export function ExpensesPage() {
 
   const createCategory = useMutation(orpc.expenseCategoriesCreate.mutationOptions());
 
-  const history = useQuery(
-    orpc.expensesList.queryOptions({
-      input: {
-        preset,
-        customFrom: customFrom.bound,
-        customTo: customTo.bound,
-        categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
-        sortBy,
-        sortDir,
-        ...pager.pagination,
-      },
-    }),
-  );
+  const expenseListOptions = orpc.expensesList.queryOptions({
+    input: {
+      preset,
+      customFrom: customFrom.bound,
+      customTo: customTo.bound,
+      categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
+      sortBy,
+      sortDir,
+      ...pager.pagination,
+    },
+  });
+  const history = useQuery(expenseListOptions);
+  const acknowledgeCorrection = useCallback((expenseId: string, entry: ExpenseListItem, correction: ExpenseCorrection, historyDataUpdateCountAtAck: number, notice: string) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      const store = current ?? {};
+      const existing = store[expenseId] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
+      const acknowledgements = existing.acknowledgements.some((event) => event.correction.id === correction.id)
+        ? existing.acknowledgements
+        : [...existing.acknowledgements, { correction, historyDataUpdateCountAtAck }];
+      return { ...store, [expenseId]: { ...existing, row: entry, acknowledgements, notice } };
+    });
+  }, [correctionRecoveryKey, queryClient]);
+  const confirmAcknowledgementsFromFreshHistory = useCallback((expenseId: string, freshHistory: ExpenseCorrectionHistory) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      if (current === undefined) return current;
+      const existing = current[expenseId];
+      if (existing === undefined || existing.acknowledgements.length === 0) return current;
+      const eventIds = new Set(freshHistory.corrections.map((event) => event.id));
+      if (!existing.acknowledgements.every((event) => eventIds.has(event.correction.id))) return current;
+      const updated = { ...existing, acknowledgements: [] };
+      const next = { ...current };
+      if (updated.row === null && updated.notice === null) delete next[expenseId];
+      else next[expenseId] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
 
-  // Active editors and undo confirmations outlive their sorted page membership.
+  // Active editors, undo confirmations and acknowledgements outlive sorted-page membership.
   const visibleRows = new Map((history.data?.items ?? []).map((entry) => [entry.id, entry]));
-  for (const [id, entry] of recoveryRows) {
-    if (!visibleRows.has(id)) visibleRows.set(id, entry);
+  for (const [id, state] of Object.entries(correctionRecoveryStore)) {
+    if (state.row !== null && !visibleRows.has(id)) visibleRows.set(id, state.row);
   }
 
   const toggleCategory = (id: string) => {
@@ -955,6 +1096,18 @@ export function ExpensesPage() {
             }
           />
         ) : null}
+        {correctionNotices.length > 0 && (
+          <div className="grid gap-2" aria-live="polite">
+            {[...correctionNotices].map(([expenseId, message]) => (
+              <div key={expenseId} className="flex flex-wrap items-center gap-2 text-sm text-success">
+                <p role="status" data-testid="expense-correction-saved">{message}</p>
+                <Button type="button" size="sm" variant="outline" aria-label={t("expenseCorrectionDismiss")} onClick={() => clearCorrectionNotice(expenseId)} data-testid="expense-correction-dismiss">
+                  {t("expenseCorrectionDismiss")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
         {visibleRows.size > 0 && (
           <table className="w-full rounded border bg-card" data-testid="expense-history">
             <thead>
@@ -976,6 +1129,10 @@ export function ExpensesPage() {
                     categoryName={category?.name ?? entry.categoryId.slice(0, 8)}
                     withdrawal={category?.isOwnerWithdrawal === true}
                     onRecoveryChange={retainRecoveryRow}
+                    onAcknowledged={acknowledgeCorrection}
+                    onHistoryConfirmed={confirmAcknowledgementsFromFreshHistory}
+                    onClearNotice={clearCorrectionNotice}
+                    recovery={correctionRecoveryStore[entry.id] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY}
                   />
                 );
               })}

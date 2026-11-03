@@ -29,6 +29,7 @@ import {
   treeAlive,
   tryTake,
   TASKKILL_TIMEOUT_MS,
+  cancellationBudgetRemaining,
   setTaskkillRunnerForTest,
   taskkillTree,
   unusableBanner,
@@ -151,13 +152,15 @@ function fixtureResponds(port: number, token: string): Promise<boolean> {
   });
 }
 
-async function waitForFixtureGone(port: number, token: string, timeoutMs: number): Promise<boolean> {
+async function waitForFixtureGone(port: number, token: string, timeoutMs: number, pid?: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!(await fixtureResponds(port, token))) return true;
+    const endpointGone = !(await fixtureResponds(port, token));
+    const processGone = pid === undefined || processState(pid) === "absent";
+    if (endpointGone && processGone) return true;
     await sleep(50);
   }
-  return !(await fixtureResponds(port, token));
+  return !(await fixtureResponds(port, token)) && (pid === undefined || processState(pid) === "absent");
 }
 
 type BoundedWait<T> = { settled: true; value: T } | { settled: false };
@@ -235,6 +238,13 @@ function stubUnusable(matches: (port: number) => boolean): void {
 }
 
 describe("heavy-slot", () => {
+  test("cancellation uses only the time left in its original deadline", () => {
+    const startedAt = 1000;
+    expect(cancellationBudgetRemaining(startedAt, startedAt + TASKKILL_TIMEOUT_MS)).toBe(8000);
+    expect(cancellationBudgetRemaining(startedAt, startedAt + 10_000)).toBe(0);
+    expect(cancellationBudgetRemaining(startedAt, startedAt + 12_000)).toBe(0);
+  });
+
   test("taskkill subprocess receives the fixed timeout budget", () => {
     const calls: Array<{ pid: number; timeout?: number }> = [];
     setTaskkillRunnerForTest((pid, options) => {
@@ -324,7 +334,20 @@ describe("heavy-slot", () => {
     }
   });
 
-  test("fixture ownership probe errors are visible and never trigger a PID kill", async () => {
+  test("fixture startup uncertainty signals cooperatively and requires bounded exit proof", async () => {
+    let signalWritten = false;
+    let exitProbeCalled = false;
+    await expect(cleanupCapturedFixture(true, {
+      // A recorded owned PID with no token listener yet is still a live fixture.
+      isAlive: async () => true,
+      kill: () => { signalWritten = true; return "signalled"; },
+      waitForExit: async () => { exitProbeCalled = true; return false; },
+    })).rejects.toThrow("test-owned fixture did not exit within 2000ms");
+    expect(signalWritten).toBe(true);
+    expect(exitProbeCalled).toBe(true);
+  });
+
+  test("fixture ownership probe errors remain visible without a PID kill", async () => {
     let killCalled = false;
     await expect(cleanupCapturedFixture(true, {
       isAlive: async () => { throw new Error("probe unavailable"); },
@@ -1178,31 +1201,36 @@ describe("heavy-slot", () => {
               }
               if (recordedPid !== capturedPid) throw new Error("fixture PID ownership changed during cleanup");
               if (await fixtureResponds(gcPort, fixtureToken)) return true;
-              if (processState(capturedPid) === "absent") return false;
-              throw new Error("fixture ownership probe failed; process state is unknown");
+              const state = processState(capturedPid);
+              if (state === "absent") return false;
+              // PID ownership is pinned by the unique record. Signal cooperatively
+              // even if startup has not bound the token endpoint yet.
+              writeFileSync(shutdownFile, "stop");
+              return true;
             },
             kill: () => {
               writeFileSync(shutdownFile, "stop");
               return "signalled";
             },
-            waitForExit: (timeoutMs) => waitForFixtureGone(gcPort, fixtureToken, timeoutMs),
+            waitForExit: (timeoutMs) => waitForFixtureGone(gcPort, fixtureToken, timeoutMs, capturedPid),
           });
         } else {
-          // The unique signal path is safe even if startup raced PID publication.
+          // The unique signal is safe before PID publication, but an absent token
+          // endpoint alone cannot prove that a starting process has exited.
           writeFileSync(shutdownFile, "stop");
-          if (!(await waitForFixtureGone(gcPort, fixtureToken, 2000))) {
-            cleanupFailure = new Error("fixture did not acknowledge cooperative shutdown within 2000ms");
-          }
+          cleanupFailure = new Error("fixture PID was unavailable; cooperative shutdown was signalled but exit could not be verified");
         }
       } catch (error) {
         cleanupFailure = error instanceof Error ? error : new Error(String(error));
       } finally {
         if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
         else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
-        // The shutdown file is a cooperative signal; remove both records after
-        // the fixture acknowledged exit or reported a cleanup failure.
-        rmSync(pidFile, { force: true });
-        rmSync(shutdownFile, { force: true });
+        // Keep the cooperative signal and PID record when cleanup cannot prove
+        // exit, so a still-starting fixture can consume the signal later.
+        if (!cleanupFailure) {
+          rmSync(pidFile, { force: true });
+          rmSync(shutdownFile, { force: true });
+        }
         rmSync(gcScript, { force: true });
         if (wrapper) rmSync(wrapper, { force: true });
         resetBase();

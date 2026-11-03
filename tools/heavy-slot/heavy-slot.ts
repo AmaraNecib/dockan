@@ -827,6 +827,10 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
 const STOP_GRACE_MS = 10_000;
 export const TASKKILL_TIMEOUT_MS = 2_000;
 
+export function cancellationBudgetRemaining(startedAt: number, now = Date.now()): number {
+  return Math.max(0, STOP_GRACE_MS - (now - startedAt));
+}
+
 export type TaskkillRunner = (pid: number, options: { timeout?: number }) => {
   status: number | null;
   error?: NodeJS.ErrnoException;
@@ -906,11 +910,11 @@ const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)
  * signals the group the shell and its children share. Exported for the cancellation
  * test - it pins the kill-then-confirm promise the SIGINT/SIGTERM hook makes.
  */
-export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+export function killTree(child: ChildProcess, signal: NodeJS.Signals): "found" | "not-found" | "unknown" | undefined {
   const pid = child.pid;
-  if (pid === undefined) return;
+  if (pid === undefined) return undefined;
   if (process.platform === "win32") {
-    taskkillTree(pid);
+    return taskkillTree(pid);
   } else {
     try {
       process.kill(-pid, signal);
@@ -985,6 +989,7 @@ export async function run(label: string, command: string): Promise<number> {
   let cancelled = false;
   let cancelStartedAt: number | undefined;
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+  let initialTreeKill: "found" | "not-found" | "unknown" | undefined;
   let settleCancellation: (() => void) | undefined;
   // Hoisted out of the promise so the handlers can be removed once the child is
   // gone: a library caller running several commands through run() would otherwise
@@ -993,8 +998,14 @@ export async function run(label: string, command: string): Promise<number> {
     if (cancelled) return;
     cancelled = true;
     cancelStartedAt = Date.now();
-    if (child) killTree(child, "SIGTERM");
-    cancelTimer = setTimeout(() => settleCancellation?.(), STOP_GRACE_MS);
+    if (child) {
+      initialTreeKill = killTree(child, "SIGTERM");
+      if (initialTreeKill === "unknown") {
+        console.error(`[heavy-slot] cancellation cleanup for pid ${child.pid} is unverified; wrapper state does not prove descendants are gone`);
+      }
+    }
+    const remaining = cancellationBudgetRemaining(cancelStartedAt);
+    cancelTimer = setTimeout(() => settleCancellation?.(), remaining);
   };
   // SAFETY: process is an EventEmitter at runtime; bun's NodeJS.Process augmentation
   // declares off() only for its own "memoryPressure" event, which is what narrows the
@@ -1049,15 +1060,17 @@ export async function run(label: string, command: string): Promise<number> {
       // reach of both the signal and the probe; the same bound releases the slot
       // when that happens too.
       const deadline = (cancelStartedAt ?? Date.now()) + STOP_GRACE_MS;
-      if (treeAlive(child)) killTree(child, "SIGKILL");
-      while (Date.now() < deadline && treeAlive(child)) await wait(100);
+      const remainingBeforeFollowup = cancellationBudgetRemaining(cancelStartedAt ?? Date.now());
+      if (remainingBeforeFollowup >= TASKKILL_TIMEOUT_MS && treeAlive(child)) killTree(child, "SIGKILL");
+      while (Date.now() < deadline && treeAlive(child)) await wait(Math.min(100, deadline - Date.now()));
       // [F21] Disclose the give-up: the bounded budget ran out with the tree still
       // alive, so the slot is released while work may still be running - the same
       // double load the queue exists to prevent. A disclosed weakness is a
       // visible one; the old silent fallthrough read as a clean release.
-      if (treeAlive(child)) {
+      const wrapperStillAlive = treeAlive(child);
+      if (wrapperStillAlive || initialTreeKill === "unknown") {
         console.error(
-          `[heavy-slot] the tree under pid ${child.pid} survived ${STOP_GRACE_MS}ms of forced kills - releasing slot ${slot.index} with work possibly still running`,
+          `[heavy-slot] cancellation cleanup for pid ${child.pid} remains unverified${wrapperStillAlive ? ` after ${STOP_GRACE_MS}ms` : " because taskkill did not establish tree state"}; releasing slot ${slot.index} with work possibly still running`,
         );
       }
     }

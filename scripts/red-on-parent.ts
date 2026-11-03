@@ -1906,6 +1906,9 @@ export function hollowModuleSource(
     // check below, which would otherwise read them as behaviour with no name to
     // mirror and drop them in silence.
     if (ts.isExportDeclaration(statement)) {
+      if (statement.moduleSpecifier === undefined) {
+        return refuse("it has a local export list (`export { … }`), which a hollow does not mirror");
+      }
       return refuse(
         "it re-exports from another module (`export … from`), and a hollow has nothing to re-export",
       );

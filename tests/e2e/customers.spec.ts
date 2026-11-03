@@ -80,6 +80,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await page.getByTestId("sale-customer-create").click();
   await page.getByTestId("sale-customer-create-phone").fill(customerPhone);
   await page.getByTestId("sale-customer-create-save").click();
+  await expect(page.getByTestId("sale-customer-create-save")).not.toBeVisible();
   await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
   await page.getByTestId("sale-open-picker").click();
   await page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
@@ -237,7 +238,7 @@ test("customer settle in place: a percentage payment spread over unpaid invoices
   await page.getByTestId("sale-customer").fill(customerName);
   await page.getByTestId("sale-customer-create").click();
   const createdCustomer = await actAndAck<Party>(page, "customersCreate", () => page.getByTestId("sale-customer-create-save").click());
-  await expect(page.getByTestId("sale-customer-create-save")).toBeHidden();
+  await expect(page.getByTestId("sale-customer-create-save")).not.toBeVisible();
   await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
   await page.getByTestId("sale-open-picker").click();
   await page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);

@@ -18,18 +18,10 @@ import {
  * which transport a server of a given mode reads a credential from, and the
  * origin comparison that the browser cookie rides on.
  *
- * Every test here is waived on the parent, because the module under test
- * (`./session`) is INTRODUCED by this change: the parent cannot load this file,
- * so no run of it there can be red for the right reason. The discrimination is
- * a mutation proof instead — each source rule reverted in turn, the named test
- * watched failing, the source restored (the lane report carries the commands).
+ * On an original parent that lacks `./session`, the gate supplies a hollow
+ * stand-in. Assertions compare complete payloads and credential unions so that
+ * a hollow's missing properties cannot trigger incidental TypeErrors.
  */
-
-// red-on-parent-waive: 'vault session cookie' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
-// red-on-parent-waive: 'reply a minting route returns' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
-// red-on-parent-waive: 'which transport a request presents' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
-// red-on-parent-waive: 'one origin gate' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
-// red-on-parent-waive: 'reads every vault cookie out of a jar' — the module under test (./session) is introduced by this change; discrimination is the mutation proof, not a parent run
 
 /** A request as the gate or the RPC guard would see it. */
 function requestAt(url: string, init: RequestInit = {}): Request {
@@ -100,18 +92,19 @@ describe("the vault session cookie's attributes (#319)", () => {
 
 describe("the reply a minting route returns (#319)", () => {
   it("hands a browser the cookie and never the token in the body", () => {
-    const payload = vaultSessionPayload(false, requestAt(ADDRESS_APP), "TOKEN", 7);
-    expect(payload.body.sessionToken).toBeUndefined();
-    expect(payload.body.sessionGeneration).toBe(7);
-    expect(payload.headers["set-cookie"]).toContain("dokan.vault.session=TOKEN");
-    expect(payload.headers["set-cookie"]).toContain("HttpOnly");
+    expect(vaultSessionPayload(false, requestAt(ADDRESS_APP), "TOKEN", 7)).toEqual({
+      body: { sessionGeneration: 7 },
+      headers: {
+        "set-cookie": "dokan.vault.session=TOKEN; HttpOnly; SameSite=Strict; Path=/; Secure",
+      },
+    });
   });
 
   it("hands the broker the token in the body and sets no cookie", () => {
-    const payload = vaultSessionPayload(true, requestAt(ADDRESS_APP), "TOKEN", 7);
-    expect(payload.body.sessionToken).toBe("TOKEN");
-    expect(payload.body.sessionGeneration).toBe(7);
-    expect(payload.headers).toEqual({});
+    expect(vaultSessionPayload(true, requestAt(ADDRESS_APP), "TOKEN", 7)).toEqual({
+      body: { sessionToken: "TOKEN", sessionGeneration: 7 },
+      headers: {},
+    });
   });
 });
 
@@ -177,7 +170,7 @@ describe("which transport a request presents (#319)", () => {
       const request = requestAt(ADDRESS_APP, {
         headers: { cookie: "dokan.vault.session=TOKEN", origin },
       });
-      expect(resolveVaultCredential(request, browserMode), origin).toEqual({ kind: "refused", reason: "foreign-origin" });
+      expect(resolveVaultCredential(request, browserMode)).toEqual({ kind: "refused", reason: "foreign-origin" });
     }
   });
 
@@ -185,11 +178,19 @@ describe("which transport a request presents (#319)", () => {
     const own = requestAt(ADDRESS_APP, {
       headers: { cookie: "dokan.vault.session=TOKEN", origin: "http://127.0.0.1:4399" },
     });
-    expect(resolveVaultCredential(own, browserMode).kind).toBe("credential");
+    expect(resolveVaultCredential(own, browserMode)).toEqual({
+      kind: "credential",
+      tokens: ["TOKEN"],
+      carrier: "cookie",
+    });
     // a browser omits Origin on a GET, and SameSite=Strict is what keeps a
     // cross-site request from carrying the cookie at all
     const noOrigin = requestAt(ADDRESS_APP, { headers: { cookie: "dokan.vault.session=TOKEN" } });
-    expect(resolveVaultCredential(noOrigin, browserMode).kind).toBe("credential");
+    expect(resolveVaultCredential(noOrigin, browserMode)).toEqual({
+      kind: "credential",
+      tokens: ["TOKEN"],
+      carrier: "cookie",
+    });
   });
 
   it("carries nothing when the request carries neither credential", () => {
@@ -240,7 +241,7 @@ describe("the one origin gate (#319, greptile P1)", () => {
 
   it("refuses a sandboxed frame's null origin and a non-http scheme", () => {
     for (const origin of ["null", "tauri://localhost", "file:///c:/dokan/index.html", "not a url"]) {
-      expect(vaultOriginGate(requestAt(AT, { headers: { origin } }), browserMode), origin).toBe("foreign-origin");
+      expect(vaultOriginGate(requestAt(AT, { headers: { origin } }), browserMode)).toBe("foreign-origin");
     }
   });
 });

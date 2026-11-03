@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { SIGNED_OUT_STORAGE_KEY, authLossReason, clearAuthLost, markSignedOut } from "./auth-refusal";
 
-// red-on-parent-waive: 'the memory hold' — the module under test (./auth-refusal) is introduced by this change; discrimination is the ablation proof, not a parent run
-// red-on-parent-waive: 'a cleared hold' — the module under test (./auth-refusal) is introduced by this change; discrimination is the ablation proof, not a parent run
+// red-on-parent-waive: "whole file" — auth-refusal.ts uses a local export list that the gate cannot mirror
 
 /**
  * The unconfirmed sign-out's fallback, tested where the hold lives (#319

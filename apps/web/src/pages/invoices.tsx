@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceKind } from "@dokan/contracts";
@@ -15,6 +15,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Pager } from "@/components/ui/pager";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
 
 type KindFilter = "" | InvoiceKind;
 type StatusFilter = "" | "UNPAID" | "PARTIAL" | "PAID";
@@ -26,29 +27,71 @@ type StatusFilter = "" | "UNPAID" | "PARTIAL" | "PAID";
  */
 export function InvoicesPage() {
   const { t } = useTranslation();
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [kind, setKind] = useState<KindFilter>("");
   const [status, setStatus] = useState<StatusFilter>("");
   // Which filter the owner last CHANGED. After clearing, focus must go to the control
   // that narrowed the list, and "whichever value is non-empty" cannot answer that: with
   // both set, focusing `kind` sends a keyboard user to a control that did not empty the
   // view (review on #245).
-  const lastFilterRef = useRef<"kind" | "status" | null>(null);
+  const lastFilterRef = useRef<"kind" | "status" | "search" | null>(null);
   const pager = usePagination();
 
-  const list = useQuery(
-    orpc.invoicesList.queryOptions({
+  useEffect(() => {
+    const trimmed = search.trim();
+    if (trimmed === "") {
+      setDebouncedSearch("");
+      pager.reset();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(trimmed);
+      pager.reset();
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [search, pager.reset]);
+
+  const list = useQuery({
+    ...orpc.invoicesList.queryOptions({
       input: {
+        search: debouncedSearch || undefined,
         kind: kind === "" ? undefined : kind,
         status: status === "" ? undefined : status,
         ...pager.pagination,
       },
     }),
-  );
+    placeholderData: (previousData) => previousData,
+  });
 
   return (
     <section data-testid="invoices-page">
       <h1 className="text-xl font-bold">{t("invoicesTitle")}</h1>
 
+      <div className="mt-4 flex items-end gap-2">
+        <label className="grid flex-1 gap-1 text-sm">
+          {t("invoicesSearch")}
+          <Input
+            ref={searchRef}
+            type="search"
+            maxLength={200}
+            value={search}
+            data-testid="invoices-search"
+            placeholder={t("invoicesSearchHint")}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              lastFilterRef.current = "search";
+            }}
+          />
+        </label>
+        {search !== "" && (
+          <Button variant="outline" data-testid="invoices-search-clear" onClick={() => {
+            setSearch("");
+            searchRef.current?.focus();
+          }}>{t("invoicesSearchClear")}</Button>
+        )}
+      </div>
       <div className="mt-4 grid grid-cols-2 gap-3">
         <label className="grid gap-1 text-sm">
           {t("invoiceKind")}
@@ -107,25 +150,31 @@ export function InvoicesPage() {
         </label>
       </div>
 
+      {list.isFetching && !list.isPending && (
+        <p className="mt-4 text-sm text-muted-foreground" role="status" aria-label={t("invoicesLoading")}>
+          {t("invoicesLoading")}
+        </p>
+      )}
       {list.isPending ? (
-        <div className="mt-4 grid gap-2">
+        <div className="mt-4 grid gap-2" aria-hidden="true">
           <Skeleton className="h-6 w-full" />
           <Skeleton className="h-6 w-full" />
           <Skeleton className="h-6 w-full" />
         </div>
       ) : list.isError ? (
-        <p role="alert" className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="invoices-error">
-          {t("activityError")}
-        </p>
+        <div className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="invoices-error">
+          <p role="alert">{t("activityError")}</p>
+          <Button variant="outline" data-testid="invoices-retry" onClick={() => { void list.refetch(); }}>{t("itemsSearchRetry")}</Button>
+        </div>
       ) : list.data.total === 0 ? (
         <EmptyState
           testId="invoices-empty"
           card
           className="mt-4"
           title={t("invoicesEmpty")}
-          hint={t(kind === "" && status === "" ? "invoicesEmptyHint" : "invoicesEmptyFilteredHint")}
+          hint={t(search.trim() === "" && kind === "" && status === "" ? "invoicesEmptyHint" : "invoicesEmptyFilteredHint")}
           action={
-            kind === "" && status === "" ? (
+            search.trim() === "" && kind === "" && status === "" ? (
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <Button asChild size="lg">
                   <Link to="/sale" data-testid="invoices-empty-action">{t("saleNew")}</Link>
@@ -148,7 +197,8 @@ export function InvoicesPage() {
                   const target =
                     last ?? (kind !== "" ? "kind" : status !== "" ? "status" : "kind");
                   const filter =
-                    target === "status" ? "invoices-status-filter" : "invoices-kind-filter";
+                    target === "search" ? "invoices-search" : target === "status" ? "invoices-status-filter" : "invoices-kind-filter";
+                  setSearch("");
                   setKind("");
                   setStatus("");
                   pager.reset();

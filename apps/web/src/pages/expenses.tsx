@@ -58,7 +58,14 @@ const EMPTY_EXPENSE_CORRECTION_RECOVERY: ExpenseCorrectionRecovery = {
 };
 
 function isDefinitiveCorrectionRefusal(message: string): boolean {
-  return /EXPENSE_CORRECTION_(?:IDEMPOTENCY_KEY_REUSED|NO_CHANGE|NOT_FOUND|ALREADY_REVERSED|NOT_REVERSIBLE|UNDO_OUT_OF_RANGE)/.test(message);
+  return [
+    "EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED",
+    "EXPENSE_CORRECTION_NO_CHANGE",
+    "EXPENSE_CORRECTION_NOT_FOUND",
+    "EXPENSE_CORRECTION_ALREADY_REVERSED",
+    "EXPENSE_CORRECTION_NOT_REVERSIBLE",
+    "EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE",
+  ].includes(message);
 }
 
 function toPreset(value: string): ReportRangePreset {

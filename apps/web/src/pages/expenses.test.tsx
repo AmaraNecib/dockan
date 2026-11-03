@@ -1900,9 +1900,12 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     await ui.unmount();
   });
 
-  it("keeps a failed draft and reuses its idempotency key on retry", async () => {
+  it.each([
+    "temporary transport failure",
+    "Network error: EXPENSE_CORRECTION_NO_CHANGE",
+  ])("keeps a failed draft and reuses its idempotency key on retry after %s", async (message) => {
     correctionFailuresRemaining = 1;
-    correctionFailureMessage = "temporary transport failure";
+    correctionFailureMessage = message;
     report.subscribe(() => {});
     const ui = await mountPage(queryClient);
     expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);

@@ -84,9 +84,9 @@ describe("wipe-e2e: the data dir the script agrees to delete", () => {
       expect(sentinelBefore).toBe(true);
 
       const run = await runWipe(worktree, "link/.e2e-data");
+      expect(run.code).toBe(1);
       const intact = existsSync(sentinel);
       expect(intact, `external fixture sentinel was removed: ${sentinel}`).toBe(true);
-      expect(run.code).toBe(1);
       expect(run.out).toContain("refusing");
     } finally {
       rmSync(fixture, { recursive: true, force: true });

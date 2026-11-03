@@ -46,10 +46,32 @@ function resolvePhysicalPath(target) {
   }
 }
 
+function resolveRootAlias(target, root) {
+  // An absolute E2E_DATA_DIR can arrive through a symlink/junction above the
+  // checkout. Find the point where that path reaches the physical worktree,
+  // then rebuild only its suffix under the physical root. Symlinks in that
+  // suffix remain visible to rejectSymlinkComponents.
+  let current = path.resolve(target);
+  const suffix = [];
+  while (true) {
+    try {
+      if (path.resolve(fs.realpathSync.native(current)) === root) {
+        return path.join(root, ...suffix.reverse());
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return target;
+    suffix.push(path.basename(current));
+    current = parent;
+  }
+}
+
 export function resolveE2eDataDir(raw, cwd) {
   if (!raw) throw new Error("E2E_DATA_DIR is required");
   const root = fs.realpathSync.native(cwd ?? process.cwd());
-  const target = path.resolve(root, raw);
+  const target = resolveRootAlias(path.resolve(root, raw), root);
   rejectSymlinkComponents(target);
   const resolved = resolvePhysicalPath(target);
   if (resolved === root) {

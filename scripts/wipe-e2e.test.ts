@@ -54,6 +54,24 @@ describe("wipe-e2e: the data dir the script agrees to delete", () => {
     expect(existsSync(join(dataDir, "takes", "records.db"))).toBe(false);
   });
 
+  test("cleans an absolute PWD override through a checkout alias", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-checkout-alias-"));
+    const physical = join(fixture, "checkout");
+    const alias = join(fixture, "checkout-alias");
+    try {
+      mkdirSync(physical);
+      const dataDir = makeDataDir(physical);
+      symlinkSync(physical, alias, process.platform === "win32" ? "junction" : "dir");
+
+      const run = await runWipe(physical, join(alias, ".e2e-data"));
+      expect(run.code).toBe(0);
+      expect(run.out).not.toContain("refusing");
+      expect(existsSync(join(dataDir, "takes", "records.db"))).toBe(false);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   test("refuses a data dir outside the working directory, and leaves it intact", async () => {
     const outside = mkdtempSync(join(tmpdir(), "wipe-e2e-outside-"));
     try {

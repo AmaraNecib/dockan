@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { dashboardSummaryOutputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient, stockMovementWithBalanceSchema } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, invoiceListInputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient, stockMovementWithBalanceSchema } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -5652,5 +5652,12 @@ describe("movement posting seam parity (issue 143)", () => {
     expect(history.movements.at(-1)).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 0, unitCost: 250, reason: "COST_CORRECTION" });
     expect(history.stockOnHand).toBe(10);
     expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(250);
+  });
+});
+
+describe("invoice list search contract", () => {
+  it("accepts 200 characters and rejects 201 using the exported input schema", () => {
+    expect(invoiceListInputSchema.safeParse({ search: "x".repeat(200) }).success).toBe(true);
+    expect(invoiceListInputSchema.safeParse({ search: "x".repeat(201) }).success).toBe(false);
   });
 });

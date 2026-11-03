@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, UserRound } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 import { NAV_GROUPS, type NavItem } from "./navigation";
 
 export const SIDEBAR_EXPANDED_WIDTH = 240;
@@ -194,6 +195,7 @@ function NavLink({ item, activeKey, collapsed, badgeCount = null, badgeUnavailab
   const active = activeKey === item.key;
   const Icon = item.icon;
   const label = t(item.labelKey);
+  const shortcut = item.key === "sale" ? shortcutKeys("onSale") : item.key === "purchase" ? shortcutKeys("onPurchase") : null;
   // a failed count is not a confirmed zero: label and draw it as unknown,
   // never as "nothing pending" (round-2 finding 1)
   const badgeLabel = badgeUnavailable
@@ -206,7 +208,7 @@ function NavLink({ item, activeKey, collapsed, badgeCount = null, badgeUnavailab
     <Link
       to={item.to}
       search={item.preserveSearch ? true : undefined}
-      title={collapsed ? label : undefined}
+      title={shortcut ? `${label} (${shortcut})` : collapsed ? label : undefined}
       // `title` is a tooltip, not an accessible name: a collapsed icon-only
       // link must carry the label itself, and a badge state must be announced
       // rather than hidden behind an aria-hidden number.

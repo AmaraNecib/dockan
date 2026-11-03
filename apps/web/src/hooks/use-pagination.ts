@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 
 import { usePreference } from "../lib/preferences";
 import { DEFAULT_PAGE_SIZE, paginationReducer, parsePageSize, serializePageSize } from "../lib/pagination";
@@ -20,6 +20,7 @@ export const PAGE_SIZE_PREFERENCE_KEY = "ui.pageSize";
 export function usePagination() {
   const size = usePreference(PAGE_SIZE_PREFERENCE_KEY, DEFAULT_PAGE_SIZE, parsePageSize, serializePageSize);
   const [offset, dispatch] = useReducer(paginationReducer, 0);
+  const reset = useCallback(() => dispatch({ type: "reset" }), []);
 
   // Every hook shares the `ui.pageSize` preference, so a size change made in
   // one list must reset the offset of every OTHER live list too. Reacting to
@@ -41,7 +42,7 @@ export function usePagination() {
     /** change the visible page */
     setOffset: (next: number) => dispatch({ type: "goto", offset: next }),
     /** a search or filter changed: back to page 1 */
-    reset: () => dispatch({ type: "reset" }),
+    reset,
     /** persist the chosen page size; also puts the list back on page 1 */
     setPageSize: (next: number) => {
       dispatch({ type: "reset" });

@@ -472,6 +472,40 @@ describe("expense corrections (#408)", () => {
     expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
   });
 
+  it("refuses anonymous correction history reads and undo writes without changing history", async () => {
+    const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
+    if (category === undefined) throw new Error("seeded rent category is missing");
+    const original = await client.expensesCreate({
+      categoryId: category.id,
+      amount: 1_000,
+      occurredAt: "2020-02-14T12:00:00",
+    });
+    const correction = await client.expensesCorrect({
+      expenseId: original.id,
+      amount: 800,
+      idempotencyKey: randomUUID(),
+    });
+    const historyBefore = await client.expenseCorrectionHistory({ expenseId: original.id });
+
+    let historyRefusal: { code?: string; message?: string } | null = null;
+    try {
+      await anonymousClient.expenseCorrectionHistory({ expenseId: original.id });
+    } catch (error) {
+      // SAFETY: oRPC rejections expose the server error code and message.
+      historyRefusal = error as { code?: string; message?: string };
+    }
+    let undoRefusal: { code?: string; message?: string } | null = null;
+    try {
+      await anonymousClient.expensesCorrectionUndo({ correctionId: correction.id, idempotencyKey: randomUUID() });
+    } catch (error) {
+      // SAFETY: oRPC rejections expose the server error code and message.
+      undoRefusal = error as { code?: string; message?: string };
+    }
+    expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(historyBefore);
+    expect(historyRefusal).toMatchObject({ code: AUTH_REFUSAL.code, message: AUTH_REFUSAL.message });
+    expect(undoRefusal).toMatchObject({ code: AUTH_REFUSAL.code, message: AUTH_REFUSAL.message });
+  });
+
   it("refuses no-op, unauthenticated, reused, and out-of-range corrections without losing history", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");

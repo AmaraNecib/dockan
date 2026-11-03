@@ -69,7 +69,9 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/expenses.tsx::dateText === \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
   ["pages/expenses.tsx::dateText !== \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
   ["pages/expenses.tsx::note.trim() === \"\"", { verdict: "raw", reason: TEXT }],
-  ["pages/expenses.tsx::reason !== \"\" [draftReason.trim()]", { verdict: "raw", reason: TEXT }],
+  // Correction reasons are trimmed by callers and passed into sendCorrection.
+  // Its text-only parameter has no local trim alias for this scanner to classify;
+  // expenses.test.tsx pins the optional reason in submitted and retried payloads.
   ["pages/invoice.tsx::note.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/invoice.tsx::trimmed === \"\" [draft.trim()]", { verdict: "draftBlank", reason: "converted (#244): returnQuantityError blank → null; customCashError blank → null (all-debt)" }],
   ["pages/invoice.tsx::(drafts[line.id] ?? \"\").trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → not an entered return line" }],

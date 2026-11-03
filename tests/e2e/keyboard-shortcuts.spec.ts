@@ -543,6 +543,56 @@ test("category refresh does not make an untouched sale quick-add dirty", async (
   }
 });
 
+test("category refresh cannot hide a changed quick-add category from Ctrl+B", async ({ page }) => {
+  await signIn(page);
+  const suffix = Date.now().toString();
+  const openingCategoryName = `!395-A-${suffix}`;
+  const selectedCategoryName = `!395-C-${suffix}`;
+  const refreshedDefaultName = `!395-0-B-${suffix}`;
+  await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", { name: openingCategoryName });
+  await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", { name: selectedCategoryName });
+  const categories = await callRpc<{ items: Array<{ id: string; name: string }> }, Record<string, never>>(
+    page,
+    "categoriesList",
+    {},
+  );
+  expect(categories.items[0]?.name).toBe(openingCategoryName);
+
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  const saleUrl = page.url();
+  await page.getByTestId("sale-quick-add").click();
+  const category = page.getByTestId("sale-quick-category");
+  await expect(page.getByTestId("sale-quick-form")).toBeVisible();
+  await expect(category).toContainText(openingCategoryName);
+  await chooseSelectOption(page, category, selectedCategoryName);
+
+  const secondTab = await page.context().newPage();
+  try {
+    await secondTab.goto("/");
+    await expect(secondTab.getByTestId("dashboard-page")).toBeVisible();
+    const createdDefault = await callRpc<{ id: string }, { name: string }>(
+      secondTab,
+      "categoriesCreate",
+      { name: refreshedDefaultName },
+    );
+    expect(createdDefault.id).toBeTruthy();
+
+    const refresh = waitForRpc(page, "categoriesList");
+    await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+    const refreshed = await rpcOutput<{ items: Array<{ id: string; name: string }> }>(await refresh, "categoriesList");
+    expect(refreshed.items[0]?.name).toBe(refreshedDefaultName);
+    await expect(category).toContainText(selectedCategoryName);
+    await chooseSelectOption(page, category, refreshedDefaultName);
+
+    await page.keyboard.press("Control+b");
+    await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
+    await expect(page).toHaveURL(saleUrl);
+  } finally {
+    await secondTab.close();
+  }
+});
+
 test("an explicit sale quick-add category choice blocks Ctrl+B until reset", async ({ page }) => {
   await signIn(page);
   const suffix = Date.now().toString();

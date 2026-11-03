@@ -479,7 +479,7 @@ export function SalePage() {
                       // event, so keep the shortcut guard in step with this pick.
                       setDraftDirty(
                         draftDirtyWithoutQuickCategory ||
-                          (nextCategoryId || quickCategoryDefault) !== quickCategoryDefault,
+                          (nextCategoryId !== "" && nextCategoryId !== quickCategoryDefaultAtOpen.current),
                       );
                     }}
                     name="quickCategory"

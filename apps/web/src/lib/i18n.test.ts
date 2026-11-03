@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { VAULT_ERROR_CODES } from "@dokan/contracts";
 
-import i18n, { PHONE_EXAMPLE_INTL, PHONE_EXAMPLE_LOCAL, authErrorKey, serverErrorKey, tError, type MessageKey } from "./i18n";
+import i18n, { CATALOGUE_KEYS, PHONE_EXAMPLE_INTL, PHONE_EXAMPLE_LOCAL, authErrorKey, serverErrorKey, tError, type MessageKey } from "./i18n";
 
 /**
  * Issue #100 — a failure the app can name must say what it is. These cases are
@@ -426,17 +426,24 @@ describe("the translation surface is typed against the catalogue (#322)", () => 
     expect(rendered).toBe("vaultInvald");
   });
 
-  it("the typed catalogue and the loaded bundle hold the same keys", () => {
+  it("the loaded bundle holds the catalogue's keys, and only those", () => {
     // SAFETY: i18next's getResourceBundle is loosely typed; the value it returns
-    // for (ar, translation) is the same flat map the catalogue literal declares,
-    // which is what makes the check below meaningful rather than circular-by-type
+    // for (ar, translation) is the flat map the catalogue literal declares, and
+    // `Object.keys` of it is the loaded side of the comparison below
     const bundle = i18n.getResourceBundle("ar", "translation") as Record<string, string>;
-    const keys = Object.keys(bundle);
-    expect(keys.length).toBeGreaterThan(0);
-    // Every key the `MessageKey` type is derived from must resolve in the instance
-    // i18next actually initialized with. A divergence typechecks and still renders
-    // identifiers on the screen — the #322 symptom from a different cause.
-    for (const key of keys) expect(i18n.exists(key), key).toBe(true);
+    const loaded = Object.keys(bundle);
+    expect(loaded.length).toBeGreaterThan(0);
+    // Every key the catalogue declares must resolve in the instance i18next was
+    // initialized with. A divergence typechecks and still renders identifiers on
+    // the screen — the #322 symptom from a different cause.
+    for (const key of CATALOGUE_KEYS) expect(i18n.exists(key), key).toBe(true);
+    // And the instance must hold nothing the catalogue does not declare. This
+    // is the direction the old version of this test could not check: it read
+    // the bundle and asked the SAME instance `exists(key)`, which is i18next
+    // checked against itself. Two sets now — the catalogue literal against the
+    // loaded bundle — so a second catalogue merged into the instance (an
+    // `addResourceBundle`, a second `init`) is a difference, not a round trip.
+    expect([...loaded].sort()).toEqual([...CATALOGUE_KEYS].sort());
     // The misspelling the `@ts-expect-error` above rejects is not merely untyped:
     // i18next does not know it, which is why the raw identifier reaches the DOM.
     expect(i18n.exists("vaultInvald")).toBe(false);
@@ -444,16 +451,23 @@ describe("the translation surface is typed against the catalogue (#322)", () => 
 });
 
 /**
- * #322 — what the widening gave up, and the runtime check that stands in its place.
+ * #322: widening resource values changes `t()` return typing and drops per-key
+ * interpolation checks. `MessageKey` comes from property names independently;
+ * widening values is not required to construct dynamic keys.
  *
- * The resource values are `Record<string, string>` rather than literal types, so
- * `t` returns `string` (which 19 call sites need) at the price of interpolation
- * checking: with literal values `t("x", { wrong: true })` is a `TS2345`; widened,
- * it compiles. So a `{{placeholder}}` can come back into a key and nothing notices.
- * Measured, not assumed: restoring `as const` on the resources breaks 19 call
- * sites over 8 files (see the #322 commit body), which is the trade this test buys
- * back for the one class that matters — keys whose name is built at the call site,
- * where no literal key exists for the compiler to check in the first place.
+ * The #322 catalogue had 66 interpolated keys. The saved #331 report says
+ * restoring `as const` produced 19 type errors across 8 files, not 19 call sites.
+ * Its reported breakdown was 14 numbers passed to unformatted, non-count
+ * placeholders typed as `string`, 4 plural-aware literal-return errors in this
+ * file, and 1 `t()` result widened into `useState`. This is a historical report,
+ * not a fresh measurement. Numeric `count` and formatter-specific values have
+ * their own types.
+ *
+ * The dynamic-key cases below enumerate catalogue families and check their
+ * runtime output. A separate case checks real i18next interpolation for
+ * `historyReasonReturnRejected`. These tests cover those behaviors; they do not
+ * reproduce per-key compile-time option checking. The current catalogue's 67
+ * interpolation declarations are counted next to `resources` in `i18n.ts`.
  */
 describe("dynamic-key families render copy, never a key or an unfilled template (#322)", () => {
   const SENTINEL = "قيمة-7f3c";
@@ -484,10 +498,10 @@ describe("dynamic-key families render copy, never a key or an unfilled template 
     }
   });
 
-  it("fills the one dynamic family whose copy interpolates, with the option it names", () => {
-    // `historyReasonReturnRejected` is the exception: its call site in stock.tsx
-    // passes the note. The sentinel proves the placeholder is filled by that
-    // option and not by a same-named i18next option (`context` was the bug).
+  it("fills the return-rejected template with its `note` option", () => {
+    // This fixed key's call site in stock.tsx passes the note. The sentinel
+    // proves the placeholder is filled by that option and not by a same-named
+    // i18next option (`context` was the bug).
     const rendered = i18n.t("historyReasonReturnRejected", { note: SENTINEL });
     expect(rendered).toContain(SENTINEL);
     expect(rendered).not.toContain("{{");

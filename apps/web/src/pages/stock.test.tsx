@@ -1,14 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import i18n from "i18next";
-import type { TFunction } from "i18next";
+
+import { movementKinds } from "@dokan/contracts";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar)
-import { movementDeltaClass, movementReasonText, supersededByCorrection, type PrecedenceRow } from "./stock";
+import { type Translate } from "../lib/i18n";
+import {
+  HISTORY_KIND_KEYS,
+  kindLabel,
+  movementDeltaClass,
+  movementReasonText,
+  supersededByCorrection,
+  type PrecedenceRow,
+} from "./stock";
 
-// SAFETY: the initialized i18next instance is a TFunction; the module's default
-// export is typed as a broader i18n interface, so the narrowing is asserted here
-// rather than at each call site
-const t = i18n.t.bind(i18n) as TFunction;
+// SAFETY: the initialized i18next instance's `t` is the catalogue-typed
+// translator; the module's default export is typed as a broader i18n
+// interface, so the narrowing is asserted here rather than at each call site
+const t = i18n.t.bind(i18n) as Translate;
 
 /** The api stores ASCII reason tokens; the item-history view owns the copy. */
 describe("stock movement reason tokens", () => {
@@ -20,6 +29,28 @@ describe("stock movement reason tokens", () => {
 
   it("renders an unknown legacy reason raw", () => {
     expect(movementReasonText(t, "opening")).toBe("opening");
+  });
+
+  it("renders both invoice-correction identifiers without template residue (#331)", () => {
+    const rendered = movementReasonText(t, "INVOICE_CORRECTION INV-7 #line-42");
+    expect(rendered).toBe("تصحيح فاتورة INV-7 #line-42");
+    expect(rendered).not.toContain("{{");
+  });
+
+  it("pairs invoice-correction values with the matching translation options (#331)", () => {
+    const calls: { key: string; vars: Record<string, string> | undefined }[] = [];
+    const stub: Translate = (key, vars) => {
+      calls.push({ key, vars });
+      return `${vars?.number ?? ""}|${vars?.line ?? ""}`;
+    };
+
+    expect(movementReasonText(stub, "INVOICE_CORRECTION INV-7 #line-42")).toBe("INV-7|#line-42");
+    expect(calls).toEqual([
+      {
+        key: "historyReasonInvoiceCorrection",
+        vars: { number: "INV-7", line: "#line-42" },
+      },
+    ]);
   });
 
   // CHARACTERIZATION, not a behaviour fix. At ae9e416a the call passed
@@ -43,6 +74,56 @@ describe("stock movement reason tokens", () => {
     // real movements keep their gain/loss styling
     expect(movementDeltaClass(4)).toBe("text-success");
     expect(movementDeltaClass(-3)).toBe("text-destructive");
+  });
+});
+
+/**
+ * #331 — the movement kind's copy is a table over the contract's kinds, not an
+ * if-chain with a silent default.
+ *
+ * `movementKinds` is the contract's own list, so the table in `stock.tsx` is
+ * exhaustive over it: a kind the contract adds is a missing property at the
+ * table, and `bun run typecheck` fails THERE — at the table — instead of the
+ * screen quietly labelling the new kind as an adjustment. The if-chain this
+ * replaces had no such edge; it fell through to the adjustment copy for every
+ * kind it did not name, so a fourth kind rendered "تسوية" with no error and no
+ * test.
+ *
+ * These assertions are the run-time half of the same claim, and the one the
+ * compiler cannot make: `bun test` does not typecheck, so the table's key set
+ * is compared with the contract's kind set here.
+ */
+describe("the movement kind's copy is exhaustive over the contract (issue 331)", () => {
+  it("names every kind the contract declares, and no other", () => {
+    expect(Object.keys(HISTORY_KIND_KEYS).sort()).toEqual([...movementKinds].sort());
+  });
+
+  it("gives each kind its own catalogue key", () => {
+    expect(HISTORY_KIND_KEYS.PURCHASE).toBe("historyKind_PURCHASE");
+    expect(HISTORY_KIND_KEYS.SALE).toBe("historyKind_SALE");
+    expect(HISTORY_KIND_KEYS.MANUAL_ADJUSTMENT).toBe("historyKind_MANUAL_ADJUSTMENT");
+    // a copy-paste that points two kinds at one key is a duplicate here rather
+    // than plausible-looking Arabic on the screen
+    expect(new Set(Object.values(HISTORY_KIND_KEYS)).size).toBe(movementKinds.length);
+  });
+
+  it("renders the intended Arabic copy for each kind without template residue", () => {
+    const expectedCopies = {
+      PURCHASE: "مشتريات",
+      SALE: "بيع",
+      MANUAL_ADJUSTMENT: "تسوية",
+    } satisfies Record<(typeof movementKinds)[number], string>;
+    const rendered = movementKinds.map((kind) => kindLabel(t, kind));
+    expect(new Set(rendered).size).toBe(movementKinds.length);
+    for (const kind of movementKinds) {
+      const copy = kindLabel(t, kind);
+      expect(copy).not.toMatch(/\{\{[^}]+\}\}/);
+      expect(copy).toBe(expectedCopies[kind]);
+      expect(copy).toMatch(/[\u0600-\u06FF]/);
+      // never a key: a table that fell behind the contract renders the key
+      // itself, which is the #322 symptom
+      expect(Object.values(HISTORY_KIND_KEYS)).not.toContain(copy);
+    }
   });
 });
 

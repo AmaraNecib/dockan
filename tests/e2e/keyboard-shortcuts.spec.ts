@@ -19,6 +19,8 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   // This covers both draft guards, dialog refusal and help evidence in one journey.
   test.setTimeout(60_000);
   await signIn(page);
+  await expect(page.getByRole("button", { name: "اختصارات لوحة المفاتيح" })).toHaveAttribute("title", /\(\?\)$/);
+  await expect(page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" })).toHaveAttribute("title", /Ctrl\/⌘\+Shift\+B/);
   await page.getByRole("button", { name: "اختصارات لوحة المفاتيح" }).click();
   const help = page.getByRole("dialog", { name: "اختصارات لوحة المفاتيح" });
   await expect(help).toBeVisible();
@@ -35,6 +37,7 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   await page.getByTestId("new-sale-button").click();
   await expect(page).toHaveURL(/\/sale\?fresh=[1-9]\d*$/);
   const saleUrl = page.url();
+  await expect(page.getByTestId("sale-open-picker")).toHaveAttribute("title", /\(Ctrl\+N\)$/);
   const customer = page.getByTestId("sale-customer");
   await page.keyboard.press("Escape");
   await page.getByTestId("sale-quick-add").click();
@@ -80,6 +83,7 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   await page.getByTestId("new-sale-discard-confirm").click();
   await expect(page.getByTestId("purchase-form")).toBeVisible();
 
+  await expect(page.getByTestId("purchase-open-picker")).toHaveAttribute("title", /\(Ctrl\+B\)$/);
   const supplier = page.getByTestId("purchase-supplier");
   await supplier.fill("مسودة المورد");
   await page.keyboard.press("Escape");
@@ -282,6 +286,86 @@ test("pending purchase refuses navigation and discard until its saved result is 
 });
 
 
+
+test("failed pending purchase forgets blocked navigation and keeps its draft for a real retry", async ({ page }) => {
+  await signIn(page);
+  const categoryId = await seedCategoryId(page, "تصنيف إعادة محاولة الشراء");
+  const name = `شراء-إعادة-محاولة-${Date.now()}`;
+  const item = await callRpc<Item, object>(page, "itemsCreate", {
+    name, categoryId, costPrice: 400, sellingPrice: 1000,
+  });
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+  await pick(page, name, "purchase");
+  const quantity = page.getByTestId("purchase-lines").getByLabel(`${name}: الكمية`);
+  await quantity.fill("2");
+
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reached = () => {};
+  const requested = new Promise<void>((resolve) => { reached = resolve; });
+  const pattern = "**/api/rpc/invoicesCreate";
+  await page.route(pattern, async (route) => {
+    reached();
+    await held;
+    // Fail at the transport boundary before the request reaches the real store.
+    await route.abort("connectionfailed");
+  });
+  try {
+    await page.getByTestId("purchase-save").click();
+    await requested;
+    await expect(page.getByTestId("purchase-save")).toBeDisabled();
+    await page.keyboard.press("Control+n");
+    await expect(page.getByTestId("purchase-discard-confirm")).toHaveCount(0);
+    await page.getByRole("button", { name: "اختصارات لوحة المفاتيح" }).click();
+    const help = page.getByRole("dialog", { name: "اختصارات لوحة المفاتيح" });
+    await expect(help).toBeVisible();
+    release();
+    await expect(page.getByTestId("purchase-error")).toBeVisible();
+    await expect(help).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/purchase$/);
+    await expect(quantity).toHaveValue("2");
+    await expect(page.getByTestId("purchase-save")).toBeEnabled();
+    const beforeRetry = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(beforeRetry.items.find((row) => row.id === item.id)?.stockOnHand).toBe(0);
+
+    await page.keyboard.press("Control+n");
+    await expect(page.getByTestId("purchase-discard-confirm")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/purchase$/);
+    await expect(quantity).toHaveValue("2");
+    await page.unroute(pattern);
+    const invoice = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("purchase-save").click());
+    await expect(page.getByTestId("purchase-saved-number")).toContainText(invoice.invoiceNumber);
+    const persisted = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: invoice.id });
+    expect(persisted.totalAmount).toBe(800);
+    expect(persisted.lines[0]?.quantity).toBe(2);
+    const afterRetry = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(afterRetry.items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
+    await page.keyboard.press("Control+n");
+    await expect(page.getByTestId("sale-form")).toBeVisible();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
+
+test("a browser-typed first sale character is protected by Ctrl+B and cancellation", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  const customer = page.getByTestId("sale-customer");
+  await expect(customer).toBeEmpty();
+  await customer.pressSequentially("x");
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
+  await expect(page).toHaveURL(/\/sale$/);
+  await expect(customer).toHaveValue("x");
+  await page.keyboard.press("Escape");
+  await expect(customer).toBeFocused();
+  await customer.pressSequentially("y");
+  await expect(customer).toHaveValue("xy");
+});
 
 test("cancelling purchase navigation restores the sale field without manual refocus", async ({ page }) => {
   await signIn(page);

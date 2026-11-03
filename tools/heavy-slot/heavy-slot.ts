@@ -983,12 +983,18 @@ export async function run(label: string, command: string): Promise<number> {
 
   let child: ChildProcess | undefined;
   let cancelled = false;
+  let cancelStartedAt: number | undefined;
+  let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+  let settleCancellation: (() => void) | undefined;
   // Hoisted out of the promise so the handlers can be removed once the child is
   // gone: a library caller running several commands through run() would otherwise
   // accumulate one SIGINT/SIGTERM listener per call.
   const stop = (): void => {
+    if (cancelled) return;
     cancelled = true;
+    cancelStartedAt = Date.now();
     if (child) killTree(child, "SIGTERM");
+    cancelTimer = setTimeout(() => settleCancellation?.(), STOP_GRACE_MS);
   };
   // SAFETY: process is an EventEmitter at runtime; bun's NodeJS.Process augmentation
   // declares off() only for its own "memoryPressure" event, which is what narrows the
@@ -1017,19 +1023,20 @@ export async function run(label: string, command: string): Promise<number> {
       // launch is an outcome, a code the caller reads - never an exception and
       // never a slot held hostage by a close that will not come.
       let settled = false;
-      child.on("close", (c) => {
-        if (!settled) {
-          settled = true;
-          resolve(c ?? 1);
-        }
-      });
+      const finish = (outcome: number): void => {
+        if (settled) return;
+        settled = true;
+        if (cancelTimer !== undefined) clearTimeout(cancelTimer);
+        resolve(outcome);
+      };
+      settleCancellation = () => finish(1);
+      child.on("close", (c) => finish(c ?? 1));
       child.on("error", (err: NodeJS.ErrnoException | undefined) => {
         if (!settled) {
-          settled = true;
           console.error(
             `[heavy-slot] the command could not start (${err?.code ?? "UNKNOWN"}: ${err?.message ?? err}): ${command} - returning 1, no shell was launched`,
           );
-          resolve(1);
+          finish(1);
         }
       });
     });
@@ -1041,7 +1048,7 @@ export async function run(label: string, command: string): Promise<number> {
       // hostage forever. A descendant that made its own process group is out of
       // reach of both the signal and the probe; the same bound releases the slot
       // when that happens too.
-      const deadline = Date.now() + STOP_GRACE_MS;
+      const deadline = (cancelStartedAt ?? Date.now()) + STOP_GRACE_MS;
       if (treeAlive(child)) killTree(child, "SIGKILL");
       while (Date.now() < deadline && treeAlive(child)) await wait(100);
       // [F21] Disclose the give-up: the bounded budget ran out with the tree still
@@ -1060,6 +1067,8 @@ export async function run(label: string, command: string): Promise<number> {
     // caller lets propagate) held the slot and accumulated listeners before this.
     emitter.off("SIGINT", stop);
     emitter.off("SIGTERM", stop);
+    if (cancelTimer !== undefined) clearTimeout(cancelTimer);
+    settleCancellation = undefined;
     release(slot);
     console.error(`[heavy-slot] slot ${slot.index} released, exit ${code}`);
   }

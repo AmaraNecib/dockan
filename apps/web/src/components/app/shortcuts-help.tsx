@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import type { MessageKey } from "@/lib/i18n";
+import { KEYBOARD_ACTIONS } from "@/lib/keyboard-actions";
 import {
   Dialog,
   DialogDescription,
@@ -19,13 +19,6 @@ interface ShortcutsHelpProps {
 export function ShortcutsHelp({ open, onOpenChange }: ShortcutsHelpProps) {
   const { t } = useTranslation();
 
-  const rows: { keys: string; labelKey: MessageKey }[] = [
-    { keys: "Ctrl/⌘ + K", labelKey: "shortcutSearch" },
-    { keys: "Ctrl/⌘+Shift+B", labelKey: "shortcutToggleSidebar" },
-    { keys: "?", labelKey: "shortcutHelp" },
-    { keys: "Esc", labelKey: "shortcutClose" },
-  ];
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPopup className="max-w-sm">
@@ -34,7 +27,7 @@ export function ShortcutsHelp({ open, onOpenChange }: ShortcutsHelpProps) {
           <DialogDescription>{t("shortcutsHint")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">
-          {rows.map((row) => (
+          {KEYBOARD_ACTIONS.map((row) => (
             <div key={row.keys} className="flex items-center justify-between gap-4 text-sm">
               <span className="text-muted-foreground">{t(row.labelKey)}</span>
               <kbd className="rounded border bg-muted px-2 py-0.5 font-mono text-xs whitespace-nowrap" dir="ltr">

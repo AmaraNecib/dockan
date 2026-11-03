@@ -83,7 +83,9 @@ describe("ShortcutsHelp dialog", () => {
     const popup = document.querySelector('[data-slot="dialog-popup"]');
     expect(popup).not.toBeNull();
     expect(popup!.textContent).toContain("اختصارات لوحة المفاتيح");
-    expect(popup!.textContent).toContain("Ctrl/⌘ + K");
+    expect(popup!.textContent).toContain("Ctrl+N");
+    expect(popup!.textContent).toContain("Ctrl+B");
+    expect(popup!.textContent).not.toContain("Ctrl/⌘ + K");
     expect(popup!.textContent).toContain("Ctrl/⌘+Shift+B");
   });
 });

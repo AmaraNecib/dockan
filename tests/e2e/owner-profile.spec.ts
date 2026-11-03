@@ -1,6 +1,39 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { actAndAck, readRpc } from "./rpc-helpers";
+
+async function inspectPhoneLayout(page: Page, label: string) {
+  const menu = page.getByRole("menu");
+  const phone = page.getByTestId("account-phone");
+  await expect(phone).toHaveAttribute("dir", "ltr");
+  const layout = await phone.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const block = element.getBoundingClientRect();
+    const text = range.getBoundingClientRect();
+    const node = element.firstChild;
+    if (!node?.textContent) throw new Error("account phone has no text node");
+    const first = document.createRange();
+    first.setStart(node, 0);
+    first.setEnd(node, 1);
+    const last = document.createRange();
+    last.setStart(node, node.textContent.length - 1);
+    last.setEnd(node, node.textContent.length);
+    return { blockRight: block.right, textRight: text.right, firstX: first.getBoundingClientRect().x, lastX: last.getBoundingClientRect().x };
+  });
+  const bounds = await menu.boundingBox();
+  const viewport = page.viewportSize();
+  if (!bounds || !viewport) throw new Error("account menu or viewport has no layout box");
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.y).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+  expect(Math.abs(layout.blockRight - layout.textRight)).toBeLessThanOrEqual(1);
+  expect(layout.firstX).toBeLessThan(layout.lastX);
+  await expect(phone).toHaveText("+213550123123");
+  console.log(JSON.stringify({ label, viewport: page.viewportSize(), bounds, layout }));
+  if (process.env.OWNER_EVIDENCE_DIR) await menu.screenshot({ path: `${process.env.OWNER_EVIDENCE_DIR}/${label}-menu.png` });
+}
 
 // These journeys share the operator's persisted preference with later specs.
 test.afterEach(async ({ page }) => {
@@ -39,6 +72,7 @@ test("verified owner stays visible collapsed, with keyboard account menu and per
   await page.keyboard.press("Enter");
   await expect(page.getByRole("menu")).toBeVisible();
   await expect(page.getByRole("menu")).toContainText("+213550123123");
+  await inspectPhoneLayout(page, "desktop");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu")).not.toBeVisible();
   await expect(account).toBeFocused();
@@ -82,8 +116,7 @@ test("long mixed owner names fit a narrow RTL header and unavailable identity ne
   await account.focus();
   await page.keyboard.press("ArrowDown");
   await expect(page.getByRole("menu")).toContainText(name);
-  if (process.env.OWNER_EVIDENCE_DIR) await page.getByRole("menu").screenshot({ path: `${process.env.OWNER_EVIDENCE_DIR}/narrow-menu.png` });
-  await expect(page.getByTestId("account-phone")).toHaveAttribute("dir", "ltr");
+  await inspectPhoneLayout(page, "narrow");
   await page.keyboard.press("Escape");
   await expect(account).toBeFocused();
   await page.unroute("**/api/rpc/currentOwner");

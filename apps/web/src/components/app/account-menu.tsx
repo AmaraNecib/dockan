@@ -67,7 +67,7 @@ export function AccountMenu({ profile, failed, blocked, retry, onLogout }: {
           <MenuGroupLabel>
             <bdi className="block break-words text-foreground">{profile.name}</bdi>
             <span className="block">{t("accountOwner")}</span>
-            {profile.phone && <bdi dir="ltr" className="block text-start" data-testid="account-phone">{profile.phone}</bdi>}
+            {profile.phone && <bdi dir="ltr" className="block text-end" data-testid="account-phone">{profile.phone}</bdi>}
           </MenuGroupLabel>
           <MenuItem onClick={onLogout}>{t("logout")}</MenuItem>
         </MenuGroup>

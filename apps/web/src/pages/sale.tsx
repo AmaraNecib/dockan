@@ -229,9 +229,10 @@ export function SalePage() {
   // The first category is a seeded default, not user work. A different category
   // is an explicit choice and must count even when it is the only quick-add edit.
   const quickCategoryDefault = categories.data?.items[0]?.id ?? "";
+  const quickCategoryDefaultAtOpen = useRef(quickCategoryDefault);
   const quickCategory = quick.fields.categoryId || quickCategoryDefault;
   const quickFieldsDirty = anyTyped([quick.fields.name, quick.fields.barcode, quick.fields.cost, quick.fields.sell, quick.fields.stock]);
-  const quickCategoryDirty = quickCategory !== quickCategoryDefault;
+  const quickCategoryDirty = quickCategory !== quickCategoryDefaultAtOpen.current;
   const draftDirtyOutsideQuickAdd =
     lines.length > 0 ||
     anyTyped([customer.name, discountValue, payment.amount, payment.percentage]) ||
@@ -327,6 +328,8 @@ export function SalePage() {
   const quickCategoriesLoading = categories.data === undefined;
 
   function openQuick(code = "", withStock = false) {
+    if (quickCreatePending || createInvoice.isPending) return;
+    quickCategoryDefaultAtOpen.current = quickCategoryDefault;
     setQuickStockRequired(withStock);
     if (withStock) setQuickStockFocusRequest((request) => request + 1);
     quick.openForm({ barcode: code, categoryId: quickCategoryDefault });
@@ -406,7 +409,10 @@ export function SalePage() {
   }
 
   return (
-    <section data-testid="sale-form" onInput={() => setDraftDirty(true)}>
+    <section data-testid="sale-form" onInput={(event) => {
+      if (event.target instanceof Element && event.target.closest('[data-testid="picker-dialog"]') !== null) return;
+      setDraftDirty(true);
+    }}>
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
 
       <div className="mt-4 grid gap-4">
@@ -449,7 +455,7 @@ export function SalePage() {
                 {t("saleAddItem")}
               </Button>
             )}
-            <Button variant="outline" data-testid="sale-quick-add" onClick={() => openQuick()} disabled={createInvoice.isPending}>
+            <Button variant="outline" data-testid="sale-quick-add" onClick={() => openQuick()} disabled={createInvoice.isPending || quickCreatePending}>
               {t("saleQuickAdd")}
             </Button>
           </div>

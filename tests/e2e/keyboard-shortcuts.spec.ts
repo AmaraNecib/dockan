@@ -468,6 +468,22 @@ test("Ctrl+B in the sale-save click task cannot interrupt the pending sale", asy
   }
 });
 
+test("picker search does not mark an empty sale dirty", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+
+  await page.getByTestId("sale-open-picker").click();
+  const picker = page.getByTestId("picker-dialog");
+  await picker.getByRole("combobox").fill("catalog lookup only");
+  await page.keyboard.press("Escape");
+  await expect(picker).toHaveCount(0);
+
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("new-sale-discard-confirm")).toHaveCount(0);
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+});
+
 test("an explicit sale quick-add category choice blocks Ctrl+B until reset", async ({ page }) => {
   await signIn(page);
   const suffix = Date.now().toString();
@@ -783,6 +799,12 @@ test("sale quick-add refusal preserves the form and re-enables its dirty guard",
     await expect(stockInput).toBeDisabled();
     await expect(saveButton).toBeDisabled();
     await expect(closeButton).toBeDisabled();
+    await expect(page.getByTestId("sale-quick-add")).toBeDisabled();
+    await page.getByTestId("sale-quick-add").evaluate((button) => {
+      if (!(button instanceof HTMLButtonElement)) throw new Error("sale-quick-add is not a button");
+      button.click();
+    });
+    await expect(nameInput).toHaveValue(enteredName);
 
     release();
     const refusalResponse = await refusal;

@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import { parseDateTimeText } from "../lib/dates";
 import { SessionCacheScopeProvider } from "../lib/session-query-scope";
+import { expenseCorrectionRecoveryQueryKey } from "../lib/query-keys";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
 import { focusedTestId } from "../tests/page-harness";
 
@@ -114,6 +115,8 @@ let deferCorrectionResponses = false;
 let deferredCorrectionResponses: Array<() => void> = [];
 let correctionResults = new Map<string, ExpenseCorrection>();
 let loseUndoResponse = false;
+let deferUndoResponses = false;
+let deferredUndoResponses: Array<(loseResponse?: boolean) => void> = [];
 let undoResults = new Map<string, ExpenseCorrection>();
 
 let categoriesFixture: ExpenseCategory[] = [];
@@ -342,6 +345,14 @@ mock.module("@/lib/rpc", () => ({
           });
           listItems = listItems.map((row) => row.id === target.expenseId ? { ...row, effectiveAmount: correction.afterAmount, correctionCount: (row.correctionCount ?? 0) + 1 } : row);
           undoResults.set(input.idempotencyKey, correction);
+          if (deferUndoResponses) {
+            return await new Promise<ExpenseCorrection>((resolve, reject) => {
+              deferredUndoResponses.push((loseResponse = false) => {
+                if (loseResponse) reject(new Error("response lost after commit"));
+                else resolve(correction);
+              });
+            });
+          }
           if (loseUndoResponse) {
             loseUndoResponse = false;
             throw new Error("response lost after commit");
@@ -1647,6 +1658,8 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     deferredCorrectionResponses = [];
     correctionResults = new Map();
     loseUndoResponse = false;
+    deferUndoResponses = false;
+    deferredUndoResponses = [];
     undoResults = new Map();
     historyFails = false;
     historyResponseOverride = null;
@@ -2574,6 +2587,102 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(correctionHistories.get("exp-1")?.corrections).toHaveLength(2);
     expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(1_000);
     expect(ui.query("expense-correction-saved")?.textContent).toBe(i18n.t("expenseCorrectionUndoSaved"));
+    await ui.unmount();
+  });
+
+  it.each([false, true])("does not restore an acknowledged correction when an undo finishes later, lost undo response: %s", async (loseUndoAck) => {
+    const priorCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-1", expenseId: "exp-1", effectiveAt: "2019-12-15T10:00:00", recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000, afterAmount: 800, difference: -200, actorId: "actor-1", actorName: "مالك المتجر",
+      reason: "receipt typo", reversesCorrectionId: null, reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      original: { id: "exp-1", categoryId: "cat-1", amount: 1_000, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+      effectiveAmount: 800, corrections: [priorCorrection],
+    });
+    listItems[0] = { ...listItems[0]!, effectiveAmount: 800, correctionCount: 1 };
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-history") !== null)).toBe(true);
+    await ui.click("expense-correction-open-history");
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    await ui.type("expense-correction-amount", "700");
+
+    deferCorrectionResponses = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && deferredCorrectionResponses.length === 1)).toBe(true);
+    const recoveryKey = expenseCorrectionRecoveryQueryKey("test-session");
+    const correctionKey = correctionInputs[0]!.idempotencyKey;
+    expect(queryClient.getQueryData<{ "exp-1"?: { correctionRequest: { idempotencyKey: string } | null } }>(recoveryKey)?.["exp-1"]?.correctionRequest?.idempotencyKey).toBe(correctionKey);
+
+    deferUndoResponses = true;
+    await ui.click("expense-correction-undo");
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 1 && deferredUndoResponses.length === 1)).toBe(true);
+    const undoKey = undoInputs[0]!.idempotencyKey;
+
+    await act(async () => { deferredCorrectionResponses[0]!(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(await ui.waitFor(() => queryClient.getQueryData<{ "exp-1"?: { correctionRequest: unknown } }>(recoveryKey)?.["exp-1"]?.correctionRequest === null)).toBe(true);
+    await act(async () => { deferredUndoResponses[0]!(loseUndoAck); await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    const recoveryAfterUndo = queryClient.getQueryData<{ "exp-1"?: { correctionRequest: unknown; undoRequests: Record<string, string> } }>(recoveryKey)?.["exp-1"];
+    expect(recoveryAfterUndo?.correctionRequest).toBeNull();
+    expect(recoveryAfterUndo?.undoRequests["correction-1"]).toBe(loseUndoAck ? undoKey : undefined);
+    if (!loseUndoAck) expect(ui.query("expense-correction-amount-unverified")).toBeNull();
+    if (loseUndoAck) {
+      await ui.click("expense-correction-undo-confirm-button");
+      expect(await ui.waitFor(() => undoInputs.length === 2)).toBe(true);
+      expect(undoInputs[1]?.idempotencyKey).toBe(undoKey);
+    }
+    expect(correctionInputs).toHaveLength(1);
+    expect(correctionInputs[0]?.idempotencyKey).toBe(correctionKey);
+    await ui.unmount();
+  });
+
+  it("preserves a pending correction and exact undo retry key when undo fails first", async () => {
+    const priorCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-1", expenseId: "exp-1", effectiveAt: "2019-12-15T10:00:00", recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000, afterAmount: 800, difference: -200, actorId: "actor-1", actorName: "مالك المتجر",
+      reason: "receipt typo", reversesCorrectionId: null, reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      original: { id: "exp-1", categoryId: "cat-1", amount: 1_000, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+      effectiveAmount: 800, corrections: [priorCorrection],
+    });
+    listItems[0] = { ...listItems[0]!, effectiveAmount: 800, correctionCount: 1 };
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-history") !== null)).toBe(true);
+    await ui.click("expense-correction-open-history");
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    await ui.type("expense-correction-amount", "700");
+
+    deferCorrectionResponses = true;
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && deferredCorrectionResponses.length === 1)).toBe(true);
+    const recoveryKey = expenseCorrectionRecoveryQueryKey("test-session");
+    const correctionKey = correctionInputs[0]!.idempotencyKey;
+    deferUndoResponses = true;
+    await ui.click("expense-correction-undo");
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 1 && deferredUndoResponses.length === 1)).toBe(true);
+    const undoKey = undoInputs[0]!.idempotencyKey;
+
+    await act(async () => { deferredUndoResponses[0]!(true); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    const recoveryAfterUndoFailure = queryClient.getQueryData<{ "exp-1"?: { correctionRequest: { idempotencyKey: string } | null; undoRequests: Record<string, string> } }>(recoveryKey)?.["exp-1"];
+    expect(recoveryAfterUndoFailure?.correctionRequest?.idempotencyKey).toBe(correctionKey);
+    expect(recoveryAfterUndoFailure?.undoRequests["correction-1"]).toBe(undoKey);
+
+    await act(async () => { deferredCorrectionResponses[0]!(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    const recoveryAfterCorrection = queryClient.getQueryData<{ "exp-1"?: { correctionRequest: unknown; undoRequests: Record<string, string> } }>(recoveryKey)?.["exp-1"];
+    expect(recoveryAfterCorrection?.correctionRequest).toBeNull();
+    expect(recoveryAfterCorrection?.undoRequests["correction-1"]).toBe(undoKey);
+
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 2)).toBe(true);
+    expect(undoInputs[1]?.idempotencyKey).toBe(undoKey);
+    expect(correctionInputs).toHaveLength(1);
+    expect(correctionInputs[0]?.idempotencyKey).toBe(correctionKey);
     await ui.unmount();
   });
 

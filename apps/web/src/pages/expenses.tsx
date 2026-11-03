@@ -84,6 +84,7 @@ function ExpenseCorrectionRow({
   onHistoryConfirmed,
   onClearNotice,
   onRequestChange,
+  onUndoRequestsChange,
   recovery,
 }: {
   entry: ExpenseListItem;
@@ -94,6 +95,7 @@ function ExpenseCorrectionRow({
   onHistoryConfirmed: (expenseId: string, history: ExpenseCorrectionHistory) => void;
   onClearNotice: (expenseId: string) => void;
   onRequestChange: (expenseId: string, correctionRequest: ExpenseCorrectionRecovery["correctionRequest"], undoRequests: Record<string, string>) => void;
+  onUndoRequestsChange: (expenseId: string, undoRequests: Record<string, string>) => void;
   recovery: ExpenseCorrectionRecovery;
 }) {
   const { t } = useTranslation();
@@ -218,7 +220,7 @@ function ExpenseCorrectionRow({
         setHistoryActionError(null);
         onAcknowledged(entry.id, entry, savedUndo, queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0, t("expenseCorrectionUndoSaved"));
         undoKeysRef.current.delete(savedUndo.reversesCorrectionId ?? "");
-        onRequestChange(entry.id, recovery.correctionRequest, Object.fromEntries(undoKeysRef.current));
+        onUndoRequestsChange(entry.id, Object.fromEntries(undoKeysRef.current));
         void queryClient.invalidateQueries();
         void refreshCorrectionHistory();
       },
@@ -226,7 +228,7 @@ function ExpenseCorrectionRow({
         setHistoryActionError(tError(error.message));
         if (isDefinitiveCorrectionRefusal(error.message)) undoKeysRef.current.delete(input.correctionId);
         else undoKeysRef.current.set(input.correctionId, input.idempotencyKey);
-        onRequestChange(entry.id, recovery.correctionRequest, Object.fromEntries(undoKeysRef.current));
+        onUndoRequestsChange(entry.id, Object.fromEntries(undoKeysRef.current));
         void queryClient.invalidateQueries();
         void refreshCorrectionHistory();
       },
@@ -578,6 +580,17 @@ export function ExpensesPage() {
       const next = { ...current };
       if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[entry.id];
       else next[entry.id] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
+  const retainUndoRequests = useCallback((expenseId: string, undoRequests: Record<string, string>) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      const store = current ?? {};
+      const existing = store[expenseId] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
+      const updated = { ...existing, undoRequests };
+      const next = { ...store };
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(undoRequests).length === 0) delete next[expenseId];
+      else next[expenseId] = updated;
       return next;
     });
   }, [correctionRecoveryKey, queryClient]);
@@ -1246,6 +1259,7 @@ export function ExpensesPage() {
                     onHistoryConfirmed={confirmAcknowledgementsFromFreshHistory}
                     onClearNotice={clearCorrectionNotice}
                     onRequestChange={retainCorrectionRequests}
+                    onUndoRequestsChange={retainUndoRequests}
                     recovery={correctionRecoveryStore[entry.id] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY}
                   />
                 );

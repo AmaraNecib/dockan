@@ -54,6 +54,7 @@ describe("wipe-e2e: the data dir the script agrees to delete", () => {
     expect(existsSync(join(dataDir, "takes", "records.db"))).toBe(false);
   });
 
+  // red-on-parent-waive: "cleans an absolute PWD override through a checkout alias" — the baseline CLI already accepts outer checkout aliases; this preserves compatibility while the new inner-link refusals fail on the baseline
   test("cleans an absolute PWD override through a checkout alias", async () => {
     const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-checkout-alias-"));
     const physical = join(fixture, "checkout");

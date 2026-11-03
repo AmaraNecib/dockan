@@ -907,8 +907,9 @@ const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)
  * descendants (a signal to the shell alone can leave the build or the full suite
  * running while the slot is already released - exactly the double load the queue
  * exists to prevent); on POSIX the child was spawned detached, so the negative pid
- * signals the group the shell and its children share. Exported for the cancellation
- * test - it pins the kill-then-confirm promise the SIGINT/SIGTERM hook makes.
+ * signals the group the shell and its children share. A Windows taskkill result is
+ * not proof that every descendant exited. Exported for the cancellation test - it
+ * pins the kill-then-confirm promise the SIGINT/SIGTERM hook makes.
  */
 export function killTree(child: ChildProcess, signal: NodeJS.Signals): "found" | "not-found" | "unknown" | undefined {
   const pid = child.pid;
@@ -989,7 +990,6 @@ export async function run(label: string, command: string): Promise<number> {
   let cancelled = false;
   let cancelStartedAt: number | undefined;
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
-  let initialTreeKill: "found" | "not-found" | "unknown" | undefined;
   let settleCancellation: (() => void) | undefined;
   // Hoisted out of the promise so the handlers can be removed once the child is
   // gone: a library caller running several commands through run() would otherwise
@@ -998,12 +998,7 @@ export async function run(label: string, command: string): Promise<number> {
     if (cancelled) return;
     cancelled = true;
     cancelStartedAt = Date.now();
-    if (child) {
-      initialTreeKill = killTree(child, "SIGTERM");
-      if (initialTreeKill === "unknown") {
-        console.error(`[heavy-slot] cancellation cleanup for pid ${child.pid} is unverified; wrapper state does not prove descendants are gone`);
-      }
-    }
+    if (child) killTree(child, "SIGTERM");
     const remaining = cancellationBudgetRemaining(cancelStartedAt);
     cancelTimer = setTimeout(() => settleCancellation?.(), remaining);
   };
@@ -1052,25 +1047,26 @@ export async function run(label: string, command: string): Promise<number> {
       });
     });
     if (cancelled && child) {
-      // The close event fires as soon as the wrapper shell dies, and the rest of the
-      // tree can outlive it - on Windows a tree can survive a SIGTERM to the shell
-      // outright. The slot is released only once the tree is really gone: re-kill
-      // and re-probe on a bounded budget, so a wedged machine cannot hold a slot
-      // hostage forever. A descendant that made its own process group is out of
-      // reach of both the signal and the probe; the same bound releases the slot
-      // when that happens too.
+      // The close event fires as soon as the wrapper shell dies, and descendants can
+      // outlive it. Windows can only probe the wrapper PID here; POSIX probes the
+      // detached process group. Retry within the original bounded budget, so a
+      // wedged process cannot hold a slot forever. A descendant that made its own
+      // process group is outside either probe. Windows cleanup remains unverified
+      // at release unless an independent descendant-exit proof exists.
       const deadline = (cancelStartedAt ?? Date.now()) + STOP_GRACE_MS;
       const remainingBeforeFollowup = cancellationBudgetRemaining(cancelStartedAt ?? Date.now());
       if (remainingBeforeFollowup >= TASKKILL_TIMEOUT_MS && treeAlive(child)) killTree(child, "SIGKILL");
       while (Date.now() < deadline && treeAlive(child)) await wait(Math.min(100, deadline - Date.now()));
-      // [F21] Disclose the give-up: the bounded budget ran out with the tree still
-      // alive, so the slot is released while work may still be running - the same
-      // double load the queue exists to prevent. A disclosed weakness is a
-      // visible one; the old silent fallthrough read as a clean release.
+      // [F21] Windows only probes the wrapper PID, so none of taskkill's outcomes
+      // prove that descendants exited. Disclose that before every Windows release.
+      // On POSIX, disclose a process group that remains observable after the bound.
       const wrapperStillAlive = treeAlive(child);
-      if (wrapperStillAlive || initialTreeKill === "unknown") {
+      if (process.platform === "win32" || wrapperStillAlive) {
+        const detail = wrapperStillAlive
+          ? `wrapper remains observable after ${STOP_GRACE_MS}ms`
+          : "wrapper exited, descendant exit was not independently verified";
         console.error(
-          `[heavy-slot] cancellation cleanup for pid ${child.pid} remains unverified${wrapperStillAlive ? ` after ${STOP_GRACE_MS}ms` : " because taskkill did not establish tree state"}; releasing slot ${slot.index} with work possibly still running`,
+          `[heavy-slot] cancellation cleanup for pid ${child.pid} remains unverified (${detail}); releasing slot ${slot.index} with work possibly still running`,
         );
       }
     }

@@ -319,6 +319,67 @@ describe("heavy-slot", () => {
     }
   });
 
+  test.skipIf(process.platform !== "win32")("run logs unverified descendant cleanup for every taskkill outcome", async () => {
+    for (const outcome of ["found", "not-found", "unknown"] as const) {
+      for (const wrapperAtRelease of ["absent", "present"] as const) {
+        const originalError = console.error;
+        const errors: string[] = [];
+        let probeCalls = 0;
+        let killCalls = 0;
+        console.error = (...messages: unknown[]) => errors.push(messages.map(String).join(" "));
+        setTaskkillRunnerForTest(() => {
+          killCalls += 1;
+          if (killCalls > 1) return { status: 0 };
+          return outcome === "found" ? { status: 0 } : { status: 1 };
+        });
+        setProcessProbeForTest(() => {
+          const call = probeCalls++;
+          if (outcome === "not-found" && call === 0) return "absent";
+          if (outcome === "unknown" && call === 0) return "unknown";
+          const releaseProbe = outcome === "found" ? 0 : 1;
+          return wrapperAtRelease === "present" && (call === releaseProbe || call === releaseProbe + 2) ? "present" : "absent";
+        });
+
+        try {
+          const baselineListeners = process.listenerCount("SIGINT");
+          const result = run("diagnostic-regression", `"${process.execPath}" -e "setTimeout(() => process.exit(0), 100)"`);
+          for (let attempt = 0; attempt < 200 && !errors.some((line) => line.includes("running:")); attempt++) await sleep(10);
+          expect(errors.some((line) => line.includes("running:"))).toBe(true);
+          expect(process.listenerCount("SIGINT")).toBeGreaterThan(baselineListeners);
+          process.emit("SIGINT");
+          expect(await waitForPromise(result, 3000)).toMatchObject({ settled: true });
+          expect(killCalls).toBeGreaterThan(0);
+          const diagnostic = errors.find((line) => line.includes("cancellation cleanup"));
+          expect(diagnostic).toBeDefined();
+          expect(diagnostic).toContain(wrapperAtRelease === "present" ? "wrapper remains observable" : "descendant exit was not independently verified");
+          expect(diagnostic).toContain("work possibly still running");
+        } finally {
+          setTaskkillRunnerForTest(null);
+          setProcessProbeForTest(null);
+          console.error = originalError;
+        }
+      }
+    }
+  }, 15000);
+
+  test.skipIf(process.platform === "win32")("POSIX run cancellation keeps process-group cleanup diagnostics unchanged", async () => {
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (...messages: unknown[]) => errors.push(messages.map(String).join(" "));
+    try {
+      const baselineListeners = process.listenerCount("SIGINT");
+      const result = run("posix-diagnostic-regression", `"${process.execPath}" -e "setInterval(() => {}, 1000)"`);
+      for (let attempt = 0; attempt < 200 && !errors.some((line) => line.includes("running:")); attempt++) await sleep(10);
+      expect(errors.some((line) => line.includes("running:"))).toBe(true);
+      expect(process.listenerCount("SIGINT")).toBeGreaterThan(baselineListeners);
+      process.emit("SIGINT");
+      expect(await waitForPromise(result, 2000)).toMatchObject({ settled: true });
+      expect(errors.join("\\n")).not.toContain("cancellation cleanup");
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   test.skipIf(process.platform !== "win32")("treeAlive treats a taskkill timeout as potentially alive", () => {
     setTaskkillRunnerForTest(() => ({
       status: null,

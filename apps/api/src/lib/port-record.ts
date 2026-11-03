@@ -74,13 +74,12 @@ function parseIpv6Words(host: string): number[] | null {
     if (v4 === null) return null;
     // fuse the tail back in as two hex groups so "::" compression still
     // parses: "::ffff:0.0.0.0" becomes "::ffff:0:0"
-    // SAFETY: parseIpv4Quarter always returns exactly two words or null
-    text = `${text.slice(0, lastColon + 1)}${v4[0]!.toString(16)}:${v4[1]!.toString(16)}`;
+    text = `${text.slice(0, lastColon + 1)}${v4[0].toString(16)}:${v4[1].toString(16)}`;
   }
   const halves = text.split("::");
   if (halves.length > 2) return null;
-  const left = halves[0] === "" ? [] : halves[0]!.split(":");
-  const right = halves.length === 2 && halves[1] !== "" ? halves[1]!.split(":") : [];
+  const left = splitGroups(halves[0]);
+  const right = halves.length === 2 ? splitGroups(halves[1]) : [];
   const words: number[] = [];
   for (const group of left) {
     const word = parseHexGroup(group);
@@ -108,7 +107,22 @@ function parseHexGroup(group: string): number | null {
   return parseInt(group, 16);
 }
 
-function parseIpv4Quarter(quarter: string): number[] | null {
+/**
+ * The colon-separated groups of one half of an IPv6 address. An absent or
+ * empty half contributes no groups at all — "::" is two empty halves, not two
+ * groups of one empty string.
+ */
+function splitGroups(half: string | undefined): string[] {
+  if (half === undefined || half === "") return [];
+  return half.split(":");
+}
+
+/**
+ * The two 16-bit words of a dotted-decimal IPv4 quarter: (a<<8|b) and
+ * (c<<8|d). The tuple is the shape the caller fuses back into an IPv6
+ * address, so it carries two words or nothing at all.
+ */
+function parseIpv4Quarter(quarter: string): readonly [number, number] | null {
   const octets = quarter.split(".");
   if (octets.length !== 4) return null;
   const bytes: number[] = [];
@@ -118,9 +132,9 @@ function parseIpv4Quarter(quarter: string): number[] | null {
     if (value > 255) return null;
     bytes.push(value);
   }
-  // SAFETY: bytes has exactly 4 elements (length-checked above); a.b.c.d maps
-  // to the 16-bit words (a<<8|b) and (c<<8|d)
-  return [(bytes[0]! << 8) | bytes[1]!, (bytes[2]! << 8) | bytes[3]!];
+  const [a, b, c, d] = bytes;
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return null;
+  return [(a << 8) | b, (c << 8) | d];
 }
 
 /**

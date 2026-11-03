@@ -1,63 +1,28 @@
 import { useCallback, useEffect } from "react";
+import { matchKeyboardAction, navigationDialogOpen, type KeyboardShortcuts } from "@/lib/keyboard-actions";
 
-export interface KeyboardShortcuts {
-  /** Cmd/Ctrl+Shift+B: toggle the sidebar. */
-  onToggleSidebar?: () => void;
-  /** `?`: open the keyboard shortcuts help. */
-  onHelp?: () => void;
-  /** Escape: close the topmost open dialog. */
-  onClose?: () => void;
-}
+export type { KeyboardShortcuts } from "@/lib/keyboard-actions";
 
-/**
- * Global keyboard-shortcut hook. Modeled on the proven tuari_react_hono hook:
- * a small hand-rolled keydown listener (no dependency) that skips firing while
- * the user is typing in an input, so shortcut keys never swallow real input.
- * Shortcut bindings deliberately avoid browser-reserved chords (plain Cmd+B
- * opens the bookmarks bar; plain Cmd+N opens a new window).
- */
+/** Ctrl-letter actions work in fields; unmodified help never replaces typing. */
 export function useKeyboardShortcuts(shortcuts: KeyboardShortcuts) {
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      // SAFETY: keydown targets are Element or Window in the DOM; the cast
-      // only narrows to HTMLElement so the is-input check can read tagName.
-      const el = event.target as HTMLElement | null;
-      const isInput =
-        !!el &&
-        (el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          el.tagName === "SELECT" ||
-          el.isContentEditable);
-
-      if (isInput) {
-        // Escape still works while a field is focused (closes dialogs/back).
-        if (event.key === "Escape") shortcuts.onClose?.();
+      if (event.defaultPrevented || event.isComposing) return;
+      const action = matchKeyboardAction(event);
+      if (!action || !shortcuts[action.id]) return;
+      const el = event.target;
+      const isInput = el instanceof HTMLElement &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" ||
+          el.isContentEditable || el.closest('[contenteditable="true"]') !== null);
+      if (isInput && action.modifier === "none") {
+        // Preserve Escape from fields, including its previous default handling.
+        if (action.id === "onClose") shortcuts.onClose?.();
         return;
       }
-
-      const isMod = event.metaKey || event.ctrlKey;
-      const isShift = event.shiftKey;
-
-      // Cmd/Ctrl+Shift+B — toggle sidebar.
-      if (isMod && isShift && event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        shortcuts.onToggleSidebar?.();
-        return;
-      }
-
-      // ? — open shortcuts help.
-      if (event.key === "?") {
-        event.preventDefault();
-        shortcuts.onHelp?.();
-        return;
-      }
-
-      // Escape — close.
-      if (event.key === "Escape") {
-        event.preventDefault();
-        shortcuts.onClose?.();
-        return;
-      }
+      event.preventDefault();
+      if (event.repeat) return;
+      if (action.scope === "navigation" && navigationDialogOpen()) return;
+      shortcuts[action.id]?.();
     },
     [shortcuts],
   );

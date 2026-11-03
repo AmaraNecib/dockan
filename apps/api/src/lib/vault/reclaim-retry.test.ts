@@ -286,4 +286,63 @@ describe("vault reclaim retry (#277)", () => {
     expect(retry.trigger()).toBe(false);
     expect(clock.pending()).toBe(0);
   });
+
+  it("keeps an armed retry when the caller empties its schedule", () => {
+    const clock = fakeScheduler();
+    const backoff = [10];
+    const retry = new ReclaimRetry({
+      attempt: () => ({ ok: false }),
+      onAcquired: () => {},
+      backoffMs: backoff,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    retry.start();
+    expect(clock.delays).toEqual([10]);
+    // A mutation after start must not make the timer callback throw before it
+    // can re-arm. The one-entry schedule repeats its last interval.
+    backoff.length = 0;
+
+    expect(() => clock.fireNext()).not.toThrow();
+    expect(clock.delays).toEqual([10, 10]);
+    expect(clock.pending()).toBe(1);
+    expect(retry.taken).toBe(false);
+  });
+
+  it("snapshots the backoff before start, ignoring later caller mutation", () => {
+    const clock = fakeScheduler();
+    const backoff = [10];
+    const retry = new ReclaimRetry({
+      attempt: () => ({ ok: false }),
+      onAcquired: () => {},
+      backoffMs: backoff,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+
+    backoff.length = 0;
+    retry.start();
+    expect(clock.delays).toEqual([10]);
+    expect(() => clock.fireNext()).not.toThrow();
+    expect(clock.delays).toEqual([10, 10]);
+    expect(clock.pending()).toBe(1);
+  });
+
+  it("rejects an empty backoff schedule at construction", () => {
+    const clock = fakeScheduler();
+
+    expect(
+      () =>
+        new ReclaimRetry({
+          attempt: () => ({ ok: false }),
+          onAcquired: () => {},
+          backoffMs: [],
+          schedule: clock.schedule,
+          cancel: clock.cancel,
+        }),
+    ).toThrow("the reclaim backoff must have at least one interval");
+    expect(clock.delays).toEqual([]);
+    expect(clock.pending()).toBe(0);
+  });
 });

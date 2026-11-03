@@ -13,7 +13,7 @@ import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
-import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
+import { itemStockProjection, recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
@@ -273,25 +273,35 @@ async function resolveOpeningNames(
  * supported returns review scrap is up to 200 lines), reading each item's
  * history and writing its cache once — see `recordStockMovements`.
  */
+const rethrowStockPostingRefusal = (error: Error): never => {
+  if (error instanceof StockItemMissingError) {
+    throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+  }
+  if (error instanceof StockLedgerError) {
+    throw new ORPCError("BAD_REQUEST", { message: error.code });
+  }
+  throw error;
+};
+
 async function postStockBatch(tx: StorePort, specs: readonly StockMovementSpec[]) {
   try {
     return await recordStockMovements(tx, specs);
   } catch (error) {
-    if (error instanceof StockItemMissingError) {
-      throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
-    }
-    if (error instanceof StockLedgerError) {
-      throw new ORPCError("BAD_REQUEST", { message: error.code });
-    }
+    if (error instanceof Error) rethrowStockPostingRefusal(error);
     throw error;
   }
 }
 
 /** The length-one case of `postStockBatch`, for the single-movement call sites. */
 async function postStock(tx: StorePort, spec: StockMovementSpec) {
-  const [posted] = await postStockBatch(tx, [spec]);
-  // SAFETY: the batch returns exactly one result per spec, and we passed one
-  return posted!;
+  try {
+    // the single-movement form of the batch: it posts the one movement and
+    // resyncs the item cache, through the same seam and the same rule
+    return await recordStockMovement(tx, spec);
+  } catch (error) {
+    if (error instanceof Error) rethrowStockPostingRefusal(error);
+    throw error;
+  }
 }
 
 /**
@@ -1003,8 +1013,13 @@ export function createRpcRouter(deps: RpcDeps) {
           if (target.kind === "CREDIT") {
             credit = input.amount;
           } else if (target.kind === "INVOICE") {
-            // SAFETY: the contract superRefine requires an invoiceId for INVOICE
-            credit = (await payInvoice(target.invoiceId!, input.amount)).credit;
+            const targetInvoiceId = target.invoiceId;
+            if (targetInvoiceId === undefined) {
+              // the contract refuses an INVOICE target with no invoice; the
+              // handler proves it too rather than assuming it
+              throw new ORPCError("BAD_REQUEST", { message: "INVOICE_ID_REQUIRED" });
+            }
+            credit = (await payInvoice(targetInvoiceId, input.amount)).credit;
           } else {
             const outstanding = await tx.listOutstandingPurchaseInvoices(input.supplierId);
             const plan = allocateOldestFirst(outstanding, input.amount);
@@ -1036,7 +1051,6 @@ export function createRpcRouter(deps: RpcDeps) {
           const occurredAt = localDateTime();
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
           const returnNumber = await tx.allocateSupplierReturnNumber();
-          const invoiceLinked = input.invoiceId !== undefined && input.lines !== undefined;
 
           // Snapshot every returned line first so the header amounts and the
           // stock movements are computed from one consistent read.
@@ -1044,41 +1058,49 @@ export function createRpcRouter(deps: RpcDeps) {
           let amount = 0;
           let invoiceRemaining: number | null = null;
           let invoiceId: string | null = null;
+          const linkedInvoiceId = input.invoiceId;
+          const linkedLines = input.lines;
+          const invoiceLinked = linkedInvoiceId !== undefined && linkedLines !== undefined;
           if (invoiceLinked) {
-            // SAFETY: the contract superRefine guarantees both fields here
-            const detail = await tx.getInvoiceDetail(input.invoiceId!);
+            const detail = await tx.getInvoiceDetail(linkedInvoiceId);
             if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
               throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
             }
             const linesById = new Map(detail.lines.map((line) => [line.id, line]));
-            for (const entry of input.lines!) {
+            const resolvedLines = linkedLines.map((entry) => {
               const line = linesById.get(entry.invoiceLineId);
               if (line === undefined) throw new ORPCError("BAD_REQUEST", { message: "LINE_NOT_ON_INVOICE" });
               if (line.itemId === null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_LINE_NOT_RETURNABLE" });
-            }
+              return { entry, line, itemId: line.itemId };
+            });
             // cap: bought minus already returned, per original line
             const already = await tx.returnedByPurchaseLine(detail.id);
             const violation = returnCapViolation(
-              input.lines!,
+              linkedLines,
               detail.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
               already,
             );
             if (violation !== null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
             invoiceId = detail.id;
             invoiceRemaining = detail.remainingAmount;
-            for (const entry of input.lines!) {
-              // SAFETY: every requested line was resolved above
-              const line = linesById.get(entry.invoiceLineId)!;
+            for (const { entry, line, itemId } of resolvedLines) {
               const lineAmount = entry.quantity * line.unitPrice;
-              lines.push({ invoiceLineId: line.id, itemId: line.itemId!, description: line.description, quantity: entry.quantity, unitCost: line.unitPrice, amount: lineAmount });
+              lines.push({ invoiceLineId: line.id, itemId, description: line.description, quantity: entry.quantity, unitCost: line.unitPrice, amount: lineAmount });
               amount += lineAmount;
             }
           } else {
-            // SAFETY: the contract superRefine guarantees the free-standing trio
-            const item = (await tx.getItemsByIds([input.itemId!])).get(input.itemId!);
+            const itemId = input.itemId;
+            const quantity = input.quantity;
+            const freeAmount = input.amount;
+            if (itemId === undefined || quantity === undefined || freeAmount === undefined) {
+              // the contract refuses a return that is neither invoice-linked
+              // nor free-standing; the handler proves it too
+              throw new ORPCError("BAD_REQUEST", { message: "RETURN_SHAPE_INVALID" });
+            }
+            const item = (await tx.getItemsByIds([itemId])).get(itemId);
             if (item === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
-            amount = input.amount!;
-            lines.push({ invoiceLineId: null, itemId: item.id, description: item.name, quantity: input.quantity!, unitCost: item.costPrice, amount });
+            amount = freeAmount;
+            lines.push({ invoiceLineId: null, itemId: item.id, description: item.name, quantity, unitCost: item.costPrice, amount });
           }
 
           const split = supplierReturnSplit(amount, invoiceRemaining);
@@ -1274,8 +1296,13 @@ export function createRpcRouter(deps: RpcDeps) {
               }
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {
-              // SAFETY: the contract superRefine guarantees newSupplierName here
-              const candidates = candidatesForName(row.newSupplierName!);
+              const newSupplierName = row.newSupplierName;
+              if (newSupplierName === undefined) {
+                // the contract refuses a row that names neither an existing
+                // supplier nor a new one; the handler proves it too
+                throw new ORPCError("BAD_REQUEST", { message: "OPENING_BALANCE_ROW_INVALID" });
+              }
+              const candidates = candidatesForName(newSupplierName);
               // #177 round 3 (finding 2) — a retry must stay on the account that
               // already holds the signature. Checking only the entry-count winner
               // can pick a different folded-match that has since gained more
@@ -1305,7 +1332,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 }
                 plan.push({ supplierId: resolved.id, name: resolved.name, direction: row.direction, amount: row.amount });
               } else {
-                const party = await tx.createParty("supplier", { name: row.newSupplierName! });
+                const party = await tx.createParty("supplier", { name: newSupplierName });
                 suppliersByName.set(normalizeTextKey(party.name), [{ id: party.id, name: party.name, entries: 0 }]);
                 plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
               }
@@ -1384,9 +1411,14 @@ export function createRpcRouter(deps: RpcDeps) {
         // resolution is the first thing inside the unit.
         return deps.store.withTransaction(async (tx) => {
         const itemsById = await tx.getItemsByIds(input.lines.map((line) => line.itemId));
-        for (const line of input.lines) {
-          if (!itemsById.has(line.itemId)) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
-        }
+        // resolve every line's item ONCE, here: a line that names an item that
+        // does not exist refuses now, and the rest of the handler never has to
+        // prove the item is still there
+        const pricedLines = input.lines.map((line) => {
+          const item = itemsById.get(line.itemId);
+          if (item === undefined) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+          return { line, item };
+        });
         // identity integrity (issue 120): a picked party must exist AND belong
         // to the invoice's role. Without this a stale picker id (party deleted
         // in another tab) or a wrong-role id would silently land as an orphan
@@ -1406,22 +1438,18 @@ export function createRpcRouter(deps: RpcDeps) {
             (input.discountType !== undefined && input.discountValue !== undefined
               ? { type: input.discountType, value: input.discountValue }
               : undefined);
-          const totals = calculateSaleTotals(
-            input.lines.map((line) => {
-              const item = itemsById.get(line.itemId)!;
-              return {
-                quantity: line.quantity,
-                price: {
-                  defaultUnitPrice: item.sellingPrice,
-                  unitPrice: line.unitPrice,
-                  priceOverride: line.priceOverride,
-                  priceOverrideType: line.priceOverrideType,
-                  priceOverrideValue: line.priceOverrideValue,
-                },
-              };
-            }),
-            discount,
-          );
+          const saleCalculationInputs = pricedLines.map(({ line, item }) => ({
+            quantity: line.quantity,
+            price: {
+              defaultUnitPrice: item.sellingPrice,
+              unitPrice: line.unitPrice,
+              priceOverride: line.priceOverride,
+              priceOverrideType: line.priceOverrideType,
+              priceOverrideValue: line.priceOverrideValue,
+            },
+            source: { line, item },
+          }));
+          const totals = calculateSaleTotals(saleCalculationInputs, discount);
           const paidAmount = input.initialPaid ?? 0;
           if (paidAmount > totals.totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
           const invoiceDate = input.invoiceDate ?? localDate();
@@ -1451,11 +1479,8 @@ export function createRpcRouter(deps: RpcDeps) {
               notes: input.notes ?? null,
             });
             const insertedLines: InvoiceDetail["lines"] = [];
-            for (const [index, line] of input.lines.entries()) {
-              // SAFETY: every itemId was resolved in itemsById at the start of
-              // this unit, and the map is immutable while it runs.
-              const item = itemsById.get(line.itemId)!;
-              const calculated = totals.lines[index]!;
+            for (const calculated of totals.lines) {
+              const { line, item } = calculated.input.source;
               // The seam owns the FIFO snapshot for the SALE, validation, the
               // movement insert and the cache resync; an explicit invoice date
               // bounds the movement time inside it. The line stamps costAtSale
@@ -1509,7 +1534,7 @@ export function createRpcRouter(deps: RpcDeps) {
         }
         // Existing purchase intake behavior: omitted line prices default to the
         // item's cost because purchase prices are the stock cost basis.
-        const totalAmount = input.lines.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? itemsById.get(line.itemId)!.costPrice), 0);
+        const totalAmount = pricedLines.reduce((sum, { line, item }) => sum + line.quantity * (line.unitPrice ?? item.costPrice), 0);
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
         const invoiceDate = input.invoiceDate ?? localDate();
@@ -1534,10 +1559,7 @@ export function createRpcRouter(deps: RpcDeps) {
             notes: input.notes ?? null,
           });
           const insertedLines: InvoiceDetail["lines"] = [];
-          for (const line of input.lines) {
-            // SAFETY: every itemId was resolved in itemsById at the start of
-            // this unit, and the map is immutable while it runs.
-            const item = itemsById.get(line.itemId)!;
+          for (const { line, item } of pricedLines) {
             const unitCost = line.unitPrice ?? item.costPrice;
             // For PURCHASE, the line price is the cost basis feeding ADR-0002.
             const inserted = await tx.insertInvoiceLine({

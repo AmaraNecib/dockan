@@ -35,7 +35,7 @@ and every worktree, lane and CI lane puts its artifacts on the drive you chose:
 | Variable | What it moves | Effect |
 | --- | --- | --- |
 | `PLAYWRIGHT_BROWSERS_PATH` | the Playwright browser download (~1.8 GB) | The browsers already live in one **per-user** directory, so checkouts share them — no re-download per checkout. The variable decides **where** that directory is, which is what moves the 1.8 GB off the system drive. |
-| `RED_ON_PARENT_CACHE` | the cached worktrees `scripts/red-on-parent.ts` makes | Without it, those throwaway worktrees land in the OS temp folder and quietly fill the system drive. |
+| `RED_ON_PARENT_CACHE` | the cached worktrees `scripts/red-on-parent.ts` makes | CI runner configuration only, not local machine setup. It moves the gate's throwaway worktrees out of the runner's OS temp folder. |
 | `BUN_INSTALL_CACHE_DIR` | bun's install cache | Keeping the cache on the same drive as the checkout means installs stay warm instead of re-copying every package into a fresh worktree. |
 
 Turbo's cache needs no variable: a worktree shares the **main** checkout's `.turbo/cache`
@@ -87,6 +87,12 @@ Merge — cheap-to-reverse merges itself; expensive or decision diffs wait for t
 A **worker lane stops at Guard Phase 2** and commits. Its completion wakes the
 parent session, which pushes, opens the PR, drives the review rounds and merges.
 A lane that pushes is breaking its authority boundary, not helping.
+
+The red-on-parent replay runs only in the PR `checks` job and must pass before
+merge. Parents, workers (including nested subagents), reviewers and hooks must
+not run or delegate it locally. Local replay output is not an acceptance
+requirement for review, push or report. Ordinary TDD and focused regression
+tests still apply.
 
 Do not run a later phase without recording the earlier gate, its commands, and its result.
 

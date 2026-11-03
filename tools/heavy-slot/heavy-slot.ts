@@ -825,6 +825,49 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
 // ---------------------------------------------------------------------------
 
 const STOP_GRACE_MS = 10_000;
+export const TASKKILL_TIMEOUT_MS = 2_000;
+
+export type TaskkillRunner = (pid: number, options: { timeout?: number }) => {
+  status: number | null;
+  error?: NodeJS.ErrnoException;
+};
+
+const realTaskkillRunner: TaskkillRunner = (pid, options) => {
+  const result = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", ...options });
+  // SAFETY: spawnSync supplies this error from the OS runner, including its errno-style code.
+  return { status: result.status, error: result.error as NodeJS.ErrnoException | undefined };
+};
+let taskkillRunner = realTaskkillRunner;
+
+/** Replace the synchronous taskkill process in tests; null restores the OS runner. */
+export function setTaskkillRunnerForTest(impl: TaskkillRunner | null): void {
+  taskkillRunner = impl ?? realTaskkillRunner;
+}
+
+/**
+ * `found` means taskkill reached the pid; `not-found` preserves the old nonzero-exit probe.
+ * A timeout or spawn error is `unknown`, never evidence that the tree is gone.
+ */
+export function taskkillTree(pid: number): "found" | "not-found" | "unknown" {
+  let result: ReturnType<TaskkillRunner>;
+  try {
+    result = taskkillRunner(pid, { timeout: TASKKILL_TIMEOUT_MS });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[heavy-slot] taskkill for pid ${pid} failed (${message}); process-tree state is unknown`);
+    return "unknown";
+  }
+
+  if (result.error || result.status === null) {
+    const code = result.error?.code;
+    const reason = code === "ETIMEDOUT"
+      ? `timed out after ${TASKKILL_TIMEOUT_MS}ms`
+      : `failed (${code ?? result.error?.message ?? "no exit status"})`;
+    console.error(`[heavy-slot] taskkill for pid ${pid} ${reason}; process-tree state is unknown`);
+    return "unknown";
+  }
+  return result.status === 0 ? "found" : "not-found";
+}
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -841,7 +884,7 @@ export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    taskkillTree(pid);
   } else {
     try {
       process.kill(-pid, signal);
@@ -861,7 +904,7 @@ export function treeAlive(child: ChildProcess): boolean {
   const pid = child.pid;
   if (pid === undefined) return false;
   if (process.platform === "win32") {
-    return spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).status === 0;
+    return taskkillTree(pid) !== "not-found";
   }
   try {
     process.kill(-pid, 0);

@@ -46,7 +46,8 @@ command itself fails authentication. Never print tokens or provision credentials
 1. Run anonymous command discovery with no account or resource identifiers:
    `cf cli search "upload local file to R2 object storage bucket"`.
 2. Check the existing `cf` authentication with `cf r2 buckets list` first. Read the discovered
-   command's help with `cf <discovered-command> --help`, then inspect the public bucket domain with
+   command's help by appending `--help` to the full command returned, for example
+   `cf r2 objects put --help`. Inspect the public bucket domain with
    `cf r2 buckets domains managed list --bucket-name crew-evidence`.
 3. Upload each PNG, GIF, and MP4 with its MIME type:
    `cf r2 objects put <project>/<pr>/<head>/<artifact> --bucket-name crew-evidence --file <local-path> --content-type <mime-type>`.

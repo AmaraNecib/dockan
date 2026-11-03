@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { InvoiceDetail, Item } from "../../packages/contracts/src/core";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
-import { actAndAck, callRpc, seedCategoryId, waitForRpc } from "./rpc-helpers";
+import { actAndAck, callRpc, rpcOutput, seedCategoryId, waitForRpc } from "./rpc-helpers";
 
 // The evidence surface is the help dialog, not the whole desktop.
 test.use({ video: "on" });
@@ -482,6 +482,65 @@ test("picker search does not mark an empty sale dirty", async ({ page }) => {
   await page.keyboard.press("Control+b");
   await expect(page.getByTestId("new-sale-discard-confirm")).toHaveCount(0);
   await expect(page.getByTestId("purchase-form")).toBeVisible();
+});
+
+test("category refresh does not make an untouched sale quick-add dirty", async ({ page }) => {
+  await signIn(page);
+  const before = await callRpc<{ items: Array<{ id: string; name: string }> }, Record<string, never>>(
+    page,
+    "categoriesList",
+    {},
+  );
+  const openingCategory = before.items[0];
+  if (openingCategory === undefined) throw new Error("categoriesList returned no opening category");
+
+  const openingCategoriesRead = waitForRpc(page, "categoriesList");
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await rpcOutput<{ items: Array<{ id: string; name: string }> }>(await openingCategoriesRead, "categoriesList");
+  await page.getByTestId("sale-quick-add").click();
+  const quick = page.getByTestId("sale-quick-form");
+  const category = page.getByTestId("sale-quick-category");
+  await expect(quick).toBeVisible();
+  await expect(category).toBeEnabled();
+  await expect(category).toContainText(openingCategory.name);
+
+  const secondTab = await page.context().newPage();
+  try {
+    await secondTab.goto("/");
+    await expect(secondTab.getByTestId("dashboard-page")).toBeVisible();
+    const earlierCategory = await callRpc<{ id: string }, { name: string }>(
+      secondTab,
+      "categoriesCreate",
+      { name: `!PR422-${Date.now()}` },
+    );
+    const secondTabCategories = await callRpc<
+      { items: Array<{ id: string; name: string }> },
+      Record<string, never>
+    >(secondTab, "categoriesList", {});
+    expect(secondTabCategories.items[0]?.id).toBe(earlierCategory.id);
+    expect(secondTabCategories.items[0]?.name).toMatch(/^!PR422-/);
+
+    const refresh = waitForRpc(page, "categoriesList");
+    await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+    const refreshed = await rpcOutput<{ items: Array<{ id: string; name: string }> }>(await refresh, "categoriesList");
+    expect(refreshed.items[0]?.id).toBe(earlierCategory.id);
+    await expect(category).toContainText(openingCategory.name);
+    await category.click();
+    await expect(page.getByRole("option", { name: /!PR422-/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await page.keyboard.press("Control+b");
+    await expect(page.getByTestId("new-sale-discard-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("purchase-form")).toBeVisible();
+
+    await page.keyboard.press("Control+n");
+    await expect(page.getByTestId("sale-form")).toBeVisible();
+    await page.getByTestId("new-sale-button").click();
+    await expect(page.getByTestId("new-sale-discard-confirm")).toHaveCount(0);
+  } finally {
+    await secondTab.close();
+  }
 });
 
 test("an explicit sale quick-add category choice blocks Ctrl+B until reset", async ({ page }) => {

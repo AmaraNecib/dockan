@@ -232,7 +232,8 @@ export function SalePage() {
   const quickCategoryDefaultAtOpen = useRef(quickCategoryDefault);
   const quickCategory = quick.fields.categoryId || quickCategoryDefault;
   const quickFieldsDirty = anyTyped([quick.fields.name, quick.fields.barcode, quick.fields.cost, quick.fields.sell, quick.fields.stock]);
-  const quickCategoryDirty = quickCategory !== quickCategoryDefaultAtOpen.current;
+  const quickCategoryDirty =
+    quick.fields.categoryId !== "" && quick.fields.categoryId !== quickCategoryDefaultAtOpen.current;
   const draftDirtyOutsideQuickAdd =
     lines.length > 0 ||
     anyTyped([customer.name, discountValue, payment.amount, payment.percentage]) ||

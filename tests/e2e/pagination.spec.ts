@@ -12,6 +12,36 @@ type ItemSeed = {
   lowStockThreshold: number;
 };
 
+/** Pager labels must not create document overflow below the content pane. */
+test("products scrolling stays inside the content pane", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await signIn(page);
+  const stamp = Date.now().toString();
+  const categoryId = await seedCategoryId(page, `scroll-${stamp}`);
+  for (let i = 0; i < 21; i++) {
+    await callRpc<unknown, ItemSeed>(page, "itemsCreate", {
+      name: `scroll-${stamp}-${i}`, categoryId, costPrice: 100,
+      sellingPrice: 200, lowStockThreshold: 0,
+    });
+  }
+  await callRpc<unknown, { key: string; value: string }>(page, "preferencesSet", { key: "ui.pageSize", value: "20" });
+  await page.goto("/items");
+  const pager = page.getByTestId("items-pager");
+  await expect(pager).toBeVisible();
+  await expect(pager).not.toBeInViewport();
+  const main = page.locator("main");
+  await main.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(pager).toBeInViewport();
+  expect(await main.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  // Wheel at the bottom must not chain into a second document scrollbar.
+  await page.mouse.move(500, 700);
+  await page.mouse.wheel(0, 2400);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight - innerHeight)).toBeLessThanOrEqual(1);
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
+  await expect(page.locator("aside")).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: "التالي", exact: true })).toHaveCount(1);
+});
+
 /** The item a spec seeds with opening stock. */
 type ItemWithStockSeed = {
   name: string;

@@ -64,7 +64,9 @@ export function Pager({ total, pageSize, offset, onOffsetChange, onPageSizeChang
 
   const pageButtonClass = (active: boolean) =>
     cn(
-      "min-w-8 rounded-lg border px-2 py-1 text-sm transition-colors tabular-nums",
+      // Contain the absolute sr-only labels inside their buttons. Otherwise
+      // labels below the scroll pane can enlarge the outer document.
+      "relative min-w-8 rounded-lg border px-2 py-1 text-sm transition-colors tabular-nums",
       "focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
       active ? "border-primary bg-primary text-primary-foreground" : "border-input hover:bg-muted",
     );

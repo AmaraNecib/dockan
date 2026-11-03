@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "@/lib/i18n";
+import { chooseOption } from "@/tests/select-driver";
 
 import type { Invoice, SupplierReturn } from "@dokan/contracts";
 
@@ -144,28 +145,11 @@ async function submit() {
   });
 }
 
-/** Open a Base UI Select trigger and click the option whose label contains `optionText`. */
+/** Select through the trigger's own listbox, since closed popups can stay mounted. */
 async function openSelect(testId: string, optionText: string) {
   const trigger = host.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
   if (trigger === null) throw new Error(`missing ${testId}`);
-  act(() => {
-    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-  });
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (document.querySelectorAll("[role='option']").length > 0) break;
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-  }
-  const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find((element) => element.textContent?.includes(optionText));
-  if (option === undefined) throw new Error(`missing option ${optionText}`);
-  act(() => {
-    // Base UI items arm mouse selection on pointerdown, then commit on click.
-    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
-    option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
-  });
+  await chooseOption(trigger, optionText);
 }
 
 describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {

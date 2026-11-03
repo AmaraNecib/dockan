@@ -1173,6 +1173,13 @@ const resources = {
    * is a string; numeric `count` and formatter-specific values have their own
    * types.
    *
+   * Those rejects are fixable, so `as const` remains a viable alternative.
+   * Explicit `useState<string>(t(...))` or `let value: string` annotations fix
+   * literal-return narrowing; numeric placeholder arguments must also match
+   * their declared types. The trade is avoiding 19 reported typing fixes
+   * versus per-key option checking on the then-66 interpolated keys, not a
+   * requirement to widen the catalogue.
+   *
    * The current catalogue has 67 property strings with `{{...}}` interpolations,
    * counted from six-space-indented declarations. Comments and `<money/>`
    * markers are not interpolation declarations. Runtime checks live in

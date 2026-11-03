@@ -167,6 +167,7 @@ describe("expense correction storage (#408)", () => {
     expect((await store.getExpenseCorrectionHistory(expenseId))?.effectiveAmount).toBe(800);
   });
 
+  // red-on-parent-waive: "refuses a correction with the wrong business date and preserves its history" — parent schema has no expense_corrections table, and its store has no insertExpenseCorrection/getExpenseCorrectionHistory methods, so this constraint case cannot run there.
   it("refuses a correction with the wrong business date and preserves its history", async () => {
     const original = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-10T10:00:00" });
     await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
@@ -200,6 +201,7 @@ describe("expense correction storage (#408)", () => {
     expect(await store.getExpenseCorrectionHistory(original.id)).toEqual(before);
   });
 
+  // red-on-parent-waive: "refuses a reversal linked to another expense and preserves both histories" — parent schema has no expense_corrections table, and its store has no insertExpenseCorrection/getExpenseCorrectionHistory methods, so this constraint case cannot run there.
   it("refuses a reversal linked to another expense and preserves both histories", async () => {
     const firstExpense = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-11T10:00:00" });
     const otherExpense = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-15T10:00:00" });
@@ -249,6 +251,7 @@ describe("expense correction storage (#408)", () => {
     expect((await store.getExpenseCorrectionHistory(firstExpense.id))?.corrections[0]?.id).toBe(first.id);
   });
 
+  // red-on-parent-waive: "refuses an unpaired correction actor snapshot without appending a row" — parent schema has no expense_corrections table or correction actor columns, and its store has no correction insert/history methods.
   it("refuses an unpaired correction actor snapshot without appending a row", async () => {
     const original = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-12T10:00:00" });
     await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
@@ -282,6 +285,7 @@ describe("expense correction storage (#408)", () => {
     expect(await store.getExpenseCorrectionHistory(original.id)).toEqual(before);
   });
 
+  // red-on-parent-waive: "refuses a correction with a delta inconsistent with its amounts" — parent schema has no expense_corrections table, and its store has no insertExpenseCorrection/getExpenseCorrectionHistory methods, so this constraint case cannot run there.
   it("refuses a correction with a delta inconsistent with its amounts", async () => {
     const original = await store.insertExpense({ categoryId, amount: 1_000, occurredAt: "2020-01-13T10:00:00" });
     await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
@@ -315,6 +319,7 @@ describe("expense correction storage (#408)", () => {
     expect(await store.getExpenseCorrectionHistory(original.id)).toEqual(before);
   });
 
+  // red-on-parent-waive: "preserves attributed history and retry identities after reopening the upgraded database" — parent schema has no expense_corrections table or actor snapshot columns, and its store has no correction insert/history/idempotency methods.
   it("preserves attributed history and retry identities after reopening the upgraded database", async () => {
     const legacyBefore = await store.getExpenseCorrectionHistory(expenseId);
     expect(legacyBefore?.original).toMatchObject({ actorId: null, actorName: null });

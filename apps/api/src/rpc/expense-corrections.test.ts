@@ -197,6 +197,7 @@ describe("expense corrections (#408)", () => {
     expect(recordingAfter.operatingExpenses - recordingBefore.operatingExpenses).toBe(0);
   });
 
+  // red-on-parent-waive: "undoes a non-latest correction against current effective money and reconciles SQL projections" — parent lacks the expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before it reaches the new correction RPCs.
   it("undoes a non-latest correction against current effective money and reconciles SQL projections", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -241,6 +242,7 @@ describe("expense corrections (#408)", () => {
     await verifyProjection(1_100, 3);
   });
 
+  // red-on-parent-waive: "serializes distinct concurrent corrections into one effective amount chain" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before reaching the new correction RPCs.
   it("serializes distinct concurrent corrections into one effective amount chain", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -274,6 +276,7 @@ describe("expense corrections (#408)", () => {
     expect(reportAfter.operatingExpenses - reportBefore.operatingExpenses).toBe(history.effectiveAmount);
   });
 
+  // red-on-parent-waive: "refuses to undo a reversal without changing history" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before reaching the new undo/history RPCs.
   it("refuses to undo a reversal without changing history", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -292,6 +295,7 @@ describe("expense corrections (#408)", () => {
     expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
   });
 
+  // red-on-parent-waive: "replays an undo key after a later correction without appending a reversal" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before reaching the new undo/history RPCs.
   it("replays an undo key after a later correction without appending a reversal", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -310,6 +314,7 @@ describe("expense corrections (#408)", () => {
     expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(beforeReplay);
   });
 
+  // red-on-parent-waive: "rejects invalid correction amounts without changing history" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before reaching the new correction/history RPCs.
   it("rejects invalid correction amounts without changing history", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -326,6 +331,7 @@ describe("expense corrections (#408)", () => {
     }
   });
 
+  // red-on-parent-waive: "rejects an undo that would cross the lower expense bound without changing history" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before reaching the new undo/history RPCs.
   it("rejects an undo that would cross the lower expense bound without changing history", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -347,6 +353,7 @@ describe("expense corrections (#408)", () => {
     expect(after.corrections[0]?.reversedByCorrectionId).toBeNull();
   });
 
+  // red-on-parent-waive: "keeps corrected owner withdrawals on inclusive SQL bounds and excludes adjacent rows" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before reaching the new correction RPCs.
   it("keeps corrected owner withdrawals on inclusive SQL bounds and excludes adjacent rows", async () => {
     const withdrawal = (await client.expenseCategoriesList()).items.find((row) => row.isOwnerWithdrawal);
     if (withdrawal === undefined) throw new Error("seeded withdrawal category is missing");
@@ -391,6 +398,7 @@ describe("expense corrections (#408)", () => {
     expect(recordingAfter.ownerWithdrawals - recordingBefore.ownerWithdrawals).toBe(0);
   });
 
+  // red-on-parent-waive: "refuses a correction replay whose actor differs" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy its actorName pin before reaching the new correction/history RPCs.
   it("refuses a correction replay whose actor differs", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -417,6 +425,7 @@ describe("expense corrections (#408)", () => {
     expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
   });
 
+  // red-on-parent-waive: "refuses an undo replay whose actor differs" — parent lacks expense actor snapshot fields and the new correction/undo/history RPCs required by this actor-replay case.
   it("refuses an undo replay whose actor differs", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -457,6 +466,7 @@ describe("expense corrections (#408)", () => {
     expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
   });
 
+  // red-on-parent-waive: "refuses an undo idempotency key reused as a correction" — parent lacks expense actor snapshot fields, so expensesCreate cannot satisfy this feature test's actorName pin before reaching the new undo/correction/history RPCs.
   it("refuses an undo idempotency key reused as a correction", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");
@@ -472,6 +482,7 @@ describe("expense corrections (#408)", () => {
     expect(await client.expenseCorrectionHistory({ expenseId: original.id })).toEqual(before);
   });
 
+  // red-on-parent-waive: "refuses anonymous correction history reads and undo writes without changing history" — parent lacks the new correction, undo and history RPC endpoints this authorization test calls.
   it("refuses anonymous correction history reads and undo writes without changing history", async () => {
     const category = (await client.expenseCategoriesList()).items.find((row) => row.name === "كراء المحل");
     if (category === undefined) throw new Error("seeded rent category is missing");

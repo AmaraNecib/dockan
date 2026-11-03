@@ -1580,6 +1580,16 @@ describe("sale checkout (ticket 30)", () => {
     expect(amount.totalAmount).toBe(1_150);
     expect(amount.lines.reduce((sum, line) => sum + line.discountAllocated, 0)).toBe(250);
     expect(amount.lines.reduce((sum, line) => sum + line.netTotal, 0)).toBe(1_150);
+    const expectedAllocationByItem = {
+      [a.id]: { discountAllocated: 161, netTotal: 739 },
+      [b.id]: { discountAllocated: 89, netTotal: 411 },
+    };
+    const allocationByItem = (lines: typeof amount.lines) => Object.fromEntries(
+      lines.map(({ itemId, discountAllocated, netTotal }) => [itemId, { discountAllocated, netTotal }]),
+    );
+    expect(allocationByItem(amount.lines)).toEqual(expectedAllocationByItem);
+    const amountReread = await client.invoicesGet({ id: amount.id });
+    expect(allocationByItem(amountReread.lines)).toEqual(expectedAllocationByItem);
 
     const percentageItem = await makeSaleItem("بيع-خصم-نسبة-ثاني", 100, 1_000);
     await client.stockAddManual({ itemId: percentageItem.id, delta: 2, unitCost: 100, kind: "PURCHASE" });

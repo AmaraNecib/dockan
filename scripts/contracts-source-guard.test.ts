@@ -133,6 +133,29 @@ describe("contracts source pre-commit guard", () => {
     }
   });
 
+  test("refuses an unstaged deletion while the expected source remains indexed", () => {
+    const root = makeFixture();
+    const missing = EXPECTED_CONTRACT_SOURCES[0];
+    if (!missing) throw new Error("the expected source list is empty");
+
+    try {
+      const file = join(root, ...missing.split("/"));
+      unlinkSync(file);
+
+      expect(existsSync(file)).toBe(false);
+      expect(
+        execFileSync("git", ["ls-files", "--error-unmatch", "--", missing], { cwd: root, encoding: "utf8" }).trim(),
+      ).toBe(missing);
+      const result = runGuard(root);
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(missing);
+      expect(result.stderr).toContain("Restore them from Git");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("allows an unstaged deletion to be restored in the working tree during development", () => {
     const root = makeFixture();
     const source = EXPECTED_CONTRACT_SOURCES[0];

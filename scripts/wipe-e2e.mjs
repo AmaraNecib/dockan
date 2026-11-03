@@ -46,17 +46,20 @@ function resolvePhysicalPath(target) {
   }
 }
 
-function resolveRootAlias(target, root) {
-  // An absolute E2E_DATA_DIR can arrive through a symlink/junction above the
-  // checkout. Find the point where that path reaches the physical worktree,
-  // then rebuild only its suffix under the physical root. Symlinks in that
-  // suffix remain visible to rejectSymlinkComponents.
+function resolveRootAlias(target, lexicalRoot, physicalRoot) {
+  // Absolute overrides can arrive through a checkout symlink/junction outside
+  // the served worktree. Rebase only that outer alias. A link inside the
+  // lexical worktree must remain in the path so rejectSymlinkComponents sees it.
   let current = path.resolve(target);
   const suffix = [];
   while (true) {
     try {
-      if (path.resolve(fs.realpathSync.native(current)) === root) {
-        return path.join(root, ...suffix.reverse());
+      if (path.resolve(fs.realpathSync.native(current)) === physicalRoot) {
+        const relative = path.relative(lexicalRoot, current);
+        const isInsideLexicalRoot =
+          relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+        if (isInsideLexicalRoot) return target;
+        return path.join(physicalRoot, ...suffix.reverse());
       }
     } catch (error) {
       if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
@@ -70,8 +73,9 @@ function resolveRootAlias(target, root) {
 
 export function resolveE2eDataDir(raw, cwd) {
   if (!raw) throw new Error("E2E_DATA_DIR is required");
-  const root = fs.realpathSync.native(cwd ?? process.cwd());
-  const target = resolveRootAlias(path.resolve(root, raw), root);
+  const lexicalRoot = path.resolve(cwd ?? process.cwd());
+  const root = fs.realpathSync.native(lexicalRoot);
+  const target = resolveRootAlias(path.resolve(root, raw), lexicalRoot, root);
   rejectSymlinkComponents(target);
   const resolved = resolvePhysicalPath(target);
   if (resolved === root) {

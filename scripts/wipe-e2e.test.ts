@@ -112,6 +112,53 @@ describe("wipe-e2e: the data dir the script agrees to delete", () => {
     }
   });
 
+  test("refuses an in-worktree symlink back to the worktree root and preserves source", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-self-root-alias-"));
+    const worktree = join(fixture, "worktree");
+    const contracts = join(worktree, "packages", "contracts");
+    try {
+      mkdirSync(contracts, { recursive: true });
+      const sentinel = join(contracts, "source.ts");
+      writeFileSync(sentinel, "contract source");
+      symlinkSync(worktree, join(worktree, "self"), process.platform === "win32" ? "junction" : "dir");
+
+      for (const target of [
+        "self/packages/contracts",
+        join(worktree, "self", "packages", "contracts"),
+        "self",
+        join(worktree, "self"),
+      ]) {
+        const run = await runWipe(worktree, target);
+        expect(run.code).toBe(1);
+        expect(run.out).toContain("refusing");
+        expect(existsSync(sentinel)).toBe(true);
+      }
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses an inner link after an outer checkout alias and preserves its target", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-outer-inner-link-"));
+    const worktree = join(fixture, "worktree");
+    const checkoutAlias = join(fixture, "checkout-alias");
+    const contracts = join(worktree, "packages", "contracts");
+    try {
+      mkdirSync(contracts, { recursive: true });
+      const dataDir = makeDataDir(contracts);
+      const sentinel = join(dataDir, "takes", "records.db");
+      symlinkSync(worktree, checkoutAlias, process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(contracts, join(worktree, "inner"), process.platform === "win32" ? "junction" : "dir");
+
+      const run = await runWipe(worktree, join(checkoutAlias, "inner", ".e2e-data"));
+      expect(run.code).toBe(1);
+      expect(run.out).toContain("refusing");
+      expect(existsSync(sentinel)).toBe(true);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   test("refuses an in-worktree symlink ancestor and preserves its target", async () => {
     const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-internal-ancestor-"));
     const worktree = join(fixture, "worktree");

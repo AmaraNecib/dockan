@@ -36,20 +36,24 @@ that write-path risk.
 
 ## Public interfaces
 
-Unchanged. No export is added, removed or re-shaped:
+The RPC procedure set and wire contracts are unchanged. The TypeScript helper interface in
+`sale-calculations.ts` does change: `SaleLineTotal` now exposes `input`, and `SaleTotals` carries
+that field through its `lines`. Both types are generic so `calculateSaleTotals` preserves each
+caller's input shape. This is an internal helper change, not a new RPC field.
+
+The other exported interfaces stay unchanged:
 
 - `port-record.ts` — `isWildcardBindHost`, `probeHostFor`, `portIsReachable`,
   `withPortFileLock`, `writeRegistryEntry`, `readRegistryEntry`,
   `recomputeCanonical`, `publishPort`, `forgetPort`.
   `parseIpv4Quarter` is module-private; its return type narrows from
-  `number[] | null` to `readonly [number, number] | null`, which is the point:
-  the tuple says "two words or nothing" in the type, not in a comment.
+  `number[] | null` to `readonly [number, number] | null`, so the type says
+  "two words or nothing."
 - `stock-posting.ts` — `recordStockMovements`, `recordStockMovement`,
   `itemStockProjection`, `StockItemMissingError`.
 - `reclaim-retry.ts` — `ReclaimRetry`, `ReclaimRetryOptions`,
   `ReclaimAttemptResult`, `ReclaimTimerHandle`,
   `DEFAULT_RECLAIM_BACKOFF_MS`.
-- `router.ts` — the oRPC router; its procedure set is unchanged.
 
 ## Dependencies
 

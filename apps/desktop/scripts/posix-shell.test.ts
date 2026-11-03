@@ -65,12 +65,14 @@ describe("POSIX shell resolution", () => {
       }),
     );
 
-    expect(resolved.kind).toBe("resolved");
-    if (resolved.kind !== "resolved") throw new Error(resolved.reason);
-    expect(resolved.path).toBe(GIT_BASH);
-    // the refused launcher is still recorded, so a future reader can see it was
-    // considered and not merely missed
-    expect(resolved.searched).toContain(SYSTEM32_BASH);
+    // #369: the whole value — including `searched` — is pinned, so the refused
+    // launcher is still recorded (considered, not merely missed) and the hollow
+    // stand-in reds as an AssertionError instead of a TypeError.
+    expect(resolved).toEqual({
+      kind: "resolved",
+      path: GIT_BASH,
+      searched: [SYSTEM32_BASH, GIT_BASH],
+    });
   });
 
   it("falls back to a Git for Windows install root when PATH has only the launcher", () => {
@@ -83,9 +85,11 @@ describe("POSIX shell resolution", () => {
       }),
     );
 
-    expect(resolved.kind).toBe("resolved");
-    if (resolved.kind !== "resolved") throw new Error(resolved.reason);
-    expect(resolved.path).toBe(GIT_BASH);
+    expect(resolved).toEqual({
+      kind: "resolved",
+      path: GIT_BASH,
+      searched: [SYSTEM32_BASH, GIT_BASH],
+    });
   });
 
   it("takes the first bash on a POSIX PATH, where there is no launcher to skip", () => {
@@ -97,9 +101,11 @@ describe("POSIX shell resolution", () => {
       }),
     );
 
-    expect(resolved.kind).toBe("resolved");
-    if (resolved.kind !== "resolved") throw new Error(resolved.reason);
-    expect(resolved.path).toBe("/usr/local/bin/bash");
+    expect(resolved).toEqual({
+      kind: "resolved",
+      path: "/usr/local/bin/bash",
+      searched: ["/usr/local/bin/bash"],
+    });
   });
 
   it("skips a bash it cannot execute and takes the one it can", () => {
@@ -115,12 +121,13 @@ describe("POSIX shell resolution", () => {
       }),
     );
 
-    expect(resolved.kind).toBe("resolved");
-    if (resolved.kind !== "resolved") throw new Error(resolved.reason);
-    // the one that runs, not merely the first one that exists
-    expect(resolved.path).toBe("/usr/bin/bash");
-    // and the unusable candidate is recorded as examined, not silently unseen
-    expect(resolved.searched).toContain("/usr/local/bin/bash");
+    // the one that runs, not merely the first one that exists — and the unusable
+    // candidate stays in `searched`: examined and refused, not silently unseen
+    expect(resolved).toEqual({
+      kind: "resolved",
+      path: "/usr/bin/bash",
+      searched: ["/usr/local/bin/bash", "/usr/bin/bash"],
+    });
   });
 
   it("names the shell it refused for being non-executable, rather than calling it absent", () => {
@@ -134,11 +141,14 @@ describe("POSIX shell resolution", () => {
     );
 
     // "not found" and "found but unrunnable" call for different fixes, so the
-    // reason has to tell them apart instead of reporting a bare absence.
-    expect(resolved.kind).toBe("absent");
-    if (resolved.kind !== "absent") throw new Error("expected no usable shell");
-    expect(resolved.reason).toContain("/usr/local/bin/bash");
-    expect(resolved.reason).toContain("not executable");
+    // reason has to tell them apart instead of reporting a bare absence. #369
+    // pins the whole value with the reason included: none of it is volatile.
+    expect(resolved).toEqual({
+      kind: "absent",
+      reason:
+        "platform linux: no POSIX-capable bash found. Refused /usr/local/bin/bash: present but not executable, so running it would fail with EACCES. Looked on PATH. Checked: /usr/local/bin/bash.",
+      searched: ["/usr/local/bin/bash"],
+    });
   });
 
   it("resolves a relative PATH entry against the working directory", () => {
@@ -151,11 +161,16 @@ describe("POSIX shell resolution", () => {
       isExecutable: () => true,
     });
 
-    expect(resolved.kind).toBe("resolved");
-    if (resolved.kind !== "resolved") throw new Error(resolved.reason);
-    expect(path.posix.isAbsolute(resolved.path)).toBe(true);
-    // the entry survived the conversion instead of being replaced by a guess
-    expect(resolved.path.endsWith("/tools/git-bin/bash")).toBe(true);
+    // #369: the whole value is pinned to `path.posix.resolve`, the same
+    // platform-flavour primitive the resolver applies — the pre-existing
+    // tradeoff, unchanged — while the `isFile`/`isExecutable` pair is what gives
+    // the row its teeth both here and against the gateway hollow.
+    const entry = path.posix.resolve("tools/git-bin");
+    expect(resolved).toEqual({
+      kind: "resolved",
+      path: `${entry}/bash`,
+      searched: [`${entry}/bash`],
+    });
   });
 
   it("names what it looked for and where when no POSIX shell exists", () => {
@@ -163,16 +178,14 @@ describe("POSIX shell resolution", () => {
       fabricated({ platform: "win32", pathEnv: SYSTEM32_DIR, present: [SYSTEM32_BASH] }),
     );
 
-    // never a silent absence: the reason is what a skip or a failure reports
-    expect(resolved.kind).toBe("absent");
-    if (resolved.kind !== "absent") throw new Error("expected no resolvable shell");
-    // what it wanted...
-    expect(resolved.reason).toContain("bash.exe");
-    // ...where it looked, including the directory it walked, the launcher it
-    // refused, and the environment variables naming the install roots
-    expect(resolved.reason).toContain(SYSTEM32_DIR);
-    expect(resolved.reason).toContain("WSL");
-    expect(resolved.reason).toContain("ProgramFiles");
+    // never a silent absence: what it wanted, where it looked, the launcher it
+    // refused and the install-root environment it consulted. #369 pins the whole
+    // reason — the module owns the wording, so nothing in it is volatile.
+    expect(resolved).toEqual({
+      kind: "absent",
+      reason: `platform win32: no POSIX-capable bash.exe found. Refused the WSL launcher ${SYSTEM32_BASH}: it runs a different filesystem view, so it cannot be trusted to see the script's own files. Looked on PATH and under the Git for Windows install roots named by ProgramFiles, ProgramW6432, ProgramFiles(x86) and LOCALAPPDATA. Checked: ${SYSTEM32_BASH}.`,
+      searched: [SYSTEM32_BASH],
+    });
   });
 
   it("does not treat an unrelated file named bash as a POSIX shell on POSIX", () => {
@@ -186,7 +199,11 @@ describe("POSIX shell resolution", () => {
       }),
     );
 
-    expect(resolved.kind).toBe("absent");
+    expect(resolved).toEqual({
+      kind: "absent",
+      reason: "platform darwin: no POSIX-capable bash found. Looked on PATH. Checked: /opt/homebrew/bin/bash.",
+      searched: ["/opt/homebrew/bin/bash"],
+    });
   });
 
   it("reports a well-formed resolution on this host, and never the System32 launcher", () => {
@@ -201,12 +218,30 @@ describe("POSIX shell resolution", () => {
     // it from the red-on-parent gate instead of failing each one for itself.
     const resolved = resolvePosixShell();
 
-    if (resolved.kind === "resolved") {
+    // #369: the shape is asserted whole and either arm of the union satisfies it,
+    // so the hollow stand-in reds as `expect(undefined).toEqual(...)`
+    // (AssertionError) instead of a `TypeError` off `resolved.kind`. The
+    // conditional arms below never dereference on the parent, and `resolved.kind`
+    // stays reachable there only after the expect above has already spoken.
+    expect(resolved).toEqual(
+      expect.objectContaining({
+        kind: expect.stringMatching(/^(resolved|absent)$/u),
+        searched: expect.any(Array),
+      }),
+    );
+
+    if (resolved?.kind === "resolved") {
+      // A relative PATH entry must not become the command handed to the runner.
+      // This stays an assertion after the whole-value guard so the parent hollow
+      // fails with AssertionError before this arm can dereference `path`.
       expect(path.isAbsolute(resolved.path)).toBe(true);
-      if (process.platform === "win32") {
-        expect(resolved.path.toLowerCase()).not.toBe(SYSTEM32_BASH.toLowerCase());
-      }
-    } else {
+    }
+
+    if (process.platform === "win32" && resolved?.kind === "resolved") {
+      // this host must never be handed the WSL launcher
+      expect(resolved.path.toLowerCase()).not.toBe(SYSTEM32_BASH.toLowerCase());
+    } else if (resolved?.kind === "absent") {
+      // an absence still says what was wanted, in words
       expect(resolved.reason).toContain("bash");
     }
   });

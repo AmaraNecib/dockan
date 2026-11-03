@@ -230,6 +230,13 @@ describe("POSIX shell resolution", () => {
       }),
     );
 
+    if (resolved?.kind === "resolved") {
+      // A relative PATH entry must not become the command handed to the runner.
+      // This stays an assertion after the whole-value guard so the parent hollow
+      // fails with AssertionError before this arm can dereference `path`.
+      expect(path.isAbsolute(resolved.path)).toBe(true);
+    }
+
     if (process.platform === "win32" && resolved?.kind === "resolved") {
       // this host must never be handed the WSL launcher
       expect(resolved.path.toLowerCase()).not.toBe(SYSTEM32_BASH.toLowerCase());

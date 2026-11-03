@@ -170,7 +170,7 @@ describe("which transport a request presents (#319)", () => {
       const request = requestAt(ADDRESS_APP, {
         headers: { cookie: "dokan.vault.session=TOKEN", origin },
       });
-      expect(resolveVaultCredential(request, browserMode), origin).toEqual({ kind: "refused", reason: "foreign-origin" });
+      expect(resolveVaultCredential(request, browserMode)).toEqual({ kind: "refused", reason: "foreign-origin" });
     }
   });
 
@@ -241,7 +241,7 @@ describe("the one origin gate (#319, greptile P1)", () => {
 
   it("refuses a sandboxed frame's null origin and a non-http scheme", () => {
     for (const origin of ["null", "tauri://localhost", "file:///c:/dokan/index.html", "not a url"]) {
-      expect(vaultOriginGate(requestAt(AT, { headers: { origin } }), browserMode), origin).toBe("foreign-origin");
+      expect(vaultOriginGate(requestAt(AT, { headers: { origin } }), browserMode)).toBe("foreign-origin");
     }
   });
 });

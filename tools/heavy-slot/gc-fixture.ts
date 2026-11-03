@@ -22,8 +22,10 @@
 export type GcFixtureOptions = {
   /** Hard self-destruction at this age, so a killed runner can never strand it. */
   ttlMs?: number;
-  /** Path the fixture writes its own pid to; polling exits when it disappears. */
+  /** Path the fixture writes its own pid to for ownership verification. */
   pidFile?: string;
+  /** Unique cooperative shutdown file watched by this owned fixture. */
+  shutdownFile?: string;
   /** Per-run response token so cleanup can prove this exact disposable fixture is alive. */
   ownershipToken?: string;
 };
@@ -31,20 +33,22 @@ export type GcFixtureOptions = {
 /** The fixture script: write the pid, bind the socket, die by signal-file or clock. */
 export function buildGcFixtureScript(port: number, options: GcFixtureOptions = {}): string {
   const pidFile = options.pidFile ?? "";
+  const shutdownFile = options.shutdownFile ?? "";
   const ttl = options.ttlMs ?? 0;
   const ownershipToken = options.ownershipToken ?? "";
   return [
     'import net from "node:net";',
     'import { existsSync, writeFileSync } from "node:fs";',
     `const pidFile = ${JSON.stringify(pidFile)};`,
+    `const shutdownFile = ${JSON.stringify(shutdownFile)};`,
     `const ownershipToken = ${JSON.stringify(ownershipToken)};`,
     // The launcher's handle on the grandchild: its pid, on disk, written before
     // the socket binds so a delete that races the launch still finds a file.
     'if (pidFile) writeFileSync(pidFile, `${process.pid}\\n`);',
-    'if (pidFile) { // exit when the launcher deletes it to say "done observing"',
+    'if (shutdownFile) { // cooperative signal addressed to this fixture',
     "  const watch = setInterval(() => {",
-    "    if (!existsSync(pidFile)) { clearInterval(watch); process.exit(0); }",
-    "  }, 200);",
+    "    if (existsSync(shutdownFile)) { clearInterval(watch); process.exit(0); }",
+    "  }, 50);",
     "}",
     ...(ttl > 0
       ? [

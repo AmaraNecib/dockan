@@ -834,19 +834,44 @@ export type TaskkillRunner = (pid: number, options: { timeout?: number }) => {
 
 const realTaskkillRunner: TaskkillRunner = (pid, options) => {
   const result = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", ...options });
-  // SAFETY: spawnSync supplies this error from the OS runner, including its errno-style code.
-  return { status: result.status, error: result.error as NodeJS.ErrnoException | undefined };
+  return { status: result.status, error: result.error ?? undefined };
 };
 let taskkillRunner = realTaskkillRunner;
+let processProbe = (pid: number): "present" | "absent" | "unknown" => {
+  try {
+    process.kill(pid, 0);
+    return "present";
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") return "absent";
+    return "unknown";
+  }
+};
 
 /** Replace the synchronous taskkill process in tests; null restores the OS runner. */
 export function setTaskkillRunnerForTest(impl: TaskkillRunner | null): void {
   taskkillRunner = impl ?? realTaskkillRunner;
 }
 
+/** Inject the OS existence probe in tests; null restores process.kill(pid, 0). */
+export function processState(pid: number): "present" | "absent" | "unknown" {
+  return processProbe(pid);
+}
+
+export function setProcessProbeForTest(impl: typeof processProbe | null): void {
+  processProbe = impl ?? ((pid) => {
+    try {
+      process.kill(pid, 0);
+      return "present";
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ESRCH") return "absent";
+      return "unknown";
+    }
+  });
+}
+
 /**
- * `found` means taskkill reached the pid; `not-found` preserves the old nonzero-exit probe.
- * A timeout or spawn error is `unknown`, never evidence that the tree is gone.
+ * A successful taskkill is `found`. Nonzero exits need an independent OS process
+ * probe: localized taskkill text is not reliable evidence of absence.
  */
 export function taskkillTree(pid: number): "found" | "not-found" | "unknown" {
   let result: ReturnType<TaskkillRunner>;
@@ -866,7 +891,8 @@ export function taskkillTree(pid: number): "found" | "not-found" | "unknown" {
     console.error(`[heavy-slot] taskkill for pid ${pid} ${reason}; process-tree state is unknown`);
     return "unknown";
   }
-  return result.status === 0 ? "found" : "not-found";
+  if (result.status === 0) return "found";
+  return processProbe(pid) === "absent" ? "not-found" : "unknown";
 }
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -895,16 +921,14 @@ export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 /**
- * True while any member of the child's tree can still be reached. The same final
- * crash counts on both platforms: POSIX probes the group with a 0-signal, which
- * throws when nobody is left; on Windows `taskkill` exits non-zero once the pid
- * and its tree no longer exist (so the same call doubles as a re-kill).
+ * True while the wrapper process can still be reached. The Windows probe is
+ * non-destructive; taskkill runs once when cancellation starts, not on every poll.
  */
 export function treeAlive(child: ChildProcess): boolean {
   const pid = child.pid;
   if (pid === undefined) return false;
   if (process.platform === "win32") {
-    return taskkillTree(pid) !== "not-found";
+    return processProbe(pid) !== "absent";
   }
   try {
     process.kill(-pid, 0);
@@ -1018,10 +1042,8 @@ export async function run(label: string, command: string): Promise<number> {
       // reach of both the signal and the probe; the same bound releases the slot
       // when that happens too.
       const deadline = Date.now() + STOP_GRACE_MS;
-      while (Date.now() < deadline && treeAlive(child)) {
-        killTree(child, "SIGKILL");
-        await wait(100);
-      }
+      if (treeAlive(child)) killTree(child, "SIGKILL");
+      while (Date.now() < deadline && treeAlive(child)) await wait(100);
       // [F21] Disclose the give-up: the bounded budget ran out with the tree still
       // alive, so the slot is released while work may still be running - the same
       // double load the queue exists to prevent. A disclosed weakness is a

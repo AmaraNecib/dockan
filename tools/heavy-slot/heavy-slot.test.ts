@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConnection } from "node:net";
@@ -23,6 +23,8 @@ import {
   resetBase,
   run,
   setBinderForTest,
+  setProcessProbeForTest,
+  processState,
   status,
   treeAlive,
   tryTake,
@@ -200,16 +202,12 @@ async function cleanupCapturedFixture(runDone: boolean, fixture: CapturedFixture
   }
 }
 
-function signalCapturedFixture(pid: number): "signalled" | "found" | "not-found" | "unknown" {
-  if (process.platform === "win32") return taskkillTree(pid);
-  try {
-    process.kill(pid, "SIGKILL");
-    return "signalled";
-  } catch (error) {
-    // SAFETY: process.kill throws a Node system error when the captured PID is absent.
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return "not-found";
-    throw error;
+function throwTestFailures(primaryFailure: Error | undefined, cleanupFailure: Error | undefined): void {
+  if (primaryFailure && cleanupFailure) {
+    throw new AggregateError([primaryFailure, cleanupFailure], "test body and fixture cleanup both failed");
   }
+  if (primaryFailure) throw primaryFailure;
+  if (cleanupFailure) throw cleanupFailure;
 }
 
 function freshDir(): string {
@@ -248,6 +246,30 @@ describe("heavy-slot", () => {
       expect(calls).toEqual([{ pid: 43210, timeout: TASKKILL_TIMEOUT_MS }]);
     } finally {
       setTaskkillRunnerForTest(null);
+    }
+  });
+
+  test("taskkill nonzero with a live PID is unknown, not absent", () => {
+    setTaskkillRunnerForTest(() => ({ status: 1 }));
+    setProcessProbeForTest(() => "present");
+    try {
+      expect(taskkillTree(43209)).toBe("unknown");
+    } finally {
+      setTaskkillRunnerForTest(null);
+      setProcessProbeForTest(null);
+    }
+  });
+
+  test("taskkill nonzero only confirms absence when the OS probe reports ESRCH", () => {
+    setTaskkillRunnerForTest(() => ({ status: 128 }));
+    setProcessProbeForTest(() => "absent");
+    try {
+      expect(taskkillTree(43208)).toBe("not-found");
+      setProcessProbeForTest(() => "unknown");
+      expect(taskkillTree(43208)).toBe("unknown");
+    } finally {
+      setTaskkillRunnerForTest(null);
+      setProcessProbeForTest(null);
     }
   });
 
@@ -292,11 +314,35 @@ describe("heavy-slot", () => {
       status: null,
       error: Object.assign(new Error("simulated taskkill timeout"), { code: "ETIMEDOUT" }),
     }));
+    setProcessProbeForTest(() => "unknown");
     try {
       // SAFETY: this Windows-only branch reads only pid; other platforms skip the test.
       expect(treeAlive({ pid: 43213 } as Parameters<typeof treeAlive>[0])).toBe(true);
     } finally {
       setTaskkillRunnerForTest(null);
+      setProcessProbeForTest(null);
+    }
+  });
+
+  test("fixture ownership probe errors are visible and never trigger a PID kill", async () => {
+    let killCalled = false;
+    await expect(cleanupCapturedFixture(true, {
+      isAlive: async () => { throw new Error("probe unavailable"); },
+      kill: () => { killCalled = true; return "signalled"; },
+      waitForExit: async () => true,
+    })).rejects.toThrow("probe unavailable");
+    expect(killCalled).toBe(false);
+  });
+
+  test("test body and cleanup failures remain visible together", () => {
+    const primary = new Error("assertion failed");
+    const cleanup = new Error("fixture did not stop");
+    try {
+      throwTestFailures(primary, cleanup);
+      throw new Error("expected combined failure");
+    } catch (error) {
+      if (!(error instanceof AggregateError)) throw error;
+      expect(error.errors).toEqual([primary, cleanup]);
     }
   });
 
@@ -953,14 +999,15 @@ describe("heavy-slot", () => {
     }
   }, 10000);
 
-  test("removing the fixture's pid file ends it within a poll interval", async () => {
+  test("the fixture exits after its cooperative shutdown file appears", async () => {
     const port = (await chooseFreeBase(TEST_BASE + 7 * BASE_STRIDE, 4)) ?? TEST_BASE;
     const dir = freshDir();
     const pidFile = join(dir, "gc.pid");
+    const shutdownFile = join(dir, "gc.shutdown");
     const script = join(ROOT, `gc-pid-${process.pid}-${Date.now()}.mjs`);
     let child: ReturnType<typeof spawn> | undefined;
     try {
-      writeFileSync(script, buildGcFixtureScript(port, { ttlMs: 60000, pidFile }));
+      writeFileSync(script, buildGcFixtureScript(port, { ttlMs: 60000, pidFile, shutdownFile }));
       child = spawn(process.execPath, [script], { stdio: "ignore" });
       // The fixture writes its own pid on boot; wait until it has actually done so
       // before deleting, so the signal cannot race the write.
@@ -971,13 +1018,14 @@ describe("heavy-slot", () => {
       }
       expect(wrote).toBe(true);
       expect(readFileSync(pidFile, "utf8").trim()).toBe(String(child.pid));
-      // The launcher's finally: delete the pid file, and the fixture exits itself.
-      unlinkSync(pidFile);
+      // The launcher's cooperative signal file ends the fixture without a PID signal.
+      writeFileSync(shutdownFile, "stop");
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline && child.exitCode === null) await sleep(100);
       expect(child.exitCode).toBe(0);
     } finally {
       rmSync(pidFile, { force: true });
+      rmSync(shutdownFile, { force: true });
       rmSync(script, { force: true });
       if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
@@ -1007,12 +1055,13 @@ describe("heavy-slot", () => {
     const gcPort = await chooseFreeBase(TEST_BASE + 3 * BASE_STRIDE, 4);
     if (gcPort === null) throw new Error("no free port for the grandchild");
     const pidFile = join(dir, "gc.pid");
+    const shutdownFile = join(dir, `shutdown-${randomUUID()}`);
     const fixtureToken = randomUUID();
     const gcScript = join(ROOT, `heavy-gc-${process.pid}-${Date.now()}.mjs`);
     let wrapper: string | undefined;
     writeFileSync(
       gcScript,
-      buildGcFixtureScript(gcPort, { ttlMs: 90_000, pidFile, ownershipToken: fixtureToken }),
+      buildGcFixtureScript(gcPort, { ttlMs: 90_000, pidFile, shutdownFile, ownershipToken: fixtureToken }),
     );
     const gcAlive = (): Promise<boolean> => fixtureResponds(gcPort, fixtureToken);
     let command: string;
@@ -1033,6 +1082,7 @@ describe("heavy-slot", () => {
 
     let violation: string | null = null;
     let cleanupFailure: Error | undefined;
+    let primaryFailure: Error | undefined;
     let runDone = false;
     let cancelSent = false;
     const runPromise = run("cancel-me", command).finally(() => {
@@ -1087,6 +1137,8 @@ describe("heavy-slot", () => {
       expect(gcGone).toBe(true);
       // Listener hygiene on the cancel path too: run() removed its pair.
       expect(process.listenerCount("SIGINT") + process.listenerCount("SIGTERM")).toBe(listenerBaseline);
+    } catch (error) {
+      primaryFailure = error instanceof Error ? error : new Error(String(error));
     } finally {
       try {
         // Keep a failed assertion from leaving run() and its child tree alive.
@@ -1094,8 +1146,10 @@ describe("heavy-slot", () => {
         try {
           const recordedPid = Number(readFileSync(pidFile, "utf8").trim());
           if (Number.isInteger(recordedPid) && recordedPid > 0) fixturePid = recordedPid;
-        } catch {
-          /* no fixture pid was written */
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+            cleanupFailure = new Error(`could not read fixture ownership record: ${String(error)}`);
+          }
         }
         if (!cancelSent && !runDone) {
           cancelSent = true;
@@ -1111,33 +1165,50 @@ describe("heavy-slot", () => {
           }
         }
         if (fixturePid !== undefined) {
+          const capturedPid = fixturePid;
           await cleanupCapturedFixture(runDone, {
             isAlive: async () => {
+              let recordedPid: number;
               try {
-                const recordedPid = Number(readFileSync(pidFile, "utf8").trim());
-                return recordedPid === fixturePid && (await fixtureResponds(gcPort, fixtureToken));
-              } catch {
-                return false;
+                recordedPid = Number(readFileSync(pidFile, "utf8").trim());
+              } catch (error) {
+                if (error instanceof Error && "code" in error && error.code === "ENOENT" &&
+                  !(await fixtureResponds(gcPort, fixtureToken)) && processState(capturedPid) === "absent") return false;
+                throw error;
               }
+              if (recordedPid !== capturedPid) throw new Error("fixture PID ownership changed during cleanup");
+              if (await fixtureResponds(gcPort, fixtureToken)) return true;
+              if (processState(capturedPid) === "absent") return false;
+              throw new Error("fixture ownership probe failed; process state is unknown");
             },
-            kill: () => signalCapturedFixture(fixturePid),
+            kill: () => {
+              writeFileSync(shutdownFile, "stop");
+              return "signalled";
+            },
             waitForExit: (timeoutMs) => waitForFixtureGone(gcPort, fixtureToken, timeoutMs),
           });
+        } else {
+          // The unique signal path is safe even if startup raced PID publication.
+          writeFileSync(shutdownFile, "stop");
+          if (!(await waitForFixtureGone(gcPort, fixtureToken, 2000))) {
+            cleanupFailure = new Error("fixture did not acknowledge cooperative shutdown within 2000ms");
+          }
         }
       } catch (error) {
         cleanupFailure = error instanceof Error ? error : new Error(String(error));
       } finally {
         if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
         else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
-        // [L342] the pid file is also the fixture's exit signal. Remove it after
-        // run() settles so an early assertion failure cannot strand the fixture.
+        // The shutdown file is a cooperative signal; remove both records after
+        // the fixture acknowledged exit or reported a cleanup failure.
         rmSync(pidFile, { force: true });
+        rmSync(shutdownFile, { force: true });
         rmSync(gcScript, { force: true });
         if (wrapper) rmSync(wrapper, { force: true });
         resetBase();
       }
     }
-    if (cleanupFailure) throw cleanupFailure;
+    throwTestFailures(primaryFailure, cleanupFailure);
   }, 30000);
 
   test("a launch that never starts returns a code, not a throw, and frees its slot (G1)", async () => {

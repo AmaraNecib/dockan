@@ -159,6 +159,35 @@ describe("wipe-e2e: the data dir the script agrees to delete", () => {
     }
   });
 
+  test("refuses inner self-root and final links through nested checkout aliases", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-nested-root-aliases-"));
+    const worktree = join(fixture, "worktree");
+    const innerCheckoutAlias = join(fixture, "checkout-alias-inner");
+    const outerCheckoutAlias = join(fixture, "checkout-alias-outer");
+    const contracts = join(worktree, "packages", "contracts");
+    try {
+      mkdirSync(contracts, { recursive: true });
+      const sentinel = join(contracts, "source.ts");
+      writeFileSync(sentinel, "contract source");
+      symlinkSync(worktree, innerCheckoutAlias, process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(innerCheckoutAlias, outerCheckoutAlias, process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(worktree, join(worktree, "self"), process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(contracts, join(worktree, "contracts-link"), process.platform === "win32" ? "junction" : "dir");
+
+      for (const target of [
+        join(outerCheckoutAlias, "self", "packages", "contracts"),
+        join(outerCheckoutAlias, "contracts-link"),
+      ]) {
+        const run = await runWipe(worktree, target);
+        expect(run.code).toBe(1);
+        expect(run.out).toContain("refusing");
+        expect(existsSync(sentinel)).toBe(true);
+      }
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   test("refuses an in-worktree symlink ancestor and preserves its target", async () => {
     const fixture = mkdtempSync(join(tmpdir(), "wipe-e2e-internal-ancestor-"));
     const worktree = join(fixture, "worktree");

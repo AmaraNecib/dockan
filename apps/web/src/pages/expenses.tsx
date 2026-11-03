@@ -45,7 +45,7 @@ type ExpenseCorrectionRecovery = {
   row: ExpenseListItem | null;
   acknowledgements: ExpenseCorrectionAcknowledgement[];
   notice: string | null;
-  correctionRequest: { amount: number; reason?: string; idempotencyKey: string } | null;
+  correctionRequest: { amount: number; reason?: string; idempotencyKey: string; historyDataUpdateCountAtFailure?: number } | null;
   undoRequests: Record<string, string>;
 };
 type ExpenseCorrectionRecoveryStore = Record<string, ExpenseCorrectionRecovery>;
@@ -104,6 +104,7 @@ function ExpenseCorrectionRow({
   const [draftReason, setDraftReason] = useState(recovery.correctionRequest?.reason ?? "");
   const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [historyActionError, setHistoryActionError] = useState<string | null>(null);
+  const [discardConfirmation, setDiscardConfirmation] = useState<{ fingerprint: string; previousKey: string } | null>(null);
   const [undoConfirmationId, setUndoConfirmationId] = useState<string | null>(() => Object.keys(recovery.undoRequests)[0] ?? null);
   const correctionKeyRef = useRef<{ fingerprint: string; key: string } | null>(recovery.correctionRequest === null ? null : {
     fingerprint: `${recovery.correctionRequest.amount}\u0000${recovery.correctionRequest.reason ?? ""}`,
@@ -137,10 +138,18 @@ function ExpenseCorrectionRow({
       ? pendingAcknowledgements[0]?.correction.afterAmount
       : latestKnownAmount;
   const amountNeedsVerification = pendingAcknowledgements.length > 0 || recovery.correctionRequest !== null || Object.keys(recovery.undoRequests).length > 0;
-  const editingBlocked = amountConflict || pendingAcknowledgements.length > 0 || (recovery.correctionRequest !== null && history.isError && (
+  const correctionHistoryRefreshedAfterFailure = recovery.correctionRequest?.historyDataUpdateCountAtFailure !== undefined
+    && history.isSuccess
+    && historyDataUpdateCount > recovery.correctionRequest.historyDataUpdateCountAtFailure;
+  const correctionDraftChanged = recovery.correctionRequest !== null && (
     parseGroupedAmount(draftAmount) !== recovery.correctionRequest.amount
     || draftReason.trim() !== (recovery.correctionRequest.reason ?? "")
-  ));
+  );
+  const editingBlocked = amountConflict || pendingAcknowledgements.length > 0 || (
+    correctionDraftChanged
+    && recovery.correctionRequest?.historyDataUpdateCountAtFailure !== undefined
+    && (!correctionHistoryRefreshedAfterFailure || history.isError)
+  );
 
   const refreshCorrectionHistory = useCallback(async () => {
     await queryClient.cancelQueries({ queryKey: historyOptions.queryKey, exact: true });
@@ -184,7 +193,11 @@ function ExpenseCorrectionRow({
         // Unknown failures may hide a committed write; known domain refusals cannot.
         let unresolvedRequest: ExpenseCorrectionRecovery["correctionRequest"] = null;
         if (!isDefinitiveCorrectionRefusal(error.message)) {
-          unresolvedRequest = { amount: input.amount, idempotencyKey: input.idempotencyKey };
+          unresolvedRequest = {
+            amount: input.amount,
+            idempotencyKey: input.idempotencyKey,
+            historyDataUpdateCountAtFailure: queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0,
+          };
           if (input.reason !== undefined) unresolvedRequest.reason = input.reason;
         }
         correctionKeyRef.current = unresolvedRequest === null ? null : {
@@ -236,6 +249,7 @@ function ExpenseCorrectionRow({
 
   function cancelCorrectionEditor(): void {
     setEditing(false);
+    setDiscardConfirmation(null);
     setCorrectionError(null);
     if (recovery.correctionRequest === null) correctionKeyRef.current = null;
   }
@@ -252,8 +266,18 @@ function ExpenseCorrectionRow({
     const fingerprint = `${amount}\u0000${reason}`;
     if (editingBlocked) return;
     const previous = correctionKeyRef.current;
-    // Only the server can distinguish replay from no change against current money.
-    // Retained off-page snapshots must not refuse a valid changed request.
+    if (correction.isPending && previous?.fingerprint === fingerprint) return;
+    if (recovery.correctionRequest !== null && !correction.isPending && previous?.fingerprint !== fingerprint) {
+      if (!history.isSuccess || history.data === undefined) return;
+      setDiscardConfirmation({ fingerprint, previousKey: recovery.correctionRequest.idempotencyKey });
+      return;
+    }
+    sendCorrection(amount, reason);
+  }
+
+  function sendCorrection(amount: number, reason: string): void {
+    const fingerprint = `${amount}\u0000${reason}`;
+    const previous = correctionKeyRef.current;
     const idempotencyKey = previous?.fingerprint === fingerprint ? previous.key : crypto.randomUUID();
     correctionKeyRef.current = { fingerprint, key: idempotencyKey };
     const input: ExpenseCorrect = {
@@ -266,6 +290,24 @@ function ExpenseCorrectionRow({
     if (reason !== "") correctionRequest.reason = reason;
     onRequestChange(entry.id, correctionRequest, Object.fromEntries(undoKeysRef.current));
     correction.mutate(input);
+  }
+
+  function confirmDiscardAndContinue(): void {
+    const pending = discardConfirmation;
+    const amount = parseGroupedAmount(draftAmount);
+    const reason = draftReason.trim();
+    const fingerprint = amount === null ? "" : `${amount}\u0000${reason}`;
+    if (pending === null || amount === null || pending.fingerprint !== fingerprint
+      || recovery.correctionRequest?.idempotencyKey !== pending.previousKey
+      || correction.isPending || editingBlocked || !correctionHistoryRefreshedAfterFailure || history.data === undefined) {
+      setDiscardConfirmation(null);
+      return;
+    }
+    setDiscardConfirmation(null);
+    // Keep unresolved undo identities; discard only the old correction retry.
+    correctionKeyRef.current = null;
+    onRequestChange(entry.id, null, Object.fromEntries(undoKeysRef.current));
+    sendCorrection(amount, reason);
   }
 
   function confirmUndo(correctionId: string): void {
@@ -440,7 +482,7 @@ function ExpenseCorrectionRow({
                       value={draftAmount}
                       aria-invalid={correctionError !== null}
                       aria-describedby={correctionError !== null ? `expense-correction-error-${entry.id}` : undefined}
-                      onChange={(event) => { setDraftAmount(event.target.value); setCorrectionError(null); }}
+                      onChange={(event) => { setDraftAmount(event.target.value); setCorrectionError(null); setDiscardConfirmation(null); }}
                       data-testid="expense-correction-amount"
                     />
                   </label>
@@ -452,10 +494,23 @@ function ExpenseCorrectionRow({
                       rows={2}
                       maxLength={500}
                       value={draftReason}
-                      onChange={(event) => setDraftReason(event.target.value)}
+                      onChange={(event) => { setDraftReason(event.target.value); setDiscardConfirmation(null); }}
                       data-testid="expense-correction-reason"
                     />
                   </label>
+                  {discardConfirmation !== null && (
+                    <div className="grid gap-2 rounded border border-warning/40 bg-warning/10 p-3 text-sm" role="alert" data-testid="expense-correction-discard-confirmation">
+                      <p data-testid="expense-correction-discard-warning">{t("expenseCorrectionDiscardWarning")}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" disabled={correction.isPending} onClick={confirmDiscardAndContinue} data-testid="expense-correction-discard-confirm">
+                          {t("expenseCorrectionDiscardConfirm")}
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" disabled={correction.isPending} onClick={() => setDiscardConfirmation(null)} data-testid="expense-correction-discard-cancel">
+                          {t("expenseCorrectionCancel")}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-2">
                     <Button type="submit" size="sm" disabled={correction.isPending || editingBlocked} data-testid="expense-correction-save">
                       {correction.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionSave")}

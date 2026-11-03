@@ -892,6 +892,8 @@ const resources = {
       expenseCorrectionNewAmount: "المبلغ الصحيح (دج)",
       expenseCorrectionSave: "حفظ التصحيح",
       expenseCorrectionSaving: "جارٍ الحفظ…",
+      expenseCorrectionDiscardWarning: "نتيجة التصحيح السابق غير مؤكدة. المتابعة تُسقط إمكانية إعادة محاولة الطلب السابق فقط؛ ولا تحذف قيداً من الخادم أو تتراجع عنه.",
+      expenseCorrectionDiscardConfirm: "تجاهل إعادة المحاولة السابقة والمتابعة",
       expenseCorrectionCancel: "إلغاء",
       expenseCorrectionSaved: "تم تسجيل التصحيح",
       expenseCorrectionUndoSaved: "تم تسجيل التراجع",

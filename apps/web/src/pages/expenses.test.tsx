@@ -2489,8 +2489,28 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
       const retainedRow = ui.query("expense-correction-history")!.closest("tr")!.previousElementSibling!;
       expect(retainedRow.querySelector('[data-testid="expense-row-effective-amount"]')?.getAttribute("data-value")).toBe("800");
     } else {
+      const historyAfterLostResponse = correctionHistories.get("exp-1")!;
+      const externalCorrection: ExpenseCorrectionHistoryEntry = {
+        id: "external-after-lost-response", expenseId: "exp-1", effectiveAt: "2019-12-15T10:00:00", recordedAt: "2026-10-28T13:40:00",
+        beforeAmount: 800, afterAmount: 900, difference: 100, actorId: "actor-2", actorName: "مالك المتجر",
+        reason: "external event", reversesCorrectionId: null, reversedByCorrectionId: null,
+      };
+      correctionHistories.set("exp-1", { ...historyAfterLostResponse, effectiveAmount: 900, corrections: [...historyAfterLostResponse.corrections, externalCorrection] });
+      listItems[0] = { ...listItems[0]!, effectiveAmount: 900, correctionCount: 2 };
+      await ui.click("expense-correction-amount-retry");
+      expect(await ui.waitFor(() => ui.query("expense-correction-history")?.querySelectorAll('[data-testid="expense-correction-entry"]').length === 2 && queryClient.isFetching() === 0)).toBe(true);
+      expect(ui.query("expense-row-effective-amount")?.getAttribute("data-value")).toBe("900");
       await ui.type("expense-correction-amount", "1000");
       await ui.submit("expense-correction-form");
+      expect(ui.query("expense-correction-discard-confirmation")).not.toBeNull();
+      expect(correctionInputs).toHaveLength(1);
+      expect(ui.query("expense-correction-discard-confirmation")?.getAttribute("role")).toBe("alert");
+      await ui.click("expense-correction-discard-cancel");
+      expect(ui.query("expense-correction-discard-confirmation")).toBeNull();
+      expect(correctionInputs).toHaveLength(1);
+      await ui.submit("expense-correction-form");
+      expect(ui.query("expense-correction-discard-confirmation")).not.toBeNull();
+      await ui.click("expense-correction-discard-confirm");
       expect(await ui.waitFor(() => correctionInputs.length === 2)).toBe(true);
       expect(correctionInputs[1]).toMatchObject({ expenseId: "exp-1", amount: 1_000, reason: "restore after lost acknowledgement" });
       expect(correctionInputs[1]?.idempotencyKey).not.toBe(correctionInputs[0]?.idempotencyKey);

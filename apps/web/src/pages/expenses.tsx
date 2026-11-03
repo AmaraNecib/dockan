@@ -83,8 +83,8 @@ function ExpenseCorrectionRow({
   onAcknowledged,
   onHistoryConfirmed,
   onClearNotice,
-  onRequestChange,
-  onUndoRequestsChange,
+  onCorrectionRequestChange,
+  onUndoRequestChange,
   recovery,
 }: {
   entry: ExpenseListItem;
@@ -94,8 +94,8 @@ function ExpenseCorrectionRow({
   onAcknowledged: (expenseId: string, entry: ExpenseListItem, correction: ExpenseCorrection, historyDataUpdateCountAtAck: number, notice: string) => void;
   onHistoryConfirmed: (expenseId: string, history: ExpenseCorrectionHistory) => void;
   onClearNotice: (expenseId: string) => void;
-  onRequestChange: (expenseId: string, correctionRequest: ExpenseCorrectionRecovery["correctionRequest"], undoRequests: Record<string, string>) => void;
-  onUndoRequestsChange: (expenseId: string, undoRequests: Record<string, string>) => void;
+  onCorrectionRequestChange: (expenseId: string, correctionRequest: ExpenseCorrectionRecovery["correctionRequest"], expectedKey?: string) => void;
+  onUndoRequestChange: (expenseId: string, correctionId: string, key: string | null, expectedKey?: string) => void;
   recovery: ExpenseCorrectionRecovery;
 }) {
   const { t } = useTranslation();
@@ -161,7 +161,7 @@ function ExpenseCorrectionRow({
     } catch {
       // A failed read leaves every acknowledgement unresolved and edits blocked.
     }
-  }, [entry.id, historyOptions, onHistoryConfirmed, onRequestChange, queryClient, recovery.correctionRequest]);
+  }, [entry.id, historyOptions, onHistoryConfirmed, queryClient]);
 
   useEffect(() => {
     const freshHistory = history.data;
@@ -181,12 +181,12 @@ function ExpenseCorrectionRow({
 
   const correction = useMutation(
     orpc.expensesCorrect.mutationOptions({
-      onSuccess: (savedCorrection) => {
+      onSuccess: (savedCorrection, input) => {
         setEditing(false);
         setCorrectionError(null);
         onAcknowledged(entry.id, entry, savedCorrection, queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0, t("expenseCorrectionSaved"));
         correctionKeyRef.current = null;
-        onRequestChange(entry.id, null, Object.fromEntries(undoKeysRef.current));
+        onCorrectionRequestChange(entry.id, null, input.idempotencyKey);
         void queryClient.invalidateQueries();
         void refreshCorrectionHistory();
       },
@@ -206,7 +206,7 @@ function ExpenseCorrectionRow({
           fingerprint: `${input.amount}\u0000${input.reason?.trim() ?? ""}`,
           key: input.idempotencyKey,
         };
-        onRequestChange(entry.id, unresolvedRequest, Object.fromEntries(undoKeysRef.current));
+        onCorrectionRequestChange(entry.id, unresolvedRequest, input.idempotencyKey);
         void queryClient.invalidateQueries();
         void refreshCorrectionHistory();
       },
@@ -215,20 +215,22 @@ function ExpenseCorrectionRow({
 
   const undo = useMutation(
     orpc.expensesCorrectionUndo.mutationOptions({
-      onSuccess: (savedUndo) => {
+      onSuccess: (savedUndo, input) => {
         setUndoConfirmationId(null);
         setHistoryActionError(null);
         onAcknowledged(entry.id, entry, savedUndo, queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0, t("expenseCorrectionUndoSaved"));
-        undoKeysRef.current.delete(savedUndo.reversesCorrectionId ?? "");
-        onUndoRequestsChange(entry.id, Object.fromEntries(undoKeysRef.current));
+        const correctionId = input.correctionId;
+        if (undoKeysRef.current.get(correctionId) === input.idempotencyKey) undoKeysRef.current.delete(correctionId);
+        onUndoRequestChange(entry.id, correctionId, null, input.idempotencyKey);
         void queryClient.invalidateQueries();
         void refreshCorrectionHistory();
       },
       onError: (error, input) => {
         setHistoryActionError(tError(error.message));
-        if (isDefinitiveCorrectionRefusal(error.message)) undoKeysRef.current.delete(input.correctionId);
+        const definitiveRefusal = isDefinitiveCorrectionRefusal(error.message);
+        if (definitiveRefusal) undoKeysRef.current.delete(input.correctionId);
         else undoKeysRef.current.set(input.correctionId, input.idempotencyKey);
-        onUndoRequestsChange(entry.id, Object.fromEntries(undoKeysRef.current));
+        onUndoRequestChange(entry.id, input.correctionId, definitiveRefusal ? null : input.idempotencyKey, input.idempotencyKey);
         void queryClient.invalidateQueries();
         void refreshCorrectionHistory();
       },
@@ -279,7 +281,10 @@ function ExpenseCorrectionRow({
 
   function sendCorrection(amount: number, reason: string): void {
     const fingerprint = `${amount}\u0000${reason}`;
-    const previous = correctionKeyRef.current;
+    const cachedRequest = recovery.correctionRequest;
+    const previous = cachedRequest === null
+      ? correctionKeyRef.current
+      : { fingerprint: `${cachedRequest.amount}\u0000${cachedRequest.reason ?? ""}`, key: cachedRequest.idempotencyKey };
     const idempotencyKey = previous?.fingerprint === fingerprint ? previous.key : crypto.randomUUID();
     correctionKeyRef.current = { fingerprint, key: idempotencyKey };
     const input: ExpenseCorrect = {
@@ -290,7 +295,7 @@ function ExpenseCorrectionRow({
     if (reason !== "") input.reason = reason;
     const correctionRequest: NonNullable<ExpenseCorrectionRecovery["correctionRequest"]> = { amount, idempotencyKey };
     if (reason !== "") correctionRequest.reason = reason;
-    onRequestChange(entry.id, correctionRequest, Object.fromEntries(undoKeysRef.current));
+    onCorrectionRequestChange(entry.id, correctionRequest);
     correction.mutate(input);
   }
 
@@ -306,17 +311,17 @@ function ExpenseCorrectionRow({
       return;
     }
     setDiscardConfirmation(null);
-    // Keep unresolved undo identities; discard only the old correction retry.
+    // Keep unresolved undo identities; discard only the correction retry shown for confirmation.
     correctionKeyRef.current = null;
-    onRequestChange(entry.id, null, Object.fromEntries(undoKeysRef.current));
+    onCorrectionRequestChange(entry.id, null, pending.previousKey);
     sendCorrection(amount, reason);
   }
 
   function confirmUndo(correctionId: string): void {
     if (editingBlocked) return;
-    const key = undoKeysRef.current.get(correctionId) ?? crypto.randomUUID();
+    const key = recovery.undoRequests[correctionId] ?? undoKeysRef.current.get(correctionId) ?? crypto.randomUUID();
     undoKeysRef.current.set(correctionId, key);
-    onRequestChange(entry.id, recovery.correctionRequest, Object.fromEntries(undoKeysRef.current));
+    onUndoRequestChange(entry.id, correctionId, key);
     undo.mutate({ correctionId, idempotencyKey: key });
   }
 
@@ -565,7 +570,7 @@ export function ExpensesPage() {
       if (existing === undefined || existing.notice === null) return current;
       const updated = { ...existing, notice: null };
       const next = { ...current };
-      if (updated.row === null && updated.acknowledgements.length === 0) delete next[expenseId];
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[expenseId];
       else next[expenseId] = updated;
       return next;
     });
@@ -583,24 +588,29 @@ export function ExpensesPage() {
       return next;
     });
   }, [correctionRecoveryKey, queryClient]);
-  const retainUndoRequests = useCallback((expenseId: string, undoRequests: Record<string, string>) => {
+  const updateCorrectionRequest = useCallback((expenseId: string, correctionRequest: ExpenseCorrectionRecovery["correctionRequest"], expectedKey?: string) => {
     queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
       const store = current ?? {};
       const existing = store[expenseId] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
-      const updated = { ...existing, undoRequests };
+      if (expectedKey !== undefined && existing.correctionRequest?.idempotencyKey !== expectedKey) return current;
+      const updated = { ...existing, correctionRequest };
       const next = { ...store };
-      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(undoRequests).length === 0) delete next[expenseId];
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[expenseId];
       else next[expenseId] = updated;
       return next;
     });
   }, [correctionRecoveryKey, queryClient]);
-  const retainCorrectionRequests = useCallback((expenseId: string, correctionRequest: ExpenseCorrectionRecovery["correctionRequest"], undoRequests: Record<string, string>) => {
+  const updateUndoRequest = useCallback((expenseId: string, correctionId: string, key: string | null, expectedKey?: string) => {
     queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
       const store = current ?? {};
       const existing = store[expenseId] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
-      const updated = { ...existing, correctionRequest, undoRequests };
+      if (expectedKey !== undefined && existing.undoRequests[correctionId] !== expectedKey) return current;
+      const undoRequests = { ...existing.undoRequests };
+      if (key === null) delete undoRequests[correctionId];
+      else undoRequests[correctionId] = key;
+      const updated = { ...existing, undoRequests };
       const next = { ...store };
-      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && correctionRequest === null && Object.keys(undoRequests).length === 0) delete next[expenseId];
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(undoRequests).length === 0) delete next[expenseId];
       else next[expenseId] = updated;
       return next;
     });
@@ -693,7 +703,7 @@ export function ExpensesPage() {
       if (!existing.acknowledgements.every((event) => eventIds.has(event.correction.id))) return current;
       const updated = { ...existing, acknowledgements: [] };
       const next = { ...current };
-      if (updated.row === null && updated.notice === null) delete next[expenseId];
+      if (updated.row === null && updated.notice === null && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[expenseId];
       else next[expenseId] = updated;
       return next;
     });
@@ -1258,8 +1268,8 @@ export function ExpensesPage() {
                     onAcknowledged={acknowledgeCorrection}
                     onHistoryConfirmed={confirmAcknowledgementsFromFreshHistory}
                     onClearNotice={clearCorrectionNotice}
-                    onRequestChange={retainCorrectionRequests}
-                    onUndoRequestsChange={retainUndoRequests}
+                    onCorrectionRequestChange={updateCorrectionRequest}
+                    onUndoRequestChange={updateUndoRequest}
                     recovery={correctionRecoveryStore[entry.id] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY}
                   />
                 );

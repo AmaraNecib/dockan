@@ -2590,6 +2590,56 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     await ui.unmount();
   });
 
+  it.each([true, false])("keeps a remounted undo retry key across both completion orders, correction first: %s", async (correctionFirst) => {
+    const priorCorrection: ExpenseCorrectionHistoryEntry = {
+      id: "correction-1", expenseId: "exp-1", effectiveAt: "2019-12-15T10:00:00", recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1_000, afterAmount: 800, difference: -200, actorId: "actor-1", actorName: "مالك المتجر",
+      reason: "receipt typo", reversesCorrectionId: null, reversedByCorrectionId: null,
+    };
+    correctionHistories.set("exp-1", {
+      original: { id: "exp-1", categoryId: "cat-1", amount: 1_000, note: "إيصال قديم", occurredAt: "2019-12-15T10:00:00", createdAt: "2019-12-16T11:00:00", actorId: null, actorName: null },
+      effectiveAmount: 800, corrections: [priorCorrection],
+    });
+    listItems[0] = { ...listItems[0]!, effectiveAmount: 800, correctionCount: 1 };
+    deferCorrectionResponses = true;
+    const oldRow = await mountPage(queryClient);
+    expect(await oldRow.waitFor(() => oldRow.query("expense-correction-open-history") !== null)).toBe(true);
+    await oldRow.click("expense-correction-open-history");
+    await oldRow.click("expense-correction-open-editor");
+    await oldRow.type("expense-correction-amount", "700");
+    await oldRow.submit("expense-correction-form");
+    expect(await oldRow.waitFor(() => correctionInputs.length === 1 && deferredCorrectionResponses.length === 1)).toBe(true);
+    await oldRow.unmount();
+
+    deferUndoResponses = true;
+    loseUndoResponse = true;
+    const remounted = await mountPage(queryClient);
+    expect(await remounted.waitFor(() => remounted.query("expense-correction-open-history") !== null)).toBe(true);
+    await remounted.click("expense-correction-open-history");
+    expect(await remounted.waitFor(() => remounted.query("expense-correction-undo") !== null)).toBe(true);
+    await remounted.click("expense-correction-undo");
+    await remounted.click("expense-correction-undo-confirm-button");
+    expect(await remounted.waitFor(() => undoInputs.length === 1 && deferredUndoResponses.length === 1)).toBe(true);
+    const exactUndoRequest = undoInputs[0]!;
+    const recoveryKey = expenseCorrectionRecoveryQueryKey("test-session");
+    const resolveCorrection = async () => act(async () => { deferredCorrectionResponses[0]!(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    const resolveUncertainUndo = async () => act(async () => { deferredUndoResponses[0]!(true); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    if (correctionFirst) {
+      await resolveCorrection();
+      expect(queryClient.getQueryData<{ "exp-1"?: { undoRequests: Record<string, string> } }>(recoveryKey)?.["exp-1"]?.undoRequests["correction-1"]).toBe(exactUndoRequest.idempotencyKey);
+      await resolveUncertainUndo();
+    } else {
+      await resolveUncertainUndo();
+      expect(queryClient.getQueryData<{ "exp-1"?: { undoRequests: Record<string, string> } }>(recoveryKey)?.["exp-1"]?.undoRequests["correction-1"]).toBe(exactUndoRequest.idempotencyKey);
+      await resolveCorrection();
+    }
+    expect(queryClient.getQueryData<{ "exp-1"?: { undoRequests: Record<string, string> } }>(recoveryKey)?.["exp-1"]?.undoRequests["correction-1"]).toBe(exactUndoRequest.idempotencyKey);
+    await remounted.click("expense-correction-undo-confirm-button");
+    expect(await remounted.waitFor(() => undoInputs.length === 2)).toBe(true);
+    expect(undoInputs[1]).toEqual(exactUndoRequest);
+    await remounted.unmount();
+  });
+
   it.each([false, true])("does not restore an acknowledged correction when an undo finishes later, lost undo response: %s", async (loseUndoAck) => {
     const priorCorrection: ExpenseCorrectionHistoryEntry = {
       id: "correction-1", expenseId: "exp-1", effectiveAt: "2019-12-15T10:00:00", recordedAt: "2026-10-28T13:34:56",

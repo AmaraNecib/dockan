@@ -332,6 +332,81 @@ describe("recordStockMovement", () => {
     expect(perLine.stats.cacheWrites).toBe(specs.length);
   });
 
+  it("keeps interleaved batch history and caches isolated by item", async () => {
+    const i1 = fakeTx({ itemId: "i1", costPrice: 100 });
+    const i2 = fakeTx({ itemId: "i2", costPrice: 700 });
+    i1.movements.push({
+      id: "i1-seed",
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 4,
+      unitCost: 100,
+      reason: null,
+      ref: null,
+      returnMark: null,
+      occurredAt: "2019-12-31T10:00:00",
+      createdAt: "2019-12-31T10:00:00",
+      seq: 0,
+    });
+    i2.movements.push({
+      id: "i2-seed",
+      itemId: "i2",
+      kind: "PURCHASE",
+      delta: 3,
+      unitCost: 700,
+      reason: null,
+      ref: null,
+      returnMark: null,
+      occurredAt: "2019-12-31T10:00:00",
+      createdAt: "2019-12-31T10:00:00",
+      seq: 0,
+    });
+    i1.item.stockOnHand = 4;
+    i2.item.stockOnHand = 3;
+    const tx: StockPostingTx = {
+      async getItemsByIds(ids) {
+        const items = new Map<string, Item>();
+        for (const fake of [i1, i2]) {
+          for (const [id, item] of await fake.tx.getItemsByIds(ids)) items.set(id, item);
+        }
+        return items;
+      },
+      listStockMovements: (id) => (id === "i1" ? i1.tx : i2.tx).listStockMovements(id),
+      insertStockMovement: (movement) => (movement.itemId === "i1" ? i1.tx : i2.tx).insertStockMovement(movement),
+      setItemStockAndCost: (id, stockOnHand, costPrice) =>
+        (id === "i1" ? i1.tx : i2.tx).setItemStockAndCost(id, stockOnHand, costPrice),
+    };
+    const specs: StockMovementSpec[] = [
+      { itemId: "i1", kind: "SALE", delta: -2, occurredAt: "2020-01-02T10:00:00" },
+      { itemId: "i2", kind: "SALE", delta: -1, occurredAt: "2020-01-02T10:01:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 2, unitCost: 200, occurredAt: "2020-01-03T10:00:00" },
+      { itemId: "i2", kind: "PURCHASE", delta: 1, unitCost: 900, occurredAt: "2020-01-03T10:01:00" },
+    ];
+
+    const results = await recordStockMovements(tx, specs);
+
+    expect(results.map(({ stockOnHand, costPrice, outflowCost }) => ({ stockOnHand, costPrice, outflowCost }))).toEqual([
+      { stockOnHand: 2, costPrice: 100, outflowCost: { totalCost: 200, unitCost: 100 } },
+      { stockOnHand: 2, costPrice: 700, outflowCost: { totalCost: 700, unitCost: 700 } },
+      { stockOnHand: 4, costPrice: 150, outflowCost: null },
+      { stockOnHand: 3, costPrice: 767, outflowCost: null },
+    ]);
+    expect(i1.cache).toEqual({ stockOnHand: 4, costPrice: 150 });
+    expect(i2.cache).toEqual({ stockOnHand: 3, costPrice: 767 });
+    expect(i1.movements.map(({ itemId, kind, delta, unitCost }) => ({ itemId, kind, delta, unitCost }))).toEqual([
+      { itemId: "i1", kind: "PURCHASE", delta: 4, unitCost: 100 },
+      { itemId: "i1", kind: "SALE", delta: -2, unitCost: null },
+      { itemId: "i1", kind: "PURCHASE", delta: 2, unitCost: 200 },
+    ]);
+    expect(i2.movements.map(({ itemId, kind, delta, unitCost }) => ({ itemId, kind, delta, unitCost }))).toEqual([
+      { itemId: "i2", kind: "PURCHASE", delta: 3, unitCost: 700 },
+      { itemId: "i2", kind: "SALE", delta: -1, unitCost: null },
+      { itemId: "i2", kind: "PURCHASE", delta: 1, unitCost: 900 },
+    ]);
+    expect(i1.stats).toEqual({ historyReads: 1, cacheWrites: 1 });
+    expect(i2.stats).toEqual({ historyReads: 1, cacheWrites: 1 });
+  });
+
   it("touches the store for nothing on an empty batch", async () => {
     const { tx, stats } = fakeTx();
     expect(await recordStockMovements(tx, [])).toEqual([]);

@@ -113,6 +113,7 @@
       "match": ["apps/web/src/pages/sale.test.tsx"],
       "specs": [
         "sale-checkout.spec.ts",
+        "keyboard-shortcuts.spec.ts",
         "no-write-window.spec.ts",
         "pagination.spec.ts",
         "completion-screens.spec.ts",
@@ -124,7 +125,7 @@
     {
       "$comment": "purchase intake, plus the learnability.spec.ts cases that pin the purchase form and its pinned bar at the two short window heights the owner uses (#231), and purchase-inline-product.spec.ts for the #257 line-scoped create. purchase.tsx is always_full (shared pickers + InvoiceHeader); the rule keeps the specs reachable for the unit-test sibling",
       "match": ["apps/web/src/pages/purchase.test.tsx"],
-      "specs": ["purchase-intake.spec.ts", "purchase-inline-product.spec.ts", "learnability.spec.ts"]
+      "specs": ["purchase-intake.spec.ts", "purchase-inline-product.spec.ts", "learnability.spec.ts", "keyboard-shortcuts.spec.ts"]
     },
     {
       "$comment": "invoice list/detail, the shared invoice header (which the purchase page also renders) and the new-return form (ReturnsPanel), which returns.spec.ts drives through the invoice page (#231)",
@@ -140,6 +141,7 @@
       "specs": [
         "invoice-payments.spec.ts",
         "party-navigation.spec.ts",
+        "invoice-search.spec.ts",
         "invoice-print-a4.spec.ts",
         "pagination.spec.ts",
         "purchase-intake.spec.ts",

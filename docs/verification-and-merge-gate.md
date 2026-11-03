@@ -37,10 +37,26 @@ evidence comment carries all three:
    GIF is the only thing that plays in a PR comment; the mp4 is the full-speed copy.
 
 Record headless as webm, convert with ffmpeg (GIF via `palettegen`/`paletteuse`, mp4 as CRF 18),
-and upload to the public `crew-evidence` bucket under `<project>/<pr>/<artifact>` — the harness
-helper is `.scratch/scripts/evidence-put.sh`, and the bucket's `r2.dev` domain is public, so the
-URLs render inline. A screenshot pair alone does not show a transition, a focus ring or a hover
-state; a linked mp4 alone does not play.
+then upload to the public `crew-evidence` bucket under `<project>/<pr>/<head>/<artifact>`. Use the
+existing authenticated `cf` CLI; `cf` and Wrangler have separate authentication, so a missing
+Wrangler token does not mean `cf` lacks credentials. Request private credentials only if a `cf`
+command itself fails authentication. Never print tokens or provision credentials when the existing
+`cf` login works.
+
+1. Run anonymous command discovery with no account or resource identifiers:
+   `cf cli search "upload local file to R2 object storage bucket"`.
+2. Check the existing `cf` authentication with `cf r2 buckets list` first. Read the discovered
+   command's help by appending `--help` to the full command returned, for example
+   `cf r2 objects put --help`. Inspect the public bucket domain with
+   `cf r2 buckets domains managed list --bucket-name crew-evidence`.
+3. Upload each PNG, GIF, and MP4 with its MIME type:
+   `cf r2 objects put <project>/<pr>/<head>/<artifact> --bucket-name crew-evidence --file <local-path> --content-type <mime-type>`.
+4. For each public URL, run `curl -fsS -D <headers-file> <public-url> -o <downloaded-file>`.
+   Confirm the response `Content-Type` matches the upload MIME type, then compare
+   `sha256sum <local-path> <downloaded-file>`. Post the URL only when the hashes match.
+
+Keep the existing bucket and policy unchanged. A screenshot pair alone does not show a transition,
+a focus ring or a hover state; a linked mp4 alone does not play.
 
 ### What counts as failing-first
 
@@ -54,9 +70,11 @@ the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR
 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
 lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
-### The red is enforced by `scripts/red-on-parent.ts`, and a waiver is its only exception
+### CI enforces red-on-parent with `scripts/red-on-parent.ts`; a waiver is its only exception
 
-"Red before green" is not an honour system here. `bun scripts/red-on-parent.ts` reconstructs the
+The PR `checks` job runs this gate, and its result must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay.
+
+"Red before green" is not an honour system here. In CI, `bun scripts/red-on-parent.ts` reconstructs the
 **parent of the change** (the merge-base, not the previous commit) and puts the files the diff adds
 into that checkout at their own paths: the added test files themselves, a **hollow** stand-in for each
 module they import that the parent does not have, and an **augmented** copy of each module the parent
@@ -157,8 +175,11 @@ assertion is rejected only in the shapes the gate can distinguish.
 A pull request may be merged when **all four** hold. Not three. Any one missing sends it back to
 the queue or back to a lane.
 
-1. **Greptile confidence is 5/5.** Not 3, not 4. A 3/5 naming two "silent escapes" is a refusal,
-   not a note.
+1. **The review confidence is 5/5.** Not 3, not 4. `reviewloop` writes it; while the Greptile A/B
+   runs, both current-head reviews must be 5/5 with no actionable findings. Follow the
+   [comparison protocol](review-comparison.md) until the owner ends the trial. A missing
+   verdict blocks merging; scores are not averaged. A 3/5 naming two "silent escapes"
+   is a refusal, not a note.
 2. **`Last reviewed commit` equals the current head SHA.** A verdict anchored to an older commit
    says nothing about the code being merged. A rebase or a fix invalidates the previous verdict —
    re-request the review.

@@ -1,4 +1,4 @@
-import type { ReturnMark, StockMovement } from "@dokan/contracts";
+import type { Item, ReturnMark, StockMovement } from "@dokan/contracts";
 
 import type { StorePort } from "../store/port";
 import { localDateTime } from "./logger";
@@ -78,6 +78,133 @@ export class StockItemMissingError extends Error {
 }
 
 /**
+ * The item cache a movement leaves behind: the stock on hand and the
+ * ADR-0002 weighted-average cost.
+ */
+type ItemCache = { stockOnHand: number; costPrice: number };
+
+/**
+ * The rows one posting batch reads once, and the running cache its movements
+ * leave behind. The batch and the single post share this state, so the single
+ * post is the length-one case of the same code and not a second
+ * implementation of it.
+ */
+type BatchState = {
+  /** the batch's items, read once for the whole batch */
+  items: Map<string, Item>;
+  /** each item's whole history, read once */
+  history: Map<string, Array<StockMovement & { seq: number }>>;
+  /** the running cache a sequence of single posts would have written */
+  running: Map<string, ItemCache>;
+  /** the movements this batch has already posted, per item */
+  appended: Map<string, LedgerMovement[]>;
+};
+
+/**
+ * Read the batch's rows: one item read for the whole batch, then one history
+ * read per distinct item, no matter how many movements that item carries in
+ * the batch (one batched item read, then one history read per item).
+ */
+async function readBatchState(
+  tx: StockPostingTx,
+  specs: readonly StockMovementSpec[],
+): Promise<BatchState> {
+  const itemIds = [...new Set(specs.map((spec) => spec.itemId))];
+  const items = await tx.getItemsByIds(itemIds);
+  const history = new Map<string, Array<StockMovement & { seq: number }>>();
+  for (const itemId of itemIds) {
+    history.set(itemId, await tx.listStockMovements(itemId));
+  }
+  return { items, history, running: new Map(), appended: new Map() };
+}
+
+/**
+ * The cache the batch's last movement for this item left behind. A missing
+ * item is reported when its first movement is reached, exactly like the
+ * single-post path, so error precedence is unchanged.
+ */
+function cacheFor(state: BatchState, itemId: string): ItemCache {
+  const cached = state.running.get(itemId);
+  if (cached !== undefined) return cached;
+  const item = state.items.get(itemId);
+  if (item === undefined) throw new StockItemMissingError(itemId);
+  const cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice };
+  state.running.set(itemId, cache);
+  return cache;
+}
+
+/**
+ * Post one movement against the batch's state and return what it posted: the
+ * inserted movement, the whole-history projection and the FIFO layer cost.
+ */
+async function postOne(
+  tx: StockPostingTx,
+  state: BatchState,
+  spec: StockMovementSpec,
+): Promise<PostedStockMovement> {
+  const existing: LedgerMovement[] = [
+    ...(state.history.get(spec.itemId) ?? []),
+    ...(state.appended.get(spec.itemId) ?? []),
+  ];
+  const cache = cacheFor(state, spec.itemId);
+  // the replay fallback is always the item's cached cost: the single home of
+  // the ADR-0002 blend for a legacy inflow with no stored unit cost
+  const fallbackUnitCost = cache.costPrice;
+  const occurredAt =
+    spec.backdateTo !== undefined
+      ? saleMovementTime(spec.backdateTo, existing)
+      : (spec.occurredAt ?? localDateTime());
+
+  const unitCost =
+    spec.delta > 0
+      ? (spec.unitCost ?? cache.costPrice)
+      : spec.delta < 0
+        ? null
+        : (spec.unitCost ?? null);
+
+  const candidate: LedgerMovement = {
+    kind: spec.kind,
+    delta: spec.delta,
+    unitCost,
+    reason: spec.reason ?? null,
+    occurredAt,
+    seq: undefined,
+  };
+
+  // an outflow stamps its FIFO layer cost (ADR-0005) and rejects an oversell;
+  // the whole-history projection then validates the candidate in order
+  const outflowCost =
+    spec.delta < 0 ? fifoOutflowCost(existing, -spec.delta, { fallbackUnitCost }) : null;
+  const projection = projectLedger([...existing, candidate], { fallbackUnitCost });
+
+  const movement = await tx.insertStockMovement({
+    itemId: spec.itemId,
+    kind: spec.kind,
+    delta: spec.delta,
+    unitCost,
+    reason: spec.reason ?? null,
+    ref: spec.ref ?? null,
+    returnMark: spec.returnMark ?? null,
+    occurredAt,
+  });
+
+  // ADR-0002/0005: the average is replayed from the full ledger after ANY
+  // write, outflows included. No per-insertion-position special-casing.
+  const costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+  state.appended.set(spec.itemId, [...(state.appended.get(spec.itemId) ?? []), candidate]);
+  cache.stockOnHand = projection.stockOnHand;
+  cache.costPrice = costPrice;
+  return { movement, stockOnHand: projection.stockOnHand, costPrice, outflowCost };
+}
+
+/** Write the item caches the batch's movements left behind: one write per item. */
+async function writeBatchCaches(tx: StockPostingTx, state: BatchState): Promise<void> {
+  for (const [itemId, cache] of state.running) {
+    await tx.setItemStockAndCost(itemId, cache.stockOnHand, cache.costPrice);
+  }
+}
+
+/**
  * Post a batch of movements and resync the touched item caches.
  *
  * The item row and the item's whole history are read ONCE per distinct item,
@@ -104,95 +231,14 @@ export async function recordStockMovements(
 ): Promise<PostedStockMovement[]> {
   if (specs.length === 0) return [];
 
-  // one item read and one history read per distinct item, no matter how many
-  // movements that item carries in this batch (one batched item read for the
-  // whole batch, then one history read per item)
-  const itemIds = [...new Set(specs.map((spec) => spec.itemId))];
-  const items = await tx.getItemsByIds(itemIds);
-  const history = new Map<string, Array<StockMovement & { seq: number }>>();
-  for (const itemId of itemIds) {
-    history.set(itemId, await tx.listStockMovements(itemId));
-  }
-
-  // the running cache a sequence of single posts would have written: each
-  // movement's fallback (and an inflow's default unit cost) is what the
-  // previous movement in this batch left in the cache
-  const running = new Map<string, { stockOnHand: number; costPrice: number }>();
-  const cacheFor = (itemId: string) => {
-    let cache = running.get(itemId);
-    if (cache === undefined) {
-      const item = items.get(itemId);
-      // a missing item is reported when its first movement is reached, exactly
-      // like the single-post path, so error precedence is unchanged
-      if (item === undefined) throw new StockItemMissingError(itemId);
-      cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice };
-      running.set(itemId, cache);
-    }
-    return cache;
-  };
-
-  const appended = new Map<string, LedgerMovement[]>();
+  const state = await readBatchState(tx, specs);
   const posted: PostedStockMovement[] = [];
   for (const spec of specs) {
-    const existing: LedgerMovement[] = [
-      ...(history.get(spec.itemId) ?? []),
-      ...(appended.get(spec.itemId) ?? []),
-    ];
-    const cache = cacheFor(spec.itemId);
-    // the replay fallback is always the item's cached cost: the single home of
-    // the ADR-0002 blend for a legacy inflow with no stored unit cost
-    const fallbackUnitCost = cache.costPrice;
-    const occurredAt =
-      spec.backdateTo !== undefined
-        ? saleMovementTime(spec.backdateTo, existing)
-        : (spec.occurredAt ?? localDateTime());
-
-    const unitCost =
-      spec.delta > 0
-        ? (spec.unitCost ?? cache.costPrice)
-        : spec.delta < 0
-          ? null
-          : (spec.unitCost ?? null);
-
-    const candidate: LedgerMovement = {
-      kind: spec.kind,
-      delta: spec.delta,
-      unitCost,
-      reason: spec.reason ?? null,
-      occurredAt,
-      seq: undefined,
-    };
-
-    // an outflow stamps its FIFO layer cost (ADR-0005) and rejects an oversell;
-    // the whole-history projection then validates the candidate in order
-    const outflowCost =
-      spec.delta < 0 ? fifoOutflowCost(existing, -spec.delta, { fallbackUnitCost }) : null;
-    const projection = projectLedger([...existing, candidate], { fallbackUnitCost });
-
-    const movement = await tx.insertStockMovement({
-      itemId: spec.itemId,
-      kind: spec.kind,
-      delta: spec.delta,
-      unitCost,
-      reason: spec.reason ?? null,
-      ref: spec.ref ?? null,
-      returnMark: spec.returnMark ?? null,
-      occurredAt,
-    });
-
-    // ADR-0002/0005: the average is replayed from the full ledger after ANY
-    // write, outflows included. No per-insertion-position special-casing.
-    const costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
-    appended.set(spec.itemId, [...(appended.get(spec.itemId) ?? []), candidate]);
-    cache.stockOnHand = projection.stockOnHand;
-    cache.costPrice = costPrice;
-    posted.push({ movement, stockOnHand: projection.stockOnHand, costPrice, outflowCost });
+    posted.push(await postOne(tx, state, spec));
   }
 
   // one cache write per item, after the item's whole batch landed
-  for (const [itemId, cache] of running) {
-    await tx.setItemStockAndCost(itemId, cache.stockOnHand, cache.costPrice);
-  }
+  await writeBatchCaches(tx, state);
   return posted;
 }
 
@@ -205,9 +251,10 @@ export async function recordStockMovement(
   tx: StockPostingTx,
   spec: StockMovementSpec,
 ): Promise<PostedStockMovement> {
-  const [posted] = await recordStockMovements(tx, [spec]);
-  // SAFETY: the batch returns exactly one result per spec, and we passed one
-  return posted!;
+  const state = await readBatchState(tx, [spec]);
+  const posted = await postOne(tx, state, spec);
+  await writeBatchCaches(tx, state);
+  return posted;
 }
 
 /** Read-only whole-history projection (stock on hand + FIFO layers). No write. */

@@ -16,13 +16,12 @@ import { createDokanRpcClient } from "./rpc-link";
  * through it, so the refusal → store → gate chain has one place that runs end
  * to end.
  *
- * Every test here is waived on the parent, because `auth-refusal.ts` and this
- * chain are introduced by this change: the parent cannot load the module, so
- * no run of this file there can be red for the right reason.
+ * The parent gate cannot load this file because `auth-refusal.ts` uses a local
+ * export list that the hollow writer cannot mirror; the whole-file waiver records
+ * that exact limitation.
  */
 
-// red-on-parent-waive: 'the RPC refusal' — the module under test (./auth-refusal) is introduced by this change; discrimination is the mutation proof, not a parent run
-// red-on-parent-waive: 'the refusal identity' — the module under test (./auth-refusal) is introduced by this change; discrimination is the mutation proof, not a parent run
+// red-on-parent-waive: "whole file" — auth-refusal.ts uses a local export list that the gate cannot mirror
 
 const originalFetch = globalThis.fetch;
 const rpcClient = createDokanRpcClient();

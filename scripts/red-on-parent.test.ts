@@ -3980,6 +3980,24 @@ describe("red-on-parent round 24 — a hollow stand-in for a module the change a
     }
   });
 
+  test("a local export list and an external re-export name distinct refusal causes", () => {
+    const local = hollowModuleSource(
+      `import { AUTH_REFUSAL } from "@dokan/contracts";\nexport { AUTH_REFUSAL };\n`,
+      "apps/web/src/lib/auth-refusal.ts",
+    );
+    const external = hollowModuleSource(
+      `export { AUTH_REFUSAL } from "@dokan/contracts";\n`,
+      "apps/web/src/lib/auth-refusal.ts",
+    );
+
+    expect(local.ok).toBe(false);
+    expect(external.ok).toBe(false);
+    if (local.ok || external.ok) return;
+    expect(local.refusal).toContain("local export list");
+    expect(local.refusal).not.toContain("re-exports from another module");
+    expect(external.refusal).toContain("re-exports from another module");
+  });
+
   test("an enum, a namespace and a local export list are refused", () => {
     for (const source of [
       "export enum Mode {\n  One,\n}\n",

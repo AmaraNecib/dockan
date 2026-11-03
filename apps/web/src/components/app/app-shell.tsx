@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
@@ -9,6 +9,8 @@ import { logoutAndReload } from "@/lib/logout";
 import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { SLOW_REFETCH_MS } from "@/lib/freshness";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { focusInvoiceEntry } from "@/hooks/use-invoice-entry-shortcut";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 import { Button } from "@/components/ui/button";
 import { AppSidebar, type ShellUser } from "./app-sidebar";
 import { DiscardDraftDialog } from "./discard-draft-dialog";
@@ -41,7 +43,7 @@ interface NewSaleActionProps {
 function NewSaleAction({ activeKey }: NewSaleActionProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { draftDirty, savePending } = useSaleDraft();
+  const { draftDirtyRef, savePending, savePendingRef } = useSaleDraft();
   const [discardOpen, setDiscardOpen] = useState(false);
 
   function goToNewSale() {
@@ -53,8 +55,8 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
   }
 
   function handleNewSale() {
-    if (savePending) return;
-    if (draftDirty) {
+    if (savePendingRef.current) return;
+    if (draftDirtyRef.current) {
       setDiscardOpen(true);
       return;
     }
@@ -77,6 +79,7 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
         open={discardOpen}
         onOpenChange={setDiscardOpen}
         onConfirm={() => {
+          if (savePendingRef.current) return;
           setDiscardOpen(false);
           goToNewSale();
         }}
@@ -116,6 +119,10 @@ export function AppShell() {
     ? { name: session.data.user.name ?? null, phone: session.data.user.phoneNumber ?? null }
     : null;
 
+  const navigate = useNavigate();
+  const { draftDirtyRef, savePendingRef } = useSaleDraft();
+  const [purchaseDiscardOpen, setPurchaseDiscardOpen] = useState(false);
+  const purchaseDiscardFocus = useRef<HTMLElement | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
@@ -141,7 +148,29 @@ export function AppShell() {
     else if (helpOpen) setHelpOpen(false);
   }
 
+  function startSale() {
+    if (savePendingRef.current) return;
+    if (activeKey === "sale") focusInvoiceEntry("sale");
+    else void navigate({ to: "/sale" });
+  }
+
+  function startPurchase() {
+    if (savePendingRef.current) return;
+    if (activeKey === "purchase") {
+      focusInvoiceEntry("purchase");
+      return;
+    }
+    if (activeKey === "sale" && draftDirtyRef.current) {
+      purchaseDiscardFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setPurchaseDiscardOpen(true);
+      return;
+    }
+    void navigate({ to: "/purchase" });
+  }
+
   useKeyboardShortcuts({
+    onSale: startSale,
+    onPurchase: startPurchase,
     onToggleSidebar: toggleSidebar,
     onHelp: () => setHelpOpen(true),
     onClose: closeTopmost,
@@ -165,7 +194,7 @@ export function AppShell() {
             variant="ghost"
             size="icon"
             aria-label={t("sidebarToggle")}
-            title={t("sidebarToggle")}
+            title={`${t("sidebarToggle")} (${shortcutKeys("onToggleSidebar")})`}
             onClick={toggleSidebar}
             disabled={collapsedPending || collapsedWriting}
           >
@@ -185,7 +214,7 @@ export function AppShell() {
               variant="ghost"
               size="icon"
               aria-label={t("shortcutsTitle")}
-              title={t("shortcutsTitle")}
+              title={`${t("shortcutsTitle")} (${shortcutKeys("onHelp")})`}
               onClick={() => setHelpOpen(true)}
             >
               <CircleHelp size={18} />
@@ -212,6 +241,21 @@ export function AppShell() {
         </main>
       </div>
 
+      <DiscardDraftDialog
+        title={t("saleToPurchaseDiscardTitle")}
+        description={t("saleToPurchaseDiscardDesc")}
+        confirmLabel={t("saleToPurchaseDiscardConfirm")}
+        cancelLabel={t("dialogClose")}
+        confirmTestId="new-sale-discard-confirm"
+        finalFocus={() => purchaseDiscardFocus.current}
+        open={purchaseDiscardOpen}
+        onOpenChange={setPurchaseDiscardOpen}
+        onConfirm={() => {
+          if (savePendingRef.current) return;
+          setPurchaseDiscardOpen(false);
+          void navigate({ to: "/purchase" });
+        }}
+      />
       <ShortcutsHelp open={helpOpen} onOpenChange={setHelpOpen} />
       <LogoutDialog open={logoutOpen} onOpenChange={setLogoutOpen} onConfirm={() => { void logoutAndReload(() => authClient.signOut()); }} />
     </div>

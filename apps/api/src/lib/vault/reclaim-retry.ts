@@ -31,7 +31,7 @@ export type ReclaimRetryOptions = {
   attempt: () => ReclaimAttemptResult;
   /** Runs exactly once, when an attempt takes the folder. */
   onAcquired: () => void;
-  /** Bounded schedule (ms); the last entry repeats. */
+  /** Bounded schedule (ms), copied at construction; the last entry repeats. */
   backoffMs?: readonly number[];
   /** Timer seams, so tests drive the schedule synchronously. */
   schedule?: (fn: () => void, ms: number) => ReclaimTimerHandle;
@@ -57,7 +57,7 @@ export class ReclaimRetry {
   private stopped = false;
 
   constructor(private readonly options: ReclaimRetryOptions) {
-    this.backoff = options.backoffMs ?? DEFAULT_RECLAIM_BACKOFF_MS;
+    this.backoff = [...(options.backoffMs ?? DEFAULT_RECLAIM_BACKOFF_MS)];
     if (this.backoff.length === 0) throw new Error("the reclaim backoff must have at least one interval");
     this.schedule =
       options.schedule ??
@@ -112,11 +112,24 @@ export class ReclaimRetry {
 
   private scheduleNext(): void {
     if (this.stopped || this.acquired) return;
+    this.pending = this.schedule(() => this.tick(), this.nextDelay());
+  }
+
+  /**
+   * The wait before the next attempt: the schedule's next interval, or its
+   * last one once the schedule is used up (the last entry repeats).
+   *
+   * The caller's array is copied and validated at construction, so later
+   * mutations cannot shorten an armed retry. A missing interval is an
+   * invariant failure, never a zero delay that spins the event loop.
+   */
+  private nextDelay(): number {
     const index = Math.min(this.attempts, this.backoff.length - 1);
-    // SAFETY: index is clamped to the last element's index, which the
-    // constructor guarantees exists (a non-empty schedule)
-    const delay = this.backoff[index]!;
-    this.pending = this.schedule(() => this.tick(), delay);
+    const delay = this.backoff[index];
+    if (delay === undefined) {
+      throw new Error("the reclaim backoff has no interval to wait: the schedule is empty");
+    }
+    return delay;
   }
 
   private tick(): void {

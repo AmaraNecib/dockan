@@ -237,6 +237,8 @@ describe("AppSidebar accessible names (issue #94)", () => {
       expect(link).toBeDefined();
       expect(link?.textContent).toContain(i18n.t(item.labelKey));
     }
+    expect(linkFor(host, "/sale")?.getAttribute("title")).toBe("المبيعات (Ctrl+N)");
+    expect(linkFor(host, "/purchase")?.getAttribute("title")).toBe("المشتريات (Ctrl+B)");
     // The rare System cluster starts folded; open it and check its labels too.
     const toggle = Array.from(host.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")).find((button) =>
       button.textContent?.includes(i18n.t("shellGroupSystem")),
@@ -259,7 +261,8 @@ describe("AppSidebar accessible names (issue #94)", () => {
         const link = linkFor(host, item.to);
         expect(link).toBeDefined();
         expect(link?.getAttribute("aria-label")).toBe(i18n.t(item.labelKey));
-        expect(link?.getAttribute("title")).toBe(i18n.t(item.labelKey));
+        const keys = item.key === "sale" ? "Ctrl+N" : item.key === "purchase" ? "Ctrl+B" : null;
+        expect(link?.getAttribute("title")).toBe(keys ? `${i18n.t(item.labelKey)} (${keys})` : i18n.t(item.labelKey));
       }
     }
     // icon-only: the label is not rendered as text, only as the accessible name

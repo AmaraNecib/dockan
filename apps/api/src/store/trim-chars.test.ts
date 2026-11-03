@@ -10,12 +10,18 @@ import { TRIM_CHARS } from "./trim-chars";
  */
 describe("the SQL trim character set (#337)", () => {
   it("is exactly the set String.prototype.trim() strips", () => {
-    const jsTrimmed = new Set<number>();
+    // The expected side is derived over the whole BMP from JS's own `trim`, so
+    // there is no second hand-written list for `TRIM_CHARS` to drift from. The
+    // module's constant is compared as a whole value — #369: deriving a set by
+    // spreading `TRIM_CHARS` dereferenced the gate's hollow stand-in before any
+    // assertion evaluated and red as a TypeError; `expect(undefined).toEqual`
+    // reds as an AssertionError instead, for this row's own reason.
+    const jsTrimmed: number[] = [];
     for (let code = 0; code <= 0xffff; code++) {
-      if (String.fromCharCode(code).trim() === "") jsTrimmed.add(code);
+      if (String.fromCharCode(code).trim() === "") jsTrimmed.push(code);
     }
-    const sqlTrimmed = new Set([...TRIM_CHARS].map((char) => char.codePointAt(0) ?? -1));
+    jsTrimmed.sort((a, b) => a - b);
 
-    expect([...sqlTrimmed].sort((a, b) => a - b)).toEqual([...jsTrimmed].sort((a, b) => a - b));
+    expect(TRIM_CHARS).toEqual(String.fromCodePoint(...jsTrimmed));
   });
 });

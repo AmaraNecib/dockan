@@ -24,7 +24,12 @@ pub fn check_candidate(path: &Path, data_dir: &Path) -> Result<(), &'static str>
                 && !part
                     .chars()
                     .any(|c| c <= '\u{1f}' || ":*?\"<>|".contains(c))
-                && !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                && !matches!(
+                    stem.as_str(),
+                    "CON" | "PRN" | "AUX" | "NUL"
+                        | "COM¹" | "COM²" | "COM³"
+                        | "LPT¹" | "LPT²" | "LPT³"
+                )
                 && !(stem.len() == 4
                     && (stem.starts_with("COM") || stem.starts_with("LPT"))
                     && matches!(stem.as_bytes()[3], b'1'..=b'9'))
@@ -265,6 +270,15 @@ mod tests {
 
     fn receipt(path: &Path) -> serde_json::Value {
         serde_json::json!({"json":{"items":[{"type":"BACKUP_CREATED","ref":path}]}})
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn refuses_extended_dos_device_aliases_before_filesystem_access() {
+        for name in ["COM¹.db", "COM².db", "COM³.db", "LPT¹.db", "LPT².db", "LPT³.db"] {
+            let root = Path::new("C:/shop");
+            assert_eq!(check_candidate(&root.join("backups").join(name), root), Err(FAILED), "{name}");
+        }
     }
 
     #[test]

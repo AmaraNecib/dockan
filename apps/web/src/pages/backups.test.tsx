@@ -78,6 +78,31 @@ it("reveals only the actual successfully completed backup", async () => {
   expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken } }]);
 });
 
+it("reveals the latest successful path with the rotated session token", async () => {
+  const latestPath = "C:/نسخ المحل/second backup #401.db.enc";
+  const responses = [
+    { json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } },
+    { json: { path: latestPath, createdAt: "2026-10-28T09:01:00" } },
+  ];
+  globalThis.fetch = Object.assign(async () => {
+    const response = responses.shift();
+    assert.ok(response, "the test expects exactly two successful backup creations");
+    return Response.json(response);
+  }, { preconnect: originalFetch.preconnect });
+
+  await click("إنشاء نسخة احتياطية الآن");
+  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  await click("إنشاء نسخة احتياطية الآن");
+  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(latestPath);
+
+  const rotatedToken = "b".repeat(43);
+  storeVaultSessionToken(rotatedToken);
+  await click("إظهار الملف في المجلد");
+  expect(calls).toEqual([
+    { command: "backup_reveal", args: { path: latestPath, sessionToken: rotatedToken } },
+  ]);
+});
+
 it("invalidates the completed-file claim when native reveal refuses a missing file", async () => {
   bridge(async () => { throw "BACKUP_REVEAL_MISSING"; });
   await click("إنشاء نسخة احتياطية الآن");

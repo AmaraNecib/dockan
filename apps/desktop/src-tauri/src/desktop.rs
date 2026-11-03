@@ -640,33 +640,82 @@ fn reveal_origin_matches(url: &tauri::Url, port: u16) -> bool {
         && url.username().is_empty() && url.password().is_none()
 }
 
+const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
+
 /// Read the existing authenticated audit RPC, never a renderer-selected URL.
-/// The body is bounded and every request has connect/read/write deadlines.
+/// The full request has one deadline, and the raw response has a fixed size cap.
 fn backup_audit(port: u16, session_token: &str) -> Result<serde_json::Value, &'static str> {
+    backup_audit_with_timeout(port, session_token, Duration::from_secs(3))
+}
+
+fn backup_audit_with_timeout(
+    port: u16,
+    session_token: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value, &'static str> {
     use crate::backup_reveal::FAILED;
     // VaultManager tokens are 32 random bytes in base64url. This also prevents
     // a renderer from injecting HTTP headers into the native request.
     if session_token.len() != 43 || !session_token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
         return Err(FAILED);
     }
+    let deadline = Instant::now().checked_add(timeout).ok_or(FAILED)?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(FAILED)
+    };
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).map_err(|_| FAILED)?;
-    stream.set_read_timeout(Some(Duration::from_secs(3))).map_err(|_| FAILED)?;
-    stream.set_write_timeout(Some(Duration::from_secs(3))).map_err(|_| FAILED)?;
+    let mut stream = TcpStream::connect_timeout(&addr, remaining()?).map_err(|_| FAILED)?;
     let body = r#"{"json":{"limit":500,"offset":0}}"#;
     let request = format!("POST /api/rpc/activitiesList HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {session_token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    stream.set_write_timeout(Some(remaining()?)).map_err(|_| FAILED)?;
     stream.write_all(request.as_bytes()).map_err(|_| FAILED)?;
-    const MAX_RESPONSE: u64 = 2 * 1024 * 1024;
     let mut bytes = Vec::new();
-    stream.take(MAX_RESPONSE + 1).read_to_end(&mut bytes).map_err(|_| FAILED)?;
-    if bytes.len() as u64 > MAX_RESPONSE { return Err(FAILED); }
+    let mut chunk = [0u8; 8192];
+    loop {
+        stream.set_read_timeout(Some(remaining()?)).map_err(|_| FAILED)?;
+        let count = stream.read(&mut chunk).map_err(|_| FAILED)?;
+        if count == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(count) > BACKUP_AUDIT_MAX_RESPONSE {
+            return Err(FAILED);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
     let response = std::str::from_utf8(&bytes).map_err(|_| FAILED)?;
     let (headers, body) = response.split_once("\r\n\r\n").ok_or(FAILED)?;
-    if headers.lines().next().and_then(|line| line.split_whitespace().nth(1)) != Some("200") {
+    let mut lines = headers.lines();
+    let status = lines.next().ok_or(FAILED)?;
+    let mut status_parts = status.split_whitespace();
+    if !matches!(status_parts.next(), Some("HTTP/1.0" | "HTTP/1.1"))
+        || status_parts.next() != Some("200")
+    {
         return Err(FAILED);
     }
-    // HTTP/1.0 with Connection: close asks for an unchunked body. Never accept
-    // redirects or guess a partial/encoded response as completion evidence.
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or(FAILED)?;
+        if name.is_empty() {
+            return Err(FAILED);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding")
+            || name.eq_ignore_ascii_case("content-encoding")
+        {
+            return Err(FAILED);
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(FAILED);
+            }
+            content_length = Some(value.trim().parse::<usize>().map_err(|_| FAILED)?);
+        }
+    }
+    if content_length != Some(body.len()) {
+        return Err(FAILED);
+    }
     serde_json::from_str(body).map_err(|_| FAILED)
 }
 
@@ -678,6 +727,7 @@ pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, 
     use crate::backup_reveal::FAILED;
     let origin = window.url().map_err(|_| FAILED.to_string())?;
     let main_window = window.label() == "main";
+    let reveal_window = window.clone();
     run_broker_task(move || {
         use crate::backup_reveal::{check_candidate, reveal_backup};
         if !cfg!(windows) { return Err("BACKUP_REVEAL_UNSUPPORTED".to_string()); }
@@ -695,6 +745,10 @@ pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, 
         let path = Path::new(&path);
         check_candidate(path, &config.data_dir).map_err(str::to_string)?;
         let audit = backup_audit(config.port, &session_token).map_err(str::to_string)?;
+        let current_origin = reveal_window.url().map_err(|_| FAILED.to_string())?;
+        if reveal_window.label() != "main" || !reveal_origin_matches(&current_origin, config.port) {
+            return Err(FAILED.to_string());
+        }
         {
             let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
             let sidecar = guard.sidecar.as_mut().ok_or(FAILED)?;
@@ -1445,14 +1499,90 @@ mod tests {
 
     #[test]
     fn reveal_audit_refuses_missing_invalid_and_revoked_sessions() {
-        assert!(backup_audit(1, "").is_err());
-        assert!(backup_audit(1, "injected\r\nx-vault-session: forged").is_err());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        for token in [
+            format!("{}!", "a".repeat(42)),
+            format!("{}=", "a".repeat(42)),
+        ] {
+            assert_eq!(token.len(), 43);
+            assert!(backup_audit(port, &token).is_err());
+        }
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ), "invalid tokens must be rejected before connecting");
+
         let (port, responder, _listener) = spawn_responder(|request| {
             assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
             assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
             "HTTP/1.0 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
         });
         assert!(backup_audit(port, &"a".repeat(43)).is_err());
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_rejects_malformed_truncated_encoded_and_mismatched_responses() {
+        let malformed = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n{";
+        let truncated = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n{}";
+        let transfer_encoded = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}";
+        let content_encoded = "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 2\r\n\r\n{}";
+        let mismatched = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n{}";
+
+        for response in [malformed, truncated, transfer_encoded, content_encoded, mismatched] {
+            let response = response.to_string();
+            let (port, responder, _listener) = spawn_responder(move |_| response);
+            assert!(backup_audit(port, &"a".repeat(43)).is_err());
+            responder.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn reveal_audit_accepts_exact_raw_response_limit_and_rejects_one_byte_over() {
+        fn response_with_raw_length(target: usize) -> String {
+            let mut body_len = target - 64;
+            for _ in 0..4 {
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n");
+                body_len = target - header.len();
+            }
+            let body = format!("{{}}{}", " ".repeat(body_len - 2));
+            http200(&body)
+        }
+
+        for raw_length in [BACKUP_AUDIT_MAX_RESPONSE, BACKUP_AUDIT_MAX_RESPONSE + 1] {
+            let response = response_with_raw_length(raw_length);
+            assert_eq!(response.len(), raw_length);
+            let (port, responder, _listener) = spawn_responder(move |_| response);
+            let result = backup_audit(port, &"a".repeat(43));
+            if raw_length == BACKUP_AUDIT_MAX_RESPONSE {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.is_err());
+            }
+            responder.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn reveal_audit_has_a_total_deadline_against_a_slow_trickling_responder() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let acceptor = listener.try_clone().unwrap();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = acceptor.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            for byte in b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" {
+                if stream.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        });
+
+        assert!(backup_audit_with_timeout(port, &"a".repeat(43), Duration::from_millis(250)).is_err());
         responder.join().unwrap();
     }
 

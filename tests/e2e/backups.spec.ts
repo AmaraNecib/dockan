@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { callRpc, seedCategoryId } from "./rpc-helpers";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -15,13 +16,24 @@ test.use({ video: "on" });
 test("manual export backup creates today's file", async ({ page }) => {
   await signIn(page);
 
-  // startup already made today's daily copy; capture it so we can tell the
-  // manual export apart by mtime afterwards if names collide (same name!)
+  // Startup may already have made today's copy. Preserve its bytes so the
+  // persisted marker below, not the filename or mtime, proves this export.
   const dataDir = process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data");
   const backupsDir = path.join(dataDir, "backups");
   const todayName = `dokan-${new Date().toLocaleString("en-CA", { timeZone: "Africa/Algiers", year: "numeric", month: "2-digit", day: "2-digit" })}.db`;
   const backupPath = path.join(backupsDir, todayName);
   expect(fs.existsSync(backupsDir)).toBe(true);
+  const previousBackup = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : undefined;
+
+  const categoryId = await seedCategoryId(page, "backup-export-e2e");
+  const marker = `backup-export-marker-${process.pid}-${Date.now()}`;
+  await callRpc(page, "itemsCreate", {
+    name: marker,
+    categoryId,
+    costPrice: 17,
+    sellingPrice: 29,
+    lowStockThreshold: 0,
+  });
 
   await page.goto("/backups");
   await expect(page.getByRole("heading", { name: "النسخ الاحتياطي" })).toBeVisible();
@@ -39,6 +51,13 @@ test("manual export backup creates today's file", async ({ page }) => {
   expect(fs.existsSync(backupPath)).toBe(true);
   const ageMs = Date.now() - fs.statSync(backupPath).mtimeMs;
   expect(ageMs).toBeLessThan(60_000);
+  const exportedBackup = fs.readFileSync(backupPath);
+  if (previousBackup !== undefined) {
+    expect(previousBackup.includes(Buffer.from(marker))).toBe(false);
+    expect(exportedBackup.equals(previousBackup)).toBe(false);
+  }
+  expect(exportedBackup.length).toBeGreaterThan(0);
+  expect(exportedBackup.includes(Buffer.from(marker))).toBe(true);
 
   // The activity log stores the filesystem path for a backup, but the UI must
   // show its useful filename rather than the same eight-character ID preview

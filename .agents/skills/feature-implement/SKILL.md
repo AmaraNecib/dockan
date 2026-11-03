@@ -177,20 +177,17 @@ Run `code-review` skill against `git diff <base-sha>...HEAD`. Save output to
 
 ### 10. Guard pre-push (Phase 2)
 
-Run `guard` Phase 2. That is the CI `checks` job **locally**, not a subset:
+Run `guard` Phase 2 for the local checks below. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
 
 ```bash
 bun run typecheck && bun run lint && bun run skills:check
 bun run test                      # full suite — heavy slot
 bun run --filter @dokan/web build # heavy slot
 bun audit --audit-level=high
-bun scripts/red-on-parent.ts --base <base>
 ```
 
 - All of the above pass, plus `bun run test:e2e` when the selector says the diff
   reaches a spec or the change touches a UI flow
-- `bun scripts/red-on-parent.ts` — every test file the change **adds** is red on
-  the parent, or carries a `red-on-parent-waive` line. New files only.
 - Review evidence files exist and are not stale
 - Working tree is clean
 
@@ -234,8 +231,9 @@ credits, and makes the previous report stale.
 ### 12. CI + review round — parent-owned
 
 `.github/workflows/ci.yml` runs three jobs on every PR to
-`develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
-(cargo test + clippy). A PR this thread opened is **watched**, and the watch is
+`develop`: `checks` (typecheck, lint, test, audit, and the red-on-parent gate),
+`e2e` (Playwright) and `rust` (cargo test + clippy). The red-on-parent gate is
+CI-only and must pass before merge. A PR this thread opened is **watched**, and the watch is
 what reports the run — do not sit in a `gh pr checks` loop for it. Poll only a PR
 nobody here watches, and never poll a lane.
 A lane cannot trigger CI or the review round at all, because it cannot push

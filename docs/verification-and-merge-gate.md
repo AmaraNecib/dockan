@@ -70,9 +70,11 @@ the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR
 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
 lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
-### The red is enforced by `scripts/red-on-parent.ts`, and a waiver is its only exception
+### CI enforces red-on-parent with `scripts/red-on-parent.ts`; a waiver is its only exception
 
-"Red before green" is not an honour system here. `bun scripts/red-on-parent.ts` reconstructs the
+The PR `checks` job runs this gate, and its result must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay.
+
+"Red before green" is not an honour system here. In CI, `bun scripts/red-on-parent.ts` reconstructs the
 **parent of the change** (the merge-base, not the previous commit) and puts the files the diff adds
 into that checkout at their own paths: the added test files themselves, a **hollow** stand-in for each
 module they import that the parent does not have, and an **augmented** copy of each module the parent

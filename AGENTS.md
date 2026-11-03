@@ -127,6 +127,10 @@ generated from it with `bun run skills:sync` and checked with
 upstream sync must not clobber them: their pinned upstream commits, divergence
 count and re-apply checklist are in `docs/skills-vendoring.md`.
 
+## Red-on-parent runs in CI only
+
+The PR `checks` job runs `scripts/red-on-parent.ts` for pull requests and must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay.
+
 ## Pick the skill before you write code
 
 The workflow in `docs/engineering-workflow.md` and the skills in `.agents/skills/` are the

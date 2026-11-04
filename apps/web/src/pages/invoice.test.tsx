@@ -577,6 +577,7 @@ describe("InvoicePage account navigation (#407)", () => {
     for (const counterpartyName of [
       null, "", "   ", "\u200e\u200f\u061c", "\u202d\u202e", "\u2066\u2067\u2068\u2069",
       "\u200b", "\u200c", "\u200d", "\u2060", "\u2062", "\u2063", "\u2064", "\u00ad", "\ufeff",
+      "\u0001", "\u007f", "\u0085", "\u0600", "\ufff9", "\ufffb",
       " \u200b\u200c\u200d\u2060\u2062\u2063\u2064\u200f ",
     ]) {
       it(`offers ${kind} account navigation for blank name ${JSON.stringify(counterpartyName)}`, async () => {
@@ -586,7 +587,7 @@ describe("InvoicePage account navigation (#407)", () => {
         expect(link?.getAttribute("href")).toBe(`/${role}/$partyId?partyId=party-407`);
       });
     }
-    for (const counterpartyName of ["\u200fاسم ٥\u200e", "٥", "\u202eاسم\u202c", "اسم عربي", "👩‍🔧", "\u2060اسم\u200d"]) {
+    for (const counterpartyName of ["\u200fاسم ٥\u200e", "٥", "\u202eاسم\u202c", "اسم عربي", "👩‍🔧", "\u2060اسم\u200d", "\u0001اسم", "\u0600اسم"]) {
       it(`preserves visible ${kind} name content ${JSON.stringify(counterpartyName)}`, async () => {
         await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName });
         expect(host.querySelector('[data-testid="invoice-party"] a')?.textContent).toBe(counterpartyName);

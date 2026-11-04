@@ -1086,10 +1086,10 @@ export function InvoicePage() {
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">
             {invoice.counterpartyId !== null && invoice.counterpartyId !== "" ? (
               <Link to={invoice.kind === "SALE" ? "/customers/$partyId" : "/suppliers/$partyId"} params={{ partyId: invoice.counterpartyId }} className="rounded font-medium underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-                {/* Display-only fallback: whitespace and Unicode Default_Ignorable_Code_Point
-                    characters alone cannot name a link. Test for content without stripping controls
-                    from visible names, including Arabic shaping and emoji sequences. */}
-                {/[^\s\p{Default_Ignorable_Code_Point}]/u.test(invoice.counterpartyName ?? "") ? invoice.counterpartyName : t("partyDetails")}
+                {/* Display-only fallback: whitespace, default-ignorable, control (Cc), and format
+                    (Cf) characters alone cannot name a link. Count content without stripping
+                    stored code points from visible names, including Arabic shaping and emoji. */}
+                {/[^\s\p{Default_Ignorable_Code_Point}\p{Cc}\p{Cf}]/u.test(invoice.counterpartyName ?? "") ? invoice.counterpartyName : t("partyDetails")}
               </Link>
             ) : invoice.counterpartyName ?? "—"}
           </dd></div>

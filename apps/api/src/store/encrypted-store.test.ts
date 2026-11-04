@@ -111,6 +111,108 @@ describe("vault-mode store", () => {
       await conn.close();
     }
   });
+  itHeavy("399 populated invoice history stays read-only across expense correction, undo, and vault reopen", async () => {
+    const { vault, vaultId, conn, store } = await freshVault();
+    const category = await store.createCategory({ name: "history-durability-399" });
+    const item = await store.createItem({ name: "history-durable-item-399", categoryId: category.id, costPrice: 100, sellingPrice: 200 });
+    const invoice = await store.withTransaction(async (tx) => {
+      const insertedInvoice = await tx.insertInvoice({
+        invoiceNumber: "SUP-399-HISTORY",
+        kind: "PURCHASE",
+        counterpartyId: null,
+        counterpartyName: "Supplier 399",
+        invoiceDate: "2025-01-15",
+        totalAmount: 200,
+        paidAmount: 0,
+        remainingAmount: 200,
+        notes: null,
+      });
+      await tx.insertInvoiceLine({
+        invoiceId: insertedInvoice.id,
+        itemId: item.id,
+        description: item.name,
+        quantity: 2,
+        unitPrice: 100,
+        costAtSale: 100,
+        total: 200,
+      });
+      await tx.insertStockMovement({
+        itemId: item.id,
+        kind: "PURCHASE",
+        delta: 2,
+        unitCost: 100,
+        reason: null,
+        ref: insertedInvoice.id,
+        occurredAt: "2025-01-15T12:00:00",
+      });
+      await tx.setItemStockAndCost(item.id, 2, 100);
+      return insertedInvoice;
+    });
+    const expenseCategory = await store.createExpenseCategory({ name: "history expense 399" });
+    const expense = await store.insertExpense({ categoryId: expenseCategory.id, amount: 1_000, occurredAt: "2025-01-16T12:00:00" });
+
+    const historyBefore = await readItemHistory(store, { itemId: item.id });
+    const stockBefore = (await store.getItemsByIds([item.id])).get(item.id)?.stockOnHand;
+    expect(stockBefore).toBe(2);
+    expect(historyBefore.movements).toHaveLength(1);
+    expect(historyBefore.movements[0]?.details?.documents).toEqual([{ id: invoice.id, number: invoice.invoiceNumber }]);
+    const snapshotBeforeRead = fs.readFileSync(conn.dbPath);
+    const historyRead = await readItemHistory(store, { itemId: item.id });
+    expect(historyRead).toEqual(historyBefore);
+    expect(fs.readFileSync(conn.dbPath).equals(snapshotBeforeRead)).toBe(true);
+
+    const correction = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: expense.id,
+      effectiveAt: expense.occurredAt,
+      recordedAt: "2025-01-17T10:00:00",
+      beforeAmount: 1_000,
+      afterAmount: 800,
+      difference: -200,
+      actorId: null,
+      actorName: null,
+      reason: "corrected",
+      reversesCorrectionId: null,
+      idempotencyKey: "39900000-0000-4000-8000-000000000001",
+    }));
+    const undo = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      expenseId: expense.id,
+      effectiveAt: expense.occurredAt,
+      recordedAt: "2025-01-17T10:01:00",
+      beforeAmount: 800,
+      afterAmount: 1_000,
+      difference: 200,
+      actorId: null,
+      actorName: null,
+      reason: null,
+      reversesCorrectionId: correction.id,
+      idempotencyKey: "39900000-0000-4000-8000-000000000002",
+    }));
+    const stockAfterWrites = await store.listStockMovements(item.id);
+    const projectedAfterWrites = await readItemHistory(store, { itemId: item.id });
+    expect(projectedAfterWrites).toEqual(historyBefore);
+    expect(stockAfterWrites).toHaveLength(1);
+    expect((await store.getItemsByIds([item.id])).get(item.id)?.stockOnHand).toBe(stockBefore);
+    await conn.close();
+
+    const reopened = createEncryptedConnection({ vaultId, masterKey: vault.requireMasterKey(), snapshotPath: vault.snapshotPath });
+    try {
+      const reopenedStore = createDrizzleStore(reopened);
+      expect(await reopenedStore.getExpenseCorrectionHistory(expense.id)).toMatchObject({
+        original: { id: expense.id, amount: 1_000 },
+        effectiveAmount: 1_000,
+        corrections: [
+          { id: correction.id, afterAmount: 800, reversedByCorrectionId: undo.id },
+          { id: undo.id, beforeAmount: 800, afterAmount: 1_000, reversesCorrectionId: correction.id },
+        ],
+      });
+      expect(await reopenedStore.listStockMovements(item.id)).toEqual(stockAfterWrites);
+      expect((await reopenedStore.getItemsByIds([item.id])).get(item.id)?.stockOnHand).toBe(stockBefore);
+      expect(await readItemHistory(reopenedStore, { itemId: item.id })).toEqual(historyBefore);
+    } finally {
+      await reopened.close();
+    }
+  });
+
   itHeavy("399 read failures and rejected writes preserve the snapshot and release the queue", async () => {
     const { conn, store } = await freshVault();
     try {

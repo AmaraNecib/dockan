@@ -574,7 +574,11 @@ describe("InvoicePage account navigation (#407)", () => {
         expect(host.querySelector('[data-testid="invoice-party"] a')).toBeNull();
       });
     }
-    for (const counterpartyName of [null, "", "   ", "\u200e\u200f\u061c", "\u202d\u202e"]) {
+    for (const counterpartyName of [
+      null, "", "   ", "\u200e\u200f\u061c", "\u202d\u202e", "\u2066\u2067\u2068\u2069",
+      "\u200b", "\u200c", "\u200d", "\u2060", "\u2062", "\u2063", "\u2064", "\u00ad", "\ufeff",
+      " \u200b\u200c\u200d\u2060\u2062\u2063\u2064\u200f ",
+    ]) {
       it(`offers ${kind} account navigation for blank name ${JSON.stringify(counterpartyName)}`, async () => {
         await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName });
         const link = host.querySelector<HTMLAnchorElement>('[data-testid="invoice-party"] a');
@@ -582,13 +586,13 @@ describe("InvoicePage account navigation (#407)", () => {
         expect(link?.getAttribute("href")).toBe(`/${role}/$partyId?partyId=party-407`);
       });
     }
-    for (const counterpartyName of ["\u200fاسم ٥\u200e", "٥", "\u202eاسم\u202c"]) {
+    for (const counterpartyName of ["\u200fاسم ٥\u200e", "٥", "\u202eاسم\u202c", "اسم عربي", "👩‍🔧", "\u2060اسم\u200d"]) {
       it(`preserves visible ${kind} name content ${JSON.stringify(counterpartyName)}`, async () => {
         await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName });
         expect(host.querySelector('[data-testid="invoice-party"] a')?.textContent).toBe(counterpartyName);
       });
     }
-    for (const counterpartyName of [null, "", "   ", "\u200f", "\u202e"]) {
+    for (const counterpartyName of [null, "", "   ", "\u200f", "\u202e", "\u200b\u200c\u200d", "\u2060\u2062\u2063\u2064"]) {
       it(`preserves unlinked ${kind} legacy name ${JSON.stringify(counterpartyName)}`, async () => {
         await renderPage({ ...makeInvoice(900), kind, counterpartyId: null, counterpartyName });
         const field = host.querySelector('[data-testid="invoice-party"]');

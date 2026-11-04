@@ -6,6 +6,9 @@ import type {
   DebtSummary,
   Expense,
   ExpenseCategory,
+  ExpenseCorrection,
+  ExpenseCorrectionHistory,
+  ExpenseListItem,
   Invoice,
   InvoiceDetail,
   InvoiceKind,
@@ -43,7 +46,14 @@ import type {
   SupplierReturnRecord,
 } from "@dokan/contracts";
 
-export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory, SupplierAccountEntry, SupplierAccountSummary, SupplierReturnRecord, SupplierReturnLine, SupplierEntryKind, PartyName };
+export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory, ExpenseCorrection, ExpenseCorrectionHistory, ExpenseListItem, SupplierAccountEntry, SupplierAccountSummary, SupplierReturnRecord, SupplierReturnLine, SupplierEntryKind, PartyName };
+
+/** A signed expense fact for one profit-report window. */
+export interface ExpenseReportEntry {
+  categoryId: string;
+  amount: number;
+  occurredAt: string;
+}
 
 /**
  * One raw SALE invoice line fact the profit report sums. Read via a JOIN of
@@ -304,10 +314,19 @@ export interface StorePort {
   listExpenseCategories(): Promise<ExpenseCategory[]>;
   /** names are UNIQUE; the adapter surfaces the violation as EXPENSE_CATEGORY_EXISTS */
   createExpenseCategory(input: { name: string; isOwnerWithdrawal?: boolean }): Promise<ExpenseCategory>;
-  insertExpense(input: { categoryId: string; amount: number; note?: string | null; occurredAt: string }): Promise<Expense>;
-  /** raw rows inside the optional category/range filters (ordering happens in
-   * the pure module, so sort behavior is unit-tested without SQL) */
+  insertExpense(input: { categoryId: string; amount: number; note?: string | null; occurredAt: string; actorId?: string | null; actorName?: string | null }): Promise<Expense>;
+  /** raw original rows inside the optional category/range filters */
   listExpenseRecords(filters: { categoryIds?: string[]; from?: string; to?: string }): Promise<Expense[]>;
+  /** list rows with the original plus all signed corrections applied */
+  listExpenseListItems(filters: { categoryIds?: string[]; from?: string; to?: string }): Promise<ExpenseListItem[]>;
+  /** one expense and its append-only correction timeline, or undefined if absent */
+  getExpenseCorrectionHistory(expenseId: string): Promise<ExpenseCorrectionHistory | undefined>;
+  getExpenseCorrection(correctionId: string): Promise<ExpenseCorrection | undefined>;
+  findExpenseCorrectionByIdempotencyKey(expenseId: string, idempotencyKey: string): Promise<ExpenseCorrection | undefined>;
+  /** appends only; caller must hold `withTransactionImmediate` */
+  insertExpenseCorrection(input: Omit<ExpenseCorrection, "id"> & { idempotencyKey: string }): Promise<ExpenseCorrection>;
+  /** original amount and signed deltas, each on its effective business date */
+  listExpenseReportEntries(filters: { categoryIds?: string[]; from: string; to: string }): Promise<ExpenseReportEntry[]>;
   /** raw SALE line facts (netTotal/costAtSale/cogsExact) for invoices dated in [from, to] */
   listSaleLinesForProfit(from: string, to: string): Promise<ProfitSaleLine[]>;
 

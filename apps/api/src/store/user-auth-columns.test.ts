@@ -109,7 +109,7 @@ describe("#362 the user table gains better-auth's email columns", () => {
     expect(verifiedColumn?.notnull).toBe(1);
     expect(verifiedColumn?.dflt_value).toBe("0");
 
-    expect(readSchemaVersion(conn.raw)).toBe(7); // literal: a future bump without a migration must red here
+    expect(readSchemaVersion(conn.raw)).toBe(8); // schema 8 adds expense corrections; keep this literal so a future bump must update the test
 
     // Idempotence is proven HERE: a second setup() that re-ran an ALTER would
     // throw "duplicate column name" and never reach the next line.

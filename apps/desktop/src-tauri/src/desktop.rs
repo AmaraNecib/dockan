@@ -666,6 +666,32 @@ fn capture_live_reveal_launch(
 
 const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
 
+#[derive(serde::Deserialize)]
+struct BackupAuditPage {
+    json: BackupAuditPageData,
+}
+
+#[derive(serde::Deserialize)]
+struct BackupAuditPageData {
+    items: Vec<BackupAuditItem>,
+    total: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct BackupAuditItem {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "ref")]
+    reference: BackupAuditReference,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum BackupAuditReference {
+    Null,
+    Path(String),
+}
+
 /// Read the existing authenticated audit RPC, never a renderer-selected URL.
 /// All pages share one deadline; each raw response keeps the fixed size cap.
 fn backup_audit(
@@ -713,32 +739,20 @@ fn find_backup_audit_with_timeout(
     loop {
         let page = fetch_page(offset, remaining()?)?;
         remaining()?;
-        let items = page
-            .get("json")
-            .and_then(|value| value.get("items"))
-            .and_then(serde_json::Value::as_array)
-            .ok_or(FAILED)?;
-        let total = page
-            .get("json")
-            .and_then(|value| value.get("total"))
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or(FAILED)?;
+        let parsed: BackupAuditPage = serde_json::from_value(page.clone()).map_err(|_| FAILED)?;
+        let items = parsed.json.items;
+        let total = parsed.json.total;
+        let next_offset = offset.checked_add(items.len()).ok_or(FAILED)?;
         if items.len() > 500
-            || items.iter().any(|item| {
-                item.get("type").and_then(serde_json::Value::as_str).is_none()
-                    || !item.get("ref").is_some_and(|value| value.is_null() || value.is_string())
-            })
+            || offset > total
+            || next_offset > total
+            || items.len() != 500.min(total - offset)
         {
             return Err(FAILED);
         }
-        let next_offset = offset.checked_add(items.len()).ok_or(FAILED)?;
-        if offset > total || next_offset > total || items.len() != 500.min(total - offset) {
-            return Err(FAILED);
-        }
         if items.iter().any(|item| {
-            item.get("type").and_then(serde_json::Value::as_str) == Some("BACKUP_CREATED")
-                && item.get("ref").and_then(serde_json::Value::as_str).is_some_and(|recorded| Path::new(recorded) == path)
+            item.kind == "BACKUP_CREATED"
+                && matches!(&item.reference, BackupAuditReference::Path(recorded) if Path::new(recorded) == path)
         }) {
             return Ok(page);
         }
@@ -1723,7 +1737,7 @@ mod tests {
             offsets.push(offset);
             match offset {
                 0 => Ok(full_audit_page()),
-                500 => Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED","ref":"item-500"}]))),
+                500 => Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED","ref":null}]))),
                 other => panic!("unexpected activity offset {other}"),
             }
         });

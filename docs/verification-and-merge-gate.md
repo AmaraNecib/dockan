@@ -174,11 +174,7 @@ assertion is rejected only in the shapes the gate can distinguish.
 A pull request may be merged when **all four** hold. Not three. Any one missing sends it back to
 the queue or back to a lane.
 
-1. **The review confidence is 5/5.** Not 3, not 4. `reviewloop` writes it; while the Greptile A/B
-   runs, both current-head reviews must be 5/5 with no actionable findings. Follow the
-   [comparison protocol](review-comparison.md) until the owner ends the trial. A missing
-   verdict blocks merging; scores are not averaged. A 3/5 naming two "silent escapes"
-   is a refusal, not a note.
+1. **The review confidence is 5/5.** Not 3, not 4. Compact review changes only the local review depth; it does not remove local review or this gate. `reviewloop` writes the local score. While the Greptile A/B trial runs, both current-head verdicts must be 5/5 with no unresolved actionable findings. Follow the [comparison protocol](review-comparison.md) until the owner ends the trial. A missing verdict blocks merging; scores are not averaged. A 3/5 naming two "silent escapes" is a refusal, not a note. A 5/5 cannot override an unresolved actionable finding.
 2. **`Last reviewed commit` equals the current head SHA.** A verdict anchored to an older commit
    says nothing about the code being merged. A rebase or a fix invalidates the previous verdict —
    re-request the review.
@@ -261,12 +257,14 @@ When the trigger list is silent, ask: *if this lands and is wrong, what does und
 (owner decision, 2026-10-17). It is not limited by visuals: a visual diff is cheap to reverse
 and auto-merges too, once the before/after packet is posted at the head. For `AUTO` the parent
 still posts the evidence comment at the head — then merges without waiting. For `OWNER` nothing
-changes: a 5/5 with no findings, anchored to the current head, with every check green, is the bar
+changes: a current-head 5/5 with no unresolved actionable findings, with every check green, is the bar
 to *ask* — not permission.
 
 The parent re-checks the class, the triggers and the four reasons **at the current head, every
 time**. A push after a verdict voids it, and a diff that was reversible before a push can be
 irreversible after it. A `.github/` change is always the owner's, whatever else is true.
+
+The rules for same-PR refinements and finding resolution are defined in [`docs/engineering-workflow.md`](engineering-workflow.md#review-invariants); they do not weaken this gate.
 
 ## 4. If it cannot merge now
 

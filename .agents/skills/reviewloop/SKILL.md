@@ -1,10 +1,9 @@
 ---
 name: reviewloop
 description: >
-  Reviews a branch or PR without Greptile: runs the debate, test-audit and
-  code-review lenses on model families other than the author's, extracts their
-  findings, and renders the Greptile-shaped summary, inline comments and
-  confidence score the rest of the workflow already reads. Use for a lane's
+  Reviews a branch or PR without Greptile: runs the risk-sized local review selected
+  for the change, extracts findings from required lenses, and renders the
+  Greptile-shaped summary, inline comments and confidence score. Use for a lane's
   review round, to replace a Greptile review, when a new head invalidates the
   evidence, or when the user asks for a review comment or confidence score.
 ---
@@ -25,9 +24,7 @@ enforces both:
 - **The score is a ceiling.** It is computed from the findings; an override can
   lower it with a reason and cannot raise it.
 
-Use this for the review round in `feature-implement` step 12. The lens steps before
-it stay where they are, unless the tier skipped them and this run is the only
-review.
+Use this for the current-head review in `feature-implement`. It executes the risk-sized local review selected in `docs/engineering-workflow.md`; it never replaces local review with hosted-only review.
 
 ## Modes
 
@@ -36,11 +33,8 @@ review.
 | local (default) | any lane | `.scratch/reviews/<issue>/` only; no push, no PR, no GitHub write |
 | PR | parent only | the rendered body as a PR comment, inline payloads as review comments, a check run on the head |
 
-A lane never pushes and never posts. It stops at the local half of step 7 and
-hands the head SHA and the renderer's exit code to the parent. Local artifacts
-from a lane are drafts. Before pushing, the parent reruns the required lenses,
-verifies their findings and renders current evidence. Step 12 publishes that
-review and handles hosted findings; it is not the first local render.
+A lane never pushes and never posts. It hands the head SHA and renderer result to the parent. Local artifacts
+from a lane are unverified until the parent checks the exact base/head, reviewer session, actual model family, provenance and report for each required lens. A valid worker execution on the exact tree is reused, not automatically duplicated. The parent verifies findings and renders current evidence. Step 12 publishes the local review and handles hosted findings.
 
 ## Steps
 
@@ -81,12 +75,7 @@ entry is neither permission to use a provider nor proof that it works.
 For an enabled route that has not answered recently, run a one-line probe before the round.
 A failed probe stops that route, not the other enabled routes.
 
-Run the lenses the parent scoped; the default at Standard and above is all three
-(`debate`, `test-audit`, `code-review`). One or two are enough when the change
-touches a single axis, and the payload records exactly what ran, so the artifact
-never claims a lens that did not. A lens that genuinely has nothing to read is
-`skipped` with the reason, never silently dropped; all three skipped is not a
-round, and the renderer refuses it.
+Run the locally required review for every reviewable change, with depth selected by reachable risk under `docs/engineering-workflow.md`. Compact Standard is one focused `code-review` execution covering Standards, Spec and affected-test adequacy; mark `debate` and `test-audit` skipped with reasons. Ordinary Standard uses all three lenses; High-assurance requires all three and final-head debate after fixes. Record exactly what ran; the renderer accepts explicit skips but refuses an all-skipped round. Compact is never no-review or hosted-only.
 
 When no enabled non-author family is available, a round on the author's family is
 possible only with the owner's explicit approval, recorded in the payload:
@@ -103,22 +92,11 @@ approval to itself. The renderer prints the exception in the review and writes
 
 **Done when** the chosen pairs pass the guard in step 4.
 
-### 3. Run the lenses
+### 3. Run the selected lenses
 
-Run `debate`, then `test-audit`, then `code-review`, each as its own sub-agent.
-Only the critic and defender inside `debate`, and the specialists inside each
-other lens, may run in parallel. Each lens uses its chosen model, loads its skill,
-and saves its report to `.scratch/reviews/<issue>/<head>-<lens>.md` with the full
-head SHA in the name. The lens skill spawns its own sub-agents; the
-model you name is the one they run on. The lenses:
+Run only the lenses required by the selected depth. Compact Standard runs one focused `code-review`; ordinary Standard runs `debate`, `test-audit`, then `code-review`; High-assurance runs all three and a final-head debate after fixes. Each required lens is its own reviewer execution, uses its selected model and saves a report to `.scratch/reviews/<issue>/<head>-<lens>.md` with the full head SHA. Only the critic/defender inside `debate` and specialists within another lens may parallelize. `code-review` covers Standards and Spec; include affected-test adequacy for compact review.
 
-- `debate` — critic and defender, for design and failure modes.
-- `test-audit` — edge cases, coverage, test quality.
-- `code-review` — standards and spec, two axes reported separately.
-
-Each lens reads the author review first, if one exists, and treats its "what the
-author knows is weak" list as a checklist rather than a verdict. Every report
-opens with two lines, nothing between them:
+Each lens reads the existing author account first, if present. Every report opens with two lines, nothing between them:
 
 ```
 Reviewer model: <provider/model that actually ran>
@@ -205,8 +183,8 @@ an independence exception, add
 `"independence": { "approvedBy": "owner", "reason": "..." }` at the top level.
 
 Before rendering, account for every report finding in `findings` or
-`summary.dismissed`. A lane may extract a local draft; the parent repeats that
-verification before pushing. The
+`summary.dismissed`. A lane may extract a local draft; the parent verifies each
+execution and finding before pushing. A worker claim alone is not evidence. The
 renderer does not reconcile report prose with the payload or authenticate an
 `approvedBy` string. It records the owner's decision, not proof of approval.
 
@@ -240,26 +218,20 @@ as reviewed even when it has no added line. Exit 2 also covers invalid JSON, wro
 an input failure cannot look like "findings remain". A raising score override,
 invalid flag or unsupported filename also exits 2, as does a failed artifact write.
 
-### 5. Verify, then fix or dismiss
+### 5. Verify and resolve findings
 
-Every finding is a claim, not a fact. Open the file at the line and confirm the
-code still says what the lens says it says. Then either fix it, or dismiss it
-with a reason in `summary.dismissed` naming what you read that made it safe.
+Every finding is a claim. Read the cited code and verify it. Fix a valid blocker in this PR when bounded; split substantial work and hold dependent work until the blocker is resolved. Dispute a stale or factually wrong finding with code evidence and obtain reviewer resolution. A parent cannot unilaterally dismiss a valid finding as optional or addressed. A genuinely nonblocking improvement is optional only when the reviewer accepts that disposition and applicable gates allow it. A finding raised by one lens remains a finding even if others missed it.
 
-A finding one lens raised and the others missed is still a finding. Verify it
-against the code; silence is not a second opinion.
+The rendered score is not enough: no unresolved actionable finding may remain at any score. An unresolved finding cannot be hidden in `summary.dismissed` or overridden by a numerical score.
 
-A successful test run is not a clean verdict while an unverified finding remains.
-
-**Done when** every finding has a verdict, and every dismissal has a reason.
+**Done when** every finding has a verified resolution and any dispute has reviewer resolution.
 
 ### 6. Loop on the new head
 
 Any fix moves the head, and evidence for the old head is stale. Re-run steps 2-5
 on the new head: the lenses, not just the renderer.
 
-Stop at **5/5 with no P0 or P1**, or after five iterations. A fifth round that
-still finds something is a finding for the user, not for a sixth round.
+Stop only at **5/5 with no unresolved actionable findings**, or after five iterations. A fifth round that still has an unresolved finding is blocked and reported to the owner; do not award a clean verdict.
 
 **Done when** the renderer exits 0, or you report the remaining findings and the
 iteration count.
@@ -324,7 +296,7 @@ P1 with five P2s scored 4/5 — not Greptile's judgement, which scored the same 
   `independence`; the review states it and the body carries a marker. A lane
   cannot approve its own exception.
 - A lens reports; it does not edit the worktree and does not take the e2e slot.
-- A lane cannot certify its own lens. The parent re-runs it and records that.
+- A worker's claim alone does not certify a lens. The parent verifies the exact-tree execution, actual reviewer session/model and report. Reuse a valid execution; rerun only when evidence is absent, invalid or stale.
 - `.agents/wisdom/` is read before the round and never written by a lane.
 
 ### What is committed

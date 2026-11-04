@@ -825,6 +825,86 @@ export async function acquireSlot(label: string): Promise<AcquireResult> {
 // ---------------------------------------------------------------------------
 
 const STOP_GRACE_MS = 10_000;
+export const TASKKILL_TIMEOUT_MS = 2_000;
+
+export function cancellationBudgetRemaining(startedAt: number, now = Date.now()): number {
+  return Math.max(0, STOP_GRACE_MS - (now - startedAt));
+}
+
+export type TaskkillRunner = (pid: number, options: { timeout?: number }) => {
+  status: number | null;
+  error?: NodeJS.ErrnoException;
+};
+
+const realTaskkillRunner: TaskkillRunner = (pid, options) => {
+  const result = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", ...options });
+  return { status: result.status, error: result.error ?? undefined };
+};
+let taskkillRunner = realTaskkillRunner;
+type CancellationTimer = (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
+let cancellationTimer: CancellationTimer = (callback, delay) => globalThis.setTimeout(callback, delay);
+let processProbe = (pid: number): "present" | "absent" | "unknown" => {
+  try {
+    process.kill(pid, 0);
+    return "present";
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") return "absent";
+    return "unknown";
+  }
+};
+
+/** Replace the synchronous taskkill process in tests; null restores the OS runner. */
+export function setTaskkillRunnerForTest(impl: TaskkillRunner | null): void {
+  taskkillRunner = impl ?? realTaskkillRunner;
+}
+
+/** Replace cancellation timers in run-path tests; null restores the real clock. */
+export function setCancellationTimerForTest(impl: CancellationTimer | null): void {
+  cancellationTimer = impl ?? ((callback, delay) => globalThis.setTimeout(callback, delay));
+}
+
+/** Inject the OS existence probe in tests; null restores process.kill(pid, 0). */
+export function processState(pid: number): "present" | "absent" | "unknown" {
+  return processProbe(pid);
+}
+
+export function setProcessProbeForTest(impl: typeof processProbe | null): void {
+  processProbe = impl ?? ((pid) => {
+    try {
+      process.kill(pid, 0);
+      return "present";
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ESRCH") return "absent";
+      return "unknown";
+    }
+  });
+}
+
+/**
+ * A successful taskkill is `found`. Nonzero exits need an independent OS process
+ * probe: localized taskkill text is not reliable evidence of absence.
+ */
+export function taskkillTree(pid: number): "found" | "not-found" | "unknown" {
+  let result: ReturnType<TaskkillRunner>;
+  try {
+    result = taskkillRunner(pid, { timeout: TASKKILL_TIMEOUT_MS });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[heavy-slot] taskkill for pid ${pid} failed (${message}); process-tree state is unknown`);
+    return "unknown";
+  }
+
+  if (result.error || result.status === null) {
+    const code = result.error?.code;
+    const reason = code === "ETIMEDOUT"
+      ? `timed out after ${TASKKILL_TIMEOUT_MS}ms`
+      : `failed (${code ?? result.error?.message ?? "no exit status"})`;
+    console.error(`[heavy-slot] taskkill for pid ${pid} ${reason}; process-tree state is unknown`);
+    return "unknown";
+  }
+  if (result.status === 0) return "found";
+  return processProbe(pid) === "absent" ? "not-found" : "unknown";
+}
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -834,14 +914,15 @@ const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)
  * descendants (a signal to the shell alone can leave the build or the full suite
  * running while the slot is already released - exactly the double load the queue
  * exists to prevent); on POSIX the child was spawned detached, so the negative pid
- * signals the group the shell and its children share. Exported for the cancellation
- * test - it pins the kill-then-confirm promise the SIGINT/SIGTERM hook makes.
+ * signals the group the shell and its children share. A Windows taskkill result is
+ * not proof that every descendant exited. Exported for the cancellation test - it
+ * pins the kill-then-confirm promise the SIGINT/SIGTERM hook makes.
  */
-export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+export function killTree(child: ChildProcess, signal: NodeJS.Signals): "found" | "not-found" | "unknown" | undefined {
   const pid = child.pid;
-  if (pid === undefined) return;
+  if (pid === undefined) return undefined;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    return taskkillTree(pid);
   } else {
     try {
       process.kill(-pid, signal);
@@ -852,16 +933,14 @@ export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 /**
- * True while any member of the child's tree can still be reached. The same final
- * crash counts on both platforms: POSIX probes the group with a 0-signal, which
- * throws when nobody is left; on Windows `taskkill` exits non-zero once the pid
- * and its tree no longer exist (so the same call doubles as a re-kill).
+ * True while the wrapper process can still be reached. The Windows probe is
+ * non-destructive; taskkill runs once when cancellation starts, not on every poll.
  */
 export function treeAlive(child: ChildProcess): boolean {
   const pid = child.pid;
   if (pid === undefined) return false;
   if (process.platform === "win32") {
-    return spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).status === 0;
+    return processProbe(pid) !== "absent";
   }
   try {
     process.kill(-pid, 0);
@@ -916,12 +995,23 @@ export async function run(label: string, command: string): Promise<number> {
 
   let child: ChildProcess | undefined;
   let cancelled = false;
+  let cancelStartedAt: number | undefined;
+  let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+  let escalationTimer: ReturnType<typeof setTimeout> | undefined;
+  let settleCancellation: (() => void) | undefined;
   // Hoisted out of the promise so the handlers can be removed once the child is
   // gone: a library caller running several commands through run() would otherwise
   // accumulate one SIGINT/SIGTERM listener per call.
   const stop = (): void => {
+    if (cancelled) return;
     cancelled = true;
+    cancelStartedAt = Date.now();
     if (child) killTree(child, "SIGTERM");
+    const remaining = cancellationBudgetRemaining(cancelStartedAt);
+    escalationTimer = cancellationTimer(() => {
+      if (child && treeAlive(child)) killTree(child, "SIGKILL");
+    }, Math.max(0, remaining - TASKKILL_TIMEOUT_MS));
+    cancelTimer = cancellationTimer(() => settleCancellation?.(), remaining);
   };
   // SAFETY: process is an EventEmitter at runtime; bun's NodeJS.Process augmentation
   // declares off() only for its own "memoryPressure" event, which is what narrows the
@@ -950,42 +1040,45 @@ export async function run(label: string, command: string): Promise<number> {
       // launch is an outcome, a code the caller reads - never an exception and
       // never a slot held hostage by a close that will not come.
       let settled = false;
-      child.on("close", (c) => {
-        if (!settled) {
-          settled = true;
-          resolve(c ?? 1);
-        }
-      });
+      const finish = (outcome: number): void => {
+        if (settled) return;
+        settled = true;
+        if (cancelTimer !== undefined) clearTimeout(cancelTimer);
+        if (escalationTimer !== undefined) clearTimeout(escalationTimer);
+        resolve(outcome);
+      };
+      settleCancellation = () => finish(1);
+      child.on("close", (c) => finish(c ?? 1));
       child.on("error", (err: NodeJS.ErrnoException | undefined) => {
         if (!settled) {
-          settled = true;
           console.error(
             `[heavy-slot] the command could not start (${err?.code ?? "UNKNOWN"}: ${err?.message ?? err}): ${command} - returning 1, no shell was launched`,
           );
-          resolve(1);
+          finish(1);
         }
       });
     });
     if (cancelled && child) {
-      // The close event fires as soon as the wrapper shell dies, and the rest of the
-      // tree can outlive it - on Windows a tree can survive a SIGTERM to the shell
-      // outright. The slot is released only once the tree is really gone: re-kill
-      // and re-probe on a bounded budget, so a wedged machine cannot hold a slot
-      // hostage forever. A descendant that made its own process group is out of
-      // reach of both the signal and the probe; the same bound releases the slot
-      // when that happens too.
-      const deadline = Date.now() + STOP_GRACE_MS;
-      while (Date.now() < deadline && treeAlive(child)) {
-        killTree(child, "SIGKILL");
-        await wait(100);
-      }
-      // [F21] Disclose the give-up: the bounded budget ran out with the tree still
-      // alive, so the slot is released while work may still be running - the same
-      // double load the queue exists to prevent. A disclosed weakness is a
-      // visible one; the old silent fallthrough read as a clean release.
-      if (treeAlive(child)) {
+      // The close event fires as soon as the wrapper shell dies, and descendants can
+      // outlive it. Windows can only probe the wrapper PID here; POSIX probes the
+      // detached process group. Retry within the original bounded budget, so a
+      // wedged process cannot hold a slot forever. A descendant that made its own
+      // process group is outside either probe. Windows cleanup remains unverified
+      // at release unless an independent descendant-exit proof exists.
+      const deadline = (cancelStartedAt ?? Date.now()) + STOP_GRACE_MS;
+      const remainingBeforeFollowup = cancellationBudgetRemaining(cancelStartedAt ?? Date.now());
+      if (remainingBeforeFollowup >= TASKKILL_TIMEOUT_MS && treeAlive(child)) killTree(child, "SIGKILL");
+      while (Date.now() < deadline && treeAlive(child)) await wait(Math.min(100, deadline - Date.now()));
+      // [F21] Windows only probes the wrapper PID, so none of taskkill's outcomes
+      // prove that descendants exited. Disclose that before every Windows release.
+      // On POSIX, disclose a process group that remains observable after the bound.
+      const wrapperStillAlive = treeAlive(child);
+      if (process.platform === "win32" || wrapperStillAlive) {
+        const detail = wrapperStillAlive
+          ? `wrapper remains observable after ${STOP_GRACE_MS}ms`
+          : "wrapper exited, descendant exit was not independently verified";
         console.error(
-          `[heavy-slot] the tree under pid ${child.pid} survived ${STOP_GRACE_MS}ms of forced kills - releasing slot ${slot.index} with work possibly still running`,
+          `[heavy-slot] cancellation cleanup for pid ${child.pid} remains unverified (${detail}); releasing slot ${slot.index} with work possibly still running`,
         );
       }
     }
@@ -995,6 +1088,9 @@ export async function run(label: string, command: string): Promise<number> {
     // caller lets propagate) held the slot and accumulated listeners before this.
     emitter.off("SIGINT", stop);
     emitter.off("SIGTERM", stop);
+    if (cancelTimer !== undefined) clearTimeout(cancelTimer);
+    if (escalationTimer !== undefined) clearTimeout(escalationTimer);
+    settleCancellation = undefined;
     release(slot);
     console.error(`[heavy-slot] slot ${slot.index} released, exit ${code}`);
   }

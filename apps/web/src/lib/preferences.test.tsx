@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 
 let store: Record<string, string>;
 let failRead = false;
+let readFailuresRemaining = 0;
 let failWrite = false;
 let writeCalls = 0;
 let writeGate: Promise<void> | null = null;
@@ -19,7 +20,10 @@ let canonicalize: ((value: string) => string) | null = null;
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     preferencesGet: async () => {
-      if (failRead) throw new Error("PREFERENCES_READ_FAILED");
+      if (failRead || readFailuresRemaining > 0) {
+        readFailuresRemaining -= 1;
+        throw new Error("PREFERENCES_READ_FAILED");
+      }
       const values = { ...store };
       if (readGate !== null) {
         const gate = readGate;
@@ -114,6 +118,7 @@ describe("preferences client (issue 97 follow-up)", () => {
   beforeEach(() => {
     store = {};
     failRead = false;
+    readFailuresRemaining = 0;
     failWrite = false;
     writeCalls = 0;
     writeGate = null;
@@ -152,6 +157,34 @@ describe("preferences client (issue 97 follow-up)", () => {
       release();
       await other.unmount();
       await handle.unmount();
+    }
+  });
+
+  it("recovers mounted consumers after a preference write and transient recovery-read failure", async () => {
+    failRead = true;
+    const first = await mountProbe("ui.test.recovery");
+    expect(await waitFor(() => text(first.host, "read-error") === "true")).toBe(true);
+    const second = await mountProbe("ui.sidebar.collapsed", first.client);
+    failRead = false;
+    readFailuresRemaining = 1;
+    store["ui.sidebar.collapsed"] = "true";
+
+    try {
+      await act(async () => first.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(await waitFor(() => text(first.host, "writing") === "false")).toBe(true);
+      expect(store["ui.test.recovery"]).toBe("true");
+      expect(text(first.host, "write-failed")).toBe("false");
+      expect(await waitFor(() => text(first.host, "value") === "true")).toBe(true);
+      expect(await waitFor(() => text(second.host, "value") === "true")).toBe(true);
+      expect(text(first.host, "read-error")).toBe("false");
+      expect(text(second.host, "read-error")).toBe("false");
+      expect(first.client.getQueryData<Record<string, string>>(["preferences"])).toEqual({
+        "ui.sidebar.collapsed": "true",
+        "ui.test.recovery": "true",
+      });
+    } finally {
+      await second.unmount();
+      await first.unmount();
     }
   });
 

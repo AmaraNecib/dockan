@@ -160,9 +160,11 @@ export function usePreference<T>(
           try {
             await queryClient.fetchQuery({ queryKey: PREFERENCES_QUERY_KEY, queryFn: readPreferences, staleTime: 0 });
           } catch {
-            // Persistence succeeded. Cancellation means another writer owns
-            // recovery; a real read error is already exposed by query.isError.
-            // Neither outcome is a failed write or should outlive a later read.
+            // Persistence succeeded, but a failed recovery leaves mounted
+            // consumers on their defaults. Invalidate once so the active
+            // shared query gets one bounded refetch. This is still a successful
+            // write; only a later successful full-map read clears query.isError.
+            await queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY, exact: true });
             return;
           }
         }

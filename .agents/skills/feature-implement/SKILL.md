@@ -150,13 +150,11 @@ Load `debate` with resolved base SHA. Saves evidence to
 
 Run this lens, `test-audit` and `code-review` on a **different model family** from the
 author, which is the lane's `Model:` trailer, not the parent's. Independence is a family,
-not an ID: free and paid DeepSeek are one opinion. Free first —
-`opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
-`opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
-`opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
-routes are exhausted. With more than one lens, at least two families must appear. Probe a
-route that has not been used this session; an advertised model is not a working one. The
-reviewer is never the author. A lane that reports "I ran the debate" has not run
+not an ID. Select models from the session's enabled routes using `reviewloop` step 2.
+OpenCode review is optional. Do not automatically probe it, switch to it after a quota failure,
+or ask the owner to enable it for each PR. With more than one lens, at least two families must
+appear unless the owner approved an exception recorded by `reviewloop`. The reviewer is a
+separate session, including when an approved same-family exception applies. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.
 
 ### 8. Test audit — Standard and High-assurance

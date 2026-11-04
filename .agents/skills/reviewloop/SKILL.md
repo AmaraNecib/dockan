@@ -64,20 +64,22 @@ git log -1 --format=%B      # the Model: trailer, e.g. "Model: pi/opencode-go/de
 A hand-written commit carries no trailer; then the author is human and every
 model is independent. Record `"authorModel": "human"`.
 
-Pick one model per lens from the ladder, free first:
+Pick one model per lens from the session's enabled review routes. Use the provider/model
+catalogue, not a hard-coded provider ladder.
 
-| Rung | Models |
-|---|---|
-| Free | `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`, `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` |
-| Paid, only when the free routes are exhausted | `opencode-go/deepseek-v4.1-flash` ($0.15/M), `opencode-go/mimo-v2.6-flash` ($0.14/M) |
+**OpenCode review is optional.** `opencode` and `opencode-go` are opt-in routes, even when their
+models appear in the catalogue. Run them only when the owner requests or explicitly enables
+them for the current scope. Do not automatically probe them, install a CLI, switch after a
+quota failure, or ask the owner to opt in for each PR. Their absence does not make the review
+incomplete. An existing owner decision remains in force for its stated scope.
 
-Independence is a family, not an ID: `deepseek-v4.1-flash-free` and
-`deepseek-v4.1-flash` are the same opinion. The author's family never reviews,
-and with two or more lenses at least two families must appear. With a DeepSeek
-author, GLM, MiMo and Beam are the free choices.
+Independence is a family, not an ID: free and paid DeepSeek are the same family. Use a family
+other than the author's, and at least two families across multiple lenses, unless the owner
+approved an exception below. Evaluate availability among enabled routes only. A catalogue
+entry is neither permission to use a provider nor proof that it works.
 
-An advertised route is not always a working one: a model this session has not
-answered with recently gets a one-line probe before the round.
+For an enabled route that has not answered recently, run a one-line probe before the round.
+A failed probe stops that route, not the other enabled routes.
 
 Run the lenses the parent scoped; the default at Standard and above is all three
 (`debate`, `test-audit`, `code-review`). One or two are enough when the change
@@ -86,15 +88,17 @@ never claims a lens that did not. A lens that genuinely has nothing to read is
 `skipped` with the reason, never silently dropped; all three skipped is not a
 round, and the renderer refuses it.
 
-When every non-author family is exhausted, a round on the author's family is
+When no enabled non-author family is available, a round on the author's family is
 possible only with the owner's explicit approval, recorded in the payload:
 
 ```json
 "independence": { "approvedBy": "owner", "reason": "only DeepSeek is available this week" }
 ```
 
-Try every other family before asking. A lane cannot grant this approval to itself.
-The renderer prints the exception in the review and writes
+Reuse an existing owner approval within its stated scope; do not ask for it again per PR.
+Do not require optional OpenCode probes or quota exhaustion before using that approval.
+Optional OpenCode does not itself grant a same-family exception. A lane cannot grant this
+approval to itself. The renderer prints the exception in the review and writes
 `<!-- reviewloop_independence_exception -->` into the body.
 
 **Done when** the chosen pairs pass the guard in step 4.

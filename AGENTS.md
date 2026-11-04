@@ -180,19 +180,18 @@ tier still decides how much scrutiny a failure mode deserves; it no longer
 decides whether the debate happens. Run them in that order, each as its own
 sub-agent, before the lane reports.
 
-- **The lenses run on a different model family than the author. That is the only fixed part.**
-  The author is the lane's model, read from its commit trailer, never the parent's.
-  Independence is a family, not an exact ID: free and paid DeepSeek are one opinion, so a
-  DeepSeek author needs GLM, MiMo or Beam. The ladder is free first —
-  `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
-  `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
-  `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
-  routes are exhausted. With more than one lens, at least two families must appear, so three
-  lenses are not one opinion counted three times. A route unused this session gets a one-line
-  probe first; an advertised model is not a working one. Free lenses have no parallelism cap,
-  so a round can go as wide as the work needs.
-- **The owner's exception is recorded, not assumed.** When every non-author family is
-  exhausted, the owner may approve a round on the author's family; the payload carries
+- **OpenCode review is optional.** Use models available through the session's enabled review
+  routes. Do not automatically probe, install or switch to `opencode` or `opencode-go`, or ask
+  the owner to enable them for each PR. Neither a quota failure nor an independence requirement
+  opts the owner into another provider. Use OpenCode only when the owner requests it or explicitly
+  enables it for the current scope. Required lenses still run. Model selection and exception
+  handling live in `.agents/skills/reviewloop/SKILL.md`.
+- **The lenses use a different model family from the author unless the owner approved an exception.**
+  Read the author's model from the lane's commit trailer, never the parent's. Independence is a
+  family, not an exact ID. With more than one lens, at least two families must appear unless an
+  approved exception applies. Availability concerns enabled routes only, not optional OpenCode routes.
+- **The owner's exception is recorded, not assumed.** When no enabled non-author family is
+  available, the owner may approve a round on the author's family; the payload carries
   `independence: { approvedBy, reason }`, the review states it, and a lane cannot approve its
   own. `reviewloop` refuses the round without it.
 - **Every reviewed change gets two reviews: the author's own, and an

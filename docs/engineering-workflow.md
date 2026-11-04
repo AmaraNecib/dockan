@@ -125,12 +125,11 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 - **The lenses run on a different model family than the author (owner decision, 2026-10-19; family
   rule 2026-10-26).** The author is the lane's model, read from its commit trailer, never the
   parent's. Independence is a family, not an exact ID: free and paid DeepSeek are one opinion.
-  Pick from the free ladder first — `opencode/deepseek-v4.1-flash-free`,
-  `opencode/glm-5.3-flash-free`, `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the
-  cheap paid fallback `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only
-  when the free routes are exhausted. With more than one lens, at least two families must appear.
-  A route unused this session gets a one-line probe first. Free lenses carry no parallelism cap.
-  When every non-author family is exhausted, the owner may approve an exception recorded as
+  Select reviewers from the session's enabled routes using `.agents/skills/reviewloop/SKILL.md`.
+  OpenCode review is optional, not a prerequisite for review or a quota-triggered fallback. Do not
+  probe or request it unless the owner opts in for the current scope. With more than one lens,
+  at least two families must appear unless an approved exception applies.
+  When no enabled non-author family is available, the owner may approve an exception recorded as
   `independence: { approvedBy, reason }`; a lane cannot approve its own.
 - **Run both reviews until the owner ends the trial.** The parent runs `reviewloop` and
   Greptile on the same pinned boundary across several PRs. Follow the

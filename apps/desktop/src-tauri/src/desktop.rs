@@ -1689,19 +1689,21 @@ mod tests {
         serde_json::json!({"json":{"items":items,"total":total}})
     }
 
+    fn full_audit_page() -> serde_json::Value {
+        let items = (0..500)
+            .map(|index| serde_json::json!({"type":"ITEM_CREATED","ref":format!("item-{index}")}))
+            .collect();
+        audit_page(501, serde_json::Value::Array(items))
+    }
+
     #[test]
     fn reveal_audit_finds_a_backup_after_the_first_500_activity_rows() {
         let path = Path::new("C:/shop/backups/older.db");
-        let first_page = serde_json::Value::Array(
-            (0..500)
-                .map(|index| serde_json::json!({"type":"ITEM_CREATED","ref":format!("item-{index}")}))
-                .collect(),
-        );
         let mut offsets = Vec::new();
         let audit = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
             offsets.push(offset);
             match offset {
-                0 => Ok(audit_page(501, first_page.clone())),
+                0 => Ok(full_audit_page()),
                 500 => Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]))),
                 other => panic!("unexpected activity offset {other}"),
             }
@@ -1720,7 +1722,7 @@ mod tests {
         let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
             offsets.push(offset);
             match offset {
-                0 => Ok(audit_page(501, serde_json::Value::Array((0..500).map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"})).collect()))),
+                0 => Ok(full_audit_page()),
                 500 => Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED","ref":"item-500"}]))),
                 other => panic!("unexpected activity offset {other}"),
             }
@@ -1740,7 +1742,7 @@ mod tests {
         ] {
             let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
                 match offset {
-                    0 => Ok(audit_page(501, serde_json::Value::Array((0..500).map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"})).collect()))),
+                    0 => Ok(full_audit_page()),
                     500 => second_page.clone(),
                     other => panic!("unexpected activity offset {other}"),
                 }
@@ -1756,7 +1758,7 @@ mod tests {
         let result = find_backup_audit_with_timeout(path, Duration::from_millis(20), |offset, _| {
             calls.set(calls.get() + 1);
             match offset {
-                0 => Ok(audit_page(501, serde_json::Value::Array((0..500).map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"})).collect()))),
+                0 => Ok(full_audit_page()),
                 500 => {
                     std::thread::sleep(Duration::from_millis(40));
                     Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}])))
@@ -1842,14 +1844,7 @@ mod tests {
                 assert!(request.contains(&format!(r#""limit":500,"offset":{offset}"#)));
                 assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
                 let (total, items) = if offset == 0 {
-                    (
-                        501,
-                        serde_json::Value::Array(
-                            (0..500)
-                                .map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"}))
-                                .collect(),
-                        ),
-                    )
+                    (501, full_audit_page()["json"]["items"].clone())
                 } else {
                     (
                         501,

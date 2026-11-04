@@ -117,7 +117,7 @@ Select depth by reachable risk under `docs/engineering-workflow.md`. Compact Sta
 
 ### 7–9. Review payload and resolution
 
-Use `.agents/skills/reviewloop/SKILL.md` for the payload format, renderer and current-head process. Every reviewable change gets local review. During the paired trial, local and hosted verdicts each need 5/5 on the exact current head, with no unresolved actionable finding. Verify every finding. Fix valid blockers or hold dependent work; disputes need code evidence and reviewer resolution. A score never overrides an unresolved finding. Any code change requires applicable current-head reviews again.
+Use `.agents/skills/reviewloop/SKILL.md` for the payload format, renderer and current-head process. Every reviewable change gets local review. During the [paired trial](../../../docs/review-comparison.md), local and hosted verdicts each need 5/5 on the exact current head, with no unresolved actionable finding. Verify every finding. Fix valid blockers or hold dependent work; disputes need code evidence and reviewer resolution. A score never overrides an unresolved finding. Any code change requires applicable current-head reviews again.
 
 ### 10. Guard pre-push (Phase 2)
 

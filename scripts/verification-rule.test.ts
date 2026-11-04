@@ -114,25 +114,32 @@ describe("the verification rule is discoverable (#259)", () => {
       "unknown rather than zero",
     ]) expect(comparison).toContain(fact);
     expect(read(".agents/skills/guard/SKILL.md")).toContain(
-      "Both current-head reviews are 5/5 with no actionable findings",
+      "Both current-head verdicts are 5/5 with no unresolved actionable findings",
     );
   });
 
   test("reviewloop extraction retains cross-lens agreement and ordered lens dispatch", () => {
     const skill = read(".agents/skills/reviewloop/SKILL.md");
-    expect(skill).toContain("Run `debate`, then `test-audit`, then `code-review`");
+    expect(skill).toContain("ordinary Standard runs `debate`, `test-audit`, then `code-review`");
     expect(skill).toContain("one entry per verified");
     expect(skill).toContain("defect per lens comment; never collapse agreement");
     expect(skill).toContain("two P2");
     expect(skill).toContain("score is 4/5");
   });
 
-  test("the workflow states the Standard-only scoped lens exception", () => {
+  test("the workflow requires risk-sized local review without weakening High-assurance", () => {
     const workflow = read("docs/engineering-workflow.md").replace(/\s+/g, " ");
-    expect(workflow).toContain("All three lenses are the default at Standard");
-    expect(workflow).toContain("one or two lenses for a single-axis Standard change");
-    expect(workflow).toContain("High-assurance always requires all three lenses");
-    expect(workflow).toContain("all three skipped is not a review");
+    for (const fact of [
+      "Every reviewable change gets local review, sized to reachable risk",
+      "Compact is one focused local `code-review` covering Standards, Spec and affected-test adequacy",
+      "Size and path alone never qualify; uncertainty means ordinary Standard or High-assurance",
+      "Compact skips `debate` and `test-audit` with reasons in the existing payload",
+      "It is local review, never no-review or hosted-only",
+      "Standard otherwise uses all three lenses; High-assurance uses all three plus final-head debate after fixes",
+    ]) expect(workflow).toContain(fact);
+    expect(read(".agents/skills/reviewloop/SKILL.md")).toContain(
+      "refuses an all-skipped round",
+    );
   });
 
   test("review entry points link to the A/B protocol", () => {

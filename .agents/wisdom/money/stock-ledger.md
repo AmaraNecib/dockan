@@ -15,16 +15,10 @@ two processes on the same SQLite file. Use a single conditional statement:
 `INSERT … SELECT … WHERE NOT EXISTS (…)` — atomic at SQLite statement level.
 (Greptile P2.)
 
-## 3. Run Greptile BEFORE piling docs/skills commits onto a feature branch
-Both the CLI (`--branch origin/develop`) and the bot refuse to review >100 changed
-files. Our branch carried ~100k lines of `.agents/skills` + shadcn scaffolding, so the
-CLI path failed and only the explicit `@greptile-apps review` tag bypass worked.
-Next time: push the feature code and request review first; ride infra/docs commits
-afterwards or in their own branch/PR.
-
-## 4. Parallel Playwright specs share one wiped-once database
-`playwright.config.ts` starts servers once per run; all spec files run against the SAME
-DB in parallel workers. Any new spec that creates items can break older specs' loose
+## Shared-database E2E tests need scoped assertions
+Check the current Playwright config and fixtures for database ownership and worker
+count. At this revision the shared suite uses one worker, not parallel workers.
+Sequential specs can still leave data that affects later assertions. Any new spec that creates items can break older specs' loose
 assertions (`getByText('منخفض')` resolving to 2 elements). Rules of thumb: unique item
 names that aren't substrings of other specs' names; scope assertions to your own row
 (`row.getByText(...)`); prefer `toHaveText` over `toContainText` for numeric cells;
@@ -35,9 +29,3 @@ remember threshold-0 items are ALWAYS low-stock at quantity 0.
 error) — guard with `query.isPending || !query.data`. And `historyWithRemaining`-style
 helpers should be generic (`<T extends LedgerMovement>`) so callers passing full DB rows
 get full row types back instead of a stripped projection shape.
-
-## 6. Review battery economics
-Four parallel reviewer subagents (critic/defender/test-auditor/spec-reviewer) on a
-~600-line diff cost ~4 min wall time and produced 1 MAJOR + several actionable MINORs,
-including two real router-level test gaps. Worth it for high-assurance tier; skip the
-defender leg for Standard-tier work and fold its claims into the critic prompt.

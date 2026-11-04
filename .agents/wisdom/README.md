@@ -1,51 +1,28 @@
-# Durable lessons learned while building Dokan
+# Task-scoped lessons
 
-**One file per lesson. The category folder says where it lives; the filename says what it teaches.**
-No dates in filenames — a lesson that recurs is the same lesson, and a dated filename makes the
-second occurrence look like a new one.
-
-## Shape
-
-```
-wisdom/
-  api/           seams, router, store, resolvers
-  architecture/  design principles that outlive a ticket
-  data/          schema, identity, ranges, pagination
-  e2e/           Playwright and browser-run mechanics
-  money/         ledger, FIFO, balances, adjustments
-  packaging/     desktop and portable builds
-  process/       lanes, reviews, CI config, git traps
-  testing/       unit and integration test design
-  vault/         vault, crypto and lock lifecycle
-  web/           React, RTL, i18n, forms, printing
-```
-
-## When a lesson repeats
-
-**Append to the existing file.** Do not create a second file because the date changed or the ticket
-number is different. Add the new occurrence to the file's body — a `Seen in:` line naming the issues
-or PRs — and strengthen the rule if the recurrence taught you something the first one did not.
-
-Two files that teach the same thing are worse than one file: the next lane reads one of them, misses
-the other, and re-derives the lesson a third time.
-
-## Who writes
-
-**The parent session only.** A lane reads this folder, applies what bears on its task, and says
-which lessons it applied and which it deliberately did not **in its commit message body** — the
-durable lesson record that travels with the branch. After committing, the lane verifies that HEAD
-and hands its SHA and untracked verification evidence path to the parent; that handoff ends the lane. A candidate lesson goes there too, on a `Lesson:` line. One
-occurrence is a report line, not wisdom: the parent writes an entry when the same failure shows up
-across reports.
-
-## How to read it
-
-Do not read all of it. Grep for your area first, then read only the hits:
+Read this index, search for the task's symbols or failure mode, then read only
+matching lessons:
 
 ```bash
-grep -rin "<your area, symbol or failure mode>" .agents/wisdom/ | head -40
+rg -n "<symbol or failure mode>" .agents/wisdom
 ```
 
-The older entries carry a `**Date:**` and `**Ticket:**` line inside the file. That provenance is
-worth keeping — it is how a reader finds the PR that produced the lesson. It just does not belong in
-the filename.
+These files record past failures, not additional workflow gates. Current owner
+instructions, `AGENTS.md`, the engineering workflow and the relevant skill govern
+the work. Check a lesson's assumptions against the current source before applying
+it. A past failure or success does not establish the cause of today's result.
+
+## Keep the collection small
+
+Only the parent writes lessons. Add one only after the same failure recurs, with
+issue or PR references and a concrete prevention step. Workers put candidates in
+their commit body under `Lesson:`, alongside relevant lessons applied or excluded.
+
+Use `<category>/<lesson>.md`, without dates in filenames. Update the existing
+lesson when it recurs. Keep the failure, its boundary and the prevention step;
+remove obsolete commands, fixed model choices, historical counts and duplicate
+policy. Retired text remains recoverable from Git history.
+
+Review requirements belong in `docs/engineering-workflow.md` and `reviewloop`.
+Verification commands belong in `guard`. Wisdom neither waives those requirements
+nor adds a second review or verification cycle.

@@ -35,12 +35,3 @@ decide each one explicitly. Pin the diverging case with a golden test even when
 the current data cannot reach it; a latent drift is the whole risk of the refactor.
 If the docs settle the rule, say so and cite the ADR — that is stronger than a
 "decision needed" note.
-
-## Evidence SHA hygiene after review fixes (🟡 Minor)
-
-Debate/test-audit/code-review evidence is named `<reviewed-sha>-<gate>.md`. When
-review fixes change HEAD, amend the source commit and rename the evidence to the
-new SHA in the evidence commit. Guard's staleness check tolerates an evidence
-commit that only touches `.scratch/`, so the evidence SHA may trail HEAD by one
-non-reviewable commit — but a tracked evidence file naming a SHA that is not in
-the final history is a blocker.

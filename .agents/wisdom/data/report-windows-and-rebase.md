@@ -22,17 +22,6 @@ invoices only store a date-only `invoice_date`. Three lessons that generalize:
    audit suite flags both the dropped-bounds bug and the half-open `0001-01-01`/`9999-12-31`
    sentinel semantics (documented in the contract docstring now).
 
-## Rebase across a parallel merged lane (debts #46 landed mid-flight)
-
-- `git rebase origin/develop` on a clean checkpoint; conflicts were all ADDITIVE (new describe
-  blocks, nav links, routes). Splicing the conflict region programmatically dropped the debts
-  describe's closing braces — after ANY scripted conflict resolution, run typecheck before
-  continuing, and eyeball the seam (the `=======` marker can sit inside a block).
-- Set `GIT_EDITOR=true` for `git rebase --continue` when no editor is configured (VS Code
-  missing → "could not commit staged changes").
-- Re-key evidence to the post-rebase head and re-run the FULL gate battery incl. e2e (debts +
-  diagnostics specs now run in the same suite — 15/15).
-
 ## E2E native-select traps
 
 - `<option>` elements are never "visible": `waitFor()`/`toBeVisible()` on options time out;

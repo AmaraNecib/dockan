@@ -102,6 +102,7 @@
         "blankness-mark-only.spec.ts",
         "catalog-scan.spec.ts",
         "stock-ledger.spec.ts",
+        "item-history.spec.ts",
         "pagination.spec.ts",
         "arabic-search.spec.ts",
         "01-empty-states.spec.ts",

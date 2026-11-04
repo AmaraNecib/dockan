@@ -271,6 +271,12 @@ export type PartyDeleteResult = "DELETED" | "HAS_INVOICES" | "NOT_FOUND";
  * `createDrizzleStore` implements it over bun:sqlite today; a postgres adapter
  * implements the same interface behind the DOKAN_DB_DRIVER config switch.
  */
+/** Read methods needed by composed snapshot reads; no write or transaction handle. */
+export type StoreReadPort = Pick<StorePort,
+  "getItemsByIds" | "listStockMovements" | "listItemHistoryLines" |
+  "listStockLinksByItem" | "getReturnHeader" | "getSupplierReturn"
+>;
+
 export interface StorePort {
   /** idempotent: create tables, seed the default category + settings */
   setup(): Promise<void>;
@@ -302,6 +308,8 @@ export interface StorePort {
    */
   listStockMovementsSince(itemId: string, recordedAfter: string): Promise<Array<StockMovement & { seq: number }>>;
   countStockMovements(itemId: string): Promise<number>;
+  /** Recorded invoice facts only, never joined to current item prices. */
+  listItemHistoryLines(itemId: string): Promise<Array<InvoiceLine & { invoiceNumber: string; invoiceKind: InvoiceKind }>>;
 
   // --- purchase linkage (ticket 29) ----------------------------------------
   /** appends an attribution record between a purchase invoice and an earlier
@@ -415,6 +423,8 @@ export interface StorePort {
    * bypassed for its own calls, so nested operations never deadlock and no
    * external call can ever land inside this transaction. */
   withTransaction<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
+  /** Coherent serialized read snapshot; rejects writes and never dirties the vault. */
+  withReadTransaction<T>(fn: (tx: StoreReadPort) => Promise<T>): Promise<T>;
   /** Like withTransaction but BEGIN IMMEDIATE — the write lock is taken before
    * the first read so money units never deadlock on a stale WAL read snapshot
    * (SQLITE_BUSY_SNAPSHOT) against a second process writing the same file.

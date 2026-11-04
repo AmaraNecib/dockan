@@ -153,9 +153,9 @@ describe("item history projection scaling", () => {
       unitPrice: 20,
       costAtSale: Number.MAX_SAFE_INTEGER,
       cogsExact: Number.MAX_SAFE_INTEGER + 1,
-      total: 40,
+      total: Number.MAX_SAFE_INTEGER + 1,
       discountAllocated: 0,
-      netTotal: 40,
+      netTotal: Number.MAX_SAFE_INTEGER + 1,
       invoiceNumber: "INV-SALE",
       invoiceKind: "SALE" as const,
     }];
@@ -191,8 +191,44 @@ describe("item history projection scaling", () => {
 
     const sale = history.movements.find((movement) => movement.id === "00000000-0000-4000-8000-000000000003");
     expect(sale?.details?.cost?.total).toBeNull();
+    expect(sale?.details?.saleTotal).toBeNull();
+    expect(sale?.details?.netSaleTotal).toBeNull();
     const unknownInflow = history.movements.find((movement) => movement.id === "00000000-0000-4000-8000-000000000008");
     expect(unknownInflow?.details?.cost).toEqual({ unitCost: null, total: null });
+    const parsed = itemHistoryOutputSchema.safeParse(history);
+    if (!parsed.success) throw new Error(JSON.stringify(parsed.error.issues));
+    expect(parsed.success).toBe(true);
+  });
+
+  it("does not present rounded legacy sale COGS as exact", async () => {
+    const itemId = "00000000-0000-4000-8000-000000000001";
+    const movements = [
+      { id: "00000000-0000-4000-8000-000000000014", itemId, kind: "PURCHASE" as const, delta: 13, unitCost: 117, reason: null, ref: null, returnMark: null, occurredAt: "2024-12-31T00:00:00", createdAt: "2024-12-31T00:00:00", seq: 4 },
+      { id: "00000000-0000-4000-8000-000000000011", itemId, kind: "SALE" as const, delta: -6, unitCost: null, reason: null, ref: "00000000-0000-4000-8000-000000000021", returnMark: null, occurredAt: "2025-01-03T00:00:00", createdAt: "2025-01-03T00:00:00", seq: 3 },
+      { id: "00000000-0000-4000-8000-000000000012", itemId, kind: "SALE" as const, delta: -6, unitCost: null, reason: null, ref: "00000000-0000-4000-8000-000000000022", returnMark: null, occurredAt: "2025-01-02T00:00:00", createdAt: "2025-01-02T00:00:00", seq: 2 },
+      { id: "00000000-0000-4000-8000-000000000013", itemId, kind: "SALE" as const, delta: -1, unitCost: null, reason: null, ref: "00000000-0000-4000-8000-000000000023", returnMark: null, occurredAt: "2025-01-01T00:00:00", createdAt: "2025-01-01T00:00:00", seq: 1 },
+    ];
+    const lines = [
+      { id: "line-legacy", invoiceId: "00000000-0000-4000-8000-000000000021", itemId, description: "legacy", quantity: 6, defaultUnitPrice: 300, unitPrice: 300, costAtSale: 117, cogsExact: 702, total: 1800, discountAllocated: 0, netTotal: 1800, invoiceNumber: "INV-LEGACY", invoiceKind: "SALE" as const },
+      { id: "line-modern", invoiceId: "00000000-0000-4000-8000-000000000022", itemId, description: "modern", quantity: 6, defaultUnitPrice: 300, unitPrice: 300, costAtSale: 117, cogsExact: 700, total: 1800, discountAllocated: 0, netTotal: 1800, invoiceNumber: "INV-MODERN", invoiceKind: "SALE" as const },
+      { id: "line-zero", invoiceId: "00000000-0000-4000-8000-000000000023", itemId, description: "zero", quantity: 1, defaultUnitPrice: 0, unitPrice: 0, costAtSale: 0, cogsExact: 0, total: 0, discountAllocated: 0, netTotal: 0, invoiceNumber: "INV-ZERO", invoiceKind: "SALE" as const },
+    ];
+    const tx = {
+      getItemsByIds: async () => new Map([[itemId, { id: itemId, name: "History item", barcode: null, categoryId: "00000000-0000-4000-8000-000000000007", costPrice: 117, sellingPrice: 300, lowStockThreshold: 0, stockOnHand: 0, createdAt: "2025-01-01T00:00:00", updatedAt: "2025-01-01T00:00:00" }]]),
+      listStockMovements: async () => movements,
+      listItemHistoryLines: async () => lines,
+      listStockLinksByItem: async () => [],
+      getReturnHeader: async () => undefined,
+      getSupplierReturn: async () => undefined,
+    } satisfies StoreReadPort;
+    const store: Pick<StorePort, "withReadTransaction"> = {
+      withReadTransaction: async <T>(callback: (readTx: StoreReadPort) => Promise<T>) => callback(tx),
+    };
+
+    const history = await readItemHistory(store, { itemId, limit: 10 });
+    expect(history.movements.filter((movement) => movement.kind === "SALE").map((movement) => movement.details?.cost?.total)).toEqual([null, 700, null]);
+    expect(history.movements.filter((movement) => movement.kind === "SALE").map((movement) => movement.details?.saleTotal)).toEqual([0, 1800, 1800]);
+    expect(history.movements.filter((movement) => movement.kind === "SALE").map((movement) => movement.details?.netSaleTotal)).toEqual([0, 1800, 1800]);
     const parsed = itemHistoryOutputSchema.safeParse(history);
     if (!parsed.success) throw new Error(JSON.stringify(parsed.error.issues));
     expect(parsed.success).toBe(true);

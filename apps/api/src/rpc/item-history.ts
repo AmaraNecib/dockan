@@ -75,11 +75,23 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
       // Valid unit facts can have an unrepresentable total. Never return rounded money.
       const safeInflowTotal = inflowTotal !== null && Number.isSafeInteger(inflowTotal) ? inflowTotal : null;
       const recordedSaleCogs = sale?.cogsExact;
-      const safeSaleCogs = recordedSaleCogs !== undefined && Number.isSafeInteger(recordedSaleCogs) ? recordedSaleCogs : null;
+      const legacyCogsEstimate = sale === undefined ? null : sale.quantity * sale.costAtSale;
+      // The migration backfilled legacy SALE rows with quantity × rounded unit
+      // cost. Without source metadata, equality is ambiguous (including zero),
+      // so only a safe recorded total that differs from a safely computed
+      // legacy estimate is supported as exact history.
+      const safeSaleCogs = recordedSaleCogs !== undefined
+        && Number.isSafeInteger(recordedSaleCogs)
+        && legacyCogsEstimate !== null
+        && Number.isSafeInteger(legacyCogsEstimate)
+        && recordedSaleCogs !== legacyCogsEstimate
+        ? recordedSaleCogs : null;
+      const safeSaleTotal = sale !== undefined && Number.isSafeInteger(sale.total) ? sale.total : null;
+      const safeNetSaleTotal = sale !== undefined && Number.isSafeInteger(sale.netTotal) ? sale.netTotal : null;
       return { ...row, supersededBySeq: superseded[index] ?? null, details: {
         sellingPrice: sale?.unitPrice ?? null,
-        saleTotal: sale?.total ?? null,
-        netSaleTotal: sale?.netTotal ?? null,
+        saleTotal: safeSaleTotal,
+        netSaleTotal: safeNetSaleTotal,
         cost: { unitCost: recordedCost, total: sale === undefined ? safeInflowTotal : safeSaleCogs },
         documents,
       } };

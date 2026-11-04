@@ -5706,7 +5706,7 @@ describe("movement posting seam parity (issue 143)", () => {
 });
 
 describe("item history 399", () => {
-  it("399 preserves exact maximum inflow and sale COGS totals", async () => {
+  it("399 keeps matching rounded sale COGS unavailable while preserving exact inflow totals", async () => {
     const category = (await client.categoriesList()).items[0]!;
     const item = await client.itemsCreate({ name: "history-max-safe-399", categoryId: category.id, costPrice: Number.MAX_SAFE_INTEGER, sellingPrice: 20 });
     await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: Number.MAX_SAFE_INTEGER, kind: "PURCHASE" });
@@ -5714,7 +5714,7 @@ describe("item history 399", () => {
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.movements.find((movement) => movement.ref === sale.id)?.details?.cost).toEqual({
       unitCost: Number.MAX_SAFE_INTEGER,
-      total: Number.MAX_SAFE_INTEGER,
+      total: null,
     });
     expect(history.movements.find((movement) => movement.kind === "PURCHASE")?.details?.cost).toEqual({
       unitCost: Number.MAX_SAFE_INTEGER,

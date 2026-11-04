@@ -332,10 +332,11 @@ Tier 2 is `bun run test:e2e:changed`, the queued spelling;
 `bun scripts/e2e-changed.ts` is the same program and is not queued. It imports
 `selectSpecs` and the checked-in map from `scripts/e2e-selection.ts`, so there is
 one map and one set of precedence rules. What differs is the range and the
-overrides: this driver diffs `<merge-base with origin/develop>..HEAD`, while CI
-diffs `base.sha..head.sha` — on a stacked PR that is the parent branch, not
-`origin/develop` — and replaces the decision outright for `push`,
-`workflow_dispatch` and the `e2e:full` label. The local run is a cheaper early
+overrides: this driver defaults to `merge-base(origin/develop, HEAD)..HEAD`;
+use `--base` for the actual PR base, including a stacked PR's parent branch.
+CI uses the event's base/head SHAs and diffs from their merge base, falling
+back to the event's base SHA if merge-base fails. It replaces the decision
+outright for `push`, `workflow_dispatch` and the `e2e:full` label. The local run is a cheaper early
 warning, never a substitute for the PR's head. `--files` and `--base` cannot be
 combined: `--files` decides from the list you give it and never reads git, so the
 pair exits 2 rather than quietly ignoring one of them.

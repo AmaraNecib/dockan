@@ -96,7 +96,7 @@ not run or delegate it locally. Local replay output is not an acceptance
 requirement for review, push or report. Ordinary TDD and focused regression
 tests still apply. For browser verification, follow `guard`'s **Browser
 verification: selector first** procedure: inspect
-`bun run test:e2e:changed --dry-run` before taking a heavy slot. The selector's
+`bun scripts/e2e-changed.ts --dry-run` before taking a heavy slot. The selector's
 map remains fail-closed; CI keeps its own event-range and override behavior.
 
 Do not run a later phase without recording the earlier gate, its commands, and its result.

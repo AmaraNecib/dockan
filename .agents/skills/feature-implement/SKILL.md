@@ -186,7 +186,7 @@ bun run --filter @dokan/web build # heavy slot
 bun audit --audit-level=high
 ```
 
-- Apply `guard`'s **Browser verification: selector first** procedure when browser verification is relevant. Inspect `bun run test:e2e:changed --dry-run` before taking a heavy slot; preserve its full/affected/skip decision and evidence. The selector procedure governs final selected-scope verification; focused TDD does not replace it.
+- Apply `guard`'s **Browser verification: selector first** procedure when browser verification is relevant. Inspect `bun scripts/e2e-changed.ts --dry-run` before taking a heavy slot; preserve its full/affected/skip decision and evidence. The selector procedure governs final selected-scope verification; focused TDD does not replace it.
 - Review evidence files exist and are not stale
 - Working tree is clean
 

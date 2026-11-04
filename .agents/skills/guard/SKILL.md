@@ -49,7 +49,7 @@ Run the local checks below for Phase 2. The red-on-parent replay runs only in th
 For a browser-relevant change, commit the complete PR scope, then inspect the selector before starting a browser run:
 
 ```bash
-bun run test:e2e:changed --dry-run [--base <PR-base-ref>]
+bun scripts/e2e-changed.ts --dry-run [--base <PR-base-ref>]
 ```
 
 Use the actual PR base ref. A normal PR uses `origin/develop`; a stacked PR uses the branch named as that PR's base, not `origin/develop`. The local selector compares `merge-base(base, HEAD)..HEAD`. CI also diffs from a merge base, using the event's base and head SHAs, and falls back to the event's base SHA if merge-base fails. Local refs can resolve to different commits from those event SHAs. CI additionally forces full runs for push, dispatch and the `e2e:full` label. The checked-in selection map is shared; base inputs, failure handling and overrides can differ. CI remains the merge gate.

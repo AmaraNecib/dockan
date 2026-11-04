@@ -60,7 +60,7 @@ they no longer have to be serialized across lanes (#202).
 
 **Heavy work goes through the queue.** A full test suite, `test:e2e`, a build or a browser agent takes a slot: `bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`. Light work — one test file, lint, typecheck — runs directly and does not take a slot.
 
-**Mechanism: a child agent with its own worktree, by default.** `delegate_task` with
+**Code-editing lanes use their own worktrees.** `delegate_task` with
 `isolation: "worktree"` checks out the work from the parent's local commit, runs project setup,
 and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,
 none to close afterwards, and the completion arrives by itself instead of being polled.
@@ -97,6 +97,10 @@ worktree needs one. The lane roots are saved in `~/.pi/agent/trust.json`
 every worktree under it. When T3 runs Pi in RPC mode it cannot show that prompt itself, which is
 why an untrusted lane surfaces as an approval card in T3 instead of a question in the terminal.
 
+**Read-only reviewers share the checkout being reviewed.** Use `delegate_task` with `isolation: "shared"`, the absolute PR worktree path and a pinned head SHA. They read files and return findings; they do not install dependencies, build, run tests that write artifacts, or edit the checkout. Finish or cancel stale reviews before the writer changes their reviewed files.
+
+**Retire finished helpers after handoff.** The parent transfers needed commits and evidence to the main PR checkout, checks for live processes and dependency links, then removes the helper worktree. Keep shared dependency or build targets until their consumers have moved. A review or CI wait does not need a helper checkout.
+
 Either way, one writer per worktree, and a lane never pushes or merges.
 
 Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
@@ -110,7 +114,7 @@ disjoint files; when two lanes share a store/router, nominate which one lands
 first and rebase the other onto it. Poll CI and the review round in-session, never
 the lane.
 
-**A lane ALWAYS gets its own workspace** — never a pane split inside the parent's
+**A code-editing lane ALWAYS gets its own workspace** — never a pane split inside the parent's
 workspace (owner complaint, 2026-10-13: *"why u open the crew here in this panel;
 I can't see anything"*). `delegate_task` with `isolation: "worktree"` gives it
 one: it checks the work out from the parent's local commit, runs project setup,
@@ -140,7 +144,7 @@ count and re-apply checklist are in `docs/skills-vendoring.md`.
 
 ## Red-on-parent runs in CI only
 
-The PR `checks` job runs `scripts/red-on-parent.ts` for pull requests and must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay. For browser verification, use the selector-first procedure in `.agents/skills/guard/SKILL.md`; inspect `bun run test:e2e:changed --dry-run` before any heavy browser run.
+The PR `checks` job runs `scripts/red-on-parent.ts` for pull requests and must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay. For browser verification, use the selector-first procedure in `.agents/skills/guard/SKILL.md`; inspect `bun scripts/e2e-changed.ts --dry-run` before any heavy browser run.
 
 ## Pick the skill before you write code
 

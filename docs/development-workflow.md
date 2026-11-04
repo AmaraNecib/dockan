@@ -342,8 +342,8 @@ combined: `--files` decides from the list you give it and never reads git, so th
 pair exits 2 rather than quietly ignoring one of them.
 
 ```bash
-bun run test:e2e:changed --dry-run                                        # decide, run nothing
-bun run test:e2e:changed --dry-run --files apps/web/src/pages/backups.tsx # decide for a path list
+bun scripts/e2e-changed.ts --dry-run                                        # decide, run nothing
+bun scripts/e2e-changed.ts --dry-run --files apps/web/src/pages/backups.tsx # decide for a path list
 DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bun run test:e2e:changed              # decide and run, on a lane's own ports
 ```
 

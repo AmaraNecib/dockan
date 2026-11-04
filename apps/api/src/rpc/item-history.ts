@@ -28,7 +28,6 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
       if (invoiceIds === undefined) linksByMovementId.set(link.movementId, [link.invoiceId]);
       else invoiceIds.push(link.invoiceId);
     }
-    const documentOrder = new Map([...documentsByInvoiceId.keys()].map((invoiceId, index) => [invoiceId, index]));
     const projected = historyWithRemaining(movements);
     const { limit, offset } = resolvePagination(input);
     const page = projected.slice(offset, offset + limit);
@@ -55,8 +54,18 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
         const returnedInvoiceId = returnInvoices.get(row.ref);
         if (returnedInvoiceId != null) documentIds.add(returnedInvoiceId);
       }
+      // Linked documents use invoice-number order, with invoice id as the stable tie-breaker;
+      // neither SQL row order nor link insertion order carries display semantics.
       const documents = [...documentIds]
-        .sort((left, right) => (documentOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (documentOrder.get(right) ?? Number.MAX_SAFE_INTEGER))
+        .sort((left, right) => {
+          const leftDocument = documentsByInvoiceId.get(left);
+          const rightDocument = documentsByInvoiceId.get(right);
+          if (leftDocument === undefined) return rightDocument === undefined ? left < right ? -1 : left > right ? 1 : 0 : 1;
+          if (rightDocument === undefined) return -1;
+          return leftDocument.number < rightDocument.number ? -1
+            : leftDocument.number > rightDocument.number ? 1
+              : left < right ? -1 : left > right ? 1 : 0;
+        })
         .flatMap((invoiceId) => {
           const document = documentsByInvoiceId.get(invoiceId);
           return document === undefined ? [] : [document];

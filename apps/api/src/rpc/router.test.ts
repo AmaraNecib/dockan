@@ -5706,6 +5706,23 @@ describe("movement posting seam parity (issue 143)", () => {
 });
 
 describe("item history 399", () => {
+  it("399 preserves exact maximum inflow and sale COGS totals", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-max-safe-399", categoryId: category.id, costPrice: Number.MAX_SAFE_INTEGER, sellingPrice: 20 });
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: Number.MAX_SAFE_INTEGER, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((movement) => movement.ref === sale.id)?.details?.cost).toEqual({
+      unitCost: Number.MAX_SAFE_INTEGER,
+      total: Number.MAX_SAFE_INTEGER,
+    });
+    expect(history.movements.find((movement) => movement.kind === "PURCHASE")?.details?.cost).toEqual({
+      unitCost: Number.MAX_SAFE_INTEGER,
+      total: Number.MAX_SAFE_INTEGER,
+    });
+    expect(itemHistoryOutputSchema.safeParse(history).success).toBe(true);
+  });
+
   it("399 keeps history readable when an inflow total exceeds exact money range", async () => {
     const category = (await client.categoriesList()).items[0]!;
     const item = await client.itemsCreate({ name: "history-overflow-399", categoryId: category.id, costPrice: Number.MAX_SAFE_INTEGER, sellingPrice: 300 });

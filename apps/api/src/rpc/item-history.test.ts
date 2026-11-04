@@ -57,8 +57,11 @@ describe("item history projection scaling", () => {
       quantity: 1,
       createdAt: "2025-01-01T00:00:00",
     }));
-    const trackedLines = new IterationCountedArray(...lines);
-    const trackedLinks = new IterationCountedArray(...links);
+    // One movement genuinely links three documents; reverse both source collections
+    // to prove the display order does not inherit adapter/query iteration order.
+    links.push({ id: "link-extra", invoiceId: "invoice-2", movementId: "movement-0", quantity: 1, createdAt: "2025-01-01T00:00:00" });
+    const trackedLines = new IterationCountedArray(...[...lines].reverse());
+    const trackedLinks = new IterationCountedArray(...[...links].reverse());
     const tx = {
       getItemsByIds: async () => new Map([["item-1", {
         id: "item-1",
@@ -89,6 +92,7 @@ describe("item history projection scaling", () => {
     expect(history.movements[0]?.details?.documents).toEqual([
       { id: "invoice-0", number: "INV-0" },
       { id: "invoice-1", number: "INV-1" },
+      { id: "invoice-2", number: "INV-2" },
     ]);
     expect(history.movements.at(-1)?.details?.documents).toEqual([
       { id: "invoice-0", number: "INV-0" },
@@ -114,6 +118,18 @@ describe("item history projection scaling", () => {
       createdAt: "2025-01-01T00:00:00",
       seq: 1,
     }, {
+      id: "00000000-0000-4000-8000-000000000008",
+      itemId: "00000000-0000-4000-8000-000000000001",
+      kind: "PURCHASE" as const,
+      delta: 1,
+      unitCost: null,
+      reason: null,
+      ref: null,
+      returnMark: null,
+      occurredAt: "2025-01-01T12:00:00",
+      createdAt: "2025-01-01T12:00:00",
+      seq: 2,
+    }, {
       id: "00000000-0000-4000-8000-000000000003",
       itemId: "00000000-0000-4000-8000-000000000001",
       kind: "SALE" as const,
@@ -124,7 +140,7 @@ describe("item history projection scaling", () => {
       returnMark: null,
       occurredAt: "2025-01-02T00:00:00",
       createdAt: "2025-01-02T00:00:00",
-      seq: 2,
+      seq: 3,
     }];
     const lines = [{
       id: "00000000-0000-4000-8000-000000000006",
@@ -169,6 +185,8 @@ describe("item history projection scaling", () => {
 
     const sale = history.movements.find((movement) => movement.id === "00000000-0000-4000-8000-000000000003");
     expect(sale?.details?.cost?.total).toBeNull();
+    const unknownInflow = history.movements.find((movement) => movement.id === "00000000-0000-4000-8000-000000000008");
+    expect(unknownInflow?.details?.cost).toEqual({ unitCost: null, total: null });
     const parsed = itemHistoryOutputSchema.safeParse(history);
     if (!parsed.success) throw new Error(JSON.stringify(parsed.error.issues));
     expect(parsed.success).toBe(true);

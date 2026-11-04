@@ -273,6 +273,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
     fn windows_file_error_mapping_only_calls_missing_leaf_missing() {
         assert_eq!(windows::file_error_code(Some(2)), MISSING);
         assert_eq!(windows::file_error_code(Some(3)), FAILED);

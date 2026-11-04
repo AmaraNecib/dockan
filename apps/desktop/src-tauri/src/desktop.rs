@@ -667,14 +667,19 @@ fn capture_live_reveal_launch(
 const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
 
 /// Read the existing authenticated audit RPC, never a renderer-selected URL.
-/// The full request has one deadline, and the raw response has a fixed size cap.
-fn backup_audit(port: u16, session_token: &str) -> Result<serde_json::Value, &'static str> {
-    backup_audit_with_timeout(port, session_token, Duration::from_secs(3))
+/// All pages share one deadline; each raw response keeps the fixed size cap.
+fn backup_audit(
+    port: u16,
+    session_token: &str,
+    path: &Path,
+) -> Result<serde_json::Value, &'static str> {
+    backup_audit_with_timeout(port, session_token, path, Duration::from_secs(3))
 }
 
 fn backup_audit_with_timeout(
     port: u16,
     session_token: &str,
+    path: &Path,
     timeout: Duration,
 ) -> Result<serde_json::Value, &'static str> {
     use crate::backup_reveal::FAILED;
@@ -683,6 +688,74 @@ fn backup_audit_with_timeout(
     if session_token.len() != 43 || !session_token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
         return Err(FAILED);
     }
+    find_backup_audit_with_timeout(path, timeout, |offset, remaining| {
+        backup_audit_page(port, session_token, offset, remaining)
+    })
+}
+
+/// Paginate inside the native audit module. The activity RPC accepts offsets
+/// and reports the unfiltered total; a missing match on page one is not proof
+/// that an older backup lacks an audit record.
+fn find_backup_audit_with_timeout(
+    path: &Path,
+    timeout: Duration,
+    mut fetch_page: impl FnMut(usize, Duration) -> Result<serde_json::Value, &'static str>,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    let deadline = Instant::now().checked_add(timeout).ok_or(FAILED)?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(FAILED)
+    };
+    let mut offset = 0usize;
+    loop {
+        let page = fetch_page(offset, remaining()?)?;
+        remaining()?;
+        let items = page
+            .get("json")
+            .and_then(|value| value.get("items"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or(FAILED)?;
+        let total = page
+            .get("json")
+            .and_then(|value| value.get("total"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(FAILED)?;
+        if items.len() > 500
+            || items.iter().any(|item| {
+                item.get("type").and_then(serde_json::Value::as_str).is_none()
+                    || !item.get("ref").is_some_and(|value| value.is_null() || value.is_string())
+            })
+        {
+            return Err(FAILED);
+        }
+        let next_offset = offset.checked_add(items.len()).ok_or(FAILED)?;
+        if offset > total || next_offset > total || items.len() != 500.min(total - offset) {
+            return Err(FAILED);
+        }
+        if items.iter().any(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("BACKUP_CREATED")
+                && item.get("ref").and_then(serde_json::Value::as_str).is_some_and(|recorded| Path::new(recorded) == path)
+        }) {
+            return Ok(page);
+        }
+        if next_offset >= total {
+            return Err(FAILED);
+        }
+        offset = next_offset;
+    }
+}
+
+fn backup_audit_page(
+    port: u16,
+    session_token: &str,
+    offset: usize,
+    timeout: Duration,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
     let deadline = Instant::now().checked_add(timeout).ok_or(FAILED)?;
     let remaining = || {
         deadline
@@ -692,7 +765,7 @@ fn backup_audit_with_timeout(
     };
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&addr, remaining()?).map_err(|_| FAILED)?;
-    let body = r#"{"json":{"limit":500,"offset":0}}"#;
+    let body = format!(r#"{{"json":{{"limit":500,"offset":{offset}}}}}"#);
     let request = format!("POST /api/rpc/activitiesList HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {session_token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     stream.set_write_timeout(Some(remaining()?)).map_err(|_| FAILED)?;
     stream.write_all(request.as_bytes()).map_err(|_| FAILED)?;
@@ -763,7 +836,7 @@ pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, 
         };
         let path = Path::new(&path);
         check_candidate(path, &config.data_dir).map_err(str::to_string)?;
-        let audit = backup_audit(config.port, &session_token).map_err(str::to_string)?;
+        let audit = backup_audit(config.port, &session_token, path).map_err(str::to_string)?;
         let current_origin = reveal_window.url().map_err(|_| FAILED.to_string())?;
         if reveal_window.label() != "main" || !reveal_origin_matches(&current_origin, config.port) {
             return Err(FAILED.to_string());
@@ -1580,7 +1653,7 @@ mod tests {
             format!("{}=", "a".repeat(42)),
         ] {
             assert_eq!(token.len(), 43);
-            assert!(backup_audit(port, &token).is_err());
+            assert!(backup_audit(port, &token, Path::new("C:/shop/backups/completed.db")).is_err());
         }
         assert!(matches!(
             listener.accept(),
@@ -1592,7 +1665,7 @@ mod tests {
             assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
             "HTTP/1.0 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
         });
-        assert!(backup_audit(port, &"a".repeat(43)).is_err());
+        assert!(backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).is_err());
         responder.join().unwrap();
     }
 
@@ -1607,9 +1680,93 @@ mod tests {
         for response in [malformed, truncated, transfer_encoded, content_encoded, mismatched] {
             let response = response.to_string();
             let (port, responder, _listener) = spawn_responder(move |_| response.clone());
-            assert!(backup_audit(port, &"a".repeat(43)).is_err());
+            assert!(backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).is_err());
             responder.join().unwrap();
         }
+    }
+
+    fn audit_page(total: usize, items: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"json":{"items":items,"total":total}})
+    }
+
+    #[test]
+    fn reveal_audit_finds_a_backup_after_the_first_500_activity_rows() {
+        let path = Path::new("C:/shop/backups/older.db");
+        let first_page = serde_json::Value::Array(
+            (0..500)
+                .map(|index| serde_json::json!({"type":"ITEM_CREATED","ref":format!("item-{index}")}))
+                .collect(),
+        );
+        let mut offsets = Vec::new();
+        let audit = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+            offsets.push(offset);
+            match offset {
+                0 => Ok(audit_page(501, first_page.clone())),
+                500 => Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]))),
+                other => panic!("unexpected activity offset {other}"),
+            }
+        })
+        .expect("the older completed backup remains auditable");
+
+        assert_eq!(offsets, [0, 500]);
+        assert_eq!(audit["json"]["items"][0]["type"], "BACKUP_CREATED");
+        assert_eq!(audit["json"]["items"][0]["ref"], path.to_string_lossy().as_ref());
+    }
+
+    #[test]
+    fn reveal_audit_exhausts_reported_pages_before_refusing_a_missing_backup() {
+        let path = Path::new("C:/shop/backups/missing.db");
+        let mut offsets = Vec::new();
+        let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+            offsets.push(offset);
+            match offset {
+                0 => Ok(audit_page(501, serde_json::Value::Array((0..500).map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"})).collect()))),
+                500 => Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED","ref":"item-500"}]))),
+                other => panic!("unexpected activity offset {other}"),
+            }
+        });
+
+        assert_eq!(offsets, [0, 500]);
+        assert!(result.is_err(), "a completed full scan without the target must fail closed");
+    }
+
+    #[test]
+    fn reveal_audit_rejects_malformed_or_failed_later_pages() {
+        let path = Path::new("C:/shop/backups/older.db");
+        for second_page in [
+            Err(crate::backup_reveal::FAILED),
+            Ok(serde_json::json!({"json":{"items":[]}})),
+            Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED"}]))),
+        ] {
+            let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+                match offset {
+                    0 => Ok(audit_page(501, serde_json::Value::Array((0..500).map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"})).collect()))),
+                    500 => second_page.clone(),
+                    other => panic!("unexpected activity offset {other}"),
+                }
+            });
+            assert!(result.is_err(), "invalid later page must fail closed");
+        }
+    }
+
+    #[test]
+    fn reveal_audit_deadline_covers_every_page() {
+        let path = Path::new("C:/shop/backups/older.db");
+        let calls = std::cell::Cell::new(0);
+        let result = find_backup_audit_with_timeout(path, Duration::from_millis(20), |offset, _| {
+            calls.set(calls.get() + 1);
+            match offset {
+                0 => Ok(audit_page(501, serde_json::Value::Array((0..500).map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"})).collect()))),
+                500 => {
+                    std::thread::sleep(Duration::from_millis(40));
+                    Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}])))
+                }
+                other => panic!("unexpected activity offset {other}"),
+            }
+        });
+
+        assert!(result.is_err(), "the deadline must include time spent on later pages");
+        assert_eq!(calls.get(), 2, "the second page began before the shared deadline expired");
     }
 
     #[test]
@@ -1628,7 +1785,7 @@ mod tests {
             let response = response_with_raw_length(raw_length);
             assert_eq!(response.len(), raw_length);
             let (port, responder, _listener) = spawn_responder(move |_| response.clone());
-            let result = backup_audit(port, &"a".repeat(43));
+            let result = backup_audit_page(port, &"a".repeat(43), 0, Duration::from_secs(3));
             if raw_length == BACKUP_AUDIT_MAX_RESPONSE {
                 assert!(result.is_ok());
             } else {
@@ -1655,7 +1812,7 @@ mod tests {
             }
         });
 
-        assert!(backup_audit_with_timeout(port, &"a".repeat(43), Duration::from_millis(250)).is_err());
+        assert!(backup_audit_with_timeout(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db"), Duration::from_millis(250)).is_err());
         responder.join().unwrap();
     }
 
@@ -1664,10 +1821,49 @@ mod tests {
         let (port, responder, _listener) = spawn_responder(|request| {
             assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
             assert!(request.contains(r#"{"json":{"limit":500,"offset":0}}"#));
-            http200(r#"{"json":{"items":[{"type":"BACKUP_CREATED","ref":"C:/shop/backups/completed.db"}]}}"#)
+            http200(r#"{"json":{"items":[{"type":"BACKUP_CREATED","ref":"C:/shop/backups/completed.db"}],"total":1}}"#)
         });
-        let audit = backup_audit(port, &"a".repeat(43)).unwrap();
+        let audit = backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).unwrap();
         assert_eq!(audit["json"]["items"][0]["type"], "BACKUP_CREATED");
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_requests_each_activity_offset_from_the_native_sidecar() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let responder = std::thread::spawn(move || {
+            for offset in [0, 500] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+                assert!(request.contains(&format!(r#""limit":500,"offset":{offset}"#)));
+                assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
+                let (total, items) = if offset == 0 {
+                    (
+                        501,
+                        serde_json::Value::Array(
+                            (0..500)
+                                .map(|_| serde_json::json!({"type":"ITEM_CREATED","ref":"item"}))
+                                .collect(),
+                        ),
+                    )
+                } else {
+                    (
+                        501,
+                        serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]),
+                    )
+                };
+                let body = audit_page(total, items).to_string();
+                stream.write_all(http200(&body).as_bytes()).unwrap();
+            }
+        });
+
+        let path = Path::new("C:/shop/backups/older.db");
+        let audit = backup_audit(port, &"a".repeat(43), path).unwrap();
+        assert_eq!(audit["json"]["items"][0]["ref"], path.to_string_lossy().as_ref());
         responder.join().unwrap();
     }
 
@@ -1683,10 +1879,10 @@ mod tests {
         let token = std::env::var("DOKAN_401_NATIVE_SESSION").unwrap();
         let path = Path::new(&path);
         let before = std::fs::read(path).unwrap();
-        let audit = backup_audit(port, &token).expect("live session must read the real API audit");
+        let audit = backup_audit(port, &token, path).expect("live session must read the real API audit");
         assert_eq!(crate::backup_reveal::reveal_backup(path, Path::new(&root), &audit), Ok(()));
         assert_eq!(std::fs::read(path).unwrap(), before);
-        assert!(backup_audit(port, &"x".repeat(43)).is_err(), "invalid session must be refused by the API");
+        assert!(backup_audit(port, &"x".repeat(43), path).is_err(), "invalid session must be refused by the API");
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let logout = format!("POST /api/vault/logout HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {token}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
@@ -1694,7 +1890,7 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         assert!(response.lines().next().unwrap().contains(" 200 "), "fixture logout must revoke the real session");
-        assert!(backup_audit(port, &token).is_err(), "the previously valid session must no longer authorize the audit");
+        assert!(backup_audit(port, &token, path).is_err(), "the previously valid session must no longer authorize the audit");
         println!("Authenticated audit read refused the revoked session.");
         println!("Authenticated native reveal selected completed backup: {}", path.display());
         println!("Backup bytes unchanged: {}", before.len());

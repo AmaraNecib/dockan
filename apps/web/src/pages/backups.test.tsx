@@ -33,15 +33,27 @@ function button(label: string): HTMLButtonElement {
   return found;
 }
 
-async function settle(): Promise<void> {
+async function settle(assertSettled: () => void, description: string): Promise<void> {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    const deadline = Date.now() + 1000;
+    let consecutiveMatches = 0;
+    while (Date.now() < deadline) {
+      try {
+        assertSettled();
+        consecutiveMatches++;
+        if (consecutiveMatches === 7) return;
+      } catch {
+        consecutiveMatches = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`Timed out waiting for ${description}`);
   });
 }
 
-async function click(label: string): Promise<void> {
+async function click(label: string, assertSettled: () => void, description: string): Promise<void> {
   await act(async () => button(label).click());
-  await settle();
+  await settle(assertSettled, description);
 }
 
 beforeEach(async () => {
@@ -72,10 +84,12 @@ afterEach(() => {
 
 it("reveals only the actual successfully completed backup", async () => {
   expect(host.textContent).not.toContain("إظهار الملف في المجلد");
-  await click("إنشاء نسخة احتياطية الآن");
-  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
-  await click("إظهار الملف في المجلد");
-  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken } }]);
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup state");
+  await click("إظهار الملف في المجلد", () => {
+    expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken } }]);
+  }, "native reveal dispatch");
 });
 
 it("reveals the latest successful path with the rotated session token", async () => {
@@ -90,30 +104,38 @@ it("reveals the latest successful path with the rotated session token", async ()
     return Response.json(response);
   }, { preconnect: originalFetch.preconnect });
 
-  await click("إنشاء نسخة احتياطية الآن");
-  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
-  await click("إنشاء نسخة احتياطية الآن");
-  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(latestPath);
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "first completed backup");
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(latestPath);
+  }, "latest completed backup");
 
   const rotatedToken = "b".repeat(43);
   storeVaultSessionToken(rotatedToken);
-  await click("إظهار الملف في المجلد");
-  expect(calls).toEqual([
-    { command: "backup_reveal", args: { path: latestPath, sessionToken: rotatedToken } },
-  ]);
+  await click("إظهار الملف في المجلد", () => {
+    expect(calls).toEqual([
+      { command: "backup_reveal", args: { path: latestPath, sessionToken: rotatedToken } },
+    ]);
+  }, "reveal with rotated token");
 });
 
 it("invalidates the completed-file claim when native reveal refuses a missing file", async () => {
   bridge(async () => { throw "BACKUP_REVEAL_MISSING"; });
-  await click("إنشاء نسخة احتياطية الآن");
-  await click("إظهار الملف في المجلد");
-  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-    "لم يعد ملف النسخة الاحتياطية موجوداً. أنشئ نسخة جديدة ثم حاول إظهارها.",
-  );
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup before missing-file refusal");
+  await click("إظهار الملف في المجلد", () => {
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "لم يعد ملف النسخة الاحتياطية موجوداً. أنشئ نسخة جديدة ثم حاول إظهارها.",
+    );
+  }, "missing-file refusal message");
   expect(host.querySelector('[data-testid="backup-done"]')).toBeNull();
   expect(host.textContent).not.toContain("إظهار الملف في المجلد");
   expect(document.activeElement).toBe(button("إنشاء نسخة احتياطية الآن"));
-  await click("إنشاء نسخة احتياطية الآن");
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "new completed backup after refusal");
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
 });
@@ -124,9 +146,15 @@ it("refuses reveal without a stored session token and keeps the completed backup
     calls.push({ command: _command, args });
     if (!args.sessionToken) throw "BACKUP_REVEAL_FAILED";
   });
-  await click("إنشاء نسخة احتياطية الآن");
-  await click("إظهار الملف في المجلد");
-  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken: "" } }]);
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup without stored token");
+  await click("إظهار الملف في المجلد", () => {
+    expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken: "" } }]);
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
+    );
+  }, "native request failure with empty token");
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(
     "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
   );
@@ -135,52 +163,68 @@ it("refuses reveal without a stored session token and keeps the completed backup
 
 it("reports a native failure in Arabic and allows retry of the same completed path", async () => {
   bridge(async () => { throw new Error("private OS error"); });
-  await click("إنشاء نسخة احتياطية الآن");
-  await click("إظهار الملف في المجلد");
-  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-    "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
-  );
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup before native failure");
+  await click("إظهار الملف في المجلد", () => {
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
+    );
+  }, "native failure message");
   expect(host.textContent).not.toContain("private OS error");
   expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
   bridge(async (command, args) => { calls.push({ command, args }); });
-  await click("إظهار الملف في المجلد");
-  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken } }]);
-  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await click("إظهار الملف في المجلد", () => {
+    expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken } }]);
+  }, "retry native reveal dispatch");
+  await settle(() => expect(host.querySelector('[role="alert"]')).toBeNull(), "successful retry clears native error");
 });
 
 it("explains browser-only mode without pretending to reveal a file", async () => {
   // SAFETY: remove this test's optional desktop bridge to simulate a browser.
   delete (window as { __TAURI_INTERNALS__?: TestBridge }).__TAURI_INTERNALS__;
-  await click("إنشاء نسخة احتياطية الآن");
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup in browser-only mode");
   expect(button("إظهار الملف في المجلد").disabled).toBe(true);
   expect(host.textContent).toContain("إظهار الملف متاح في تطبيق دكان على Windows فقط.");
   expect(calls).toEqual([]);
 });
 
 it("removes the old success and reveal error while a new creation is pending or failed", async () => {
-  await click("إنشاء نسخة احتياطية الآن");
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "initial completed backup");
   bridge(async () => { throw "BACKUP_REVEAL_FAILED"; });
-  await click("إظهار الملف في المجلد");
+  await click("إظهار الملف في المجلد", () => {
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+  }, "initial reveal error");
   let refuse: ((reason: Error) => void) | undefined;
   globalThis.fetch = Object.assign(() => new Promise<Response>((_resolve, reject) => {
     refuse = reject;
   }), { preconnect: originalFetch.preconnect });
-  await click("إنشاء نسخة احتياطية الآن");
-  expect(button("جاري الإنشاء…").disabled).toBe(true);
-  expect(host.querySelector('[data-testid="backup-done"]')).toBeNull();
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(button("جاري الإنشاء…").disabled).toBe(true);
+    expect(host.querySelector('[data-testid="backup-done"]')).toBeNull();
+  }, "pending creation state");
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(host.textContent).not.toContain("إظهار الملف في المجلد");
   await act(async () => refuse?.(new Error("write failed")));
-  await settle();
-  expect(host.querySelector('[role="alert"]')).not.toBeNull();
+  await settle(() => expect(host.querySelector('[role="alert"]')).not.toBeNull(), "creation error state");
   expect(host.querySelector('[data-testid="backup-done"]')).toBeNull();
   expect(button("إنشاء نسخة احتياطية الآن").disabled).toBe(false);
 });
 
 it("maps unsupported native reveal to the Arabic desktop-only explanation", async () => {
   bridge(async () => { throw "BACKUP_REVEAL_UNSUPPORTED"; });
-  await click("إنشاء نسخة احتياطية الآن");
-  await click("إظهار الملف في المجلد");
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup before unsupported reveal");
+  await click("إظهار الملف في المجلد", () => {
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "إظهار الملف متاح في تطبيق دكان على Windows فقط. يمكنك فتح المسار الظاهر يدوياً.",
+    );
+  }, "unsupported reveal message");
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(
     "إظهار الملف متاح في تطبيق دكان على Windows فقط. يمكنك فتح المسار الظاهر يدوياً.",
   );
@@ -188,7 +232,9 @@ it("maps unsupported native reveal to the Arabic desktop-only explanation", asyn
 });
 
 it("blocks same-turn competing dispatches before React commits pending state", async () => {
-  await click("إنشاء نسخة احتياطية الآن");
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup before competing dispatches");
   let finish: (() => void) | undefined;
   bridge((command, args) => {
     calls.push({ command, args });
@@ -206,11 +252,10 @@ it("blocks same-turn competing dispatches before React commits pending state", a
     reveal.click();
     create.click();
   });
-  await settle();
-  expect(calls).toHaveLength(1);
+  await settle(() => expect(calls).toHaveLength(1), "single native dispatch");
   expect(creations).toBe(0);
   await act(async () => finish?.());
-  await settle();
+  await settle(() => expect(button("إظهار الملف في المجلد").disabled).toBe(false), "settled native reveal");
 });
 
 it("sends one creation when duplicate clicks arrive in the same turn", async () => {
@@ -222,22 +267,26 @@ it("sends one creation when duplicate clicks arrive in the same turn", async () 
   }, { preconnect: originalFetch.preconnect });
   const create = button("إنشاء نسخة احتياطية الآن");
   await act(async () => { create.click(); create.click(); });
-  await settle();
+  await settle(() => expect(button("جاري الإنشاء…").disabled).toBe(true), "pending single creation");
   expect(creations).toBe(1);
   await act(async () => complete?.(Response.json({ json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } })));
-  await settle();
+  await settle(() => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed single creation");
   expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
 });
 
 it("prevents a new backup or duplicate reveal until the native call settles", async () => {
   let finish: (() => void) | undefined;
   bridge(() => new Promise<void>((resolve) => { finish = resolve; }));
-  await click("إنشاء نسخة احتياطية الآن");
-  await click("إظهار الملف في المجلد");
-  expect(button("جاري إظهار الملف…").disabled).toBe(true);
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "completed backup before reveal pending");
+  await click("إظهار الملف في المجلد", () => {
+    expect(button("جاري إظهار الملف…").disabled).toBe(true);
+  }, "pending native reveal state");
   expect(button("إنشاء نسخة احتياطية الآن").disabled).toBe(true);
   await act(async () => finish?.());
-  await settle();
-  expect(button("إظهار الملف في المجلد").disabled).toBe(false);
+  await settle(() => expect(button("إظهار الملف في المجلد").disabled).toBe(false), "settled native reveal");
   expect(button("إنشاء نسخة احتياطية الآن").disabled).toBe(false);
 });

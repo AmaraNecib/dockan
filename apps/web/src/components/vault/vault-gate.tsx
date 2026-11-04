@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useTranslation } from "react-i18next";
 
 import { PasswordInput } from "@/components/ui/password-input";
+import { useVaultSetupCeremony } from "./vault-setup-ceremony";
 import {
   VaultRequestError,
   acknowledgeVaultSetup,
@@ -215,20 +216,21 @@ function VaultFrame({ children }: { children: ReactNode }) {
   );
 }
 
-export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnlocked: () => void }) {
+export function VaultGate({ status, onUnlocked, onSetupCreated, hideSetupKey = false }: { status: VaultStatus; onUnlocked: () => void; onSetupCreated?: () => void; hideSetupKey?: boolean }) {
   const { t } = useTranslation();
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
-  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
-  const [cleanup, setCleanup] = useState<VaultCleanupOutcome | undefined>(undefined);
-  const [savedConfirmed, setSavedConfirmed] = useState(false);
+  const [ceremony, setCeremony] = useVaultSetupCeremony();
+  const { recoveryKey, cleanup, savedConfirmed } = ceremony;
+  const setCleanup = (next: VaultCleanupOutcome | undefined): void => setCeremony((current) => ({ ...current, cleanup: next }));
+  const setSavedConfirmed = (next: boolean): void => setCeremony((current) => ({ ...current, savedConfirmed: next }));
   const [busy, setBusy] = useState(false);
-  const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
+  const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">(recoveryKey === null ? "primary" : "recovery-show");
   // the key screen owns the window only while it is the current screen
   useEffect(() => {
-    noteSetupKeyOnScreen(screen === "recovery-show" && recoveryKey !== null);
-  }, [screen, recoveryKey]);
+    noteSetupKeyOnScreen(recoveryKey !== null && !hideSetupKey);
+  }, [recoveryKey, hideSetupKey]);
   useEffect(() => () => noteSetupKeyOnScreen(false), []);
 
   // A failure and the field it blames are ONE value: setting one always sets
@@ -301,7 +303,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
     );
   }
 
-  if (screen === "recovery-show" && recoveryKey !== null) {
+  if (recoveryKey !== null && !hideSetupKey) {
     return (
       <VaultFrame>
         <h2 className="mt-6 font-semibold">{t("vaultRecoveryTitle")}</h2>
@@ -358,6 +360,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           onClick={() => {
             // release the shell's key screen; the app already serves either way
             void acknowledgeVaultSetup(status.broker);
+            setCeremony({ recoveryKey: null, cleanup: undefined, savedConfirmed: false });
             onUnlocked();
           }}
           data-testid="vault-recovery-continue"
@@ -441,8 +444,9 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
             }
             void run(async () => {
               const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
-              setRecoveryKey(result.recoveryKey);
+              setCeremony({ recoveryKey: result.recoveryKey, cleanup: undefined, savedConfirmed: false });
               setScreen("recovery-show");
+              onSetupCreated?.();
               if (status.broker) {
                 // the key is on screen now: the sweep verdict follows on the
                 // shell's own longer budget (round-3 finding 1); until it

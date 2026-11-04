@@ -1,0 +1,179 @@
+import { afterEach, expect, it, mock } from "bun:test";
+import { act, StrictMode, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { Invoice } from "@dokan/contracts";
+import { z } from "zod";
+
+import "./i18n";
+import { clearAuthLost } from "./auth-refusal";
+import { usePreference, parseBooleanPreference, serializeBooleanPreference } from "./preferences";
+
+// SAFETY: React's documented act environment flag is the only property written.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// SAFETY: only the optional happy-dom test registry is read.
+(window as { happyDOM?: { setURL: (url: string) => void } }).happyDOM?.setURL("http://localhost:5173/");
+mock.module("@/lib/auth-client", () => ({
+  useSession: () => ({ data: { user: { id: "owner" } }, isPending: false }),
+  authClient: { getSession: async () => ({ data: { user: { id: "owner" } }, error: null }) },
+}));
+const { RequireSession } = await import("../App");
+const { CustomerSettlePanel } = await import("../components/parties/customer-settle-panel");
+
+const originalFetch = globalThis.fetch;
+const roots: ReturnType<typeof createRoot>[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) act(() => root.unmount());
+  document.body.innerHTML = "";
+  globalThis.fetch = originalFetch;
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  clearAuthLost();
+});
+type RpcFixture = { values: Record<string, string> } | { needsSetup: boolean; setupBlocked: boolean } | { key: string; value: string } | Record<string, never>;
+function envelope(value: RpcFixture) { return Response.json({ json: value }); }
+function requiredElement<T extends HTMLElement = HTMLElement>(host: HTMLElement, selector: string): T {
+  const element = host.querySelector<T>(selector);
+  if (element === null) throw new Error(`Missing test element ${selector}`);
+  return element;
+}
+function advisory() {
+  window.dispatchEvent(new StorageEvent("storage", { key: "better-auth.message", newValue: '{"event":"session","data":{"trigger":"signout"}}' }));
+}
+async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); }); }
+async function until(check: () => boolean) {
+  for (let i = 0; i < 60 && !check(); i += 1) await flush();
+  expect(check()).toBe(true);
+}
+async function mount(children: ReactNode, strict = false) {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  roots.push(root);
+  const tree = <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><RequireSession>{children}</RequireSession></QueryClientProvider>;
+  await act(async () => { root.render(strict ? <StrictMode>{tree}</StrictMode> : tree); });
+  return host;
+}
+function setInput(host: HTMLElement, testId: string, value: string) {
+  const input = requiredElement<HTMLInputElement>(host, `[data-testid="${testId}"]`);
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (setter === undefined) throw new Error("Missing native input setter");
+  act(() => { setter.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+}
+
+it("preserves the exact unchecked setup key and cleanup warning across a live advisory without provisioning before acknowledgment", async () => {
+  const recoveryKey = "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BC";
+  let configured = false;
+  let credentialLive = true;
+  let statusHold: Promise<Response> | null = null;
+  let ownerChecks = 0;
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const path = new URL(input instanceof Request ? input.url : String(input), window.location.origin).pathname;
+    if (path === "/api/vault/status") {
+      if (statusHold !== null) { const pending = statusHold; statusHold = null; return pending; }
+      return Response.json({ mode: "vault", state: configured ? "unlocked" : "unconfigured", legacyDatabase: true, recoveryKeyCount: configured ? 1 : 0, lockedForMs: 0, unlocked: configured, session: configured && credentialLive, broker: false });
+    }
+    if (path === "/api/vault/unlock") { credentialLive = true; return Response.json({ ok: true, sessionGeneration: 2 }); }
+    if (path === "/api/vault/setup") { configured = true; return Response.json({ ok: true, recoveryKey, plaintextRemaining: ["D:/owned/legacy.db"] }); }
+    if (path.endsWith("/needsSetup")) { ownerChecks += 1; return envelope({ needsSetup: false, setupBlocked: false }); }
+    if (path.endsWith("/preferencesGet")) return envelope({ values: {} });
+    return Response.json({ ok: true });
+  }, { preconnect: originalFetch.preconnect });
+  const host = await mount(<div data-testid="private-app">Private</div>);
+  await until(() => host.querySelector('[data-testid="vault-setup-submit"]') !== null);
+  setInput(host, "vault-passphrase", "a strong setup passphrase");
+  setInput(host, "vault-passphrase-confirm", "a strong setup passphrase");
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-setup-submit"]').click());
+  await until(() => host.querySelector('[data-testid="vault-recovery-key"]') !== null);
+  expect(requiredElement(host, '[data-testid="vault-recovery-key"]').textContent).toBe(recoveryKey);
+  expect(requiredElement(host, '[data-testid="vault-plaintext-warning"]').textContent).toContain("D:/owned/legacy.db");
+  expect(ownerChecks).toBe(0);
+  await act(async () => { advisory(); });
+  await flush();
+  expect(host.querySelector('[data-testid="vault-recovery-key"]')?.textContent).toBe(recoveryKey);
+  expect(host.querySelector('[data-testid="vault-plaintext-warning"]')?.textContent).toContain("D:/owned/legacy.db");
+  expect(host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-confirm"]')?.checked).toBe(false);
+  expect(host.querySelector<HTMLButtonElement>('[data-testid="vault-recovery-continue"]')?.disabled).toBe(true);
+  expect(ownerChecks).toBe(0);
+  expect(host.querySelector('[data-testid="private-app"]')).toBeNull();
+  let releaseStatus!: (response: Response) => void;
+  statusHold = new Promise<Response>((resolve) => { releaseStatus = resolve; });
+  credentialLive = false;
+  await act(async () => { advisory(); });
+  expect(host.querySelector('[data-testid="vault-recovery-key"]')).toBeNull();
+  await act(async () => { releaseStatus(Response.json({ mode: "vault", state: "unlocked", legacyDatabase: true, recoveryKeyCount: 1, lockedForMs: 0, unlocked: true, session: false, broker: false })); });
+  await until(() => host.querySelector('[data-testid="vault-unlock-submit"]') !== null);
+  expect(host.querySelector('[data-testid="vault-recovery-key"]')).toBeNull();
+  expect(ownerChecks).toBe(0);
+  setInput(host, "vault-passphrase", "a strong setup passphrase");
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-unlock-submit"]').click());
+  await until(() => host.querySelector('[data-testid="vault-recovery-key"]') !== null);
+  expect(requiredElement(host, '[data-testid="vault-recovery-key"]').textContent).toBe(recoveryKey);
+  expect(requiredElement(host, '[data-testid="vault-plaintext-warning"]').textContent).toContain("D:/owned/legacy.db");
+  expect(ownerChecks).toBe(0);
+  act(() => requiredElement<HTMLInputElement>(host, '[data-testid="vault-recovery-confirm"]').click());
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-recovery-continue"]').click());
+  await until(() => host.querySelector('[data-testid="private-app"]') !== null);
+  expect(ownerChecks).toBeGreaterThan(0);
+});
+
+function invoice(id: string, invoiceDate: string): Invoice {
+  return { id, invoiceDate, invoiceNumber: `INV-${id}`, kind: "SALE", counterpartyId: "customer", counterpartyName: "Customer", subtotalAmount: 1000, discountType: null, discountValue: null, discountAmount: 0, totalAmount: 1000, remainingAmount: 1000, paidAmount: 0, notes: null, createdAt: `${invoiceDate}T10:00:00`, updatedAt: `${invoiceDate}T10:00:00` };
+}
+
+it("blocks a retained direct preference setter after its component unmounts", async () => {
+  let writeCount = 0;
+  let retained!: (next: boolean) => void;
+  function PreferenceProbe() {
+    const pref = usePreference("ui.test", false, parseBooleanPreference, serializeBooleanPreference);
+    retained = pref.setValue;
+    return <span data-testid="preference">{String(pref.value)}</span>;
+  }
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const path = new URL(input instanceof Request ? input.url : String(input), window.location.origin).pathname;
+    if (path === "/api/vault/status") return new Response("not found", { status: 404 });
+    if (path.endsWith("/preferencesGet")) return envelope({ values: {} });
+    if (path.endsWith("/preferencesSet")) { writeCount += 1; return envelope({ key: "ui.test", value: "true" }); }
+    return envelope({ needsSetup: false, setupBlocked: false });
+  }, { preconnect: originalFetch.preconnect });
+  const host = await mount(<PreferenceProbe />);
+  await until(() => host.querySelector('[data-testid="preference"]') !== null);
+  const root = roots.pop();
+  if (root === undefined) throw new Error("Missing mounted root");
+  act(() => root.unmount());
+  act(() => retained(true));
+  await flush();
+  expect(writeCount).toBe(0);
+});
+
+it("retains the real two-target payment observer without dispatching its second payment after fresh admission", async () => {
+  let release!: (response: Response) => void;
+  const writes: string[] = [];
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const request = input instanceof Request ? input : new Request(input);
+    const path = new URL(request.url).pathname;
+    if (path === "/api/vault/status") return new Response("not found", { status: 404 });
+    if (path.endsWith("/invoicesPay")) {
+      const body = z.object({ json: z.object({ invoiceId: z.string() }) }).parse(await request.json());
+      writes.push(body.json.invoiceId);
+      if (writes.length === 1) return new Promise<Response>((resolve) => { release = resolve; });
+      return envelope({});
+    }
+    if (path.endsWith("/preferencesGet")) return envelope({ values: {} });
+    return envelope({ needsSetup: false, setupBlocked: false });
+  }, { preconnect: originalFetch.preconnect });
+  const host = await mount(<CustomerSettlePanel partyId="customer" invoices={[invoice("first", "2026-09-01"), invoice("second", "2026-09-02")]} unpaid={2000} onDone={() => {}} onWriteFailed={() => {}} onCancel={() => {}} />, true);
+  await until(() => host.querySelector('[data-testid="party-settle-confirm"]') !== null);
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="party-settle-confirm"]').click());
+  await until(() => writes.length === 1);
+  expect(writes).toEqual(["first"]);
+  await act(async () => { advisory(); });
+  await until(() => host.querySelector<HTMLButtonElement>('[data-testid="party-settle-confirm"]')?.disabled === false);
+  // B is now admitted before A's first request finishes.
+  await act(async () => { release(envelope({})); });
+  await flush();
+  expect(writes).toEqual(["first"]);
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="party-settle-confirm"]').click());
+  await until(() => writes.length === 3);
+  expect(writes).toEqual(["first", "first", "second"]);
+});

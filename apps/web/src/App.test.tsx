@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "./lib/scoped-mutation";
 
 // React 19 act() requires the environment flag to be set explicitly
 // SAFETY: only this flag is written; globalThis keeps every other property
@@ -12,6 +13,8 @@ import { clearVaultSessionToken, storeVaultSessionToken } from "./lib/vault-clie
 import { clearAuthLost, markAuthLost, markSignedOut, SIGNED_OUT_STORAGE_KEY } from "./lib/auth-refusal";
 import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
+import { useRpc } from "./lib/rpc-context";
+import type { CredentialLease } from "./lib/credential-lease";
 
 let needsSetup = false;
 let setupBlocked = false;
@@ -43,9 +46,9 @@ let preferenceReadGate: Promise<void> | null = null;
 let preferenceReadCalls = 0;
 let failPreferenceWriteCount = 0;
 let preferenceWriteGate: Promise<void> | null = null;
+let preferenceWriteCalls = 0;
 
-mock.module("@/lib/rpc", () => ({
-  rpcClient: {
+const rpcMock = {
     currentOwner: () => ownerRead(),
     needsSetup: async () => {
       if (needsSetupFailures > 0) {
@@ -68,6 +71,7 @@ mock.module("@/lib/rpc", () => ({
       return { values: { ...preferenceStore } };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
+      preferenceWriteCalls += 1;
       if (preferenceWriteGate !== null) {
         const gate = preferenceWriteGate;
         preferenceWriteGate = null;
@@ -80,8 +84,17 @@ mock.module("@/lib/rpc", () => ({
       preferenceStore[input.key] = input.value;
       return { key: input.key, value: input.value };
     },
-  },
-  orpc: {},
+};
+mock.module("@/lib/rpc", () => ({ rpcClient: rpcMock, orpc: {} }));
+// Screen tests retain their RPC stub. Real transport proofs live separately.
+mock.module("@/lib/rpc-link", () => ({
+  createDokanRpcClient: (lease: CredentialLease) => ({
+    currentOwner: () => { lease.assertLive(); return rpcMock.currentOwner(); },
+    needsSetup: () => { lease.assertLive(); return rpcMock.needsSetup(); },
+    firstTimeSetup: (input: { setupToken?: string }) => { lease.assertLive(); return rpcMock.firstTimeSetup(input); },
+    preferencesGet: () => { lease.assertLive(); return rpcMock.preferencesGet(); },
+    preferencesSet: (input: { key: string; value: string }) => { lease.assertLive(); return rpcMock.preferencesSet(input); },
+  }),
 }));
 
 mock.module("@/lib/auth-client", () => ({
@@ -179,6 +192,7 @@ afterEach(() => {
   preferenceReadCalls = 0;
   failPreferenceWriteCount = 0;
   preferenceWriteGate = null;
+  preferenceWriteCalls = 0;
   window.localStorage.clear();
   window.sessionStorage.clear();
   // the refusal is module state, so it outlives a mount: reset it like the page
@@ -240,22 +254,23 @@ describe("cross-tab credential verification", () => {
     freshSessionRead = async () => ({ data: sessionData, error: null });
     const clients: QueryClient[] = [];
     let releaseQuery!: (value: string) => void;
-    let releaseMutation!: (value: string) => void;
+    let releaseMutation!: (value: { key: string; value: string }) => void;
     let first = true;
     let callbacks = 0;
     function PrivatePage() {
+      const { orpc } = useRpc();
       const client = useQueryClient();
       if (!clients.includes(client)) clients.push(client);
       const query = useQuery({
         queryKey: ["private"],
         queryFn: () => first ? new Promise<string>((resolve) => { releaseQuery = resolve; }) : Promise.resolve("Fresh page"),
       });
-      const mutation = useMutation({
-        mutationFn: () => new Promise<string>((resolve) => { releaseMutation = resolve; }),
-        onSuccess: (value) => { callbacks += 1; client.setQueryData(["private"], value); },
+      const mutation = useMutation(orpc.preferencesSet.mutationOptions({
+        mutationFn: () => new Promise<{ key: string; value: string }>((resolve) => { releaseMutation = resolve; }),
+        onSuccess: (value) => { callbacks += 1; client.setQueryData(["private"], value.value); },
         onSettled: () => { callbacks += 1; },
-      });
-      return <div data-testid="private-page">{query.data}<button onClick={() => mutation.mutate()}>Write</button></div>;
+      }));
+      return <div data-testid="private-page">{query.data}<button onClick={() => mutation.mutate({ key: "private", value: "old" })}>Write</button></div>;
     }
     const host = await mountAuthGateFor('[data-testid="private-page"]', <PrivatePage />);
     await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
@@ -269,7 +284,7 @@ describe("cross-tab credential verification", () => {
     expect(old.getMutationCache().getAll()).toHaveLength(0);
     await act(async () => {
       releaseQuery("Obsolete query");
-      releaseMutation("Obsolete mutation");
+      releaseMutation({ key: "private", value: "Obsolete mutation" });
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
     expect(host.textContent).toContain("Fresh page");
@@ -286,19 +301,17 @@ describe("cross-tab credential verification", () => {
     freshSessionRead = async () => ({ data: sessionData, error: null });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    let writes = 0;
+    const writesBefore = preferenceWriteCalls;
     function PendingWrite() {
-      const mutation = useMutation({
-        onMutate: () => gate,
-        mutationFn: async () => { writes += 1; },
-      });
-      return <button data-testid="pending-write" onClick={() => mutation.mutate()}>Write</button>;
+      const { orpc } = useRpc();
+      const mutation = useMutation(orpc.preferencesSet.mutationOptions({ onMutate: () => gate }));
+      return <button data-testid="pending-write" onClick={() => mutation.mutate({ key: "private", value: "old" })}>Write</button>;
     }
     const host = await mountAuthGateFor('[data-testid="pending-write"]', <PendingWrite />);
     await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
     await act(async () => signalSessionRefresh());
     await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 20)); });
-    expect(writes).toBe(0);
+    expect(preferenceWriteCalls).toBe(writesBefore);
   });
 
   it("ignores older verification and honors an authoritative absent credential", async () => {

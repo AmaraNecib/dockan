@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { Link, useParams } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -14,7 +15,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError, type MessageKey, type Translate } from "../lib/i18n";
 import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { inputClass } from "@/components/ui/input";
 import { usePagination } from "../hooks/use-pagination";
 import { Pager } from "@/components/ui/pager";
@@ -29,6 +30,7 @@ import { formatDateTime } from "../lib/dates";
  */
 
 export function StockForm() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const items = useQuery(orpc.itemsAll.queryOptions());
@@ -349,6 +351,7 @@ function pageLocalSupersededByCorrection(rows: readonly PrecedenceRow[]): Set<nu
 }
 
 export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?: number } = {}) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };

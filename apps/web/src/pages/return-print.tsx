@@ -7,7 +7,7 @@ import { ReturnVoucherView } from "@/components/return-voucher-view";
 
 import { buildReturnVoucher } from "../lib/return-voucher";
 import { tError } from "../lib/i18n";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 
 /**
  * Return voucher printing — print-only voucher screen
@@ -21,6 +21,7 @@ import { orpc } from "../lib/rpc";
  * both reads land; a manual "print now" button is the escape hatch.
  */
 export function ReturnVoucherPrintPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const { invoiceId, returnId } = useParams({ from: "/invoices/$invoiceId/returns/$returnId/print" });
 

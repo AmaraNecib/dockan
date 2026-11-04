@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@/lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
 
 import type { Invoice, SupplierAdjustmentDirection } from "@dokan/contracts";
@@ -15,7 +16,7 @@ import { tError } from "@/lib/i18n";
 import { supplierBalanceDirectionKey, supplierDirectionHintKey, supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { invalidatePartyMoney } from "@/lib/party-cache-key";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 
 const REASON_PRESETS = ["supplierAdjustPresetOpening", "supplierAdjustPresetCorrection", "supplierAdjustPresetOldDebt", "supplierAdjustPresetDiscount"] as const;
 
@@ -46,6 +47,7 @@ export function SupplierAdjustPanel({
   onWriteFailed?: () => void;
   onCancel: () => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const openInvoices = invoices.filter((invoice) => invoice.kind === "PURCHASE" && invoice.remainingAmount > 0);

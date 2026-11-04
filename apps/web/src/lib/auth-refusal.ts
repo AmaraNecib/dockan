@@ -199,6 +199,11 @@ export function authLossReason(): "refusal" | "signed-out" | undefined {
   return reason === false ? undefined : reason;
 }
 
+/** Revisions still change if loss and recovery occur before React renders. */
+export function useAuthLossRevision(): number {
+  return useSyncExternalStore(subscribe, authLossRevision, authLossRevision);
+}
+
 /**
  * Whether the session is gone and the unlock screen must take over, and why.
  *

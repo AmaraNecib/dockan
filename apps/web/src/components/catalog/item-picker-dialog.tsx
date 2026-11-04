@@ -7,7 +7,7 @@ import type { CatalogMatch, Item } from "@dokan/contracts";
 import type { MessageKey } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import { useModalDialog } from "@/lib/use-modal-dialog";
 
 /** LTR-isolated barcode text inside the RTL layout */
@@ -48,6 +48,7 @@ export function ItemPickerDialog({
   onClose: () => void;
   onSelect: (item: Item) => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");

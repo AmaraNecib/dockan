@@ -2,8 +2,8 @@ import { createORPCClient, ORPCError } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { DokanClient } from "@dokan/contracts";
 
-import { authLossRevision, isAuthRefusal, markAuthLost } from "./auth-refusal";
-import { sessionRefreshGeneration } from "./session-refresh";
+import { isAuthRefusal, markAuthLost } from "./auth-refusal";
+import { createCredentialLease, type CredentialLease } from "./credential-lease";
 import { readVaultSessionToken } from "./vault-client";
 
 /**
@@ -22,10 +22,13 @@ import { readVaultSessionToken } from "./vault-client";
  * any other test file. `rpc-link.test.ts` builds a client from this factory
  * and drives a real oRPC refusal through it.
  */
-export function createDokanRpcClient(): DokanClient {
+export function createDokanRpcClient(lease: CredentialLease = createCredentialLease()): DokanClient {
   const rpcLink = new RPCLink({
     url: () => new URL("/api/rpc", window.location.origin).toString(),
     fetch: (request, init) => {
+      // Encoding in StandardLink awaits. Check HERE, with no await between
+      // validation, credential attachment and dispatch, not only at invocation.
+      lease.assertLive();
       const headers = new Headers(request.headers);
       const vaultToken = readVaultSessionToken();
       if (vaultToken !== undefined) headers.set("x-vault-session", vaultToken);
@@ -36,13 +39,12 @@ export function createDokanRpcClient(): DokanClient {
     },
     interceptors: [
       async ({ next }) => {
-        const generation = sessionRefreshGeneration();
-        const revision = authLossRevision();
+        lease.assertLive();
         try {
           return await next();
         } catch (error) {
           // A refusal from a retired scope cannot close a freshly verified one.
-          if (generation === sessionRefreshGeneration() && revision === authLossRevision() && error instanceof ORPCError && isAuthRefusal(error)) markAuthLost();
+          if (lease.isLive() && error instanceof ORPCError && isAuthRefusal(error)) markAuthLost();
           if (import.meta.env.MODE !== "test") console.error("[dokan rpc]", error);
           throw error;
         }

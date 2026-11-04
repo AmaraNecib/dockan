@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "bun:test";
 
 import { AUTH_REFUSAL } from "@dokan/contracts";
 
-import { authLossReason, clearAuthLost, isAuthRefusal } from "./auth-refusal";
+import { authLossReason, clearAuthLost, isAuthRefusal, markAuthLost } from "./auth-refusal";
+import { clearVaultSessionToken, storeVaultSessionToken } from "./vault-client";
 import { createDokanRpcClient } from "./rpc-link";
 import { subscribeSessionRefresh } from "./session-refresh";
 
@@ -25,7 +26,7 @@ import { subscribeSessionRefresh } from "./session-refresh";
 // red-on-parent-waive: "whole file" — auth-refusal.ts uses a local export list that the gate cannot mirror
 
 const originalFetch = globalThis.fetch;
-const rpcClient = createDokanRpcClient();
+let rpcClient = createDokanRpcClient();
 
 /**
  * The link builds its URL from `window.location.origin`, which the happy-dom
@@ -47,7 +48,56 @@ function refusalEnvelope(code: string, message: string, status: number): Respons
 
 beforeEach(() => {
   clearAuthLost();
+  rpcClient = createDokanRpcClient();
   globalThis.fetch = originalFetch;
+});
+
+describe("credential lease dispatch", () => {
+  it("permanently retires A on auth loss, never attaches B's token to A, and admits fresh B", async () => {
+    const tokens: Array<string | null> = [];
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      const request = input instanceof Request ? input : new Request(input);
+      tokens.push(request.headers.get("x-vault-session"));
+      return Response.json({ json: { key: "ui.test", value: "true" } });
+    }, { preconnect: originalFetch.preconnect });
+    try {
+      storeVaultSessionToken("credential-A");
+      const old = createDokanRpcClient();
+      const pending = old.preferencesSet({ key: "ui.test", value: "true" }).catch((error: Error) => error);
+      markAuthLost();
+      storeVaultSessionToken("credential-B");
+      clearAuthLost();
+      const fresh = createDokanRpcClient();
+      expect(await pending).toMatchObject({ message: "SESSION_SCOPE_RETIRED" });
+      await expect(old.preferencesSet({ key: "ui.test", value: "true" })).rejects.toThrow("SESSION_SCOPE_RETIRED");
+      expect(tokens).toEqual([]);
+      await fresh.preferencesSet({ key: "ui.test", value: "true" });
+      expect(tokens).toEqual(["credential-B"]);
+      expect(authLossReason()).toBeUndefined();
+    } finally { clearVaultSessionToken(); }
+  });
+  it("blocks retirement during oRPC encoding and lets a fresh binding write", async () => {
+    let fetches = 0;
+    globalThis.fetch = Object.assign(async () => {
+      fetches += 1;
+      return Response.json({ json: { key: "ui.test", value: "true" } });
+    }, { preconnect: originalFetch.preconnect });
+    const stop = subscribeSessionRefresh(() => {});
+    try {
+      const old = createDokanRpcClient();
+      const pending = old.preferencesSet({ key: "ui.test", value: "true" });
+      const rejected = pending.catch((error: Error) => error);
+      // StandardLink has begun encoding, but its public fetch adapter has not run.
+      expect(fetches).toBe(0);
+      window.dispatchEvent(new StorageEvent("storage", { key: "better-auth.message", newValue: '{"event":"session","data":{"trigger":"signout"}}' }));
+      expect(await rejected).toMatchObject({ message: "SESSION_SCOPE_RETIRED" });
+      expect(fetches).toBe(0);
+      const fresh = createDokanRpcClient();
+      await expect(fresh.preferencesSet({ key: "ui.test", value: "true" })).resolves.toMatchObject({ value: "true" });
+      await expect(old.preferencesSet({ key: "ui.test", value: "false" })).rejects.toThrow("SESSION_SCOPE_RETIRED");
+      expect(fetches).toBe(1);
+    } finally { stop(); }
+  });
 });
 
 describe("the RPC refusal reaches the unlock screen (#319 round 2)", () => {

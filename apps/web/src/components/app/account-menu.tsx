@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { DokanClient } from "@dokan/contracts";
 import { ChevronDown } from "lucide-react";
 
-import { rpcClient } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import { useAuthLossReason } from "@/lib/auth-refusal";
 import { sessionRefreshGeneration, useSessionRefreshGeneration } from "@/lib/session-refresh";
 import { Menu, MenuTrigger, MenuPopup, MenuItem, MenuGroup, MenuGroupLabel } from "@/components/ui/dropdown-menu";
@@ -12,6 +12,7 @@ export type CurrentOwner = Awaited<ReturnType<DokanClient["currentOwner"]>>;
 
 /** Mount-local identity, never a shared cache that could outlive an unlock. */
 export function useCurrentOwner() {
+  const { rpcClient } = useRpc();
   const loss = useAuthLossReason();
   const generation = useSessionRefreshGeneration();
   const [profileGeneration, setProfileGeneration] = useState(generation);
@@ -36,7 +37,7 @@ export function useCurrentOwner() {
       })();
     }
     return () => { alive = false; };
-  }, [loss, attempt, generation]);
+  }, [loss, attempt, generation, rpcClient]);
   return { profile: loss || profileGeneration !== generation ? null : profile, failed, blocked: Boolean(loss), retry: () => retry((value) => value + 1) };
 }
 

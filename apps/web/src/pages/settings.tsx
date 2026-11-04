@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -7,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { GettingStartedSetting } from "../components/app/getting-started-setting";
 import { VaultSettings } from "../components/vault/vault-settings";
 import { inputClass } from "@/components/ui/input";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 
 /**
@@ -18,6 +19,7 @@ import { tError } from "../lib/i18n";
  * stored value as-is.
  */
 export function SettingsPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const settings = useQuery(orpc.settingsGet.queryOptions());

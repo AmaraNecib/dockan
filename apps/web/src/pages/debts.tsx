@@ -11,7 +11,7 @@ import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { partyBalanceInput, partyBalanceQueryOptions } from "../lib/party-cache-key";
 import { LEDGER_REFETCH_MS } from "../lib/freshness";
 import { tError } from "../lib/i18n";
@@ -36,6 +36,7 @@ function partyId(signature: string): string {
 }
 
 function DebtPersonRow({ row, groupLabel, expanded, onToggle, refreshMs = LEDGER_REFETCH_MS }: { row: DebtSummary; groupLabel: string; expanded: boolean; onToggle: () => void; refreshMs?: number }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const signature = partySignature(row);
   // #161/#260 — a supplier row is the signed net balance (positive = the
@@ -68,7 +69,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle, refreshMs = LEDGER
   const invoices = useQuery(
     partyBalanceQueryOptions(
       { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
-      { enabled: expanded, refreshMs },
+      { enabled: expanded, refreshMs, rpc: orpc },
     ),
   );
   // supplier account movements behind the net balance (issue 161)
@@ -240,6 +241,7 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
 }
 
 export function DebtsPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?: number } = {}) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const debts = useQuery(orpc.reportsDebts.queryOptions());
   const [openParty, setOpenParty] = useState<PartyIdentity | null>(null);

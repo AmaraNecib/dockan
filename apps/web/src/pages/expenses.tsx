@@ -447,7 +447,7 @@ function ExpenseCorrectionRow({
                             {t("expenseCorrectionReversedBy")} <a className="underline" href={`#expense-correction-entry-${event.reversedByCorrectionId}`}><bdi dir="ltr" className="break-all">{event.reversedByCorrectionId}</bdi></a>
                           </p>
                         )}
-                        {event.reversesCorrectionId === null && event.reversedByCorrectionId === null && (
+                        {event.reversesCorrectionId === null && (event.reversedByCorrectionId === null || (recovery.undoRequests[event.id] !== undefined && undoConfirmationId !== event.id)) && (
                           <Button
                             type="button"
                             size="sm"
@@ -456,7 +456,7 @@ function ExpenseCorrectionRow({
                             onClick={() => { setHistoryActionError(null); setUndoConfirmationId(event.id); }}
                             data-testid="expense-correction-undo"
                           >
-                            {t("expenseCorrectionUndo")}
+                            {t(recovery.undoRequests[event.id] === undefined ? "expenseCorrectionUndo" : "expenseCorrectionRetry")}
                           </Button>
                         )}
                       </li>

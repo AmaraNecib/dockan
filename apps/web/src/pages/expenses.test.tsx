@@ -2793,7 +2793,7 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     await otherSession.unmount();
   });
 
-  it("restores a lost undo confirmation and its key after remount", async () => {
+  it.each(["remount", "cancel after refreshed history"])("restores a lost undo confirmation and its key after %s", async (recoveryPath) => {
     const priorCorrection: ExpenseCorrectionHistoryEntry = {
       id: "correction-1", expenseId: "exp-1", effectiveAt: "2019-12-15T10:00:00", recordedAt: "2026-10-28T13:34:56",
       beforeAmount: 1_000, afterAmount: 800, difference: -200, actorId: "actor-1", actorName: "مالك المتجر",
@@ -2815,11 +2815,23 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     await ui.click("expense-correction-undo-confirm-button");
     expect(await ui.waitFor(() => undoInputs.length === 1 && ui.query("expense-correction-undo-confirm") !== null)).toBe(true);
     const originalUndo = undoInputs[0]!;
-    await ui.unmount();
+    if (recoveryPath === "remount") await ui.unmount();
 
-    const remounted = await mountPage(queryClient);
+    const remounted = recoveryPath === "remount" ? await mountPage(queryClient) : ui;
     expect(await remounted.waitFor(() => remounted.query("expense-correction-open-history") !== null)).toBe(true);
-    await remounted.click("expense-correction-open-history");
+    if (recoveryPath === "remount") {
+      await remounted.click("expense-correction-open-history");
+    } else {
+      historyFails = false;
+      listFails = false;
+      await remounted.click("expense-correction-amount-retry");
+      expect(await remounted.waitFor(() => remounted.queryAll("expense-correction-entry").length === 2 && queryClient.isFetching() === 0)).toBe(true);
+      await remounted.click("expense-correction-undo-cancel");
+      expect(remounted.query("expense-correction-undo-confirm")).toBeNull();
+      expect(remounted.query("expense-correction-amount-unverified")).not.toBeNull();
+      expect(remounted.query("expense-correction-undo")?.textContent).toBe(i18n.t("expenseCorrectionRetry"));
+      await remounted.click("expense-correction-undo");
+    }
     expect(await remounted.waitFor(() => remounted.query("expense-correction-undo-confirm") !== null)).toBe(true);
     expect(remounted.query("expense-correction-undo-confirm")).not.toBeNull();
     await remounted.click("expense-correction-undo-confirm-button");

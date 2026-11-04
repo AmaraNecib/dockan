@@ -65,9 +65,11 @@ Test audit — default at Standard, required at High-assurance
     ↓
 Code-review — Standards + Spec axes against pinned base SHA
     ↓
-Guard Phase 2 — pre-push gate
+Commit complete reviewable scope
     ↓
-commit — the lane stops here
+Guard Phase 2 — verify committed HEAD; commit fixes and refresh checks if needed
+    ↓
+Handoff verified SHA and local evidence — the lane stops here
     ↓
 ── parent-owned from here ──
     ↓
@@ -84,7 +86,7 @@ Capture wisdom (repeated pattern only) + report to the owner
 Merge — cheap-to-reverse merges itself; expensive or decision diffs wait for the owner
 ```
 
-A **worker lane stops at Guard Phase 2** and commits. Its completion wakes the
+A **worker lane commits before Guard Phase 2**, verifies that HEAD, and stops with a handoff. Post-commit results go in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`; do not create an evidence-only commit. A fix requires a new commit and refreshed checks and stale reviews. Its completion wakes the
 parent session, which pushes, opens the PR, drives the review rounds and merges.
 A lane that pushes is breaking its authority boundary, not helping.
 
@@ -92,7 +94,10 @@ The red-on-parent replay runs only in the PR `checks` job and must pass before
 merge. Parents, workers (including nested subagents), reviewers and hooks must
 not run or delegate it locally. Local replay output is not an acceptance
 requirement for review, push or report. Ordinary TDD and focused regression
-tests still apply.
+tests still apply. For browser verification, follow `guard`'s **Browser
+verification: selector first** procedure: inspect
+`bun scripts/e2e-changed.ts --dry-run` before taking a heavy slot. The selector's
+map remains fail-closed; CI keeps its own event-range and override behavior.
 
 Do not run a later phase without recording the earlier gate, its commands, and its result.
 
@@ -120,12 +125,11 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 - **The lenses run on a different model family than the author (owner decision, 2026-10-19; family
   rule 2026-10-26).** The author is the lane's model, read from its commit trailer, never the
   parent's. Independence is a family, not an exact ID: free and paid DeepSeek are one opinion.
-  Pick from the free ladder first — `opencode/deepseek-v4.1-flash-free`,
-  `opencode/glm-5.3-flash-free`, `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the
-  cheap paid fallback `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only
-  when the free routes are exhausted. With more than one lens, at least two families must appear.
-  A route unused this session gets a one-line probe first. Free lenses carry no parallelism cap.
-  When every non-author family is exhausted, the owner may approve an exception recorded as
+  Select reviewers from the session's enabled routes using `.agents/skills/reviewloop/SKILL.md`.
+  OpenCode review is optional, not a prerequisite for review or a quota-triggered fallback. Do not
+  probe or request it unless the owner opts in for the current scope. With more than one lens,
+  at least two families must appear unless an approved exception applies.
+  When no enabled non-author family is available, the owner may approve an exception recorded as
   `independence: { approvedBy, reason }`; a lane cannot approve its own.
 - **Run both reviews until the owner ends the trial.** The parent runs `reviewloop` and
   Greptile on the same pinned boundary across several PRs. Follow the

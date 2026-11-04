@@ -1,5 +1,14 @@
 # Agent notes
 
+## Before starting work
+
+Parents and workers complete this startup check before editing, delegating implementation, or running verification:
+
+1. Read this checkout's `AGENTS.md`, `docs/engineering-workflow.md`, and the originating issue or approved task. Identify your role, absolute worktree, branch, base and permitted writes. Preserve unrelated changes.
+2. Read `feature-implement` for a code-changing task, `guard` for verification, and the skills whose descriptions match the task. Load their `SKILL.md` files, not just their names. For design and code, include `codebase-design` and `domain-modeling`; for writing, include `unslop` and, when editing agent instructions, `writing-for-agents`.
+3. Read `.agents/wisdom/README.md` and the lessons relevant to the affected area. Before planning or triage, also read `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, and `docs/agents/domain.md`.
+4. Record the role, scope, applicable skills and lessons in the task's local design or handoff notes. The parent's lane brief names the required reading, file ownership, verification and authority limits. A worker loads those sources in its own session; the parent's reading does not substitute for it. If a required source is unavailable, report the gap rather than claim it was read.
+
 ## Authority
 
 - **A lane commits and reports; it does not land.** A lane (`fix-*`, `feat-*`,
@@ -7,6 +16,8 @@
   completion wakes the parent; there is no report tool to call. It **never** runs
   `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
   `feature-implement` step 11 is parent-only.
+- **The parent coordinates; workers implement and verify.** The parent scopes work, assigns isolated writers, dispatches reviewers, checks their evidence, and handles publication and merge decisions. Workers read the required sources, implement within their assigned scope, run the applicable verification, commit and report. Read-only reviewers return findings, not edits. Parent handling of small corrections does not make it the default test runner.
+- **The parent delegates heavy execution by default.** Full test suites, E2E, builds and browser runs belong to a verification worker through the heavy-work queue. The parent uses `heavy_run` itself only when the owner explicitly requests it or delegation cannot perform a necessary check. Before an exception, record the exact check, why delegation cannot do it, and why it is needed now. Convenience, a quiet worker, or wanting a second copy of an unchanged run is not a reason. The exception does not waive queue limits or other approval requirements. Reads, diff inspection, selector dry-runs, lint and typecheck remain light parent work.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
   lane's branch, opens the PR, runs the review round (`reviewloop`, plus Greptile
   while the two are being compared), drives the rounds, and
@@ -49,7 +60,7 @@ they no longer have to be serialized across lanes (#202).
 
 **Heavy work goes through the queue.** A full test suite, `test:e2e`, a build or a browser agent takes a slot: `bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`. Light work — one test file, lint, typecheck — runs directly and does not take a slot.
 
-**Mechanism: a child agent with its own worktree, by default.** `delegate_task` with
+**Code-editing lanes use their own worktrees.** `delegate_task` with
 `isolation: "worktree"` checks out the work from the parent's local commit, runs project setup,
 and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,
 none to close afterwards, and the completion arrives by itself instead of being polled.
@@ -86,6 +97,10 @@ worktree needs one. The lane roots are saved in `~/.pi/agent/trust.json`
 every worktree under it. When T3 runs Pi in RPC mode it cannot show that prompt itself, which is
 why an untrusted lane surfaces as an approval card in T3 instead of a question in the terminal.
 
+**Read-only reviewers share the checkout being reviewed.** Use `delegate_task` with `isolation: "shared"`, the absolute PR worktree path and a pinned head SHA. They read files and return findings; they do not install dependencies, build, run tests that write artifacts, or edit the checkout. Finish or cancel stale reviews before the writer changes their reviewed files.
+
+**Retire finished helpers after handoff.** The parent transfers needed commits and evidence to the main PR checkout, checks for live processes and dependency links, then removes the helper worktree. Keep shared dependency or build targets until their consumers have moved. A review or CI wait does not need a helper checkout.
+
 Either way, one writer per worktree, and a lane never pushes or merges.
 
 Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
@@ -99,7 +114,7 @@ disjoint files; when two lanes share a store/router, nominate which one lands
 first and rebase the other onto it. Poll CI and the review round in-session, never
 the lane.
 
-**A lane ALWAYS gets its own workspace** — never a pane split inside the parent's
+**A code-editing lane ALWAYS gets its own workspace** — never a pane split inside the parent's
 workspace (owner complaint, 2026-10-13: *"why u open the crew here in this panel;
 I can't see anything"*). `delegate_task` with `isolation: "worktree"` gives it
 one: it checks the work out from the parent's local commit, runs project setup,
@@ -129,7 +144,7 @@ count and re-apply checklist are in `docs/skills-vendoring.md`.
 
 ## Red-on-parent runs in CI only
 
-The PR `checks` job runs `scripts/red-on-parent.ts` for pull requests and must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay.
+The PR `checks` job runs `scripts/red-on-parent.ts` for pull requests and must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay. For browser verification, use the selector-first procedure in `.agents/skills/guard/SKILL.md`; inspect `bun scripts/e2e-changed.ts --dry-run` before any heavy browser run.
 
 ## Pick the skill before you write code
 
@@ -165,19 +180,18 @@ tier still decides how much scrutiny a failure mode deserves; it no longer
 decides whether the debate happens. Run them in that order, each as its own
 sub-agent, before the lane reports.
 
-- **The lenses run on a different model family than the author. That is the only fixed part.**
-  The author is the lane's model, read from its commit trailer, never the parent's.
-  Independence is a family, not an exact ID: free and paid DeepSeek are one opinion, so a
-  DeepSeek author needs GLM, MiMo or Beam. The ladder is free first —
-  `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
-  `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
-  `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
-  routes are exhausted. With more than one lens, at least two families must appear, so three
-  lenses are not one opinion counted three times. A route unused this session gets a one-line
-  probe first; an advertised model is not a working one. Free lenses have no parallelism cap,
-  so a round can go as wide as the work needs.
-- **The owner's exception is recorded, not assumed.** When every non-author family is
-  exhausted, the owner may approve a round on the author's family; the payload carries
+- **OpenCode review is optional.** Use models available through the session's enabled review
+  routes. Do not automatically probe, install or switch to `opencode` or `opencode-go`, or ask
+  the owner to enable them for each PR. Neither a quota failure nor an independence requirement
+  opts the owner into another provider. Use OpenCode only when the owner requests it or explicitly
+  enables it for the current scope. Required lenses still run. Model selection and exception
+  handling live in `.agents/skills/reviewloop/SKILL.md`.
+- **The lenses use a different model family from the author unless the owner approved an exception.**
+  Read the author's model from the lane's commit trailer, never the parent's. Independence is a
+  family, not an exact ID. With more than one lens, at least two families must appear unless an
+  approved exception applies. Availability concerns enabled routes only, not optional OpenCode routes.
+- **The owner's exception is recorded, not assumed.** When no enabled non-author family is
+  available, the owner may approve a round on the author's family; the payload carries
   `independence: { approvedBy, reason }`, the review states it, and a lane cannot approve its
   own. `reviewloop` refuses the round without it.
 - **Every reviewed change gets two reviews: the author's own, and an

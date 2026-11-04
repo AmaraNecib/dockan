@@ -42,7 +42,23 @@ If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
 This is the gate before the review round and before any push. It never pushes by
 itself. The parent's push runs the Husky pre-push hook when the hook is available.
 
-Run the local checks below for Phase 2. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance; ordinary TDD still applies. The full suite and web build take a heavy slot (`bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`).
+Run the local checks below for Phase 2. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance. Ordinary failing-first TDD, focused regression tests and applicable current-head mutation checks remain required; follow [What counts as failing-first](../../../docs/verification-and-merge-gate.md#what-counts-as-failing-first). Only the actual-PR parent replay is CI-only.
+
+Distinguish the **PR red-on-parent gate** from **replay-tool self-tests**. The CI-only rule applies to replaying the actual branch against its parent for acceptance. The regular unit suite includes tests such as `scripts/red-on-parent.test.ts` that exercise the replay engine in small temporary fixture repositories with separate caches and cleanup. Those self-tests may run locally through the normal test queue; their output is not PR parent-replay acceptance evidence.
+
+#### Browser verification: selector first
+
+For a browser-relevant change, commit the complete PR scope, then inspect the selector before starting a browser run:
+
+```bash
+bun scripts/e2e-changed.ts --dry-run [--base <PR-base-ref>]
+```
+
+Use the actual PR base ref. A normal PR uses `origin/develop`; a stacked PR uses the branch named as that PR's base, not `origin/develop`. The local selector compares `merge-base(base, HEAD)..HEAD`. CI also diffs from a merge base, using the event's base and head SHAs, and falls back to the event's base SHA if merge-base fails. Local refs can resolve to different commits from those event SHAs. CI additionally forces full runs for push, dispatch and the `e2e:full` label. The checked-in selection map is shared; base inputs, failure handling and overrides can differ. CI remains the merge gate.
+
+Save post-commit evidence in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`. Record the exact `mode=`, `specs=`, `reason=`, and `source=` lines, plus the full `HEAD` SHA and base ref/SHA, run command, exit code and artifact paths, or the selector's skip decision. Record any reason for repeating a completed run there too. Do not make an evidence-only commit; hand the path and verified SHA to the parent for PR publication. Accept `affected` or `skip` only when the committed HEAD contains the complete PR scope and no reviewable tracked or untracked changes remain. The selector warns about dirty tracked files but does not include their edits; untracked files are not included. Resolve those changes into commits, then inspect the dry run again. `--files` bypasses Git and cannot prove complete PR scope, so it is never acceptance evidence.
+
+Follow the map without changing it: `affected` means run exactly the listed specs, `full` means run the full suite and retain the selector's reason, and `skip` means no browser run. An unmapped or critical path must stay `full`. Focused TDD or a reproducer remains useful, but does not replace verification of the selected scope. Route actual browser runs through `heavy_run` with the isolated `DOKAN_PORT`, `DOKAN_WEB_PORT`, `DOKAN_VAULT_PORT` and `DOKAN_VAULT_WEB_PORT`; the dry run needs no slot. Do not repeat a completed run for the same unchanged scope unless a specific need is recorded. The full suite and web build also take a heavy slot.
 
 ```
 [ ] bun run typecheck — passes?
@@ -51,8 +67,7 @@ Run the local checks below for Phase 2. The red-on-parent replay runs only in th
 [ ] bun run test — the full suite passes (turbo + scripts/ + tools/)
 [ ] bun run --filter @dokan/web build — the production bundle builds?
 [ ] bun audit --audit-level=high — no high/critical advisory?
-[ ] bun run test:e2e — passes? (only when the selector says the diff reaches a
-      spec, or the change touches a UI flow)
+[ ] Browser verification follows "Browser verification: selector first" above; preserve the selector contract and evidence for the selected scope
 [ ] git status — working tree clean?
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```

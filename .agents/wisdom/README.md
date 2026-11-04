@@ -33,8 +33,8 @@ the other, and re-derives the lesson a third time.
 
 **The parent session only.** A lane reads this folder, applies what bears on its task, and says
 which lessons it applied and which it deliberately did not **in its commit message body** — the
-durable handoff that travels with the branch, since a lane's last act is its commit and there is no
-report tool to write a field into. A candidate lesson goes there too, on a `Lesson:` line. One
+durable lesson record that travels with the branch. After committing, the lane verifies that HEAD
+and hands its SHA and untracked verification evidence path to the parent; that handoff ends the lane. A candidate lesson goes there too, on a `Lesson:` line. One
 occurrence is a report line, not wisdom: the parent writes an entry when the same failure shows up
 across reports.
 

@@ -181,10 +181,12 @@ coverage, and charging the full 35-spec suite for one buys nothing. The selector
 above is a different matter: it decides which specs CI runs, so it stays
 critical.
 
-The range and the overrides differ too: this driver reads
-`<merge-base with origin/develop>..HEAD`, while CI reads `base.sha..head.sha`
-(on a stacked PR, the parent branch) and overrides the decision for `push`,
-`workflow_dispatch` and the `e2e:full` label. Same map, different question.
+The local driver defaults to `merge-base(origin/develop, HEAD)..HEAD`; use
+`--base` for the actual PR base, including a stacked PR's parent branch. CI uses
+the event's base/head SHAs, computes their merge base, and falls back to the
+event's base SHA if merge-base fails. CI overrides the decision for `push`,
+`workflow_dispatch` and the `e2e:full` label. The map is shared, but ref inputs,
+failure handling and overrides can differ.
 
 A subset run still starts the config's shared API+web pair. Those defaults
 (`DOKAN_PORT=4317`, `DOKAN_WEB_PORT=5173`) belong to whoever is not in a lane: two

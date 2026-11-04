@@ -15,7 +15,7 @@ fresh clone has this document but not the scripts.
 | the change | the evidence |
 | --- | --- |
 | **visual** — anything the eye can judge | before/after images **and** a video at real user pace. A screenshot pair alone does not show a transition, a focus ring or a hover state. |
-| **not visual** — logic, a feature, a refactor, a fix | the **measurements**. Not "it works": the failing-first run (red before, green after), the ablation/mutation proof that the new guard actually bites, the before/after numbers, and the decisions taken and why. |
+| **not visual** — logic, a feature, a refactor, a fix | the **measurements**. Not "it works": the failing-first run (red before, green after), the ablation/mutation proof that the new guard actually bites, the before/after numbers, and the decisions taken and why. The automated red-on-parent replay is CI-only. |
 
 An **inert** diff (§3) cannot reach the product, so its measurement is the CI run itself — still posted as the evidence comment reason 4 requires. The form changes; the obligation does not.
 
@@ -65,10 +65,9 @@ change and green after it**, with the failing assertion named. A guard added wit
 reddens when the guard is deleted is not a guard. Run the guard's mutation against the current
 head; an inherited mutation table is an unrun gate.
 
-Put the evidence in the commit message body so the parent can reuse it for the PR description, and keep
-the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason
-4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
-lane that only writes the commit body produces no comment, so reason 4 fails at merge.
+These ordinary TDD and current-head mutation checks are distinct from the automated red-on-parent replay, which runs only in CI. Do not run or delegate that replay locally or require its local output. Browser-relevant changes follow the selector-first procedure in `.agents/skills/guard/SKILL.md`, including its recorded decision and selected-scope run.
+
+Put evidence already available before commit in the commit message body. Record post-commit verification in `.scratch/reviews/<issue>/<sha>-verification.md` and hand its path and verified SHA to the parent for the PR description. Do not create an evidence-only commit that moves the verified HEAD. Keep other lane notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
 ### CI enforces red-on-parent with `scripts/red-on-parent.ts`; a waiver is its only exception
 

@@ -212,9 +212,9 @@ before any of these. Otherwise the first failure reads as a broken script.
 |-------------------|-----------|------|------|
 | 0 | `bun run typecheck`, `bun run lint` | after every edit | seconds, no queue |
 | 1 | `bun run test:affected` | per iteration, not per edit | ~2-4 minutes cold, queued |
-| 2 | `bun run test:e2e:changed` | before every push | the mapped specs, ~1-3 minutes, queued |
+| 2 | Selector dry-run, then the scope required by `guard`'s selector-first procedure | before push, after committing complete scope | dry-run takes seconds without a slot; selected browser runs are queued |
 | 3 | the local checks: `bun run typecheck`, `bun run lint`, `bun run skills:check`, `bun run test`, `bun run --filter @dokan/web build`, and `bun audit --audit-level=high` | before the push; the PR's `checks` run after it is confirmation, not discovery | the suite and build take a slot, ~4-6 minutes |
-| 4 | `bun run test:e2e` | **once per PR**, right before the lane reports | all 35 specs, ~9 minutes, queued |
+| 4 | `bun run test:e2e` only for a selector `full` decision | before handoff when required by the selected scope | full browser suite, queued |
 
 Tier 3 covers the local checks before a push. The PR's `checks` job remains the
 CI authority for the branch; its red-on-parent step runs only there. Parents,
@@ -224,7 +224,7 @@ acceptance. Ordinary TDD and focused regression tests still apply. Keep the
 listed local checks intact rather than replacing them with a subset such as
 `typecheck` plus one test file.
 
-Only tier 0 is free, and the queue's rule is a **string match on the command**, not
+Tier 0 and selector dry-runs need no heavy slot. Actual test runs use the queue. The queue's rule is a **string match on the command**, not
 on what the command runs. `bun run test:affected`, `bun run test:e2e:changed` and
 `bun run test:e2e` all contain the words the bash heavy-work guard looks for, so
 they are refused inline and you call `heavy_run` (or take the guard's redirect).
@@ -332,17 +332,18 @@ Tier 2 is `bun run test:e2e:changed`, the queued spelling;
 `bun scripts/e2e-changed.ts` is the same program and is not queued. It imports
 `selectSpecs` and the checked-in map from `scripts/e2e-selection.ts`, so there is
 one map and one set of precedence rules. What differs is the range and the
-overrides: this driver diffs `<merge-base with origin/develop>..HEAD`, while CI
-diffs `base.sha..head.sha` — on a stacked PR that is the parent branch, not
-`origin/develop` — and replaces the decision outright for `push`,
-`workflow_dispatch` and the `e2e:full` label. The local run is a cheaper early
+overrides: this driver defaults to `merge-base(origin/develop, HEAD)..HEAD`;
+use `--base` for the actual PR base, including a stacked PR's parent branch.
+CI uses the event's base/head SHAs and diffs from their merge base, falling
+back to the event's base SHA if merge-base fails. It replaces the decision
+outright for `push`, `workflow_dispatch` and the `e2e:full` label. The local run is a cheaper early
 warning, never a substitute for the PR's head. `--files` and `--base` cannot be
 combined: `--files` decides from the list you give it and never reads git, so the
 pair exits 2 rather than quietly ignoring one of them.
 
 ```bash
-bun run test:e2e:changed --dry-run                                        # decide, run nothing
-bun run test:e2e:changed --dry-run --files apps/web/src/pages/backups.tsx # decide for a path list
+bun scripts/e2e-changed.ts --dry-run                                        # decide, run nothing
+bun scripts/e2e-changed.ts --dry-run --files apps/web/src/pages/backups.tsx # decide for a path list
 DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bun run test:e2e:changed              # decide and run, on a lane's own ports
 ```
 
@@ -385,8 +386,4 @@ and CPU load on every acquire, so it narrows when the box is busy and widens whe
 it is idle. `HEAVY_SLOT_MAX` (default 5) is a ceiling, not the number anyone gets
 — "at most 2 at once" is not a mechanism this repo has.
 
-**The policy for tier 4:** a lane runs the full suite at most once per PR, right
-before it reports. Everything between the first push and the last fix iterates on
-tier 2, and a `--dry-run` at either tier answers the cheap questions first. The
-full run is what makes the narrowed runs safe, so it is not optional — it is just
-not repeated.
+**The policy for tier 4:** follow the authoritative selector-first procedure in `.agents/skills/guard/SKILL.md`. Inspect the dry-run against the complete committed scope and actual PR base before a browser run. A `full` decision requires the full suite with its reason recorded; `affected` runs the listed specs and `skip` requires no browser run. There is no additional mandatory full run after `affected` or `skip`. Repeat a completed run only for a recorded need, including a fix that invalidates its evidence. CI keeps its full-run overrides.

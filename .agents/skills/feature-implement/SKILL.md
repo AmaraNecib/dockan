@@ -10,8 +10,8 @@ Read `docs/engineering-workflow.md` first.
 
 **A lane stops at step 10 (Guard Phase 2).** Steps 11-15 are parent-owned: push, PR,
 CI/review round, the architecture review, the merge decision and wisdom. The lane's
-last act is its **commit**; its completion wakes the parent. It never pushes,
-never opens a PR and never merges.
+last act is its **handoff of the verified commit and evidence path**; its completion
+wakes the parent. It never pushes, opens a PR or merges.
 
 **A quiet child is not a stuck child.** A child that is thinking, waiting on a
 long command, or finished touches no files, so file mtimes prove nothing about
@@ -150,13 +150,11 @@ Load `debate` with resolved base SHA. Saves evidence to
 
 Run this lens, `test-audit` and `code-review` on a **different model family** from the
 author, which is the lane's `Model:` trailer, not the parent's. Independence is a family,
-not an ID: free and paid DeepSeek are one opinion. Free first —
-`opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
-`opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
-`opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
-routes are exhausted. With more than one lens, at least two families must appear. Probe a
-route that has not been used this session; an advertised model is not a working one. The
-reviewer is never the author. A lane that reports "I ran the debate" has not run
+not an ID. Select models from the session's enabled routes using `reviewloop` step 2.
+OpenCode review is optional. Do not automatically probe it, switch to it after a quota failure,
+or ask the owner to enable it for each PR. With more than one lens, at least two families must
+appear unless the owner approved an exception recorded by `reviewloop`. The reviewer is a
+separate session, including when an approved same-family exception applies. A lane that reports "I ran the debate" has not run
 it; the parent re-runs the lens and records the disclosure.
 
 ### 8. Test audit — Standard and High-assurance
@@ -177,7 +175,7 @@ Run `code-review` skill against `git diff <base-sha>...HEAD`. Save output to
 
 ### 10. Guard pre-push (Phase 2)
 
-Run `guard` Phase 2 for the local checks below. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
+Commit the complete reviewable scope before running `guard` Phase 2 for the local checks below. If verification requires a fix, commit it and refresh the affected checks and stale reviews before handoff. Record post-commit results in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`, not an evidence-only commit. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
 
 ```bash
 bun run typecheck && bun run lint && bun run skills:check
@@ -186,8 +184,7 @@ bun run --filter @dokan/web build # heavy slot
 bun audit --audit-level=high
 ```
 
-- All of the above pass, plus `bun run test:e2e` when the selector says the diff
-  reaches a spec or the change touches a UI flow
+- Apply `guard`'s **Browser verification: selector first** procedure when browser verification is relevant. Inspect `bun scripts/e2e-changed.ts --dry-run` before taking a heavy slot; preserve its full/affected/skip decision and evidence. The selector procedure governs final selected-scope verification; focused TDD does not replace it.
 - Review evidence files exist and are not stale
 - Working tree is clean
 
@@ -205,7 +202,7 @@ it, and take it to the owner instead of calling the branch green.
 
 ### 11. Report to the parent — the parent owns push and PR
 
-**A lane stops at step 10.** Its last act is its **commit**. It does not push, does
+**A lane stops after step 10 verifies its committed HEAD.** It reports that SHA and the local verification evidence path to the parent. It does not push, does
 not open a PR and does not merge — running any command below is a breach of its
 authority boundary, not help. The parent session pushes the lane's branch, opens
 the PR and drives the review rounds.

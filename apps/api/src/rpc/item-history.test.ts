@@ -86,6 +86,7 @@ describe("item history projection scaling", () => {
     };
 
     const history = await readItemHistory(store, { itemId: "item-1", limit: count });
+    expect(history).toMatchObject({ item: { id: "item-1", name: "Indexed item" }, total: count, stockOnHand: count });
 
     // At 1,000 rows the previous per-movement line/doc filters inspect ~2,000,000 line slots; these counts pin one index pass each without machine-dependent timing limits.
     expect(history.movements).toHaveLength(count);
@@ -182,6 +183,11 @@ describe("item history projection scaling", () => {
     };
 
     const history = await readItemHistory(store, { itemId: "00000000-0000-4000-8000-000000000001", limit: 10 });
+    expect(history).toMatchObject({
+      item: { id: "00000000-0000-4000-8000-000000000001", name: "Indexed item" },
+      total: 3,
+      stockOnHand: 1,
+    });
 
     const sale = history.movements.find((movement) => movement.id === "00000000-0000-4000-8000-000000000003");
     expect(sale?.details?.cost?.total).toBeNull();

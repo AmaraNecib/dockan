@@ -1533,7 +1533,7 @@ mod tests {
 
         for response in [malformed, truncated, transfer_encoded, content_encoded, mismatched] {
             let response = response.to_string();
-            let (port, responder, _listener) = spawn_responder(move |_| response);
+            let (port, responder, _listener) = spawn_responder(move |_| response.clone());
             assert!(backup_audit(port, &"a".repeat(43)).is_err());
             responder.join().unwrap();
         }
@@ -1554,7 +1554,7 @@ mod tests {
         for raw_length in [BACKUP_AUDIT_MAX_RESPONSE, BACKUP_AUDIT_MAX_RESPONSE + 1] {
             let response = response_with_raw_length(raw_length);
             assert_eq!(response.len(), raw_length);
-            let (port, responder, _listener) = spawn_responder(move |_| response);
+            let (port, responder, _listener) = spawn_responder(move |_| response.clone());
             let result = backup_audit(port, &"a".repeat(43));
             if raw_length == BACKUP_AUDIT_MAX_RESPONSE {
                 assert!(result.is_ok());

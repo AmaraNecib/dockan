@@ -44,6 +44,8 @@ itself. The parent's push runs the Husky pre-push hook when the hook is availabl
 
 Run the local checks below for Phase 2. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance; ordinary TDD still applies.
 
+Distinguish the **PR red-on-parent gate** from **replay-tool self-tests**. The CI-only rule applies to replaying the actual branch against its parent for acceptance. The regular unit suite includes tests such as `scripts/red-on-parent.test.ts` that exercise the replay engine in small temporary fixture repositories with separate caches and cleanup. Those self-tests may run locally through the normal test queue; their output is not PR parent-replay acceptance evidence.
+
 #### Browser verification: selector first
 
 For a browser-relevant change, commit the complete PR scope, then inspect the selector before starting a browser run:

@@ -1,3 +1,4 @@
+mod backup_reveal;
 mod desktop;
 
 // The sidecar freshness/stamp logic is exercised by `cargo test`; build.rs
@@ -21,7 +22,8 @@ pub fn run() {
             desktop::vault_reset_passphrase,
             desktop::vault_setup_saved,
             desktop::vault_setup_warning,
-            desktop::vault_logout
+            desktop::vault_logout,
+            desktop::backup_reveal
         ])
         .setup(desktop::setup)
         .on_window_event(|window, event| {

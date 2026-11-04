@@ -326,6 +326,11 @@ const resources = {
       backupsExport: "إنشاء نسخة احتياطية الآن",
       backupsBusy: "جاري الإنشاء…",
       backupsDone: "تم إنشاء النسخة الاحتياطية في:",
+      backupsReveal: "إظهار الملف في المجلد",
+      backupsRevealing: "جاري إظهار الملف…",
+      backupsRevealMissing: "لم يعد ملف النسخة الاحتياطية موجوداً. أنشئ نسخة جديدة ثم حاول إظهارها.",
+      backupsRevealFailed: "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
+      backupsRevealDesktopOnly: "إظهار الملف متاح في تطبيق دكان على Windows فقط. يمكنك فتح المسار الظاهر يدوياً.",
       // ticket 10 — settings (store identity)
       settingsTitle: "إعدادات المتجر",
       settingsHint: "يظهر اسم المتجر ورقم الهاتف في ترويسة الفواتير.",

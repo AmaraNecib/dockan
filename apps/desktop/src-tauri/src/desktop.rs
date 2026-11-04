@@ -668,11 +668,6 @@ const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
 
 #[derive(serde::Deserialize)]
 struct BackupAuditPage {
-    json: BackupAuditPageData,
-}
-
-#[derive(serde::Deserialize)]
-struct BackupAuditPageData {
     items: Vec<BackupAuditItem>,
     total: usize,
 }
@@ -739,9 +734,10 @@ fn find_backup_audit_with_timeout(
     loop {
         let page = fetch_page(offset, remaining()?)?;
         remaining()?;
-        let parsed: BackupAuditPage = serde_json::from_value(page.clone()).map_err(|_| FAILED)?;
-        let items = parsed.json.items;
-        let total = parsed.json.total;
+        let parsed: BackupAuditPage =
+            serde::Deserialize::deserialize(page.get("json").ok_or(FAILED)?).map_err(|_| FAILED)?;
+        let items = parsed.items;
+        let total = parsed.total;
         let next_offset = offset.checked_add(items.len()).ok_or(FAILED)?;
         if items.len() > 500
             || offset > total
@@ -1857,16 +1853,12 @@ mod tests {
                 assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
                 assert!(request.contains(&format!(r#""limit":500,"offset":{offset}"#)));
                 assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
-                let (total, items) = if offset == 0 {
-                    (501, full_audit_page()["json"]["items"].clone())
+                let page = if offset == 0 {
+                    full_audit_page()
                 } else {
-                    (
-                        501,
-                        serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]),
-                    )
+                    audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]))
                 };
-                let body = audit_page(total, items).to_string();
-                stream.write_all(http200(&body).as_bytes()).unwrap();
+                stream.write_all(http200(&page.to_string()).as_bytes()).unwrap();
             }
         });
 

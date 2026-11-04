@@ -439,11 +439,20 @@ export async function requestVaultReclaim(): Promise<void> {
   }
 }
 
-export async function fetchVaultStatus(): Promise<VaultBootStatus> {
+export function fetchVaultStatus(): Promise<VaultBootStatus> {
+  return loadVaultStatus(false);
+}
+
+/** Verify this window's HTTP credential, not the broker's global unlocked state. */
+export function verifyVaultSession(): Promise<VaultBootStatus> {
+  return loadVaultStatus(true);
+}
+
+async function loadVaultStatus(verifySession: boolean): Promise<VaultBootStatus> {
   // Inside the desktop shell the broker is the authoritative gate transport:
   // try it first (no secret involved) and fall back to HTTP when the shell has
   // no sidecar (dev window) or the bridge is absent (browser)
-  if (brokerAvailable()) {
+  if (!verifySession && brokerAvailable()) {
     try {
       const reply = await invokeBroker(brokerCommands.status);
       const decoded = statusSchema.safeParse(reply.status);
@@ -457,7 +466,13 @@ export async function fetchVaultStatus(): Promise<VaultBootStatus> {
     // A bounded probe: `logout` awaits this before clearing the local token and
     // signing out, so a status hop that stalls must resolve into a refusal the
     // caller holds on, never into a sign-out that never finishes (#341 round 5).
-    response = await fetch("/api/vault/status", { signal: AbortSignal.timeout(STATUS_PROBE_TIMEOUT_MS) });
+    const token = verifySession ? readVaultSessionToken() : undefined;
+    response = await fetch("/api/vault/status", {
+      signal: AbortSignal.timeout(STATUS_PROBE_TIMEOUT_MS),
+      credentials: "include",
+      cache: "no-store",
+      headers: token === undefined ? undefined : { "x-vault-session": token },
+    });
   } catch {
     // the server is unreachable (booting, proxy blip): the caller shows RETRY,
     // never the legacy login screen

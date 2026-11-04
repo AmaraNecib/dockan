@@ -4,6 +4,7 @@ import { AUTH_REFUSAL } from "@dokan/contracts";
 
 import { authLossReason, clearAuthLost, isAuthRefusal } from "./auth-refusal";
 import { createDokanRpcClient } from "./rpc-link";
+import { subscribeSessionRefresh } from "./session-refresh";
 
 /**
  * The wire → unlock-screen chain (#319), tested where it actually lives.
@@ -50,6 +51,22 @@ beforeEach(() => {
 });
 
 describe("the RPC refusal reaches the unlock screen (#319 round 2)", () => {
+  it("ignores a refusal that completes after its credential scope was retired", async () => {
+    let release!: (response: Response) => void;
+    globalThis.fetch = Object.assign(() => new Promise<Response>((resolve) => { release = resolve; }), { preconnect: originalFetch.preconnect });
+    const stop = subscribeSessionRefresh(() => {});
+    try {
+      const pending = rpcClient.categoriesList();
+      const rejected = pending.catch((error: Error) => error);
+      for (let i = 0; i < 30 && !release; i += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+      expect(release).toBeDefined();
+      window.dispatchEvent(new StorageEvent("storage", { key: "better-auth.message", newValue: '{"event":"session","data":{"trigger":"signout"}}' }));
+      release(refusalEnvelope(AUTH_REFUSAL.code, AUTH_REFUSAL.message, 401));
+      expect(await rejected).toMatchObject({ message: AUTH_REFUSAL.message });
+      expect(authLossReason()).toBeUndefined();
+    } finally { stop(); }
+  });
+
   it("records the loss when the wire answers UNAUTHORIZED / AUTH_REQUIRED", async () => {
     globalThis.fetch = Object.assign(
       async () => refusalEnvelope(AUTH_REFUSAL.code, AUTH_REFUSAL.message, 401),

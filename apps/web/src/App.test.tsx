@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 // React 19 act() requires the environment flag to be set explicitly
 // SAFETY: only this flag is written; globalThis keeps every other property
@@ -122,15 +122,18 @@ let vaultStatusResponse: () => Promise<Response> = async () => new Response("not
  * ORDER is the point (#298): the folder must be asked before the status is read.
  */
 let vaultCalls: string[] = [];
+let vaultStatusHeaders: Array<string | null> = [];
 
 beforeEach(() => {
   vaultCalls = [];
+  vaultStatusHeaders = [];
   globalThis.fetch = Object.assign(
     async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = input instanceof Request ? input.url : String(input);
       const pathname = new URL(url, "http://localhost").pathname;
       if (pathname === "/api/vault/status") {
         vaultCalls.push(`GET ${pathname}`);
+        vaultStatusHeaders.push(new Headers(init?.headers).get("x-vault-session"));
         return vaultStatusResponse();
       }
       if (pathname === "/api/vault/reclaim") {
@@ -208,6 +211,162 @@ async function mountAuthGateFor(selector: string, children: React.ReactNode = nu
   throw new Error(`auth gate did not render ${selector}`);
 }
 
+function signalSessionRefresh() {
+  window.dispatchEvent(new StorageEvent("storage", { key: "better-auth.message", newValue: JSON.stringify({ event: "session", data: { trigger: "signout" }, clientId: "other-tab", timestamp: Date.now() }) }));
+}
+
+describe("cross-tab credential verification", () => {
+  it("invalidates owner reads on generation even when the loss reason stays unchanged", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => root.render(<IdentityProbe />));
+    expect(host.textContent).toContain("Old owner");
+    let release!: (value: OwnerProfile) => void;
+    ownerRead = () => new Promise((resolve) => { release = resolve; });
+    await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
+    const obsolete = release;
+    await act(async () => signalSessionRefresh());
+    expect(host.textContent).toContain("hidden");
+    await act(async () => obsolete({ id: "old", name: "Obsolete", phone: "", role: "owner" }));
+    expect(host.textContent).not.toContain("Obsolete");
+    await act(async () => release({ id: "new", name: "Verified new owner", phone: "", role: "owner" }));
+    expect(host.textContent).toContain("Verified new owner");
+  });
+
+  it("retires cached queries and mutations so late callbacks cannot enter the new scope", async () => {
+    sessionData = { user: { id: "owner" } };
+    freshSessionRead = async () => ({ data: sessionData, error: null });
+    const clients: QueryClient[] = [];
+    let releaseQuery!: (value: string) => void;
+    let releaseMutation!: (value: string) => void;
+    let first = true;
+    let callbacks = 0;
+    function PrivatePage() {
+      const client = useQueryClient();
+      if (!clients.includes(client)) clients.push(client);
+      const query = useQuery({
+        queryKey: ["private"],
+        queryFn: () => first ? new Promise<string>((resolve) => { releaseQuery = resolve; }) : Promise.resolve("Fresh page"),
+      });
+      const mutation = useMutation({
+        mutationFn: () => new Promise<string>((resolve) => { releaseMutation = resolve; }),
+        onSuccess: (value) => { callbacks += 1; client.setQueryData(["private"], value); },
+        onSettled: () => { callbacks += 1; },
+      });
+      return <div data-testid="private-page">{query.data}<button onClick={() => mutation.mutate()}>Write</button></div>;
+    }
+    const host = await mountAuthGateFor('[data-testid="private-page"]', <PrivatePage />);
+    await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
+    const old = clients[0];
+    if (!old) throw new Error("old query client missing");
+    expect(old.getMutationCache().getAll()).toHaveLength(1);
+    first = false;
+    await act(async () => signalSessionRefresh());
+    expect(clients).toHaveLength(2);
+    expect(old.getQueryCache().getAll()).toHaveLength(0);
+    expect(old.getMutationCache().getAll()).toHaveLength(0);
+    await act(async () => {
+      releaseQuery("Obsolete query");
+      releaseMutation("Obsolete mutation");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.textContent).toContain("Fresh page");
+    expect(host.textContent).not.toContain("Obsolete");
+    expect(callbacks).toBe(0);
+    const fresh = clients[1];
+    if (!fresh) throw new Error("fresh query client missing");
+    expect(fresh.getQueryData<string>(["private"])).toBe("Fresh page");
+    expect(fresh.getMutationCache().getAll()).toHaveLength(0);
+  });
+
+  it("does not submit a mutation still waiting in onMutate when its scope retires", async () => {
+    sessionData = { user: { id: "owner" } };
+    freshSessionRead = async () => ({ data: sessionData, error: null });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let writes = 0;
+    function PendingWrite() {
+      const mutation = useMutation({
+        onMutate: () => gate,
+        mutationFn: async () => { writes += 1; },
+      });
+      return <button data-testid="pending-write" onClick={() => mutation.mutate()}>Write</button>;
+    }
+    const host = await mountAuthGateFor('[data-testid="pending-write"]', <PendingWrite />);
+    await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
+    await act(async () => signalSessionRefresh());
+    await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(writes).toBe(0);
+  });
+
+  it("ignores older verification and honors an authoritative absent credential", async () => {
+    sessionData = { user: { id: "owner" } };
+    const host = await mountAuthGateFor('[data-testid="identity"]', <IdentityProbe />);
+    const checks: Array<(value: Awaited<ReturnType<typeof freshSessionRead>>) => void> = [];
+    freshSessionRead = () => new Promise((resolve) => { checks.push(resolve); });
+    await act(async () => signalSessionRefresh());
+    await act(async () => signalSessionRefresh());
+    expect(checks).toHaveLength(2);
+    const [old, fresh] = checks;
+    if (!old || !fresh) throw new Error("verification reads missing");
+    await act(async () => fresh({ data: null, error: null }));
+    await act(async () => old({ data: sessionData, error: null }));
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
+    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
+  });
+
+  it("verifies the receiver's own vault token, never a plaintext session or token presence alone", async () => {
+    let live = true;
+    vaultStatusResponse = async () => Response.json({ mode: "vault", state: "unlocked", unlocked: true, session: live, broker: true, legacyDatabase: false, recoveryKeyCount: 1, lockedForMs: 0 });
+    storeVaultSessionToken("own-window-token");
+    const host = await mountAuthGateFor('[data-testid="identity"]', <IdentityProbe />);
+    live = false;
+    await act(async () => signalSessionRefresh());
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+    expect(freshSessionArgs).toHaveLength(0);
+    expect(vaultStatusHeaders.at(-1)).toBe("own-window-token");
+  });
+
+  it("immediately removes private UI, waits for a fresh credential, and ignores overtaken owner reads", async () => {
+    sessionData = { user: { id: "owner" } };
+    const host = await mountAuthGateFor('[data-testid="identity"]', <><IdentityProbe /><div data-testid="private-page">Private page</div></>);
+    let resolveOld!: (owner: OwnerProfile) => void;
+    ownerRead = () => new Promise((resolve) => { resolveOld = resolve; });
+    await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
+    let resolveFresh!: (value: Awaited<ReturnType<typeof freshSessionRead>>) => void;
+    freshSessionRead = () => new Promise((resolve) => { resolveFresh = resolve; });
+    await act(async () => signalSessionRefresh());
+    expect(host.querySelector('[data-testid="private-page"]')).toBeNull();
+    expect(host.textContent).not.toContain("Old owner");
+    expect(freshSessionArgs.at(-1)).toEqual({ query: { disableCookieCache: true } });
+    await act(async () => resolveOld({ id: "old", name: "Obsolete owner", phone: "", role: "owner" }));
+    expect(host.textContent).not.toContain("Obsolete owner");
+    ownerRead = async () => ({ id: "new", name: "New owner", phone: "", role: "owner" });
+    await act(async () => resolveFresh({ data: sessionData, error: null }));
+    expect(host.textContent).toContain("New owner");
+    expect(host.querySelector('[data-testid="private-page"]')).not.toBeNull();
+  });
+
+  it("stays closed on failed verification, retries, and never clears a sender hold", async () => {
+    sessionData = { user: { id: "owner" } };
+    const host = await mountAuthGateFor('[data-testid="identity"]', <IdentityProbe />);
+    freshSessionRead = async () => { throw new Error("offline"); };
+    await act(async () => signalSessionRefresh());
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
+    expect(host.querySelector('[data-testid="session-check-retry"]')).not.toBeNull();
+    freshSessionRead = async () => ({ data: sessionData, error: null });
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="session-check-retry"]')?.click());
+    expect(host.textContent).toContain("Old owner");
+    await act(async () => markSignedOut());
+    await act(async () => signalSessionRefresh());
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
+    expect(window.sessionStorage.getItem(SIGNED_OUT_STORAGE_KEY)).not.toBeNull();
+  });
+});
+
 describe("plaintext refusal recovery", () => {
   it("waits for a fresh authenticated session and a fresh owner, ignoring obsolete profile replies", async () => {
     sessionData = { user: { id: "owner" } };
@@ -219,7 +378,7 @@ describe("plaintext refusal recovery", () => {
     if (!(retry instanceof HTMLButtonElement)) throw new Error("profile retry missing");
     await act(async () => retry.click());
     await act(async () => markAuthLost());
-    expect(host.textContent).toContain("hidden");
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
     expect(freshSessionArgs).toEqual([{ query: { disableCookieCache: true } }]);
 
     let resolveSession!: (value: Awaited<ReturnType<typeof freshSessionRead>>) => void;
@@ -227,7 +386,7 @@ describe("plaintext refusal recovery", () => {
     await act(async () => window.dispatchEvent(new Event("focus")));
     expect(freshSessionArgs).toHaveLength(2);
     await act(async () => resolveOld({ id: "owner", name: "Obsolete owner", phone: "", role: "owner" }));
-    expect(host.textContent).toContain("hidden");
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
     let resolveFresh!: (owner: OwnerProfile) => void;
     ownerRead = () => new Promise((resolve) => { resolveFresh = resolve; });
     await act(async () => resolveSession({ data: sessionData, error: null }));
@@ -245,7 +404,7 @@ describe("plaintext refusal recovery", () => {
     await act(async () => markAuthLost());
     await act(async () => markSignedOut());
     await act(async () => resolveSession({ data: sessionData, error: null }));
-    expect(host.textContent).toContain("hidden");
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
     expect(host.textContent).not.toContain("Old owner");
   });
 
@@ -268,16 +427,16 @@ describe("plaintext refusal recovery", () => {
     freshSessionRead = async () => { throw new Error("offline"); };
     await act(async () => markAuthLost());
     expect(freshSessionArgs).toHaveLength(1);
-    expect(host.textContent).toContain("hidden");
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
     freshSessionRead = async () => ({ data: sessionData, error: { message: "refused" } });
     await act(async () => window.dispatchEvent(new Event("focus")));
-    expect(host.textContent).toContain("hidden");
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
     await act(async () => markSignedOut());
     const before = freshSessionArgs.length;
     freshSessionRead = async () => ({ data: sessionData, error: null });
     await act(async () => window.dispatchEvent(new Event("focus")));
     expect(freshSessionArgs).toHaveLength(before);
-    expect(host.textContent).toContain("hidden");
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
   });
 });
 

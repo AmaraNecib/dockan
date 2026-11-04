@@ -5,7 +5,7 @@ import { PasswordInput } from "@/components/ui/password-input";
 import {
   VaultRequestError,
   acknowledgeVaultSetup,
-  fetchVaultStatus,
+  verifyVaultSession,
   noteVaultMode,
   fetchVaultSetupWarning,
   isVaultPassphraseLongEnough,
@@ -142,10 +142,10 @@ export function useVaultStatus(): VaultHook {
   const load = useCallback(async (): Promise<VaultBootStatus | undefined> => {
     const appliedAtStart = appliedRef.current;
     try {
-      const result = await fetchVaultStatus();
+      const result = await verifyVaultSession();
       // a local answer (an unlock) landed while this read was in flight
       if (appliedAtStart !== appliedRef.current) return undefined;
-      if (!aliveRef.current) return result;
+      if (!aliveRef.current) return undefined;
       settle(result);
       setFailure(undefined);
       return result;

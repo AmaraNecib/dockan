@@ -1,8 +1,9 @@
-import { createORPCClient, onError, ORPCError } from "@orpc/client";
+import { createORPCClient, ORPCError } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { DokanClient } from "@dokan/contracts";
 
-import { isAuthRefusal, markAuthLost } from "./auth-refusal";
+import { authLossRevision, isAuthRefusal, markAuthLost } from "./auth-refusal";
+import { sessionRefreshGeneration } from "./session-refresh";
 import { readVaultSessionToken } from "./vault-client";
 
 /**
@@ -34,14 +35,18 @@ export function createDokanRpcClient(): DokanClient {
       });
     },
     interceptors: [
-      onError((error) => {
-        // the session can die under a live window: the refusal means the unlock
-        // screen, not a page of failed queries (#319). The shape check is the
-        // I/O boundary's job; `isAuthRefusal` only decides what the code MEANS.
-        if (error instanceof ORPCError && isAuthRefusal(error)) markAuthLost();
-        if (import.meta.env.MODE === "test") return;
-        console.error("[dokan rpc]", error);
-      }),
+      async ({ next }) => {
+        const generation = sessionRefreshGeneration();
+        const revision = authLossRevision();
+        try {
+          return await next();
+        } catch (error) {
+          // A refusal from a retired scope cannot close a freshly verified one.
+          if (generation === sessionRefreshGeneration() && revision === authLossRevision() && error instanceof ORPCError && isAuthRefusal(error)) markAuthLost();
+          if (import.meta.env.MODE !== "test") console.error("[dokan rpc]", error);
+          throw error;
+        }
+      },
     ],
   });
   return createORPCClient(rpcLink);

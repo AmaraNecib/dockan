@@ -1,4 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { authLossRevision } from "./auth-refusal";
+import { sessionRefreshGeneration } from "./session-refresh";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { Preferences } from "@dokan/contracts";
@@ -67,10 +69,21 @@ export interface Preference<T> {
 // can take over a value the server rejected. The import consults this so a
 // background migration can never overtake a newer choice that will land.
 const writtenKeys = new Set<string>();
+const writeScope = () => `${sessionRefreshGeneration()}:${authLossRevision()}`;
+let writtenScope = writeScope();
+
+function currentWrittenKeys(): Set<string> {
+  const scope = writeScope();
+  if (scope !== writtenScope) {
+    writtenKeys.clear();
+    writtenScope = scope;
+  }
+  return writtenKeys;
+}
 
 /** True while this page session has a write for `key` in flight or landed. */
 export function hasPreferenceWrite(key: string): boolean {
-  return writtenKeys.has(key);
+  return currentWrittenKeys().has(key);
 }
 
 type PreferenceWriteListener = (key: string, ok: boolean) => void;
@@ -134,6 +147,11 @@ export function usePreference<T>(
   const inFlight = useRef(false);
   /** the newest change made while a write was in flight, sent once it settles */
   const queued = useRef<{ next: T } | null>(null);
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; queued.current = null; };
+  }, []);
 
   const raw = query.data?.[key];
   const value = raw === undefined ? defaultValue : parse(raw);
@@ -142,10 +160,13 @@ export function usePreference<T>(
     inFlight.current = true;
     setPending(true);
     setWriteFailed(false);
-    writtenKeys.add(key);
+    currentWrittenKeys().add(key);
+    const scope = writeScope();
+    const isCurrent = () => active.current && scope === writeScope();
     let failed = false;
     void writePreference(key, serialize(next))
       .then((stored) => {
+        if (!isCurrent()) return;
         if (stored === null) {
           // the write failed; the server value stands and the caller is told
           failed = true;
@@ -160,6 +181,7 @@ export function usePreference<T>(
         });
       })
       .finally(() => {
+        if (!isCurrent()) { queued.current = null; return; }
         inFlight.current = false;
         setPending(false);
         const queuedNext = queued.current;

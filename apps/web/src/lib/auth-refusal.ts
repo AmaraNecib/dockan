@@ -96,7 +96,12 @@ function forgetSignedOut(): void {
 let refusalLost = false;
 const listeners = new Set<() => void>();
 
+let revision = 0;
+
+export function authLossRevision(): number { return revision; }
+
 function notify(): void {
+  revision += 1;
   for (const listener of listeners) listener();
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { authClient, useSession } from "./lib/auth-client";
@@ -9,9 +9,10 @@ import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Pref
 import { isSetupKeyOnScreen, VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
 import { readVaultSessionToken, requestVaultReclaim, type VaultBootStatus } from "./lib/vault-client";
-import { useQueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
+import { useSessionRefreshGeneration } from "./lib/session-refresh";
 import { rpcClient } from "./lib/rpc";
-import { clearAuthLost, recoverAuthLost, useAuthLossReason } from "./lib/auth-refusal";
+import { authLossRevision, clearAuthLost, recoverAuthLost, useAuthLossReason } from "./lib/auth-refusal";
 import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY, onPreferenceWriteSettled } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
@@ -47,11 +48,45 @@ function setupNameKey(ownerName: string, storeName: string): MessageKey | null {
   return null;
 }
 
-/** Blocks children until a session exists; preferences import in the background. */
+/** Every advisory refresh retires the entire credential-bound React/cache tree. */
 export function RequireSession({ children }: { children: ReactNode }) {
+  const generation = useSessionRefreshGeneration();
+  const mountedGeneration = useRef(generation);
+  return <CredentialScope key={generation} verify={generation !== mountedGeneration.current}>{children}</CredentialScope>;
+}
+
+function CredentialScope({ children, verify }: { children: ReactNode; verify: boolean }) {
+  const parentClient = useQueryClient();
+  const loss = useAuthLossReason();
+  const client = useMemo(() => new QueryClient({ defaultOptions: parentClient.getDefaultOptions() }), [parentClient, loss]);
+  useEffect(() => () => {
+    // Mutations cannot be unsubmitted. Their callbacks retain this retired
+    // client, never the replacement client's query or mutation cache.
+    void client.cancelQueries();
+    for (const mutation of client.getMutationCache().getAll()) {
+      // TanStack Mutation.setOptions is public. Pending work reads these
+      // callbacks when it settles, so stale toasts/follow-up writes stop too.
+      mutation.setOptions({
+        ...mutation.options,
+        mutationFn: () => Promise.reject(new Error("SESSION_SCOPE_RETIRED")),
+        retry: false,
+        onMutate: undefined,
+        onSuccess: undefined,
+        onError: undefined,
+        onSettled: undefined,
+      });
+    }
+    client.clear();
+  }, [client]);
+  return <QueryClientProvider client={client}><SessionGate verify={verify}>{children}</SessionGate></QueryClientProvider>;
+}
+
+/** Blocks children until a session exists; preferences import in the background. */
+function SessionGate({ children, verify }: { children: ReactNode; verify: boolean }) {
   const vault = useVaultStatus();
   const queryClient = useQueryClient();
-  const [sessionCacheScope, setSessionCacheScope] = useState(() => crypto.randomUUID());
+  const [unlockGeneration, setUnlockGeneration] = useState(0);
+  const sessionCacheScope = useMemo(() => crypto.randomUUID(), [queryClient, unlockGeneration]);
   /**
    * The session can die under a live window — another window replaced it, the
    * owner logged out, the vault was locked. The refusal that says so must
@@ -216,7 +251,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
     // cookie lands on the unlock screen instead of mounting the app and being
     // sent back there by its first refused query. The broker path's token
     // lives in this page, so a window without it has no session at all.
-    const hasSession = vaultStatus.broker ? readVaultSessionToken() !== undefined : vaultStatus.session;
+    const hasSession = vaultStatus.session && (!vaultStatus.broker || readVaultSessionToken() !== undefined);
     if (vaultStatus.state !== "unlocked" || !hasSession || authLost) {
       return (
         <VaultGate
@@ -224,7 +259,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
           onUnlocked={() => {
             clearAuthLost();
             queryClient.removeQueries({ queryKey: EXPENSE_CORRECTION_RECOVERY_QUERY_KEY });
-            setSessionCacheScope(crypto.randomUUID());
+            setUnlockGeneration((value) => value + 1);
             // the unlock minted a fresh credential, which is exactly what the
             // status route would now report: this window holds the live session
             vault.setStatus({ ...vaultStatus, state: "unlocked", unlocked: true, session: true });
@@ -251,7 +286,7 @@ export function RequireSession({ children }: { children: ReactNode }) {
   if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
   return (
     <SessionCacheScopeProvider scopeId={sessionCacheScope}>
-      <LegacySessionGate>{children}</LegacySessionGate>
+      {verify ? <FreshLegacySessionGate>{children}</FreshLegacySessionGate> : <LegacySessionGate>{children}</LegacySessionGate>}
     </SessionCacheScopeProvider>
   );
 }
@@ -272,7 +307,7 @@ function VaultStatusScreen({ message, testId, onRetry }: { message: string; test
           type="button"
           onClick={onRetry}
           className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80"
-          data-testid="vault-status-retry"
+          data-testid={testId === "session-check-failed" ? "session-check-retry" : "vault-status-retry"}
         >
           {t("itemsSearchRetry")}
         </button>
@@ -428,9 +463,11 @@ function useSidebarPreferenceMigration(enabled: boolean): void {
     if (!enabled) return;
 
     let importing = false;
+    let active = true;
     // a retry asked for while an import is in flight; one bit, not a queue
     let retryPending = false;
     const importLegacy = () => {
+      if (!active) return;
       if (importing) {
         retryPending = true;
         return;
@@ -438,7 +475,7 @@ function useSidebarPreferenceMigration(enabled: boolean): void {
       importing = true;
       void migrateLegacySidebarCollapsed()
         .then((imported) => {
-          if (imported === null) return;
+          if (!active || imported === null) return;
           // install the imported value so the sidebar does not wait for the
           // next refetch, then reconcile the full map
           queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) =>
@@ -464,10 +501,41 @@ function useSidebarPreferenceMigration(enabled: boolean): void {
 
     // ...but a competing write that fails means the import was skipped for a
     // choice that never landed, so re-run it now (issue #115)
-    return onPreferenceWriteSettled((key, ok) => {
+    const unsubscribe = onPreferenceWriteSettled((key, ok) => {
       if (key === SIDEBAR_COLLAPSED_KEY && !ok) importLegacy();
     });
+    return () => { active = false; unsubscribe(); };
   }, [enabled, queryClient]);
+}
+
+/** A storage signal is advisory. Only this credential-specific read admits UI. */
+function FreshLegacySessionGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
+  const [answer, setAnswer] = useState<"pending" | "failed" | "absent" | "live">("pending");
+  const [attempt, setAttempt] = useState(0);
+  const loss = useAuthLossReason();
+  useEffect(() => {
+    let alive = true;
+    setAnswer("pending");
+    const revision = authLossRevision();
+    void authClient.getSession({ query: { disableCookieCache: true } }).then((result) => {
+      if (!alive) return;
+      if (revision !== authLossRevision()) { setAnswer("failed"); return; }
+      if (result.error) setAnswer("failed");
+      else {
+        setAnswer(result.data ? "live" : "absent");
+        if (result.data) recoverAuthLost();
+      }
+    }).catch(() => { if (alive) setAnswer("failed"); });
+    return () => { alive = false; };
+  }, [attempt]);
+  useSidebarPreferenceMigration(answer === "live" && !loss);
+  if (loss === "signed-out" || answer === "absent") return <AuthGate />;
+  if (answer === "failed" || (answer === "live" && loss)) {
+    return <VaultStatusScreen message={t("startupCheckFailed")} testId="session-check-failed" onRetry={() => setAttempt((value) => value + 1)} />;
+  }
+  if (answer !== "live") return <LoadingScreen />;
+  return <>{children}</>;
 }
 
 /** The legacy plaintext path: better-auth session, setup or login. */
@@ -483,8 +551,9 @@ function LegacySessionGate({ children }: { children: ReactNode }) {
       inFlight = true;
       // A sibling's login replaces the shared cookie, not this mount's session
       // snapshot. Only a fresh server answer can take back the refusal.
+      const revision = authLossRevision();
       void authClient.getSession({ query: { disableCookieCache: true } }).then((result) => {
-        if (alive && !result.error && result.data !== null) recoverAuthLost();
+        if (alive && revision === authLossRevision() && !result.error && result.data !== null) recoverAuthLost();
       }).catch(() => {
         // Verification failed. Keep identity masked until a later focus retry.
       }).finally(() => { inFlight = false; });
@@ -500,6 +569,8 @@ function LegacySessionGate({ children }: { children: ReactNode }) {
   }, [loss]);
   useSidebarPreferenceMigration(sessionResult.data !== null && !sessionResult.isPending);
 
+  if (loss === "signed-out") return <AuthGate />;
+  if (loss === "refusal") return <VaultUnavailable onRetry={() => window.dispatchEvent(new Event("focus"))} />;
   if (sessionResult.isPending) {
     return <LoadingScreen />;
   }

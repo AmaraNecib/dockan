@@ -140,6 +140,24 @@ describe("preferences client (issue 97 follow-up)", () => {
     await handle.unmount();
   });
 
+  it("drops queued old-scope writes and settlement notifications after unmount", async () => {
+    let release!: () => void;
+    writeGate = new Promise<void>((resolve) => { release = resolve; });
+    const handle = await mountProbe("ui.test.retired");
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+    let settled = 0;
+    const stop = onPreferenceWriteSettled(() => { settled += 1; });
+    try {
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='unset']")?.click());
+      await handle.unmount();
+      release();
+      await flush();
+      expect(writeCalls).toBe(1);
+      expect(settled).toBe(0);
+    } finally { stop(); }
+  });
+
   it("does not drop a second change made while a write is in flight", async () => {
     let release: (() => void) | null = null;
     writeGate = new Promise<void>((resolve) => {

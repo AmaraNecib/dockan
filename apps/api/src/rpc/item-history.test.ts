@@ -226,6 +226,7 @@ describe("item history projection scaling", () => {
     };
 
     const history = await readItemHistory(store, { itemId, limit: 10 });
+    expect(history).toMatchObject({ item: { id: itemId, name: "History item" }, total: 4, stockOnHand: 0 });
     expect(history.movements.filter((movement) => movement.kind === "SALE").map((movement) => movement.details?.cost?.total)).toEqual([null, 700, null]);
     expect(history.movements.filter((movement) => movement.kind === "SALE").map((movement) => movement.details?.saleTotal)).toEqual([0, 1800, 1800]);
     expect(history.movements.filter((movement) => movement.kind === "SALE").map((movement) => movement.details?.netSaleTotal)).toEqual([0, 1800, 1800]);

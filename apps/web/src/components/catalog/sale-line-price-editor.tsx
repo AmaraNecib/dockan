@@ -29,7 +29,6 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
     onChange({ overrideType: "", overrideValue: "" });
     setSwitchError(false);
     previousPercentage.current = undefined;
-    input.current?.focus();
   }
 
   function selectMode(value: string | null) {

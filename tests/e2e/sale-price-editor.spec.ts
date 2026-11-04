@@ -41,7 +41,8 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   await expect(value).toHaveValue("٣٠١");
   await expect(lines.getByRole("alert")).toContainText("دون تغيير السعر");
   await lines.getByTestId("sale-price-reset").click();
-  await expect(value).toBeFocused();
+  await expect(lines.getByTestId("sale-price-reset")).toBeFocused();
+  await expect(value).not.toBeFocused();
   await expect(value).toHaveValue("333");
   await chooseSelectOption(page, mode, "نسبة %");
   await expect(value).toHaveValue("100");
@@ -88,6 +89,35 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   expect(resetSaved.totalAmount).toBe(500);
   expect(resetSaved.lines[0]).toMatchObject({ defaultUnitPrice: 500, unitPrice: 500, quantity: 1, total: 500 });
   await testInfo.attach("persisted-sale", { body: JSON.stringify({ saved, resetSaved }, null, 2), contentType: "application/json" });
+});
+
+test("resetting a sale price leaves keyboard barcode scans out of the price editor (#397)", async ({ page }) => {
+  await signIn(page);
+  const { item } = await fixture(page, 333);
+  const barcodeItem = await callRpc<Item, object>(page, "itemsCreateWithStock", {
+    name: `Short barcode ${Date.now()}`, barcode: "397", categoryId: await seedCategoryId(page, "أسعار البيع"),
+    costPrice: 100, sellingPrice: 250, stockOnHand: 20,
+  });
+  const lines = page.getByTestId("sale-lines");
+  const originalPrice = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
+  await chooseSelectOption(page, lines.getByLabel(`${item.name}: نوع تعديل السعر`), "مبلغ");
+  await originalPrice.fill("301");
+  const reset = lines.getByTestId("sale-price-reset");
+  await reset.click();
+  await expect(reset).toBeFocused();
+  await expect(originalPrice).not.toBeFocused();
+
+  await page.keyboard.type("397", { delay: 8 });
+  await page.keyboard.press("Enter");
+
+  await expect(lines).toContainText(barcodeItem.name);
+  await expect(originalPrice).toHaveValue("333");
+  await expect(lines.getByLabel(`${item.name}: الكمية`)).toHaveValue("1");
+  const saved = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
+  expect(saved.lines).toEqual(expect.arrayContaining([
+    expect.objectContaining({ defaultUnitPrice: 333, unitPrice: 333, quantity: 1 }),
+    expect.objectContaining({ defaultUnitPrice: 250, unitPrice: 250, quantity: 1 }),
+  ]));
 });
 
 test("effective sale price: cancellation, explicit zero and catalogue changes preserve amount meaning (#397)", async ({ page }) => {

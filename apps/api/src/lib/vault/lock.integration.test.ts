@@ -347,15 +347,15 @@ describe("the holder's heartbeat re-reads the snapshot fence (#292)", () => {
     // the wiring main.ts does: the holder's beat is the fence probe
     let probes = 0;
     let detectedAtProbe: number | undefined;
-    lock.onHeartbeat(() => {
-      probes += 1;
-      if (conn.recheckFence().outcome !== "mine" && detectedAtProbe === undefined) detectedAtProbe = probes;
-    });
     try {
       conn.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
       conn.markDirty();
       await conn.persistIfDirty();
       expect(diskStamp()).toBe(lock.currentOwner().token);
+      lock.onHeartbeat(() => {
+        probes += 1;
+        if (conn.recheckFence().outcome !== "mine" && detectedAtProbe === undefined) detectedAtProbe = probes;
+      });
 
       // No await between the counter's read and the rename, so no timer can run
       // in between: the next probe is the FIRST probe after the bytes landed,

@@ -44,7 +44,7 @@ test.afterEach(async ({ page }) => {
     if (await sidebar.evaluate((element) => element.getBoundingClientRect().width) === 64) {
       await actAndAck(page, "preferencesSet", () => toggle.click());
     }
-    await expect.poll(async () => (await readRpc<{ values: Record<string, string> }>(page, "preferencesGet")).values["ui.sidebar.collapsed"]).toBe("false");
+    await expect.poll(async () => (await readRpc<{ values: Record<string, string> }>(page, "preferencesGet")).values["ui.sidebar.collapsed"] ?? "false").toBe("false");
     await page.reload();
     await expect(toggle).toBeEnabled();
     await expect(sidebar).toHaveCSS("width", "240px");

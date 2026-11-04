@@ -1,3 +1,4 @@
+bun scripts/contracts-source-guard.ts
 bun run lint
 bun run skills:check
 cd apps/api && bunx tsc --noEmit

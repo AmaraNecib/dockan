@@ -242,6 +242,18 @@ describe("ReportsPage range label (#73)", () => {
 
     await page.unmount();
   });
+
+  it("keeps a signed correction total signed in the category breakdown", async () => {
+    report = fixture({
+      operatingExpenses: 25,
+      byCategory: [{ categoryId: "cat-correction", categoryName: "تصحيح موقّع", isOwnerWithdrawal: false, total: -25, count: 2 }],
+    });
+    const page = await mountPage(queryClient);
+    const amount = () => page.container().querySelector<HTMLElement>("[data-testid='report-breakdown-row'] td:nth-child(3) [data-testid='money-figures']");
+    expect(await page.waitFor(() => amount() !== null)).toBe(true);
+    expect(amount()?.textContent).toBe("-25");
+    await page.unmount();
+  });
 });
 
 describe("ReportsPage custom bounds (issue #123)", () => {

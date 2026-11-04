@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import type { Expense, ExpenseCategory } from "@dokan/contracts";
+import { profitReportOutputSchema, type Expense, type ExpenseCategory } from "@dokan/contracts";
 
 import { computeProfitReport, sortExpenses } from "./profit-report";
 
@@ -12,14 +12,14 @@ import { computeProfitReport, sortExpenses } from "./profit-report";
  */
 
 const opCategory: ExpenseCategory = {
-  id: "cat-rent",
+  id: "00000000-0000-4000-8000-000000000001",
   name: "كراء",
   isOwnerWithdrawal: false,
   createdAt: "2026-01-01T00:00:00",
   updatedAt: "2026-01-01T00:00:00",
 };
 const withdrawalCategory: ExpenseCategory = {
-  id: "cat-withdraw",
+  id: "00000000-0000-4000-8000-000000000002",
   name: "سحوبات المالك",
   isOwnerWithdrawal: true,
   createdAt: "2026-01-01T00:00:00",
@@ -36,6 +36,8 @@ function expense(partial: Partial<Expense> & { categoryId: string; amount: numbe
     note: partial.note ?? null,
     occurredAt: partial.occurredAt ?? "2026-02-10T12:00:00",
     createdAt: partial.createdAt ?? "2026-02-10T12:00:00",
+    actorId: partial.actorId ?? null,
+    actorName: partial.actorName ?? null,
   };
 }
 
@@ -220,6 +222,23 @@ describe("profit report — withdrawals and orphan categories", () => {
     expect(report.byCategory[0]).toMatchObject({ isOwnerWithdrawal: true, total: 5_000 });
   });
 
+  it("keeps signed correction deltas in negative report totals and validates the output", () => {
+    const report = computeProfitReport({
+      saleLines: [],
+      expenses: [
+        expense({ categoryId: opCategory.id, amount: -150 }),
+        expense({ categoryId: withdrawalCategory.id, amount: -40 }),
+      ],
+      categories: [opCategory, withdrawalCategory],
+      range,
+    });
+    expect(report.operatingExpenses).toBe(-150);
+    expect(report.ownerWithdrawals).toBe(-40);
+    expect(report.resultAfterExpenses).toBe(190);
+    expect(report.byCategory.map(({ total }) => total)).toEqual([-150, -40]);
+    expect(profitReportOutputSchema.parse(report)).toEqual(report);
+  });
+
   it("an orphan expense (unknown category) still counts as operating with a placeholder name", () => {
     const report = computeProfitReport({
       saleLines: [],
@@ -259,6 +278,14 @@ describe("sortExpenses", () => {
   it("sorts by date both directions", () => {
     expect(sortExpenses(rows, "occurredAt", "asc").map((row) => row.amount)).toEqual([50, 100, 900]);
     expect(sortExpenses(rows, "occurredAt", "desc").map((row) => row.amount)).toEqual([900, 100, 50]);
+  });
+
+  it("sorts corrected list rows by effective amount, not their immutable original amount", () => {
+    const correctedRows = [
+      { ...expense({ categoryId: opCategory.id, amount: 100 }), effectiveAmount: 900, correctionCount: 1 },
+      { ...expense({ categoryId: opCategory.id, amount: 500 }), effectiveAmount: 100, correctionCount: 2 },
+    ];
+    expect(sortExpenses(correctedRows, "amount", "asc").map((row) => row.effectiveAmount)).toEqual([100, 900]);
   });
 
   it("sorts by amount both directions, date descending as the tiebreak", () => {

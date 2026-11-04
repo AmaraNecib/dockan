@@ -478,9 +478,45 @@ export const expenseSchema = z.object({
   amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
   /** mirror of the input cap so persisted and returned shapes agree */
   note: z.string().max(500).nullable(),
-  /** Algeria-local moment of the expense (editable for backdating) */
+  /** Algeria-local business moment of the expense (editable for backdating) */
   occurredAt: localDateTimeSchema,
+  /** server recording time; legacy rows keep the timestamp even when their actor is unknown */
   createdAt: localDateTimeSchema,
+  /** server-authenticated actor snapshot; null on legacy rows */
+  actorId: idSchema.nullable(),
+  actorName: z.string().nullable(),
+});
+
+export const expenseListItemSchema = expenseSchema.extend({
+  /** original amount plus every signed correction */
+  effectiveAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  correctionCount: z.number().int().min(0),
+});
+
+/** One immutable signed change to an expense's effective amount. */
+export const expenseCorrectionSchema = z.object({
+  id: idSchema,
+  expenseId: idSchema,
+  effectiveAt: localDateTimeSchema,
+  recordedAt: localDateTimeSchema,
+  beforeAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  afterAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  difference: z.number().int().min(-MAX_EXPENSE_AMOUNT).max(MAX_EXPENSE_AMOUNT),
+  actorId: idSchema.nullable(),
+  actorName: z.string().nullable(),
+  reason: z.string().max(500).nullable(),
+  reversesCorrectionId: idSchema.nullable(),
+});
+
+export const expenseCorrectionHistoryEntrySchema = expenseCorrectionSchema.extend({
+  /** the later immutable row that reversed this correction, if any */
+  reversedByCorrectionId: idSchema.nullable(),
+});
+
+export const expenseCorrectionHistorySchema = z.object({
+  original: expenseSchema,
+  effectiveAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  corrections: z.array(expenseCorrectionHistoryEntrySchema),
 });
 
 /** Flexible report windows, computed in Algeria local time (ticket 31). */
@@ -518,7 +554,7 @@ export const expenseCategoryTotalSchema = z.object({
   categoryId: idSchema,
   categoryName: z.string(),
   isOwnerWithdrawal: z.boolean(),
-  total: z.number().int().min(0),
+  total: z.number().int(),
   count: z.number().int().min(0),
 });
 
@@ -533,8 +569,8 @@ export const profitReportOutputSchema = z.object({
   revenue: z.number().int().min(0),
   cogs: z.number().int().min(0),
   grossProfit: z.number().int(),
-  operatingExpenses: z.number().int().min(0),
-  ownerWithdrawals: z.number().int().min(0),
+  operatingExpenses: z.number().int(),
+  ownerWithdrawals: z.number().int(),
   resultAfterExpenses: z.number().int(),
   byCategory: z.array(expenseCategoryTotalSchema),
 });
@@ -1445,6 +1481,21 @@ export const expenseCreateInputSchema = z.object({
   occurredAt: localDateTimeSchema.optional(),
 });
 
+export const expenseCorrectionHistoryInputSchema = z.object({ expenseId: idSchema });
+
+export const expenseCorrectInputSchema = z.object({
+  expenseId: idSchema,
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  reason: z.string().trim().max(500).optional(),
+  /** client identity for a retry; actor and timestamps are server-owned */
+  idempotencyKey: idSchema,
+});
+
+export const expenseCorrectionUndoInputSchema = z.object({
+  correctionId: idSchema,
+  idempotencyKey: idSchema,
+});
+
 export const expenseListInputSchema = paginationInputSchema.extend({
   /** empty/absent = all categories (a record never escapes every filter) */
   categoryIds: z.array(idSchema).max(100).optional(),
@@ -1467,7 +1518,7 @@ export const expenseListInputSchema = paginationInputSchema.extend({
   sortDir: z.enum(["asc", "desc"]).optional(),
 });
 
-export const expenseListOutputSchema = pagedOutputSchema(expenseSchema);
+export const expenseListOutputSchema = pagedOutputSchema(expenseListItemSchema);
 
 // --- purchase intake (ticket 29) -------------------------------------------
 
@@ -1737,6 +1788,10 @@ export type DashboardSummary = z.infer<typeof dashboardSummaryOutputSchema>;
 export type OnboardingProgress = z.infer<typeof onboardingProgressOutputSchema>;
 export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
 export type Expense = z.infer<typeof expenseSchema>;
+export type ExpenseListItem = z.infer<typeof expenseListItemSchema>;
+export type ExpenseCorrection = z.infer<typeof expenseCorrectionSchema>;
+export type ExpenseCorrectionHistoryEntry = z.infer<typeof expenseCorrectionHistoryEntrySchema>;
+export type ExpenseCorrectionHistory = z.infer<typeof expenseCorrectionHistorySchema>;
 export type ReportRangePreset = z.infer<typeof reportRangePresetSchema>;
 export type ExpenseCategoryTotal = z.infer<typeof expenseCategoryTotalSchema>;
 export type ProfitReport = z.infer<typeof profitReportOutputSchema>;
@@ -1778,5 +1833,8 @@ export type ReturnsListFilters = z.infer<typeof returnsListInputSchema>;
 export type ReturnsReview = z.infer<typeof returnsReviewInputSchema>;
 export type ExpenseCategoryCreate = z.infer<typeof expenseCategoryCreateInputSchema>;
 export type ExpenseCreate = z.infer<typeof expenseCreateInputSchema>;
+export type ExpenseCorrect = z.infer<typeof expenseCorrectInputSchema>;
+export type ExpenseCorrectionHistoryInput = z.infer<typeof expenseCorrectionHistoryInputSchema>;
+export type ExpenseCorrectionUndo = z.infer<typeof expenseCorrectionUndoInputSchema>;
 export type ExpenseListFilters = z.infer<typeof expenseListInputSchema>;
 export type ProfitReportInput = z.infer<typeof profitReportInputSchema>;

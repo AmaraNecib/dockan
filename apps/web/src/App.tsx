@@ -15,6 +15,8 @@ import { clearAuthLost, recoverAuthLost, useAuthLossReason } from "./lib/auth-re
 import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY, onPreferenceWriteSettled } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
+import { EXPENSE_CORRECTION_RECOVERY_QUERY_KEY } from "./lib/query-keys";
+import { SessionCacheScopeProvider } from "./lib/session-query-scope";
 
 /** The longest accepted login name: "+213550123123". */
 const PHONE_MAX_LENGTH = 13;
@@ -48,6 +50,8 @@ function setupNameKey(ownerName: string, storeName: string): MessageKey | null {
 /** Blocks children until a session exists; preferences import in the background. */
 export function RequireSession({ children }: { children: ReactNode }) {
   const vault = useVaultStatus();
+  const queryClient = useQueryClient();
+  const [sessionCacheScope, setSessionCacheScope] = useState(() => crypto.randomUUID());
   /**
    * The session can die under a live window — another window replaced it, the
    * owner logged out, the vault was locked. The refusal that says so must
@@ -219,6 +223,8 @@ export function RequireSession({ children }: { children: ReactNode }) {
           status={vaultStatus}
           onUnlocked={() => {
             clearAuthLost();
+            queryClient.removeQueries({ queryKey: EXPENSE_CORRECTION_RECOVERY_QUERY_KEY });
+            setSessionCacheScope(crypto.randomUUID());
             // the unlock minted a fresh credential, which is exactly what the
             // status route would now report: this window holds the live session
             vault.setStatus({ ...vaultStatus, state: "unlocked", unlocked: true, session: true });
@@ -226,7 +232,11 @@ export function RequireSession({ children }: { children: ReactNode }) {
         />
       );
     }
-    return <VaultOwnerGate>{children}</VaultOwnerGate>;
+    return (
+      <SessionCacheScopeProvider scopeId={sessionCacheScope}>
+        <VaultOwnerGate>{children}</VaultOwnerGate>
+      </SessionCacheScopeProvider>
+    );
   }
   // A status route that 404s means this build has no vault gate (legacy
   // plaintext) and falls through to the auth screens. A refusal that names a
@@ -239,7 +249,11 @@ export function RequireSession({ children }: { children: ReactNode }) {
   if (vault.failure === "stale-lock") return <VaultLockStaleHeartbeat onRetry={retryRefusedFolder} />;
   if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
   if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
-  return <LegacySessionGate>{children}</LegacySessionGate>;
+  return (
+    <SessionCacheScopeProvider scopeId={sessionCacheScope}>
+      <LegacySessionGate>{children}</LegacySessionGate>
+    </SessionCacheScopeProvider>
+  );
 }
 
 /**

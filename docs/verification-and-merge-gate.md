@@ -67,7 +67,7 @@ head; an inherited mutation table is an unrun gate.
 
 These ordinary TDD and current-head mutation checks are distinct from the automated red-on-parent replay, which runs only in CI. Do not run or delegate that replay locally or require its local output. Browser-relevant changes follow the selector-first procedure in `.agents/skills/guard/SKILL.md`, including its recorded decision and selected-scope run.
 
-Put verification evidence in the commit message body so the parent can reuse it for the PR description, and keep the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A lane that only writes the commit body produces no comment, so reason 4 fails at merge.
+Put evidence already available before commit in the commit message body. Record post-commit verification in `.scratch/reviews/<issue>/<sha>-verification.md` and hand its path and verified SHA to the parent for the PR description. Do not create an evidence-only commit that moves the verified HEAD. Keep other lane notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
 ### CI enforces red-on-parent with `scripts/red-on-parent.ts`; a waiver is its only exception
 

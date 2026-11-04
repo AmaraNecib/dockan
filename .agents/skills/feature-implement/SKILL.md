@@ -177,7 +177,7 @@ Run `code-review` skill against `git diff <base-sha>...HEAD`. Save output to
 
 ### 10. Guard pre-push (Phase 2)
 
-Run `guard` Phase 2 for the local checks below. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
+Commit the complete reviewable scope before running `guard` Phase 2 for the local checks below. If verification requires a fix, commit it and refresh the affected checks and stale reviews before handoff. Record post-commit results in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`, not an evidence-only commit. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
 
 ```bash
 bun run typecheck && bun run lint && bun run skills:check
@@ -204,7 +204,7 @@ it, and take it to the owner instead of calling the branch green.
 
 ### 11. Report to the parent — the parent owns push and PR
 
-**A lane stops at step 10.** Its last act is its **commit**. It does not push, does
+**A lane stops after step 10 verifies its committed HEAD.** It reports that SHA and the local verification evidence path to the parent. It does not push, does
 not open a PR and does not merge — running any command below is a breach of its
 authority boundary, not help. The parent session pushes the lane's branch, opens
 the PR and drives the review rounds.

@@ -640,6 +640,30 @@ fn reveal_origin_matches(url: &tauri::Url, port: u16) -> bool {
         && url.username().is_empty() && url.password().is_none()
 }
 
+/// Validate the live native launch before HTTP and again after it. The second
+/// call receives a newly-read origin and the captured PID, so replacement,
+/// shutdown, or navigation during the request invalidates the operation.
+fn capture_live_reveal_launch(
+    slot: &mut SidecarSlot,
+    window_label: &str,
+    origin: &tauri::Url,
+    shutting_down: bool,
+    expected_pid: Option<u32>,
+) -> Result<(SidecarConfig, u32), &'static str> {
+    let config = slot.config.clone().ok_or(crate::backup_reveal::FAILED)?;
+    if window_label != "main" || !reveal_origin_matches(origin, config.port) || shutting_down {
+        return Err(crate::backup_reveal::FAILED);
+    }
+    let sidecar = slot.sidecar.as_mut().ok_or(crate::backup_reveal::FAILED)?;
+    let pid = sidecar.child.id();
+    if !sidecar.served || !matches!(sidecar.child.try_wait(), Ok(None))
+        || expected_pid.is_some_and(|expected| expected != pid)
+    {
+        return Err(crate::backup_reveal::FAILED);
+    }
+    Ok((config, pid))
+}
+
 const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
 
 /// Read the existing authenticated audit RPC, never a renderer-selected URL.
@@ -726,7 +750,7 @@ fn backup_audit_with_timeout(
 pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, session_token: String) -> Result<(), String> {
     use crate::backup_reveal::FAILED;
     let origin = window.url().map_err(|_| FAILED.to_string())?;
-    let main_window = window.label() == "main";
+    let window_label = window.label().to_string();
     let reveal_window = window.clone();
     run_broker_task(move || {
         use crate::backup_reveal::{check_candidate, reveal_backup};
@@ -734,13 +758,8 @@ pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, 
         let state = app.state::<SidecarState>();
         let (config, pid) = {
             let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
-            let config = guard.config.clone().ok_or(FAILED)?;
-            if !main_window || !reveal_origin_matches(&origin, config.port) { return Err(FAILED.to_string()); }
-            let sidecar = guard.sidecar.as_mut().ok_or(FAILED)?;
-            if shutdown_began() || !sidecar.served || !matches!(sidecar.child.try_wait(), Ok(None)) {
-                return Err(FAILED.to_string());
-            }
-            (config, sidecar.child.id())
+            capture_live_reveal_launch(&mut guard, &window_label, &origin, shutdown_began(), None)
+                .map_err(str::to_string)?
         };
         let path = Path::new(&path);
         check_candidate(path, &config.data_dir).map_err(str::to_string)?;
@@ -751,9 +770,8 @@ pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, 
         }
         {
             let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
-            let sidecar = guard.sidecar.as_mut().ok_or(FAILED)?;
-            if shutdown_began() || sidecar.child.id() != pid || !sidecar.served
-                || !matches!(sidecar.child.try_wait(), Ok(None)) { return Err(FAILED.to_string()); }
+            capture_live_reveal_launch(&mut guard, reveal_window.label(), &current_origin, shutdown_began(), Some(pid))
+                .map_err(str::to_string)?;
         }
         reveal_backup(path, &config.data_dir, &audit).map_err(str::to_string)
     }).await
@@ -1469,6 +1487,61 @@ mod tests {
             });
             assert!(allowed, "{command} must be allowed from the remote sidecar origin");
         }
+    }
+
+    fn reveal_test_config() -> SidecarConfig {
+        SidecarConfig {
+            binary: PathBuf::from("dokan-api"), data_dir: PathBuf::from("C:\\data"),
+            port_root: PathBuf::from("C:\\data\\run"), web_dist: PathBuf::from("C:\\ui"),
+            port: 4318, boot_token: "test-token".to_string(),
+        }
+    }
+
+    fn reveal_test_slot(with_config: bool) -> SidecarSlot {
+        let mut slot = SidecarSlot::default();
+        if with_config { slot.config = Some(reveal_test_config()); }
+        let mut sidecar = dummy_sidecar();
+        sidecar.served = true;
+        slot.sidecar = Some(sidecar);
+        slot
+    }
+
+    #[test]
+    fn reveal_launch_gate_rejects_wrong_window_origin_missing_launch_shutdown_and_dead_child() {
+        let origin: tauri::Url = "http://127.0.0.1:4318/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "settings", &origin, false, None).is_err());
+        let wrong_origin: tauri::Url = "http://127.0.0.1:4319/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "main", &wrong_origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut SidecarSlot::default(), "main", &origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(false), "main", &origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "main", &origin, true, None).is_err());
+        let mut dead = reveal_test_slot(true);
+        let child = &mut dead.sidecar.as_mut().unwrap().child;
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(capture_live_reveal_launch(&mut dead, "main", &origin, false, None).is_err());
+        if let Some(sidecar) = dead.sidecar.take() { reap_sidecar(sidecar); }
+        let mut unserved = reveal_test_slot(true);
+        unserved.sidecar.as_mut().unwrap().served = false;
+        assert!(capture_live_reveal_launch(&mut unserved, "main", &origin, false, None).is_err());
+        if let Some(sidecar) = unserved.sidecar.take() { reap_sidecar(sidecar); }
+    }
+
+    #[test]
+    fn reveal_launch_recheck_rejects_replacement_shutdown_and_reread_origin_change() {
+        let origin: tauri::Url = "http://127.0.0.1:4318/backups".parse().unwrap();
+        let mut slot = reveal_test_slot(true);
+        let (_, captured_pid) = capture_live_reveal_launch(&mut slot, "main", &origin, false, None).unwrap();
+        let old = slot.sidecar.take().unwrap();
+        reap_sidecar(old);
+        let mut replacement = dummy_sidecar();
+        replacement.served = true;
+        slot.sidecar = Some(replacement);
+        assert!(capture_live_reveal_launch(&mut slot, "main", &origin, false, Some(captured_pid)).is_err());
+        assert!(capture_live_reveal_launch(&mut slot, "main", &origin, true, Some(captured_pid)).is_err());
+        let changed_origin: tauri::Url = "http://127.0.0.1:4319/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut slot, "main", &changed_origin, false, Some(captured_pid)).is_err());
+        if let Some(sidecar) = slot.sidecar.take() { reap_sidecar(sidecar); }
     }
 
     #[test]

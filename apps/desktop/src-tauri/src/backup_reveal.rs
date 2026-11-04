@@ -143,10 +143,14 @@ mod windows {
     }
 
     fn file_error(error: std::io::Error) -> &'static str {
-        match error.raw_os_error() {
-            Some(2 | 3) => MISSING,
-            _ => FAILED,
-        }
+        file_error_code(error.raw_os_error())
+    }
+
+    pub(super) fn file_error_code(code: Option<i32>) -> &'static str {
+        // ERROR_FILE_NOT_FOUND identifies the requested leaf. PATH_NOT_FOUND
+        // can describe a missing ancestor or another unresolvable path, so do
+        // not tell the user the backup itself is missing.
+        if code == Some(2) { MISSING } else { FAILED }
     }
 
     pub(super) fn pin_local_file(path: &Path) -> Result<Vec<OwnedHandle>, &'static str> {
@@ -267,6 +271,15 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_file_error_mapping_only_calls_missing_leaf_missing() {
+        assert_eq!(windows::file_error_code(Some(2)), MISSING);
+        assert_eq!(windows::file_error_code(Some(3)), FAILED);
+        assert_eq!(windows::file_error_code(Some(5)), FAILED);
+        assert_eq!(windows::file_error_code(Some(123)), FAILED);
+        assert_eq!(windows::file_error_code(None), FAILED);
+    }
 
     fn receipt(path: &Path) -> serde_json::Value {
         serde_json::json!({"json":{"items":[{"type":"BACKUP_CREATED","ref":path}]}})

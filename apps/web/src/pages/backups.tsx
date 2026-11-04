@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 
@@ -19,9 +19,14 @@ export function BackupsPage() {
   const backup = useMutation(orpc.backupManual.mutationOptions());
   const reveal = useMutation({ mutationFn: revealBackup });
   const dispatching = useRef(false);
+  const exportButton = useRef<HTMLButtonElement>(null);
   const revealError = reveal.error instanceof BackupRevealError ? reveal.error.key : "backupsRevealFailed";
   const missing = reveal.isError && revealError === "backupsRevealMissing";
   const desktop = backupRevealAvailable();
+
+  useEffect(() => {
+    if (missing) exportButton.current?.focus();
+  }, [missing]);
 
   return (
     <section>
@@ -31,6 +36,7 @@ export function BackupsPage() {
       <div className="mt-4 grid gap-3 rounded border bg-card p-4">
         <div>
           <Button
+            ref={exportButton}
             data-testid="backup-export"
             onClick={() => {
               if (dispatching.current) return;

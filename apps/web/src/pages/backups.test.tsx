@@ -112,8 +112,24 @@ it("invalidates the completed-file claim when native reveal refuses a missing fi
   );
   expect(host.querySelector('[data-testid="backup-done"]')).toBeNull();
   expect(host.textContent).not.toContain("إظهار الملف في المجلد");
+  expect(document.activeElement).toBe(button("إنشاء نسخة احتياطية الآن"));
   await click("إنشاء نسخة احتياطية الآن");
   expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+});
+
+it("refuses reveal without a stored session token and keeps the completed backup", async () => {
+  clearVaultSessionToken();
+  bridge(async (_command, args) => {
+    calls.push({ command: _command, args });
+    if (!args.sessionToken) throw "BACKUP_REVEAL_FAILED";
+  });
+  await click("إنشاء نسخة احتياطية الآن");
+  await click("إظهار الملف في المجلد");
+  expect(calls).toEqual([{ command: "backup_reveal", args: { path: completedPath, sessionToken: "" } }]);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+    "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
+  );
   expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
 });
 

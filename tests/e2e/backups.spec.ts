@@ -145,6 +145,7 @@ test.describe("completed backup reveal", () => {
     );
     await expect(done).toHaveCount(0);
     await expect(reveal).toHaveCount(0);
+    await expect(page.getByTestId("backup-export")).toBeFocused();
   });
 
   test("failed creation never exposes a completed backup or reveal action", async ({ page }) => {

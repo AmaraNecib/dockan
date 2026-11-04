@@ -473,6 +473,31 @@ function useSidebarPreferenceMigration(enabled: boolean): void {
 /** The legacy plaintext path: better-auth session, setup or login. */
 function LegacySessionGate({ children }: { children: ReactNode }) {
   const sessionResult = useSession();
+  const loss = useAuthLossReason();
+  useEffect(() => {
+    if (loss !== "refusal") return;
+    let alive = true;
+    let inFlight = false;
+    const recheck = (): void => {
+      if (document.visibilityState === "hidden" || inFlight) return;
+      inFlight = true;
+      // A sibling's login replaces the shared cookie, not this mount's session
+      // snapshot. Only a fresh server answer can take back the refusal.
+      void authClient.getSession({ query: { disableCookieCache: true } }).then((result) => {
+        if (alive && !result.error && result.data !== null) recoverAuthLost();
+      }).catch(() => {
+        // Verification failed. Keep identity masked until a later focus retry.
+      }).finally(() => { inFlight = false; });
+    };
+    recheck();
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [loss]);
   useSidebarPreferenceMigration(sessionResult.data !== null && !sessionResult.isPending);
 
   if (sessionResult.isPending) {

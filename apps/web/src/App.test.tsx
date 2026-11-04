@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
-import { storeVaultSessionToken } from "./lib/vault-client";
+import { clearVaultSessionToken, storeVaultSessionToken } from "./lib/vault-client";
 import { clearAuthLost, markAuthLost, markSignedOut, SIGNED_OUT_STORAGE_KEY } from "./lib/auth-refusal";
 import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
@@ -33,6 +33,11 @@ let setupError: Error | null = null;
 // issue #97 follow-up: the shell's preference migration
 let sessionData: { user: { id: string } } | null = null;
 let sessionPending = false;
+let freshSessionRead = async (): Promise<{ data: typeof sessionData; error: null | { message: string } }> => ({ data: null, error: null });
+type FreshSessionQuery = { query: { disableCookieCache: boolean } };
+let freshSessionArgs: FreshSessionQuery[] = [];
+type OwnerProfile = { id: string; name: string; phone: string; role: "owner" };
+let ownerRead = async (): Promise<OwnerProfile> => ({ id: "owner", name: "Old owner", phone: "0550123123", role: "owner" });
 let preferenceStore: Record<string, string> = {};
 let preferenceReadGate: Promise<void> | null = null;
 let preferenceReadCalls = 0;
@@ -41,6 +46,7 @@ let preferenceWriteGate: Promise<void> | null = null;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
+    currentOwner: () => ownerRead(),
     needsSetup: async () => {
       if (needsSetupFailures > 0) {
         needsSetupFailures -= 1;
@@ -81,6 +87,7 @@ mock.module("@/lib/rpc", () => ({
 mock.module("@/lib/auth-client", () => ({
   useSession: () => ({ data: sessionData, isPending: sessionPending }),
   authClient: {
+    getSession: (args: FreshSessionQuery) => { freshSessionArgs.push(args); return freshSessionRead(); },
     signIn: {
       username: async (args: { username?: string; password?: string }) => {
         signInCalls += 1;
@@ -94,6 +101,12 @@ mock.module("@/lib/auth-client", () => ({
 }));
 
 const { RequireSession } = await import("./App");
+const { useCurrentOwner } = await import("./components/app/account-menu");
+
+function IdentityProbe() {
+  const owner = useCurrentOwner();
+  return <div data-testid="identity"><span>{owner.profile?.name ?? "hidden"}</span><button onClick={owner.retry}>Retry profile</button></div>;
+}
 
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> = [];
 
@@ -154,6 +167,10 @@ afterEach(() => {
   setupError = null;
   sessionData = null;
   sessionPending = false;
+  freshSessionArgs = [];
+  clearVaultSessionToken();
+  freshSessionRead = async () => ({ data: null, error: null });
+  ownerRead = async () => ({ id: "owner", name: "Old owner", phone: "0550123123", role: "owner" });
   preferenceStore = {};
   preferenceReadGate = null;
   preferenceReadCalls = 0;
@@ -190,6 +207,79 @@ async function mountAuthGateFor(selector: string, children: React.ReactNode = nu
   }
   throw new Error(`auth gate did not render ${selector}`);
 }
+
+describe("plaintext refusal recovery", () => {
+  it("waits for a fresh authenticated session and a fresh owner, ignoring obsolete profile replies", async () => {
+    sessionData = { user: { id: "owner" } };
+    const host = await mountAuthGateFor('[data-testid="identity"]', <IdentityProbe />);
+    expect(host.textContent).toContain("Old owner");
+    let resolveOld!: (owner: OwnerProfile) => void;
+    ownerRead = () => new Promise((resolve) => { resolveOld = resolve; });
+    const retry = host.querySelector("button");
+    if (!(retry instanceof HTMLButtonElement)) throw new Error("profile retry missing");
+    await act(async () => retry.click());
+    await act(async () => markAuthLost());
+    expect(host.textContent).toContain("hidden");
+    expect(freshSessionArgs).toEqual([{ query: { disableCookieCache: true } }]);
+
+    let resolveSession!: (value: Awaited<ReturnType<typeof freshSessionRead>>) => void;
+    freshSessionRead = () => new Promise((resolve) => { resolveSession = resolve; });
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(freshSessionArgs).toHaveLength(2);
+    await act(async () => resolveOld({ id: "owner", name: "Obsolete owner", phone: "", role: "owner" }));
+    expect(host.textContent).toContain("hidden");
+    let resolveFresh!: (owner: OwnerProfile) => void;
+    ownerRead = () => new Promise((resolve) => { resolveFresh = resolve; });
+    await act(async () => resolveSession({ data: sessionData, error: null }));
+    expect(host.textContent).toContain("hidden");
+    await act(async () => resolveFresh({ id: "owner", name: "Fresh owner", phone: "", role: "owner" }));
+    expect(host.textContent).toContain("Fresh owner");
+    expect(host.textContent).not.toContain("Obsolete owner");
+  });
+
+  it("discards session verification overtaken by sign-out", async () => {
+    sessionData = { user: { id: "owner" } };
+    const host = await mountAuthGateFor('[data-testid="identity"]', <IdentityProbe />);
+    let resolveSession!: (value: Awaited<ReturnType<typeof freshSessionRead>>) => void;
+    freshSessionRead = () => new Promise((resolve) => { resolveSession = resolve; });
+    await act(async () => markAuthLost());
+    await act(async () => markSignedOut());
+    await act(async () => resolveSession({ data: sessionData, error: null }));
+    expect(host.textContent).toContain("hidden");
+    expect(host.textContent).not.toContain("Old owner");
+  });
+
+  it("never uses plaintext verification to recover a refused vault broker token", async () => {
+    vaultStatusResponse = async () => Response.json({ mode: "vault", state: "unlocked", unlocked: true, session: true, broker: true, legacyDatabase: false, recoveryKeyCount: 1, lockedForMs: 0 });
+    storeVaultSessionToken("refused-broker-token");
+    sessionData = { user: { id: "owner" } };
+    freshSessionRead = async () => ({ data: sessionData, error: null });
+    const host = await mountAuthGateFor('[data-testid="identity"]', <IdentityProbe />);
+    await act(async () => markAuthLost());
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(freshSessionArgs).toHaveLength(0);
+    expect(host.querySelector('[data-testid="identity"]')).toBeNull();
+    expect(host.textContent).not.toContain("Old owner");
+  });
+
+  it("does not recover on failed verification or an unconfirmed sign-out", async () => {
+    sessionData = { user: { id: "owner" } };
+    const host = await mountAuthGateFor('[data-testid="identity"]', <IdentityProbe />);
+    freshSessionRead = async () => { throw new Error("offline"); };
+    await act(async () => markAuthLost());
+    expect(freshSessionArgs).toHaveLength(1);
+    expect(host.textContent).toContain("hidden");
+    freshSessionRead = async () => ({ data: sessionData, error: { message: "refused" } });
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(host.textContent).toContain("hidden");
+    await act(async () => markSignedOut());
+    const before = freshSessionArgs.length;
+    freshSessionRead = async () => ({ data: sessionData, error: null });
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(freshSessionArgs).toHaveLength(before);
+    expect(host.textContent).toContain("hidden");
+  });
+});
 
 async function mountAuthGate(): Promise<HTMLElement> {
   return mountAuthGateFor("form");

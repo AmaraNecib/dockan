@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
 import { MutationCache, QueryClient, QueryClientProvider, type MutationFunctionContext, type UseMutationOptions, type UseMutationResult } from "@tanstack/react-query";
 import { act } from "react";
+import { z } from "zod";
 import { createRoot } from "react-dom/client";
 import { clearAuthLost, markAuthLost } from "./auth-refusal";
 import { createCredentialLease, type CredentialLease } from "./credential-lease";
@@ -121,6 +122,84 @@ it("keeps TanStack's mutation defaults when no mutationFn is supplied", async ()
     expect(await current().mutateAsync(23)).toBe("default-23");
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+});
+
+it.each(["key", "global"] as const)("preserves omitted %s default callbacks and explicit undefined overrides", async (source) => {
+  const events: string[] = [];
+  const contextValue = { previous: 5 };
+  const defaults: UseMutationOptions<unknown, Error, unknown, unknown> = {
+    mutationFn: async (value) => { const input = z.number().parse(value); if (input < 0) throw new Error("default refusal"); return `saved-${input}`; },
+    onMutate: (value) => { events.push(`mutate-${value}`); return contextValue; },
+    onSuccess: (data, value, result) => { expect(result).toBe(contextValue); events.push(`success-${data}-${value}`); },
+    onError: (error, value, result) => { expect(result).toBe(contextValue); events.push(`error-${error.message}-${value}`); },
+    onSettled: (_data, _error, value, result) => { expect(result).toBe(contextValue); events.push(`settled-${value}`); },
+  };
+  const client = new QueryClient(source === "global" ? { defaultOptions: { mutations: defaults } } : {});
+  if (source === "key") client.setMutationDefaults(["callbacks"], defaults);
+  const current = await mount<string, number, typeof contextValue>({ mutationKey: ["callbacks"] }, client, createCredentialLease());
+  await act(async () => {
+    expect(await current().mutateAsync(9)).toBe("saved-9");
+    await expect(current().mutateAsync(-1)).rejects.toThrow("default refusal");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(events).toEqual(["mutate-9", "success-saved-9-9", "settled-9", "mutate--1", "error-default refusal--1", "settled--1"]);
+  events.length = 0;
+  const overridden = await mount<string, number, typeof contextValue>({ mutationKey: ["callbacks"], onMutate: undefined, onSuccess: undefined, onError: undefined, onSettled: undefined }, client);
+  await act(async () => {
+    expect(await overridden().mutateAsync(10)).toBe("saved-10");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(events).toEqual([]);
+});
+
+it.each(["supplied", "key defaults", "global defaults"] as const)("suppresses retired rejection callbacks but forwards fresh errors with %s", async (source) => {
+  const variables = { amount: 41 };
+  const optimistic = { previous: 12 };
+  const failure = new Error("deferred refusal");
+  const entered = deferred();
+  let rejectA!: (error: Error) => void;
+  const held = new Promise<string>((_resolve, reject) => { rejectA = reject; });
+  const oldEvents: string[] = [];
+  const freshEvents: string[] = [];
+  function options(events: string[], mutationFn: () => Promise<string>): UseMutationOptions<unknown, Error, unknown, unknown> {
+    return {
+      mutationKey: ["rejection"], mutationFn,
+      onMutate: () => optimistic,
+      onError: (error, value, result, context) => {
+        expect(error).toBe(failure); expect(value).toBe(variables); expect(result).toBe(optimistic);
+        expect(context.mutationKey).toEqual(["rejection"]); events.push("error");
+      },
+      onSettled: (data, error, value, result, context) => {
+        expect(data).toBeUndefined(); expect(error).toBe(failure); expect(value).toBe(variables); expect(result).toBe(optimistic);
+        expect(context.mutationKey).toEqual(["rejection"]); events.push("settled");
+      },
+    };
+  }
+  async function scoped(events: string[], fn: () => Promise<string>, lease: CredentialLease) {
+    const defaults = options(events, fn);
+    const client = new QueryClient(source === "global defaults" ? { defaultOptions: { mutations: defaults } } : {});
+    if (source === "key defaults") client.setMutationDefaults(["rejection"], defaults);
+    return mount(source === "supplied" ? defaults : { mutationKey: ["rejection"] }, client, lease);
+  }
+  const old = await scoped(oldEvents, () => { entered.resolve(); return held; }, createCredentialLease());
+  let outcome!: Promise<unknown>;
+  await act(async () => {
+    outcome = old().mutateAsync(variables).then(() => null, (error: Error) => error);
+    await entered.promise;
+  });
+  markAuthLost(); clearAuthLost();
+  const fresh = await scoped(freshEvents, async () => { throw failure; }, createCredentialLease());
+  await act(async () => {
+    rejectA(failure);
+    expect(await outcome).toBe(failure);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(oldEvents).toEqual([]);
+  await act(async () => {
+    await expect(fresh().mutateAsync(variables)).rejects.toBe(failure);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(freshEvents).toEqual(["error", "settled"]);
 });
 
 const settingsWrites = [

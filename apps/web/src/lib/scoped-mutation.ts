@@ -1,4 +1,4 @@
-import { useMutation as useTanstackMutation, type DefaultError, type QueryClient, type UseMutationOptions } from "@tanstack/react-query";
+import { useMutation as useTanstackMutation, useQueryClient, type DefaultError, type QueryClient, type UseMutationOptions } from "@tanstack/react-query";
 import { useRpc } from "./rpc-context";
 
 /** Mutation execution and completion belong to their originating credential. */
@@ -7,14 +7,14 @@ export function useMutation<TData = unknown, TError = DefaultError, TVariables =
   client?: QueryClient,
 ) {
   const { lease } = useRpc();
-  const { mutationFn, onMutate, onSuccess, onError, onSettled } = options;
-  const scopedOptions: typeof options = {
-    ...options,
-    onMutate: onMutate === undefined ? undefined : (...args) => { lease?.assertLive(); return onMutate(...args); },
-    onSuccess: onSuccess === undefined ? undefined : (...args) => { if (!lease || lease.isLive()) return onSuccess(...args); },
-    onError: onError === undefined ? undefined : (...args) => { if (!lease || lease.isLive()) return onError(...args); },
-    onSettled: onSettled === undefined ? undefined : (...args) => { if (!lease || lease.isLive()) return onSettled(...args); },
-  };
+  const queryClient = useQueryClient(client);
+  const { onMutate, onSuccess, onError, onSettled } = queryClient.defaultMutationOptions(options);
+  const { mutationFn } = options;
+  const scopedOptions: typeof options = { ...options };
+  if (onMutate !== undefined) scopedOptions.onMutate = (...args) => { lease?.assertLive(); return onMutate(...args); };
+  if (onSuccess !== undefined) scopedOptions.onSuccess = (...args) => { if (!lease || lease.isLive()) return onSuccess(...args); };
+  if (onError !== undefined) scopedOptions.onError = (...args) => { if (!lease || lease.isLive()) return onError(...args); };
+  if (onSettled !== undefined) scopedOptions.onSettled = (...args) => { if (!lease || lease.isLive()) return onSettled(...args); };
   if (mutationFn !== undefined) {
     scopedOptions.mutationFn = function (this: typeof options, ...args) {
       lease?.assertLive();

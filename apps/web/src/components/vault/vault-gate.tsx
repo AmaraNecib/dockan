@@ -223,7 +223,6 @@ export function VaultGate({ status, onUnlocked, onSetupCreated, hideSetupKey = f
   const [recoveryInput, setRecoveryInput] = useState("");
   const [ceremony, setCeremony] = useVaultSetupCeremony();
   const { recoveryKey, cleanup, savedConfirmed } = ceremony;
-  const setCleanup = (next: VaultCleanupOutcome | undefined): void => setCeremony((current) => ({ ...current, cleanup: next }));
   const setSavedConfirmed = (next: boolean): void => setCeremony((current) => ({ ...current, savedConfirmed: next }));
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">(recoveryKey === null ? "primary" : "recovery-show");
@@ -301,6 +300,15 @@ export function VaultGate({ status, onUnlocked, onSetupCreated, hideSetupKey = f
         <VaultAlert message={t("vaultInvalid")} focus />
       </VaultFrame>
     );
+  }
+
+  if (ceremony.pending) {
+    return <VaultFrame><p role="status" data-testid="vault-setup-pending">{t("vaultWorking")}</p></VaultFrame>;
+  }
+  // A lost setup reply does not prove the server failed to commit. Only an
+  // unconfigured status permits another setup attempt; a live cookie is not ack.
+  if (ceremony.failure !== undefined && status.state !== "unconfigured") {
+    return <VaultFrame><VaultAlert message={ceremony.failure} focus /></VaultFrame>;
   }
 
   if (recoveryKey !== null && !hideSetupKey) {
@@ -443,25 +451,29 @@ export function VaultGate({ status, onUnlocked, onSetupCreated, hideSetupKey = f
               return;
             }
             void run(async () => {
-              const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
-              setCeremony({ recoveryKey: result.recoveryKey, cleanup: undefined, savedConfirmed: false });
-              setScreen("recovery-show");
-              onSetupCreated?.();
-              if (status.broker) {
-                // the key is on screen now: the sweep verdict follows on the
-                // shell's own longer budget (round-3 finding 1); until it
-                // arrives the outcome is UNKNOWN, never clean (round-4)
-                setCleanup(undefined);
-                void fetchVaultSetupWarning(true).then(setCleanup);
-              } else {
-                // the HTTP setup response already carries the sweep verdict
-                setCleanup(
-                  result.plaintextRemaining.length > 0
+              const attempt = Symbol("vault setup");
+              setCeremony({ attempt, pending: true, recoveryKey: null, cleanup: undefined, savedConfirmed: false });
+              try {
+                const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
+                const cleanup: VaultCleanupOutcome | undefined = status.broker ? undefined
+                  : result.plaintextRemaining.length > 0
                     ? { status: "remaining", paths: result.plaintextRemaining }
-                    : result.plaintextStatus === "clean"
-                      ? { status: "clean" }
-                      : { status: "unknown" },
-                );
+                    : result.plaintextStatus === "clean" ? { status: "clean" } : { status: "unknown" };
+                setCeremony((current) => current.attempt !== attempt ? current : {
+                  attempt, pending: false, recoveryKey: result.recoveryKey, cleanup, savedConfirmed: false,
+                });
+                setScreen("recovery-show");
+                onSetupCreated?.();
+                if (status.broker) {
+                  void fetchVaultSetupWarning(true).then((next) => {
+                    setCeremony((current) => current.attempt !== attempt ? current : { ...current, cleanup: next });
+                  });
+                }
+              } catch (err) {
+                setCeremony((current) => current.attempt !== attempt ? current : {
+                  ...current, pending: false, failure: vaultErrorCopy(err instanceof Error ? err : undefined),
+                });
+                throw err;
               }
             });
           }}
@@ -503,7 +515,7 @@ export function VaultGate({ status, onUnlocked, onSetupCreated, hideSetupKey = f
             />
           </label>
           <p className="text-xs text-muted-foreground">{t("vaultPassphraseRule")}</p>
-          <VaultAlert message={error} focus={errorField === null} />
+          <VaultAlert message={error ?? ceremony.failure ?? null} focus={errorField === null} />
           <button type="submit" className="rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" disabled={busy} data-testid="vault-setup-submit">
             {busy ? t("vaultWorking") : t("vaultSetupCreate")}
           </button>

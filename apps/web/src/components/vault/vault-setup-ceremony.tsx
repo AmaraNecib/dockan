@@ -2,6 +2,9 @@ import { createContext, useContext, useState, type Dispatch, type ReactNode, typ
 import type { VaultCleanupOutcome } from "@/lib/vault-client";
 
 export type VaultSetupCeremony = {
+  attempt?: symbol;
+  pending?: boolean;
+  failure?: string;
   recoveryKey: string | null;
   cleanup: VaultCleanupOutcome | undefined;
   savedConfirmed: boolean;

@@ -109,6 +109,18 @@ function SessionGate({ children, verify }: { children: ReactNode; verify: boolea
    * not the live one".
    */
   const vaultStatusNow = vault.status;
+  const setupCompletionProbed = useRef<string | null>(null);
+  useEffect(() => {
+    if (ceremony.recoveryKey === null) {
+      setupCompletionProbed.current = null;
+      return;
+    }
+    if (setupCompletionProbed.current === ceremony.recoveryKey) return;
+    setupCompletionProbed.current = ceremony.recoveryKey;
+    // The setup's original gate may be gone. Verify the current credential,
+    // rather than applying that gate's obsolete status or trusting its cookie.
+    if (!isLiveSessionAnswer(vaultStatusNow)) void vault.refresh();
+  }, [ceremony.recoveryKey, vaultStatusNow, vault.refresh]);
   /**
    * Is the gate up for a reason a LIVE session could clear? That covers the boot
    * race ("unlocked, but this page's credential is not the live one") AND the
@@ -243,7 +255,7 @@ function SessionGate({ children, verify }: { children: ReactNode; verify: boolea
     // sent back there by its first refused query. The broker path's token
     // lives in this page, so a window without it has no session at all.
     const hasSession = vaultStatus.session && (!vaultStatus.broker || readVaultSessionToken() !== undefined);
-    if (vaultStatus.state !== "unlocked" || !hasSession || authLost || ceremony.recoveryKey !== null) {
+    if (vaultStatus.state !== "unlocked" || !hasSession || authLost || ceremony.pending || ceremony.failure !== undefined || ceremony.recoveryKey !== null) {
       return (
         <VaultGate
           status={vaultStatus}

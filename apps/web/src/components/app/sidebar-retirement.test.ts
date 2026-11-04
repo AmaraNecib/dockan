@@ -10,6 +10,34 @@ import { createDokanRpcClient } from "../../lib/rpc-link";
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; window.localStorage.clear(); });
 
+it("retains the legacy fallback when A retires after its migration write dispatches", async () => {
+  window.localStorage.setItem("dokan.sidebar.collapsed", "true");
+  let release!: (response: Response) => void;
+  let dispatched!: () => void;
+  const entered = new Promise<void>((resolve) => { dispatched = resolve; });
+  let writes = 0;
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const path = new URL(input instanceof Request ? input.url : String(input), window.location.origin).pathname;
+    if (path.endsWith("/preferencesGet")) return Response.json({ json: { values: {} } });
+    writes += 1;
+    const response = new Promise<Response>((resolve) => { release = resolve; });
+    dispatched();
+    return response;
+  }, { preconnect: originalFetch.preconnect });
+  const stop = subscribeSessionRefresh(() => {});
+  try {
+    const lease = createCredentialLease();
+    const pending = migrateLegacySidebarCollapsed(createPreferenceClient(createDokanRpcClient(lease), lease));
+    await entered;
+    expect(writes).toBe(1);
+    window.dispatchEvent(new StorageEvent("storage", { key: "better-auth.message", newValue: '{"event":"session","data":{"trigger":"signout"}}' }));
+    release(Response.json({ json: { key: SIDEBAR_COLLAPSED_KEY, value: "true" } }));
+    expect(await pending).toBeNull();
+    expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBe("true");
+    expect(writes).toBe(1);
+  } finally { stop(); }
+});
+
 it.each([undefined, "false"])("keeps the legacy fallback and submits zero writes after a held sidebar read retires, server value %s", async (serverValue) => {
   window.localStorage.setItem("dokan.sidebar.collapsed", "true");
   let release!: (response: Response) => void;

@@ -117,6 +117,156 @@ it("preserves the exact unchecked setup key and cleanup warning across a live ad
   expect(ownerChecks).toBeGreaterThan(0);
 });
 
+it.each([false, true])("holds owner admission while the committed setup body is pending across advisory replacement, revoked %s", async (revoked) => {
+  const recoveryKey = "LATE-EXACT-SETUP-RECOVERY-KEY";
+  let configured = false;
+  let credentialLive = true;
+  let bodyRequested = false;
+  let releaseBody!: (body: string) => void;
+  const body = new Promise<string>((resolve) => { releaseBody = resolve; });
+  let ownerChecks = 0;
+  let statusChecks = 0;
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const path = new URL(input instanceof Request ? input.url : String(input), window.location.origin).pathname;
+    if (path === "/api/vault/status") {
+      statusChecks += 1;
+      return Response.json({ mode: "vault", state: configured ? "unlocked" : "unconfigured", legacyDatabase: true, recoveryKeyCount: configured ? 1 : 0, lockedForMs: 0, unlocked: configured, session: configured && credentialLive, broker: false });
+    }
+    if (path === "/api/vault/unlock") { credentialLive = true; return Response.json({ ok: true, sessionGeneration: 2 }); }
+    if (path === "/api/vault/setup") {
+      // Headers install the shared cookie before request() consumes the body.
+      configured = true;
+      const response = new Response(null, { headers: { "set-cookie": "vault=committed; HttpOnly" } });
+      response.text = () => { bodyRequested = true; return body; };
+      return response;
+    }
+    if (path.endsWith("/needsSetup")) { ownerChecks += 1; return envelope({ needsSetup: false, setupBlocked: false }); }
+    if (path.endsWith("/preferencesGet")) return envelope({ values: {} });
+    return Response.json({ ok: true });
+  }, { preconnect: originalFetch.preconnect });
+  const host = await mount(<div data-testid="private-app">Private</div>);
+  await until(() => host.querySelector('[data-testid="vault-setup-submit"]') !== null);
+  setInput(host, "vault-passphrase", "a strong setup passphrase");
+  setInput(host, "vault-passphrase-confirm", "a strong setup passphrase");
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-setup-submit"]').click());
+  await until(() => bodyRequested);
+  const before = statusChecks;
+  await act(async () => { advisory(); });
+  await until(() => statusChecks > before);
+  await flush();
+  expect(ownerChecks).toBe(0);
+  expect(host.querySelector('[data-testid="private-app"]')).toBeNull();
+  expect(host.querySelector('[data-testid="vault-recovery-key"]')).toBeNull();
+  if (revoked) {
+    credentialLive = false;
+    await act(async () => { advisory(); });
+    await flush();
+  }
+  await act(async () => { releaseBody(JSON.stringify({ ok: true, recoveryKey, plaintextRemaining: ["D:/late/legacy.db"] })); });
+  if (revoked) {
+    await until(() => host.querySelector('[data-testid="vault-unlock-submit"]') !== null);
+    expect(host.querySelector('[data-testid="vault-recovery-key"]')).toBeNull();
+    expect(ownerChecks).toBe(0);
+    setInput(host, "vault-passphrase", "a strong setup passphrase");
+    act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-unlock-submit"]').click());
+  }
+  await until(() => host.querySelector('[data-testid="vault-recovery-key"]') !== null);
+  expect(requiredElement(host, '[data-testid="vault-recovery-key"]').textContent).toBe(recoveryKey);
+  expect(requiredElement(host, '[data-testid="vault-plaintext-warning"]').textContent).toContain("D:/late/legacy.db");
+  expect(ownerChecks).toBe(0);
+  expect(requiredElement<HTMLButtonElement>(host, '[data-testid="vault-recovery-continue"]').disabled).toBe(true);
+  act(() => requiredElement<HTMLInputElement>(host, '[data-testid="vault-recovery-confirm"]').click());
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-recovery-continue"]').click());
+  await until(() => host.querySelector('[data-testid="private-app"]') !== null);
+  expect(ownerChecks).toBeGreaterThan(0);
+});
+
+it("rechecks the current credential when setup commits after its originating gate unmounts", async () => {
+  let configured = false;
+  let release!: () => void;
+  let dispatched = false;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  let statusChecks = 0;
+  let ownerChecks = 0;
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const path = new URL(input instanceof Request ? input.url : String(input), window.location.origin).pathname;
+    if (path === "/api/vault/status") {
+      statusChecks += 1;
+      return Response.json({ mode: "vault", state: configured ? "unlocked" : "unconfigured", legacyDatabase: false, recoveryKeyCount: configured ? 1 : 0, lockedForMs: 0, unlocked: configured, session: configured, broker: false });
+    }
+    if (path === "/api/vault/setup") {
+      dispatched = true;
+      await hold;
+      configured = true;
+      return Response.json({ ok: true, recoveryKey: "AFTER-REMOUNT-KEY", plaintextStatus: "clean" });
+    }
+    if (path.endsWith("/needsSetup")) { ownerChecks += 1; return envelope({ needsSetup: false, setupBlocked: false }); }
+    return Response.json({ ok: true });
+  }, { preconnect: originalFetch.preconnect });
+  const host = await mount(<div data-testid="private-app">Private</div>);
+  await until(() => host.querySelector('[data-testid="vault-setup-submit"]') !== null);
+  setInput(host, "vault-passphrase", "a strong setup passphrase");
+  setInput(host, "vault-passphrase-confirm", "a strong setup passphrase");
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-setup-submit"]').click());
+  await until(() => dispatched);
+  const before = statusChecks;
+  await act(async () => { advisory(); });
+  await until(() => statusChecks > before);
+  await flush();
+  await act(async () => { release(); });
+  await until(() => host.querySelector('[data-testid="vault-recovery-key"]') !== null);
+  expect(requiredElement(host, '[data-testid="vault-recovery-key"]').textContent).toBe("AFTER-REMOUNT-KEY");
+  expect(ownerChecks).toBe(0);
+  expect(host.querySelector('[data-testid="private-app"]')).toBeNull();
+});
+
+it.each([false, true])("settles failed setup after replacement without admitting unknown completion, committed %s", async (committed) => {
+  let configured = false;
+  let bodyRequested = false;
+  let rejectBody!: (error: Error) => void;
+  const body = new Promise<string>((_resolve, reject) => { rejectBody = reject; });
+  let setupCalls = 0;
+  let ownerChecks = 0;
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const path = new URL(input instanceof Request ? input.url : String(input), window.location.origin).pathname;
+    if (path === "/api/vault/status") return Response.json({ mode: "vault", state: configured ? "unlocked" : "unconfigured", legacyDatabase: true, recoveryKeyCount: configured ? 1 : 0, lockedForMs: 0, unlocked: configured, session: configured, broker: false });
+    if (path === "/api/vault/setup") {
+      setupCalls += 1;
+      if (setupCalls > 1) {
+        configured = true;
+        return Response.json({ ok: true, recoveryKey: "RETRY-KEY", plaintextStatus: "clean" });
+      }
+      configured = committed;
+      const response = new Response(null);
+      response.text = () => { bodyRequested = true; return body; };
+      return response;
+    }
+    if (path.endsWith("/needsSetup")) { ownerChecks += 1; return envelope({ needsSetup: false, setupBlocked: false }); }
+    return Response.json({ ok: true });
+  }, { preconnect: originalFetch.preconnect });
+  const host = await mount(<div data-testid="private-app">Private</div>);
+  await until(() => host.querySelector('[data-testid="vault-setup-submit"]') !== null);
+  setInput(host, "vault-passphrase", "a strong setup passphrase");
+  setInput(host, "vault-passphrase-confirm", "a strong setup passphrase");
+  act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-setup-submit"]').click());
+  await until(() => bodyRequested);
+  await act(async () => { advisory(); });
+  await until(() => host.querySelector('[data-testid="vault-setup-pending"]') !== null);
+  await act(async () => { rejectBody(new Error("setup body lost")); });
+  await until(() => host.querySelector('[role="alert"]') !== null);
+  expect(host.querySelector('[data-testid="vault-setup-pending"]')).toBeNull();
+  expect(host.querySelector('[data-testid="private-app"]')).toBeNull();
+  expect(ownerChecks).toBe(0);
+  if (!committed) {
+    setInput(host, "vault-passphrase", "a strong retry passphrase");
+    setInput(host, "vault-passphrase-confirm", "a strong retry passphrase");
+    act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="vault-setup-submit"]').click());
+    await until(() => host.querySelector('[data-testid="vault-recovery-key"]') !== null);
+    expect(requiredElement(host, '[data-testid="vault-recovery-key"]').textContent).toBe("RETRY-KEY");
+    expect(ownerChecks).toBe(0);
+  }
+});
+
 function invoice(id: string, invoiceDate: string): Invoice {
   return { id, invoiceDate, invoiceNumber: `INV-${id}`, kind: "SALE", counterpartyId: "customer", counterpartyName: "Customer", subtotalAmount: 1000, discountType: null, discountValue: null, discountAmount: 0, totalAmount: 1000, remainingAmount: 1000, paidAmount: 0, notes: null, createdAt: `${invoiceDate}T10:00:00`, updatedAt: `${invoiceDate}T10:00:00` };
 }

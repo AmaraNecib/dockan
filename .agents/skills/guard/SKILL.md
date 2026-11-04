@@ -32,8 +32,10 @@ If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
 
 ## Phase 2 — Pre-review / pre-push
 
-This is the gate before the review round and before any push. It never pushes by
-itself. The parent's push runs the Husky pre-push hook when the hook is available.
+This is the local gate after local review and before any push or hosted review.
+Hosted review is not a pre-push or worker-handoff prerequisite; it starts after
+publication. Phase 2 never pushes by itself. The parent's push runs the Husky
+pre-push hook when the hook is available.
 
 Run the local checks below for Phase 2. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance. Ordinary failing-first TDD, focused regression tests and applicable current-head mutation checks remain required; follow [What counts as failing-first](../../../docs/verification-and-merge-gate.md#what-counts-as-failing-first). Only the actual-PR parent replay is CI-only.
 
@@ -99,7 +101,7 @@ get the docs-only exemption.
 ```
 [ ] Local review exists for every reviewable change; compact uses one focused code-review execution, with skipped lenses and reasons recorded
 [ ] Parent verifies exact base/head, actual reviewer session/model, provenance and report; valid exact-tree worker reviews are reused, not automatically rerun
-[ ] Reviewloop payload renders at the exact head; during the paired trial both local and hosted verdicts are 5/5 with no unresolved actionable findings
+[ ] Local reviewloop is 5/5 with no unresolved actionable findings; its payload renders at the exact head
 ```
 
 **High-assurance** (use the reachable failure modes in `docs/engineering-workflow.md`):
@@ -107,19 +109,19 @@ get the docs-only exemption.
 [ ] debate, test-audit and code-review ran as separate executions
 [ ] A final-head debate ran after fixes
 [ ] Every evidence file matches the reviewed head and base
-[ ] Reviewloop is 5/5 with no unresolved actionable findings; paired hosted verdict also 5/5 during the trial
+[ ] Local reviewloop is 5/5 with no unresolved actionable findings
 ```
 
 For **compact Standard**, verify one local focused code-review execution covering Standards, Spec and affected-test adequacy; the payload records why `debate` and `test-audit` were skipped. The parent verifies reviewer session, actual model, provenance and exact-tree report. Reuse a valid worker execution rather than rerunning it automatically. Ordinary Standard retains all three lenses.
 
 ## Phase 3 — Pre-report
 
-Run before the parent reports a local handoff or remote merge-readiness. Phase 3 validates existing Phase 1/2 results and current-head review evidence; it does not automatically re-execute unchanged checks. Reuse only genuine results whose input tree and command match the committed head. During the trial, use the [comparison protocol](../../../docs/review-comparison.md) until the owner chooses which review path to keep. A local-only report is not merge-readiness while the hosted verdict is missing.
+Run before the parent reports a local handoff or remote merge-readiness. Phase 3 validates existing Phase 1/2 results and current-head review evidence; it does not automatically re-execute unchanged checks. Reuse only genuine results whose input tree and command match the committed head. During the trial, use the [comparison protocol](../../../docs/review-comparison.md) until the owner chooses which review path to keep. For a local worker handoff, validate local results and report hosted review and CI as pending, not failed or passed. The post-publication checks below apply to merge-readiness only. A local-only report is not merge-readiness while the hosted verdict is missing.
 
 ```
 [ ] Guard Phase 1/2 evidence matches the committed input tree and required commands; no automatic duplicate run
 [ ] Local review evidence is current for the selected risk depth; exact-head provenance is verified
-[ ] Both current-head verdicts are 5/5 with no unresolved actionable findings during the trial; a missing verdict blocks merge-readiness
+[ ] For merge-readiness after publication: Both current-head verdicts are 5/5 with no unresolved actionable findings during the trial; a missing verdict blocks merge-readiness
 [ ] CI — required checks green on GitHub (when the branch is pushed)
 [ ] The push and the PR came from the parent, and the merge followed the gate's classes — a cheap-to-reverse, no-decision diff merges itself once green, an expensive-to-reverse or decision diff waits for the owner
 [ ] PR description — accurate and complete

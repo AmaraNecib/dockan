@@ -118,6 +118,18 @@ describe("the verification rule is discoverable (#259)", () => {
     );
   });
 
+  test("hosted verdicts gate merge-readiness, not the push that starts review", () => {
+    const guard = read(".agents/skills/guard/SKILL.md");
+    const phase2 = guard.split("## Phase 2")[1]?.split("## Phase 3")[0] ?? "";
+    const phase3 = guard.split("## Phase 3")[1]?.split("## When a check fails")[0] ?? "";
+    expect(phase2).toContain("Hosted review is not a pre-push or worker-handoff prerequisite");
+    expect(phase2).toContain("Local reviewloop is 5/5 with no unresolved actionable findings");
+    expect(phase2).not.toContain("both local and hosted verdicts are 5/5");
+    expect(phase2).not.toContain("paired hosted verdict also 5/5");
+    expect(phase3).toContain("For merge-readiness after publication");
+    expect(phase3).toContain("Both current-head verdicts are 5/5 with no unresolved actionable findings");
+  });
+
   test("reviewloop extraction retains cross-lens agreement and ordered lens dispatch", () => {
     const skill = read(".agents/skills/reviewloop/SKILL.md");
     expect(skill).toContain("ordinary Standard runs `debate`, `test-audit`, then `code-review`");

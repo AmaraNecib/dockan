@@ -1,5 +1,14 @@
 # Agent notes
 
+## Before starting work
+
+Parents and workers complete this startup check before editing, delegating implementation, or running verification:
+
+1. Read this checkout's `AGENTS.md`, `docs/engineering-workflow.md`, and the originating issue or approved task. Identify your role, absolute worktree, branch, base and permitted writes. Preserve unrelated changes.
+2. Read `feature-implement` for a code-changing task, `guard` for verification, and the skills whose descriptions match the task. Load their `SKILL.md` files, not just their names. For design and code, include `codebase-design` and `domain-modeling`; for writing, include `unslop` and, when editing agent instructions, `writing-for-agents`.
+3. Read `.agents/wisdom/README.md` and the lessons relevant to the affected area. Before planning or triage, also read `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, and `docs/agents/domain.md`.
+4. Record the role, scope, applicable skills and lessons in the task's local design or handoff notes. The parent's lane brief names the required reading, file ownership, verification and authority limits. A worker loads those sources in its own session; the parent's reading does not substitute for it. If a required source is unavailable, report the gap rather than claim it was read.
+
 ## Authority
 
 - **A lane commits and reports; it does not land.** A lane (`fix-*`, `feat-*`,
@@ -7,6 +16,8 @@
   completion wakes the parent; there is no report tool to call. It **never** runs
   `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
   `feature-implement` step 11 is parent-only.
+- **The parent coordinates; workers implement and verify.** The parent scopes work, assigns isolated writers, dispatches reviewers, checks their evidence, and handles publication and merge decisions. Workers read the required sources, implement within their assigned scope, run the applicable verification, commit and report. Read-only reviewers return findings, not edits. Parent handling of small corrections does not make it the default test runner.
+- **The parent delegates heavy execution by default.** Full test suites, E2E, builds and browser runs belong to a verification worker through the heavy-work queue. The parent uses `heavy_run` itself only when the owner explicitly requests it or delegation cannot perform a necessary check. Before an exception, record the exact check, why delegation cannot do it, and why it is needed now. Convenience, a quiet worker, or wanting a second copy of an unchanged run is not a reason. The exception does not waive queue limits or other approval requirements. Reads, diff inspection, selector dry-runs, lint and typecheck remain light parent work.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
   lane's branch, opens the PR, runs the review round (`reviewloop`, plus Greptile
   while the two are being compared), drives the rounds, and

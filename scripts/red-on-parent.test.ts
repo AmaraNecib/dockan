@@ -2459,6 +2459,7 @@ test("rejects zero", () => {
       ],
     );
     let holder: ReturnType<typeof spawn> | null = null;
+    let holderClosed: Promise<void> | undefined;
     let parentRelaxed = false;
     try {
       const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
@@ -2500,6 +2501,10 @@ test("rejects zero", () => {
           ["-e", "process.stdout.write(process.cwd()); setTimeout(() => {}, 20000)"],
           { cwd: lockPath, stdio: ["ignore", "pipe", "ignore"] },
         );
+        const child = holder;
+        holderClosed = new Promise<void>((closed) => {
+          child.once("close", () => closed());
+        });
         await new Promise<void>((held) => {
           const timer = setTimeout(held, 5_000);
           holder?.stdout?.once("data", () => {
@@ -2537,6 +2542,7 @@ test("rejects zero", () => {
     } finally {
       if (parentRelaxed) chmodSync(fixture.cache, 0o755);
       holder?.kill();
+      await holderClosed;
       fixture.cleanup();
     }
   }, 60_000);

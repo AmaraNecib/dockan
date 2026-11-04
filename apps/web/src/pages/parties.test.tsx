@@ -223,6 +223,7 @@ describe("PartiesPage (issue 120)", () => {
       const details = host.querySelector<HTMLAnchorElement>('[data-testid="party-row-details"]');
       expect(details).not.toBeNull();
       expect(details?.textContent).toBe("تفاصيل");
+      expect(host.querySelector("thead th:last-child")?.textContent).toBe("تفاصيل / تعديل / حذف");
       expect(details?.getAttribute("href")).toBe(`/${role}s/$partyId?partyId=${role}-407`);
       expect(details?.closest("td")).toBe(host.querySelector('[data-testid="party-row-edit"]')?.closest("td"));
       expect(host.querySelector('[data-testid="party-row-link"]')).not.toBeNull();

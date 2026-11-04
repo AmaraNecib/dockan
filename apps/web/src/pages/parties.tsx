@@ -148,7 +148,7 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                 <TableHead>{t("partiesColInvoices")}</TableHead>
                 <TableHead>{t("partiesColRemaining")}</TableHead>
                 <TableHead>
-                  <span className="sr-only">{t("partyEdit")}</span>
+                  <span className="sr-only">{t("partyDetails")} / {t("partyEdit")} / {t("partyDelete")}</span>
                 </TableHead>
               </TableRow>
             </TableHeader>

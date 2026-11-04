@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Locator } from "@playwright/test";
 import type { InvoiceCreate, InvoiceDetail, ItemCreate, Party, PartyDetail } from "../../packages/contracts/src/core";
@@ -62,6 +62,53 @@ for (const role of ["customer", "supplier"] as const) {
       await page.goto("/debts");
       const group = page.getByTestId(role === "customer" ? "debts-group-owed" : "debts-group-weowe");
       await expect(group.getByTestId("debts-person").filter({ hasText: name })).toHaveCount(2);
+      // Legacy expansion keeps the whole row target; only linked rows reserve Details space.
+      const debtRows = group.getByRole("listitem").filter({ hasText: name });
+      const legacyRow = debtRows.filter({ hasNot: page.getByTestId("debts-person-details") });
+      const linkedRow = debtRows.filter({ has: page.locator(`a[href="${listPath}/${party.id}"]`) });
+      await expect(legacyRow).toHaveCount(1);
+      await expect(linkedRow).toHaveCount(1);
+      const savedViewport = page.viewportSize();
+      const measurements = [];
+      for (const width of [1920, 1280, 390]) {
+        await page.setViewportSize({ width, height: 1080 });
+        for (const [identity, measuredRow] of [["legacy", legacyRow], ["linked", linkedRow]] as const) {
+          const boxes = await measuredRow.evaluate((element) => {
+            const rect = (target: Element) => {
+              const box = target.getBoundingClientRect();
+              return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width };
+            };
+            const button = element.querySelector("button");
+            if (!button) throw new Error("debt expansion missing");
+            const link = element.querySelector("a");
+            const style = getComputedStyle(element);
+            return {
+              row: rect(element), button: rect(button), link: link ? rect(link) : null,
+              insetLeft: Number.parseFloat(style.paddingLeft), insetRight: Number.parseFloat(style.paddingRight),
+              children: Array.from(button.children, rect),
+            };
+          });
+          measurements.push({ width, identity, ...boxes });
+        }
+      }
+      const geometryPath = test.info().outputPath(`${role}-debt-geometry.json`);
+      writeFileSync(geometryPath, JSON.stringify(measurements, null, 2));
+      await test.info().attach(`${role}-debt-geometry`, { path: geometryPath, contentType: "application/json" });
+      for (const boxes of measurements) {
+        if (boxes.identity === "legacy") {
+          expect(boxes.button.left).toBeCloseTo(boxes.row.left + boxes.insetLeft, 0);
+          expect(boxes.button.right).toBeCloseTo(boxes.row.right - boxes.insetRight, 0);
+        } else {
+          if (!boxes.link) throw new Error("debt Details missing");
+          expect(boxes.link.right).toBeLessThanOrEqual(boxes.button.left);
+        }
+        for (const child of boxes.children) {
+          expect(child.left).toBeGreaterThanOrEqual(boxes.button.left);
+          expect(child.right).toBeLessThanOrEqual(boxes.button.right);
+          expect(child.bottom).toBeLessThanOrEqual(boxes.button.bottom);
+        }
+      }
+      if (savedViewport) await page.setViewportSize(savedViewport);
       await capture(group, `${role}-debts`);
       await page.goto(listPath);
       const row = page.getByTestId("party-row").filter({ has: page.locator(`a[href="${listPath}/${party.id}"]`) });
@@ -170,7 +217,8 @@ for (const role of ["customer", "supplier"] as const) {
       await details.click();
       await expect(page.getByTestId("party-detail-name")).toHaveText(name);
 
-      // The existing purchase draft guard still holds a native Link navigation.
+      // Existing guard regression via the sidebar Link, not the new Details control.
+      // Details is reachable only after the draft has been discarded.
       if (role === "supplier") {
         await page.goto("/purchase");
         const supplierInput = page.getByTestId("purchase-supplier");

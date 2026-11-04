@@ -79,7 +79,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle, refreshMs = LEDGER
 
   return (
     <li className="px-1">
-      <div className="flex items-center gap-2 pe-3">
+      <div className={`flex items-center gap-2${row.counterpartyId !== null && row.counterpartyId !== "" ? " pe-3" : ""}`}>
         <button
           type="button"
           data-testid="debts-person"

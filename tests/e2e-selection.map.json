@@ -128,7 +128,7 @@
       "specs": ["purchase-intake.spec.ts", "purchase-inline-product.spec.ts", "learnability.spec.ts", "keyboard-shortcuts.spec.ts"]
     },
     {
-      "$comment": "invoice list/detail, the shared invoice header (which the purchase page also renders) and the new-return form (ReturnsPanel), which returns.spec.ts drives through the invoice page (#231)",
+      "$comment": "invoice list/detail, the shared invoice header (which the purchase page also renders) and the new-return form (ReturnsPanel), which returns.spec.ts drives through the invoice page (#231); party-navigation.spec.ts proves linked invoice names and legacy text (#407)",
       "match": [
         "apps/web/src/pages/invoice.tsx",
         "apps/web/src/pages/invoices.tsx",
@@ -170,7 +170,7 @@
       "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts", "01-empty-states.spec.ts"]
     },
     {
-      "$comment": "customers + suppliers list and detail pages; parties.tsx and party-detail.tsx are always_full (shared components/parties tree), so this rule keeps the specs reachable for the unit-test files. phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride this page (#209 drift)",
+      "$comment": "customers + suppliers list and detail pages; parties.tsx and party-detail.tsx are always_full (shared components/parties tree), so this rule keeps the specs reachable for the unit-test files. phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride this page (#209 drift); party-navigation.spec.ts proves explicit Details routing by saved identity (#407)",
       "match": [
         "apps/web/src/pages/parties.test.tsx",
         "apps/web/src/pages/party-detail.test.tsx"
@@ -197,7 +197,7 @@
       "specs": ["supplier-adjustment.spec.ts", "supplier-account.spec.ts"]
     },
     {
-      "$comment": "supplier-adjustment.spec.ts drives the supplier-credit label and total on /debts (lines 162-167), so a debts.tsx-only diff must run it (#231)",
+      "$comment": "supplier-adjustment.spec.ts drives the supplier-credit label and total on /debts (lines 162-167), so a debts.tsx-only diff must run it (#231); party-navigation.spec.ts proves separate expansion/Details controls and linked/legacy RTL geometry (#407)",
       "match": ["apps/web/src/pages/debts.tsx", "apps/web/src/pages/debts.test.tsx"],
       "specs": ["debts.spec.ts", "party-navigation.spec.ts", "supplier-adjustment.spec.ts"]
     },

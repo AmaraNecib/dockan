@@ -1086,7 +1086,9 @@ export function InvoicePage() {
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">
             {invoice.counterpartyId !== null && invoice.counterpartyId !== "" ? (
               <Link to={invoice.kind === "SALE" ? "/customers/$partyId" : "/suppliers/$partyId"} params={{ partyId: invoice.counterpartyId }} className="rounded font-medium underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-                {draftBlank(invoice.counterpartyName ?? "") ? t("partyDetails") : invoice.counterpartyName}
+                {/* Display-only fallback: whitespace and bidi controls cannot name a link.
+                    Keep visible stored text unchanged; this is not numeric blankness or identity normalization. */}
+                {/[^\s\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(invoice.counterpartyName ?? "") ? invoice.counterpartyName : t("partyDetails")}
               </Link>
             ) : invoice.counterpartyName ?? "—"}
           </dd></div>

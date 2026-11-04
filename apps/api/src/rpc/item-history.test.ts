@@ -3,9 +3,13 @@ import { itemHistoryOutputSchema } from "../../../../packages/contracts/src/core
 import type { StorePort, StoreReadPort } from "../store/port";
 import { readItemHistory } from "./item-history";
 
+type FindPredicate<T> = Parameters<Array<T>["find"]>[0];
+type FindThisArg<T> = Parameters<Array<T>["find"]>[1];
+
 class IterationCountedArray<T> extends Array<T> {
   iterations = 0;
   filters = 0;
+  finds = 0;
 
   override [Symbol.iterator](): ArrayIterator<T> {
     this.iterations += 1;
@@ -15,6 +19,13 @@ class IterationCountedArray<T> extends Array<T> {
   override filter(predicate: (value: T, index: number, array: T[]) => boolean): T[] {
     this.filters += 1;
     return super.filter(predicate);
+  }
+
+  override find<S extends T>(predicate: (value: T, index: number, array: T[]) => value is S, thisArg?: FindThisArg<T>): S | undefined;
+  override find(predicate: FindPredicate<T>, thisArg?: FindThisArg<T>): T | undefined;
+  override find(predicate: FindPredicate<T>, thisArg?: FindThisArg<T>): T | undefined {
+    this.finds += 1;
+    return super.find(predicate, thisArg);
   }
 }
 
@@ -101,8 +112,10 @@ describe("item history projection scaling", () => {
     ]);
     expect(trackedLines.iterations).toBe(1);
     expect(trackedLines.filters).toBe(0);
+    expect(trackedLines.finds).toBe(0);
     expect(trackedLinks.iterations).toBe(1);
     expect(trackedLinks.filters).toBe(0);
+    expect(trackedLinks.finds).toBe(0);
   });
 
   it("returns null for unsafe recorded sale COGS and keeps the history contract valid", async () => {

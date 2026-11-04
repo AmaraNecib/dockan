@@ -68,6 +68,28 @@ describe("setup + seed", () => {
     expect(settings.storeName).toBe("Dokan");
   });
 
+  it("creates the invoice-line item index when setup runs on an existing database", async () => {
+    const indexDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-history-index-"));
+    const existing = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: indexDir, DOKAN_DB_PATH: path.join(indexDir, "existing.db") }),
+    );
+    const existingStore = createDrizzleStore(existing);
+    try {
+      await existingStore.setup();
+      // Simulate a database created before this additive index existed.
+      existing.raw.exec("DROP INDEX IF EXISTS idx_invoice_lines_item");
+      await existingStore.setup();
+      // SAFETY: EXPLAIN QUERY PLAN returns string-valued detail fields for each plan step.
+      const plan = existing.raw.query(
+        "EXPLAIN QUERY PLAN SELECT id FROM invoice_lines WHERE item_id = 'item-1'",
+      ).all() as Array<{ detail: string }>;
+      expect(plan.some((row) => row.detail.includes("idx_invoice_lines_item"))).toBe(true);
+    } finally {
+      await existing.close();
+      removeTempDirRetry(indexDir);
+    }
+  });
+
   it("seeds expense categories with one distinct owner-withdrawal category, idempotently", async () => {
     const first = await store.listExpenseCategories();
     expect(first.some((row) => row.isOwnerWithdrawal)).toBe(true);

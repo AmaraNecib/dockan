@@ -10,8 +10,8 @@ Read `docs/engineering-workflow.md` first.
 
 **A lane stops at step 10 (Guard Phase 2).** Steps 11-15 are parent-owned: push, PR,
 CI/review round, the architecture review, the merge decision and wisdom. The lane's
-last act is its **commit**; its completion wakes the parent. It never pushes,
-never opens a PR and never merges.
+last act is its **handoff of the verified commit and evidence path**; its completion
+wakes the parent. It never pushes, opens a PR or merges.
 
 **A quiet child is not a stuck child.** A child that is thinking, waiting on a
 long command, or finished touches no files, so file mtimes prove nothing about

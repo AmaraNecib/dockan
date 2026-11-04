@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { ExpenseCategory, ReportRangePreset } from "@dokan/contracts";
+import { MAX_EXPENSE_AMOUNT, type ExpenseCategory, type ExpenseCorrect, type ExpenseCorrection, type ExpenseCorrectionHistory, type ExpenseListItem, type ReportRangePreset } from "@dokan/contracts";
 import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
@@ -11,11 +11,14 @@ import { Pager } from "@/components/ui/pager";
 import { DateField } from "@/components/ui/date-field";
 import { inputClass } from "@/components/ui/input";
 import { focusByTestId } from "../lib/focus";
+import { expenseCorrectionRecoveryQueryKey } from "../lib/query-keys";
+import { useSessionCacheScope } from "../lib/session-query-scope";
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
 import { editDateBound, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTimeText, type DateBound } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -34,11 +37,509 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 const PRESET_KEYS: ReportRangePreset[] = ["24H", "7D", "28D", "30D", "CURRENT_MONTH", "3M", "6M", "CURRENT_YEAR", "LAST_YEAR", "CUSTOM"];
 
+type ExpenseCorrectionAcknowledgement = {
+  correction: ExpenseCorrection;
+  historyDataUpdateCountAtAck: number;
+};
+type ExpenseCorrectionRecovery = {
+  row: ExpenseListItem | null;
+  acknowledgements: ExpenseCorrectionAcknowledgement[];
+  notice: string | null;
+  correctionRequest: { amount: number; reason?: string; idempotencyKey: string; historyDataUpdateCountAtFailure?: number } | null;
+  undoRequests: Record<string, string>;
+};
+type ExpenseCorrectionRecoveryStore = Record<string, ExpenseCorrectionRecovery>;
+const EMPTY_EXPENSE_CORRECTION_RECOVERY: ExpenseCorrectionRecovery = {
+  row: null,
+  acknowledgements: [],
+  notice: null,
+  correctionRequest: null,
+  undoRequests: {},
+};
+
+function isDefinitiveCorrectionRefusal(message: string): boolean {
+  return [
+    "EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED",
+    "EXPENSE_CORRECTION_NO_CHANGE",
+    "EXPENSE_CORRECTION_NOT_FOUND",
+    "EXPENSE_CORRECTION_ALREADY_REVERSED",
+    "EXPENSE_CORRECTION_NOT_REVERSIBLE",
+    "EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE",
+  ].includes(message);
+}
+
 function toPreset(value: string): ReportRangePreset {
   for (const preset of PRESET_KEYS) {
     if (value === preset) return preset;
   }
   return "CURRENT_MONTH";
+}
+
+function ExpenseCorrectionRow({
+  entry,
+  categoryName,
+  withdrawal,
+  onRecoveryChange,
+  onAcknowledged,
+  onHistoryConfirmed,
+  onClearNotice,
+  onCorrectionRequestChange,
+  onUndoRequestChange,
+  recovery,
+}: {
+  entry: ExpenseListItem;
+  categoryName: string;
+  withdrawal: boolean;
+  onRecoveryChange: (entry: ExpenseListItem, active: boolean) => void;
+  onAcknowledged: (expenseId: string, entry: ExpenseListItem, correction: ExpenseCorrection, historyDataUpdateCountAtAck: number, notice: string) => void;
+  onHistoryConfirmed: (expenseId: string, history: ExpenseCorrectionHistory) => void;
+  onClearNotice: (expenseId: string) => void;
+  onCorrectionRequestChange: (expenseId: string, correctionRequest: ExpenseCorrectionRecovery["correctionRequest"], expectedKey?: string) => void;
+  onUndoRequestChange: (expenseId: string, correctionId: string, key: string | null, expectedKey?: string) => void;
+  recovery: ExpenseCorrectionRecovery;
+}) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftAmount, setDraftAmount] = useState(recovery.correctionRequest === null ? "" : String(recovery.correctionRequest.amount));
+  const [draftReason, setDraftReason] = useState(recovery.correctionRequest?.reason ?? "");
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const [historyActionError, setHistoryActionError] = useState<string | null>(null);
+  const [discardConfirmation, setDiscardConfirmation] = useState<{ fingerprint: string; previousKey: string } | null>(null);
+  const [undoConfirmationId, setUndoConfirmationId] = useState<string | null>(() => Object.keys(recovery.undoRequests)[0] ?? null);
+  const correctionKeyRef = useRef<{ fingerprint: string; key: string } | null>(recovery.correctionRequest === null ? null : {
+    fingerprint: `${recovery.correctionRequest.amount}\u0000${recovery.correctionRequest.reason ?? ""}`,
+    key: recovery.correctionRequest.idempotencyKey,
+  });
+  const undoKeysRef = useRef(new Map(Object.entries(recovery.undoRequests)));
+  const historyOptions = useMemo(
+    () => orpc.expenseCorrectionHistory.queryOptions({ input: { expenseId: entry.id } }),
+    [entry.id],
+  );
+  const history = useQuery({ ...historyOptions, enabled: expanded });
+  const historyDataUpdateCount = queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0;
+
+  const listCorrectionCount = entry.correctionCount ?? 0;
+  const historyCorrectionCount = history.data?.corrections.length ?? 0;
+  const pendingAcknowledgements = recovery.acknowledgements;
+  const pendingAcknowledgementSignature = pendingAcknowledgements.map((pending) => `${pending.correction.id}:${pending.historyDataUpdateCountAtAck}`).join("|");
+  const pendingAcknowledgementsInHistory = history.data !== undefined
+    && pendingAcknowledgements.length > 0
+    && pendingAcknowledgements.every((pending) => history.data?.corrections.some((event) => event.id === pending.correction.id) === true);
+  const amountConflict = history.data !== undefined
+    && historyCorrectionCount === listCorrectionCount
+    && history.data.effectiveAmount !== entry.effectiveAmount;
+  const unorderedAcknowledgements = pendingAcknowledgements.length > 1 && !pendingAcknowledgementsInHistory;
+  const latestKnownAmount = historyCorrectionCount > listCorrectionCount
+    ? history.data?.effectiveAmount ?? entry.effectiveAmount
+    : entry.effectiveAmount;
+  const effectiveAmount = amountConflict || unorderedAcknowledgements
+    ? undefined
+    : pendingAcknowledgements.length === 1 && !pendingAcknowledgementsInHistory
+      ? pendingAcknowledgements[0]?.correction.afterAmount
+      : latestKnownAmount;
+  const amountNeedsVerification = pendingAcknowledgements.length > 0 || recovery.correctionRequest !== null || Object.keys(recovery.undoRequests).length > 0;
+  const correctionHistoryRefreshedAfterFailure = recovery.correctionRequest?.historyDataUpdateCountAtFailure !== undefined
+    && history.isSuccess
+    && historyDataUpdateCount > recovery.correctionRequest.historyDataUpdateCountAtFailure;
+  const correctionDraftChanged = recovery.correctionRequest !== null && (
+    parseGroupedAmount(draftAmount) !== recovery.correctionRequest.amount
+    || draftReason.trim() !== (recovery.correctionRequest.reason ?? "")
+  );
+  const editingBlocked = amountConflict || pendingAcknowledgements.length > 0 || (
+    correctionDraftChanged
+    && recovery.correctionRequest?.historyDataUpdateCountAtFailure !== undefined
+    && (!correctionHistoryRefreshedAfterFailure || history.isError)
+  );
+
+  const refreshCorrectionHistory = useCallback(async () => {
+    await queryClient.cancelQueries({ queryKey: historyOptions.queryKey, exact: true });
+    try {
+      const freshHistory = await queryClient.fetchQuery({ ...historyOptions, staleTime: 0 });
+      onHistoryConfirmed(entry.id, freshHistory);
+    } catch {
+      // A failed read leaves every acknowledgement unresolved and edits blocked.
+    }
+  }, [entry.id, historyOptions, onHistoryConfirmed, queryClient]);
+
+  useEffect(() => {
+    const freshHistory = history.data;
+    if (!history.isSuccess || freshHistory === undefined || pendingAcknowledgements.length === 0) return;
+    const eventIds = new Set(freshHistory.corrections.map((event) => event.id));
+    const readStartedAfterEveryAck = pendingAcknowledgements.every(
+      (pending) => historyDataUpdateCount > pending.historyDataUpdateCountAtAck,
+    );
+    if (readStartedAfterEveryAck && pendingAcknowledgements.every((pending) => eventIds.has(pending.correction.id))) {
+      onHistoryConfirmed(entry.id, freshHistory);
+    }
+  }, [entry.id, history.data, historyDataUpdateCount, history.isSuccess, onHistoryConfirmed, pendingAcknowledgementSignature]);
+
+  useEffect(() => {
+    onRecoveryChange(entry, editing || undoConfirmationId !== null || amountNeedsVerification);
+  }, [entry, editing, undoConfirmationId, amountNeedsVerification, onRecoveryChange]);
+
+  const correction = useMutation(
+    orpc.expensesCorrect.mutationOptions({
+      onSuccess: (savedCorrection, input) => {
+        setEditing(false);
+        setCorrectionError(null);
+        onAcknowledged(entry.id, entry, savedCorrection, queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0, t("expenseCorrectionSaved"));
+        correctionKeyRef.current = null;
+        onCorrectionRequestChange(entry.id, null, input.idempotencyKey);
+        void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
+      },
+      onError: (error, input) => {
+        setCorrectionError(tError(error.message));
+        // Unknown failures may hide a committed write; known domain refusals cannot.
+        let unresolvedRequest: ExpenseCorrectionRecovery["correctionRequest"] = null;
+        if (!isDefinitiveCorrectionRefusal(error.message)) {
+          unresolvedRequest = {
+            amount: input.amount,
+            idempotencyKey: input.idempotencyKey,
+            historyDataUpdateCountAtFailure: queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0,
+          };
+          if (input.reason !== undefined) unresolvedRequest.reason = input.reason;
+        }
+        correctionKeyRef.current = unresolvedRequest === null ? null : {
+          fingerprint: `${input.amount}\u0000${input.reason?.trim() ?? ""}`,
+          key: input.idempotencyKey,
+        };
+        onCorrectionRequestChange(entry.id, unresolvedRequest, input.idempotencyKey);
+        void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
+      },
+    }),
+  );
+
+  const undo = useMutation(
+    orpc.expensesCorrectionUndo.mutationOptions({
+      onSuccess: (savedUndo, input) => {
+        setUndoConfirmationId(null);
+        setHistoryActionError(null);
+        onAcknowledged(entry.id, entry, savedUndo, queryClient.getQueryState(historyOptions.queryKey)?.dataUpdateCount ?? 0, t("expenseCorrectionUndoSaved"));
+        const correctionId = input.correctionId;
+        if (undoKeysRef.current.get(correctionId) === input.idempotencyKey) undoKeysRef.current.delete(correctionId);
+        onUndoRequestChange(entry.id, correctionId, null, input.idempotencyKey);
+        void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
+      },
+      onError: (error, input) => {
+        setHistoryActionError(tError(error.message));
+        const definitiveRefusal = isDefinitiveCorrectionRefusal(error.message);
+        if (definitiveRefusal) undoKeysRef.current.delete(input.correctionId);
+        else undoKeysRef.current.set(input.correctionId, input.idempotencyKey);
+        onUndoRequestChange(entry.id, input.correctionId, definitiveRefusal ? null : input.idempotencyKey, input.idempotencyKey);
+        void queryClient.invalidateQueries();
+        void refreshCorrectionHistory();
+      },
+    }),
+  );
+
+  function openCorrectionEditor(): void {
+    setExpanded(true);
+    if (editing || correction.isPending || (editingBlocked && recovery.correctionRequest === null)) return;
+    setEditing(true);
+    if (recovery.correctionRequest === null) {
+      setDraftAmount(String(effectiveAmount));
+      setDraftReason("");
+    }
+    setCorrectionError(null);
+    setHistoryActionError(null);
+    onClearNotice(entry.id);
+    if (recovery.correctionRequest === null) correctionKeyRef.current = null;
+  }
+
+  function cancelCorrectionEditor(): void {
+    setEditing(false);
+    setDiscardConfirmation(null);
+    setCorrectionError(null);
+    if (recovery.correctionRequest === null) correctionKeyRef.current = null;
+  }
+
+  function submitCorrection(event: React.FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    setCorrectionError(null);
+    const amount = parseGroupedAmount(draftAmount);
+    if (amount === null || amount < 1 || amount > MAX_EXPENSE_AMOUNT) {
+      setCorrectionError(t("expenseCorrectionAmountInvalid"));
+      return;
+    }
+    const reason = draftReason.trim();
+    const fingerprint = `${amount}\u0000${reason}`;
+    if (editingBlocked) return;
+    const previous = correctionKeyRef.current;
+    if (correction.isPending && previous?.fingerprint === fingerprint) return;
+    if (recovery.correctionRequest !== null && !correction.isPending && previous?.fingerprint !== fingerprint) {
+      if (!history.isSuccess || history.data === undefined) return;
+      setDiscardConfirmation({ fingerprint, previousKey: recovery.correctionRequest.idempotencyKey });
+      return;
+    }
+    sendCorrection(amount, reason);
+  }
+
+  function sendCorrection(amount: number, reason: string): void {
+    const fingerprint = `${amount}\u0000${reason}`;
+    const cachedRequest = recovery.correctionRequest;
+    const previous = cachedRequest === null
+      ? correctionKeyRef.current
+      : { fingerprint: `${cachedRequest.amount}\u0000${cachedRequest.reason ?? ""}`, key: cachedRequest.idempotencyKey };
+    const idempotencyKey = previous?.fingerprint === fingerprint ? previous.key : crypto.randomUUID();
+    correctionKeyRef.current = { fingerprint, key: idempotencyKey };
+    const input: ExpenseCorrect = {
+      expenseId: entry.id,
+      amount,
+      idempotencyKey,
+    };
+    if (reason !== "") input.reason = reason;
+    const correctionRequest: NonNullable<ExpenseCorrectionRecovery["correctionRequest"]> = { amount, idempotencyKey };
+    if (reason !== "") correctionRequest.reason = reason;
+    onCorrectionRequestChange(entry.id, correctionRequest);
+    correction.mutate(input);
+  }
+
+  function confirmDiscardAndContinue(): void {
+    const pending = discardConfirmation;
+    const amount = parseGroupedAmount(draftAmount);
+    const reason = draftReason.trim();
+    const fingerprint = amount === null ? "" : `${amount}\u0000${reason}`;
+    if (pending === null || amount === null || pending.fingerprint !== fingerprint
+      || recovery.correctionRequest?.idempotencyKey !== pending.previousKey
+      || correction.isPending || editingBlocked || !correctionHistoryRefreshedAfterFailure || history.data === undefined) {
+      setDiscardConfirmation(null);
+      return;
+    }
+    setDiscardConfirmation(null);
+    // Keep unresolved undo identities; discard only the correction retry shown for confirmation.
+    correctionKeyRef.current = null;
+    onCorrectionRequestChange(entry.id, null, pending.previousKey);
+    sendCorrection(amount, reason);
+  }
+
+  function confirmUndo(correctionId: string): void {
+    if (editingBlocked) return;
+    const key = recovery.undoRequests[correctionId] ?? undoKeysRef.current.get(correctionId) ?? crypto.randomUUID();
+    undoKeysRef.current.set(correctionId, key);
+    onUndoRequestChange(entry.id, correctionId, key);
+    undo.mutate({ correctionId, idempotencyKey: key });
+  }
+
+  function retryCurrentAmountReads(): void {
+    void queryClient.invalidateQueries();
+    void refreshCorrectionHistory();
+  }
+
+  function actorLabel(name: string | null, id: string | null) {
+    if (name !== null && id !== null) {
+      return <>{name} <bdi dir="ltr" className="break-all text-xs">({id})</bdi></>;
+    }
+    if (name !== null) return name;
+    if (id !== null) return <bdi dir="ltr" className="break-all text-xs">{id}</bdi>;
+    return t("expenseActorUnknown");
+  }
+
+  return (
+    <>
+      <tr className={`border-b ${withdrawal ? "bg-warning/10" : ""}`} data-testid="expense-row">
+        <td className="p-3 text-sm whitespace-nowrap text-muted-foreground">{formatDateTime(entry.occurredAt)}</td>
+        <td className="p-3">
+          {categoryName}
+          {withdrawal && <span className="mr-2 rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}
+        </td>
+        <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
+        <td className="p-3 font-semibold" data-testid="expense-row-effective-amount" data-value={effectiveAmount}>
+          {effectiveAmount === undefined ? <span>—</span> : <Amount value={effectiveAmount} />}
+          {amountNeedsVerification && (
+            <div className="mt-1 grid gap-1 text-xs font-normal" role="status" data-testid="expense-correction-amount-unverified">
+              <p>{t("expenseCorrectionAmountUnverified")}</p>
+              <Button type="button" size="sm" variant="outline" onClick={retryCurrentAmountReads} data-testid="expense-correction-amount-retry">
+                {t("expenseCorrectionRetry")}
+              </Button>
+            </div>
+          )}
+          {amountConflict && (
+            <div className="mt-1 grid gap-1 text-xs font-normal" role="alert" data-testid="expense-correction-amount-conflict">
+              <p>{t("expenseCorrectionAmountConflict")}</p>
+              <Button type="button" size="sm" variant="outline" onClick={retryCurrentAmountReads} data-testid="expense-correction-amount-conflict-retry">
+                {t("expenseCorrectionRetry")}
+              </Button>
+            </div>
+          )}
+        </td>
+        <td className="p-3">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-expanded={expanded}
+              aria-controls={`expense-correction-details-${entry.id}`}
+              onClick={() => setExpanded((current) => !current)}
+              data-testid="expense-correction-open-history"
+            >
+              {t("expenseCorrectionHistoryButton")}
+            </Button>
+            <Button type="button" size="sm" variant="outline" disabled={editingBlocked} onClick={openCorrectionEditor} data-testid="expense-correction-open-editor">
+              {t("expenseCorrectionEditButton")}
+            </Button>
+          </div>
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-b bg-muted/30">
+          <td colSpan={5} className="p-3" id={`expense-correction-details-${entry.id}`}>
+            <section className="grid gap-3" data-testid="expense-correction-history">
+              <h3 className="font-semibold">{t("expenseCorrectionHistoryHeading")}</h3>
+              {history.isPending ? (
+                <div className="grid gap-2" aria-busy="true">
+                  <p className="sr-only">{t("expensesLoading")}</p>
+                  <Skeleton className="h-5 w-40" />
+                  <Skeleton className="h-12 w-full" />
+                </div>
+              ) : history.isError ? (
+                <div className="grid gap-2 rounded border border-destructive/20 bg-destructive/10 p-3" role="alert">
+                  <p className="text-sm text-destructive" data-testid="expense-correction-history-error">{t("expenseCorrectionLoadError")}</p>
+                  <Button type="button" size="sm" variant="outline" onClick={retryCurrentAmountReads} data-testid="expense-correction-history-retry">
+                    {t("expenseCorrectionRetry")}
+                  </Button>
+                </div>
+              ) : history.data !== undefined ? (
+                <>
+                  <ol className="grid gap-3">
+                    <li className="grid gap-2 border-b pb-3" data-testid="expense-correction-original">
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <h4 className="font-medium">{t("expenseCorrectionOriginal")}</h4>
+                        <Amount value={history.data.original.amount} />
+                      </div>
+                      <dl className="grid gap-x-3 gap-y-1 text-sm sm:grid-cols-2">
+                        <div><dt className="text-muted-foreground">{t("expenseCorrectionEffectiveDate")}</dt><dd>{formatDateTime(history.data.original.occurredAt)}</dd></div>
+                        <div><dt className="text-muted-foreground">{t("expenseCorrectionRecordedAt")}</dt><dd>{formatDateTime(history.data.original.createdAt)}</dd></div>
+                        <div><dt className="text-muted-foreground">{t("expenseCorrectionActor")}</dt><dd>{actorLabel(history.data.original.actorName, history.data.original.actorId)}</dd></div>
+                      </dl>
+                    </li>
+                    {history.data.corrections.map((event) => (
+                      <li key={event.id} id={`expense-correction-entry-${event.id}`} className="grid gap-2 border-b pb-3 last:border-0" data-testid="expense-correction-entry">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <h4 className="font-medium">{event.reversesCorrectionId === null ? t("expenseCorrectionStage") : t("expenseCorrectionReversalOf")}</h4>
+                          <bdi dir="ltr" className="break-all text-xs text-muted-foreground">{event.id}</bdi>
+                          <span className="text-sm">
+                            <Amount value={event.beforeAmount} /> <span aria-hidden="true">→</span> <Amount value={event.afterAmount} />
+                          </span>
+                        </div>
+                        <dl className="grid gap-x-3 gap-y-1 text-sm sm:grid-cols-2">
+                          <div>
+                            <dt className="text-muted-foreground">{t("expenseCorrectionDifference")}</dt>
+                            <dd data-testid="expense-correction-difference">
+                              <Amount value={Math.abs(event.difference)} sign={event.difference > 0 ? "+" : "−"} />
+                            </dd>
+                          </div>
+                          <div><dt className="text-muted-foreground">{t("expenseCorrectionEffectiveDate")}</dt><dd>{formatDateTime(event.effectiveAt)}</dd></div>
+                          <div><dt className="text-muted-foreground">{t("expenseCorrectionRecordedAt")}</dt><dd>{formatDateTime(event.recordedAt)}</dd></div>
+                          <div><dt className="text-muted-foreground">{t("expenseCorrectionActor")}</dt><dd>{actorLabel(event.actorName, event.actorId)}</dd></div>
+                          <div><dt className="text-muted-foreground">{t("expenseCorrectionReasonLabel")}</dt><dd>{event.reason ?? t("expenseCorrectionNoReason")}</dd></div>
+                        </dl>
+                        {event.reversesCorrectionId !== null && (
+                          <p className="text-xs text-muted-foreground">{t("expenseCorrectionReversalOf")} <a className="underline" href={`#expense-correction-entry-${event.reversesCorrectionId}`}><bdi dir="ltr" className="break-all">{event.reversesCorrectionId}</bdi></a></p>
+                        )}
+                        {event.reversedByCorrectionId !== null && (
+                          <p className="text-xs text-muted-foreground" role="status">
+                            {t("expenseCorrectionReversedBy")} <a className="underline" href={`#expense-correction-entry-${event.reversedByCorrectionId}`}><bdi dir="ltr" className="break-all">{event.reversedByCorrectionId}</bdi></a>
+                          </p>
+                        )}
+                        {event.reversesCorrectionId === null && (event.reversedByCorrectionId === null || (recovery.undoRequests[event.id] !== undefined && undoConfirmationId !== event.id)) && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={undo.isPending || editingBlocked}
+                            onClick={() => { setHistoryActionError(null); setUndoConfirmationId(event.id); }}
+                            data-testid="expense-correction-undo"
+                          >
+                            {t(recovery.undoRequests[event.id] === undefined ? "expenseCorrectionUndo" : "expenseCorrectionRetry")}
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              ) : null}
+              {undoConfirmationId !== null && (
+                <div className="grid gap-2 rounded border bg-card p-3" role="group" aria-labelledby={`expense-correction-undo-prompt-${undoConfirmationId}`} data-testid="expense-correction-undo-confirm">
+                  <p id={`expense-correction-undo-prompt-${undoConfirmationId}`} className="text-sm">{t("expenseCorrectionUndoConfirm")}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant="outline" disabled={undo.isPending} onClick={() => setUndoConfirmationId(null)} data-testid="expense-correction-undo-cancel">
+                      {t("expenseCorrectionUndoCancel")}
+                    </Button>
+                    <Button type="button" size="sm" disabled={undo.isPending || editingBlocked} onClick={() => confirmUndo(undoConfirmationId)} data-testid="expense-correction-undo-confirm-button">
+                      {undo.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionUndoConfirmButton")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {editing && (
+                <form className="grid gap-3 rounded border bg-card p-3" onSubmit={submitCorrection} data-testid="expense-correction-form">
+                  <label className="grid gap-1 text-sm font-medium" htmlFor={`expense-correction-amount-${entry.id}`}>
+                    {t("expenseCorrectionNewAmount")}
+                    <input
+                      id={`expense-correction-amount-${entry.id}`}
+                      className={inputClass}
+                      type="text"
+                      inputMode="numeric"
+                      value={draftAmount}
+                      aria-invalid={correctionError !== null}
+                      aria-describedby={correctionError !== null ? `expense-correction-error-${entry.id}` : undefined}
+                      onChange={(event) => { setDraftAmount(event.target.value); setCorrectionError(null); setDiscardConfirmation(null); }}
+                      data-testid="expense-correction-amount"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-sm font-medium" htmlFor={`expense-correction-reason-${entry.id}`}>
+                    {t("expenseCorrectionReasonLabel")}
+                    <textarea
+                      id={`expense-correction-reason-${entry.id}`}
+                      className={inputClass}
+                      rows={2}
+                      maxLength={500}
+                      value={draftReason}
+                      onChange={(event) => { setDraftReason(event.target.value); setDiscardConfirmation(null); }}
+                      data-testid="expense-correction-reason"
+                    />
+                  </label>
+                  {discardConfirmation !== null && (
+                    <div className="grid gap-2 rounded border border-warning/40 bg-warning/10 p-3 text-sm" role="alert" data-testid="expense-correction-discard-confirmation">
+                      <p data-testid="expense-correction-discard-warning">{t("expenseCorrectionDiscardWarning")}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" disabled={correction.isPending} onClick={confirmDiscardAndContinue} data-testid="expense-correction-discard-confirm">
+                          {t("expenseCorrectionDiscardConfirm")}
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" disabled={correction.isPending} onClick={() => setDiscardConfirmation(null)} data-testid="expense-correction-discard-cancel">
+                          {t("expenseCorrectionCancel")}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="submit" size="sm" disabled={correction.isPending || editingBlocked} data-testid="expense-correction-save">
+                      {correction.isPending ? t("expenseCorrectionSaving") : t("expenseCorrectionSave")}
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" disabled={correction.isPending} onClick={cancelCorrectionEditor} data-testid="expense-correction-cancel">
+                      {t("expenseCorrectionCancel")}
+                    </Button>
+                  </div>
+                  {correctionError !== null && (
+                    <p id={`expense-correction-error-${entry.id}`} className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-correction-error">
+                      {correctionError}
+                    </p>
+                  )}
+                </form>
+              )}
+              {historyActionError !== null && <p className="text-sm text-destructive" role="alert">{historyActionError}</p>}
+            </section>
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 /** The record form's error, tagged with the control it belongs to so a field
@@ -48,7 +549,72 @@ type RecordError = { message: string; field: "amount" | "category" | "date" | "s
 export function ExpensesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const sessionCacheScope = useSessionCacheScope();
+  const correctionRecoveryKey = useMemo(() => expenseCorrectionRecoveryQueryKey(sessionCacheScope), [sessionCacheScope]);
+  const correctionRecoveryQuery = useQuery({
+    queryKey: correctionRecoveryKey,
+    queryFn: async (): Promise<ExpenseCorrectionRecoveryStore> => ({}),
+    initialData: (): ExpenseCorrectionRecoveryStore => ({}),
+    enabled: false,
+    gcTime: Infinity,
+  });
+  const correctionRecoveryStore = correctionRecoveryQuery.data;
+  const correctionNotices = Object.entries(correctionRecoveryStore).flatMap(([expenseId, state]) =>
+    state.notice === null ? [] : [[expenseId, state.notice] as const],
+  );
   const categories = useQuery(orpc.expenseCategoriesList.queryOptions());
+  const clearCorrectionNotice = useCallback((expenseId: string) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      if (current === undefined) return current;
+      const existing = current[expenseId];
+      if (existing === undefined || existing.notice === null) return current;
+      const updated = { ...existing, notice: null };
+      const next = { ...current };
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[expenseId];
+      else next[expenseId] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
+  const retainRecoveryRow = useCallback((entry: ExpenseListItem, active: boolean) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      if (current === undefined) return current;
+      const existing = current[entry.id] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
+      if (active && existing.row === entry) return current;
+      if (!active && existing.row === null) return current;
+      const updated = { ...existing, row: active ? entry : null };
+      const next = { ...current };
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[entry.id];
+      else next[entry.id] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
+  const updateCorrectionRequest = useCallback((expenseId: string, correctionRequest: ExpenseCorrectionRecovery["correctionRequest"], expectedKey?: string) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      const store = current ?? {};
+      const existing = store[expenseId] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
+      if (expectedKey !== undefined && existing.correctionRequest?.idempotencyKey !== expectedKey) return current;
+      const updated = { ...existing, correctionRequest };
+      const next = { ...store };
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[expenseId];
+      else next[expenseId] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
+  const updateUndoRequest = useCallback((expenseId: string, correctionId: string, key: string | null, expectedKey?: string) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      const store = current ?? {};
+      const existing = store[expenseId] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
+      if (expectedKey !== undefined && existing.undoRequests[correctionId] !== expectedKey) return current;
+      const undoRequests = { ...existing.undoRequests };
+      if (key === null) delete undoRequests[correctionId];
+      else undoRequests[correctionId] = key;
+      const updated = { ...existing, undoRequests };
+      const next = { ...store };
+      if (updated.row === null && updated.acknowledgements.length === 0 && updated.notice === null && updated.correctionRequest === null && Object.keys(undoRequests).length === 0) delete next[expenseId];
+      else next[expenseId] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
 
   // record form
   const [categoryId, setCategoryId] = useState("");
@@ -106,19 +672,48 @@ export function ExpensesPage() {
 
   const createCategory = useMutation(orpc.expenseCategoriesCreate.mutationOptions());
 
-  const history = useQuery(
-    orpc.expensesList.queryOptions({
-      input: {
-        preset,
-        customFrom: customFrom.bound,
-        customTo: customTo.bound,
-        categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
-        sortBy,
-        sortDir,
-        ...pager.pagination,
-      },
-    }),
-  );
+  const expenseListOptions = orpc.expensesList.queryOptions({
+    input: {
+      preset,
+      customFrom: customFrom.bound,
+      customTo: customTo.bound,
+      categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
+      sortBy,
+      sortDir,
+      ...pager.pagination,
+    },
+  });
+  const history = useQuery(expenseListOptions);
+  const acknowledgeCorrection = useCallback((expenseId: string, entry: ExpenseListItem, correction: ExpenseCorrection, historyDataUpdateCountAtAck: number, notice: string) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      const store = current ?? {};
+      const existing = store[expenseId] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY;
+      const acknowledgements = existing.acknowledgements.some((event) => event.correction.id === correction.id)
+        ? existing.acknowledgements
+        : [...existing.acknowledgements, { correction, historyDataUpdateCountAtAck }];
+      return { ...store, [expenseId]: { ...existing, row: entry, acknowledgements, notice } };
+    });
+  }, [correctionRecoveryKey, queryClient]);
+  const confirmAcknowledgementsFromFreshHistory = useCallback((expenseId: string, freshHistory: ExpenseCorrectionHistory) => {
+    queryClient.setQueryData<ExpenseCorrectionRecoveryStore>(correctionRecoveryKey, (current) => {
+      if (current === undefined) return current;
+      const existing = current[expenseId];
+      if (existing === undefined || existing.acknowledgements.length === 0) return current;
+      const eventIds = new Set(freshHistory.corrections.map((event) => event.id));
+      if (!existing.acknowledgements.every((event) => eventIds.has(event.correction.id))) return current;
+      const updated = { ...existing, acknowledgements: [] };
+      const next = { ...current };
+      if (updated.row === null && updated.notice === null && updated.correctionRequest === null && Object.keys(updated.undoRequests).length === 0) delete next[expenseId];
+      else next[expenseId] = updated;
+      return next;
+    });
+  }, [correctionRecoveryKey, queryClient]);
+
+  // Active editors, undo confirmations and acknowledgements outlive sorted-page membership.
+  const visibleRows = new Map((history.data?.items ?? []).map((entry) => [entry.id, entry]));
+  for (const [id, state] of Object.entries(correctionRecoveryStore)) {
+    if (state.row !== null && !visibleRows.has(id)) visibleRows.set(id, state.row);
+  }
 
   const toggleCategory = (id: string) => {
     pager.reset();
@@ -594,13 +1189,14 @@ export function ExpensesPage() {
           </div>
         </div>
 
-        {history.isPending ? (
-          <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-loading">{t("expensesLoading")}</p>
-        ) : history.isError ? (
+        {history.isError && (
           <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="expenses-history-error">
             {tError(history.error instanceof Error ? history.error.message : undefined)}
           </p>
-        ) : history.data === undefined || history.data.total === 0 ? (
+        )}
+        {history.isPending && visibleRows.size === 0 ? (
+          <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-loading">{t("expensesLoading")}</p>
+        ) : !history.isError && visibleRows.size === 0 ? (
           <EmptyState
             testId="expenses-empty"
             card
@@ -635,8 +1231,20 @@ export function ExpensesPage() {
               )
             }
           />
-        ) : (
-          <>
+        ) : null}
+        {correctionNotices.length > 0 && (
+          <div className="grid gap-2" aria-live="polite">
+            {[...correctionNotices].map(([expenseId, message]) => (
+              <div key={expenseId} className="flex flex-wrap items-center gap-2 text-sm text-success">
+                <p role="status" data-testid="expense-correction-saved">{message}</p>
+                <Button type="button" size="sm" variant="outline" aria-label={t("expenseCorrectionDismiss")} onClick={() => clearCorrectionNotice(expenseId)} data-testid="expense-correction-dismiss">
+                  {t("expenseCorrectionDismiss")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        {visibleRows.size > 0 && (
           <table className="w-full rounded border bg-card" data-testid="expense-history">
             <thead>
               <tr className="border-b text-right text-sm text-muted-foreground">
@@ -644,26 +1252,32 @@ export function ExpensesPage() {
                 <th className="p-3">{t("expenseColCategory")}</th>
                 <th className="p-3">{t("expenseColNote")}</th>
                 <th className="p-3">{t("expenseColAmount")}</th>
+                <th className="p-3">{t("expenseCorrectionEditButton")}</th>
               </tr>
             </thead>
             <tbody>
-              {history.data.items.map((entry) => {
+              {[...visibleRows.values()].map((entry) => {
                 const category = categories.data?.items.find((row) => row.id === entry.categoryId);
-                const withdrawal = category?.isOwnerWithdrawal === true;
                 return (
-                  <tr key={entry.id} className={`border-b last:border-0 ${withdrawal ? "bg-warning/10" : ""}`} data-testid="expense-row">
-                    <td className="p-3 text-sm whitespace-nowrap text-muted-foreground">{formatDateTime(entry.occurredAt)}</td>
-                    <td className="p-3">
-                      {category?.name ?? entry.categoryId.slice(0, 8)}
-                      {withdrawal && <span className="mr-2 rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}
-                    </td>
-                    <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
-                    <td className="p-3 font-semibold"><Amount value={entry.amount} /></td>
-                  </tr>
+                  <ExpenseCorrectionRow
+                    key={entry.id}
+                    entry={entry}
+                    categoryName={category?.name ?? entry.categoryId.slice(0, 8)}
+                    withdrawal={category?.isOwnerWithdrawal === true}
+                    onRecoveryChange={retainRecoveryRow}
+                    onAcknowledged={acknowledgeCorrection}
+                    onHistoryConfirmed={confirmAcknowledgementsFromFreshHistory}
+                    onClearNotice={clearCorrectionNotice}
+                    onCorrectionRequestChange={updateCorrectionRequest}
+                    onUndoRequestChange={updateUndoRequest}
+                    recovery={correctionRecoveryStore[entry.id] ?? EMPTY_EXPENSE_CORRECTION_RECOVERY}
+                  />
                 );
               })}
             </tbody>
           </table>
+        )}
+        {history.data !== undefined && history.data.total > 0 && (
           <Pager
             total={history.data.total}
             pageSize={pager.pageSize}
@@ -672,7 +1286,6 @@ export function ExpensesPage() {
             onPageSizeChange={pager.setPageSize}
             testId="expenses-pager"
           />
-          </>
         )}
       </div>
     </section>

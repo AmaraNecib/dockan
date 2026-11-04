@@ -1,5 +1,6 @@
 import { implement, ORPCError } from "@orpc/server";
-import { AUTH_REFUSAL, dokanContract, normalizeBarcode, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { eq } from "drizzle-orm";
+import { AUTH_REFUSAL, dokanContract, MAX_EXPENSE_AMOUNT, normalizeBarcode, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -389,6 +390,11 @@ export function createRpcRouter(deps: RpcDeps) {
     return session;
   };
 
+  const expenseActor = async (session: SessionIdentity): Promise<{ id: string; name: string | null }> => {
+    const rows = await deps.db.select({ name: users.name }).from(users).where(eq(users.id, session.user.id)).limit(1);
+    return { id: session.user.id, name: rows[0]?.name ?? null };
+  };
+
   /**
    * #317 — a supplier account holding a row the rule table cannot sign used to
    * reach the owner as an unmapped internal error, and the UI's `serverErrorKey`
@@ -443,14 +449,14 @@ export function createRpcRouter(deps: RpcDeps) {
     }
   };
 
-  /** Like guarded, but passes the procedure input through as well. */
-  const guardedInput = <T, I>(handler: (input: I, context: RpcContext) => Promise<T>) => async ({
+  /** Like guarded, but passes the procedure input and authenticated identity. */
+  const guardedInput = <T, I>(handler: (input: I, context: RpcContext, session: SessionIdentity) => Promise<T>) => async ({
     input,
     context,
   }: { input: I; context: RpcContext }): Promise<T> => {
-    await requireSession(context);
+    const session = await requireSession(context);
     try {
-      return await handler(input, context);
+      return await handler(input, context, session);
     } catch (error) {
       // a thrown non-Error (`throw "x"`) carries no store refusal to translate
       if (error instanceof Error) rethrowStoreRefusal(error);
@@ -2258,7 +2264,7 @@ export function createRpcRouter(deps: RpcDeps) {
         const range = resolveWindow({ preset: input.preset, customFrom: input.customFrom, customTo: input.customTo });
         const [saleLines, expenses, categories] = await Promise.all([
           deps.store.listSaleLinesForProfit(range.from, range.to),
-          deps.store.listExpenseRecords({ from: range.from, to: range.to }),
+          deps.store.listExpenseReportEntries({ from: range.from, to: range.to }),
           deps.store.listExpenseCategories(),
         ]);
         return computeProfitReport({ saleLines, expenses, categories, range });
@@ -2323,10 +2329,11 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     expensesCreate: os.expensesCreate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         // category existence is validated INSIDE the transaction unit, so an
         // FK violation on a race (category vanishing mid-call) surfaces as the
         // translated CATEGORY_NOT_FOUND instead of a raw constraint error
+        const actor = await expenseActor(session);
         return deps.store.withTransaction(async (tx) => {
           const categories = await tx.listExpenseCategories();
           if (!categories.some((category) => category.id === input.categoryId)) {
@@ -2336,10 +2343,102 @@ export function createRpcRouter(deps: RpcDeps) {
             categoryId: input.categoryId,
             amount: input.amount,
             note: input.note ?? null,
-            occurredAt: input.occurredAt ?? localDateTime(),
+            occurredAt: input.occurredAt ?? localDateTime(deps.now?.() ?? new Date()),
+            actorId: actor.id,
+            actorName: actor.name,
           });
           await tx.insertActivity({ type: "EXPENSE_RECORDED", summary: `EXPENSE_RECORDED ${input.amount}`, ref: expense.id });
           return expense;
+        });
+      }),
+    ),
+    expenseCorrectionHistory: os.expenseCorrectionHistory.handler(
+      guardedInput(async ({ expenseId }) => {
+        const history = await deps.store.getExpenseCorrectionHistory(expenseId);
+        if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+        return history;
+      }),
+    ),
+    expensesCorrect: os.expensesCorrect.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        const reason = input.reason?.trim() || null;
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const history = await tx.getExpenseCorrectionHistory(input.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+
+          const existing = await tx.findExpenseCorrectionByIdempotencyKey(input.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (
+              existing.actorId === actor.id &&
+              existing.afterAmount === input.amount &&
+              existing.reason === reason &&
+              existing.reversesCorrectionId === null
+            ) {
+              return existing;
+            }
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED" });
+          }
+          if (history.effectiveAmount === input.amount) {
+            throw new ORPCError("BAD_REQUEST", { message: "EXPENSE_CORRECTION_NO_CHANGE" });
+          }
+
+          return tx.insertExpenseCorrection({
+            expenseId: input.expenseId,
+            effectiveAt: history.original.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()),
+            beforeAmount: history.effectiveAmount,
+            afterAmount: input.amount,
+            difference: input.amount - history.effectiveAmount,
+            actorId: actor.id,
+            actorName: actor.name,
+            reason,
+            reversesCorrectionId: null,
+            idempotencyKey: input.idempotencyKey,
+          });
+        });
+      }),
+    ),
+    expensesCorrectionUndo: os.expensesCorrectionUndo.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const target = await tx.getExpenseCorrection(input.correctionId);
+          if (target === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_CORRECTION_NOT_FOUND" });
+
+          const existing = await tx.findExpenseCorrectionByIdempotencyKey(target.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (existing.actorId === actor.id && existing.reversesCorrectionId === target.id) return existing;
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED" });
+          }
+
+          const history = await tx.getExpenseCorrectionHistory(target.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+          if (target.reversesCorrectionId !== null) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_NOT_REVERSIBLE" });
+          }
+          if (history.corrections.some((correction) => correction.reversesCorrectionId === target.id)) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_ALREADY_REVERSED" });
+          }
+
+          const difference = -target.difference;
+          const afterAmount = history.effectiveAmount + difference;
+          if (afterAmount < 1 || afterAmount > MAX_EXPENSE_AMOUNT) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE" });
+          }
+          return tx.insertExpenseCorrection({
+            expenseId: target.expenseId,
+            effectiveAt: history.original.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()),
+            beforeAmount: history.effectiveAmount,
+            afterAmount,
+            difference,
+            actorId: actor.id,
+            actorName: actor.name,
+            reason: null,
+            reversesCorrectionId: target.id,
+            idempotencyKey: input.idempotencyKey,
+          });
         });
       }),
     ),
@@ -2353,7 +2452,7 @@ export function createRpcRouter(deps: RpcDeps) {
             ? "CURRENT_MONTH"
             : undefined));
         const range = resolveWindow({ preset, customFrom: input.customFrom, customTo: input.customTo, from: input.from, to: input.to });
-        const rows = await deps.store.listExpenseRecords({ categoryIds: input.categoryIds, from: range.from, to: range.to });
+        const rows = await deps.store.listExpenseListItems({ categoryIds: input.categoryIds, from: range.from, to: range.to });
         // sortExpenses owns ordering (a tested pure module), so the page is
         // sliced after the sort; `total` is the filtered, sorted length.
         const sorted = sortExpenses(rows, input.sortBy, input.sortDir);

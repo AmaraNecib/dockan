@@ -114,6 +114,51 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   await help.screenshot({ path: info.outputPath("shortcuts-help-active.png") });
 });
 
+test("a closing purchase-discard popup cannot take focus from the newer picker", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+  const stock = page.getByTestId("sale-quick-stock");
+  await stock.fill("7");
+
+  // Hold the real exit animation, not a wall-clock delay. Base UI unmounts
+  // the popup only after its animations finish.
+  await page.addStyleTag({
+    content: '[data-slot="dialog-popup"][data-closed] { animation-play-state: paused !important; }',
+  });
+  await page.keyboard.press("Control+b");
+  const discard = page.getByRole("dialog").filter({
+    has: page.getByTestId("new-sale-discard-confirm"),
+  });
+  await expect(discard).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(discard).toHaveAttribute("data-closed", "");
+  expect(await discard.evaluate((element) =>
+    element.getAnimations().map((animation) => animation.playState),
+  )).toEqual(["paused"]);
+
+  await page.keyboard.press("Control+n");
+  const search = page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…");
+  await expect(search).toBeFocused();
+  // Drain the picker's queued animation-frame autofocus before releasing the
+  // old popup, so another picker focus cannot conceal a stale return.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  await expect(discard).toHaveCount(1);
+  await discard.evaluate((element) => {
+    for (const animation of element.getAnimations()) animation.finish();
+  });
+  await expect(discard).toHaveCount(0);
+  // React's passive unmount cleanup queues the return-focus microtask.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  await expect(search).toBeFocused();
+  await expect(stock).toHaveValue("7");
+});
+
 test("shortcut-entered purchase and sale persist, a refused sale keeps its draft for retry", async ({ page }) => {
   await signIn(page);
   const categoryId = await seedCategoryId(page, "تصنيف الاختصارات");

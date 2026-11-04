@@ -15,7 +15,7 @@ fresh clone has this document but not the scripts.
 | the change | the evidence |
 | --- | --- |
 | **visual** — anything the eye can judge | before/after images **and** a video at real user pace. A screenshot pair alone does not show a transition, a focus ring or a hover state. |
-| **not visual** — logic, a feature, a refactor, a fix | the **measurements**. Not "it works": the failing-first run (red before, green after), the ablation/mutation proof that the new guard actually bites, the before/after numbers, and the decisions taken and why. |
+| **not visual** — logic, a feature, a refactor, a fix | the **measurements**. Not "it works": the focused TDD or regression result, the before/after numbers where they matter, and the decisions taken and why. The automated red-on-parent replay is a CI-only gate, not local evidence. |
 
 An **inert** diff (§3) cannot reach the product, so its measurement is the CI run itself — still posted as the evidence comment reason 4 requires. The form changes; the obligation does not.
 
@@ -58,17 +58,11 @@ command itself fails authentication. Never print tokens or provision credentials
 Keep the existing bucket and policy unchanged. A screenshot pair alone does not show a transition,
 a focus ring or a hover state; a linked mp4 alone does not play.
 
-### What counts as failing-first
+### Local test evidence
 
-A test that never failed proves nothing. The evidence must show the artefact **red before the
-change and green after it**, with the failing assertion named. A guard added without a case that
-reddens when the guard is deleted is not a guard. Run the guard's mutation against the current
-head; an inherited mutation table is an unrun gate.
+Use focused TDD or a regression test where it fits, and name the failing assertion when recording a red/green result. A local test may demonstrate the changed behavior; it does not substitute for the PR's CI-only red-on-parent result. Do not run the red-on-parent replay or require its local output. Browser-relevant changes follow the selector-first procedure in `.agents/skills/guard/SKILL.md`, including its recorded decision and selected-scope run.
 
-Put the evidence in the commit message body so the parent can reuse it for the PR description, and keep
-the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason
-4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
-lane that only writes the commit body produces no comment, so reason 4 fails at merge.
+Put verification evidence in the commit message body so the parent can reuse it for the PR description, and keep the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
 ### CI enforces red-on-parent with `scripts/red-on-parent.ts`; a waiver is its only exception
 

@@ -169,10 +169,7 @@ habit happened. The parent owns push, CI, the review round and the merge decisio
   Read the author's model from the lane's commit trailer, never the parent's. Independence is a
   family, not an exact ID. With more than one lens, at least two families must appear unless an
   approved exception applies. Availability concerns enabled routes only, not optional OpenCode routes.
-- **The owner's exception is recorded, not assumed.** When no enabled non-author family is
-  available, the owner may approve a round on the author's family; the payload carries
-  `independence: { approvedBy, reason }`, the review states it, and a lane cannot approve its
-  own. `reviewloop` refuses the round without it.
+- **Standing owner approval applies when OpenCode is unavailable.** Same-family review is then allowed without asking again per PR, including the multi-family lens exception. Prefer an enabled working non-author family; otherwise use separate reviewer sessions and disclose the shared family. Record `independence: { approvedBy, reason }` under `reviewloop`. This does not waive required lenses, current-head 5/5, finding resolution or merge gates. A lane records the owner's approval, not its own.
 - **One accountable set of genuine reviewer executions.** A worker claim alone is not evidence. The parent verifies exact base/head, reviewer session, actual model family, provenance and report, and reuses valid exact-tree executions rather than automatically rerunning them. Required lenses stay separate when the selected depth calls for them. The existing design or PR handoff can supply the short author account; a fresh author-review session is not required.
 - **Evidence lands in a local, untracked `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**,
   which `guard` checks before a push. Review reports are never committed: a committed

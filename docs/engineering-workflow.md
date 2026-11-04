@@ -119,8 +119,7 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   OpenCode review is optional, not a prerequisite for review or a quota-triggered fallback. Do not
   probe or request it unless the owner opts in for the current scope. With more than one lens,
   at least two families must appear unless an approved exception applies.
-  When no enabled non-author family is available, the owner may approve an exception recorded as
-  `independence: { approvedBy, reason }`; a lane cannot approve its own.
+  The owner gives standing approval for same-family review when OpenCode is unavailable; no new per-PR approval is needed. Prefer an enabled working non-author family; otherwise use separate reviewer sessions and disclose the shared family. Record the standing approval in `independence: { approvedBy, reason }` under `reviewloop`. All required lenses, current-head 5/5 and finding-resolution gates still apply.
 - **Run both reviews until the owner ends the trial.** The parent runs `reviewloop` and
   Greptile on the same pinned boundary across several PRs. Follow the
   [comparison protocol](review-comparison.md) for independent first-pass records, verified

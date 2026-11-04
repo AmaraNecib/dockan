@@ -142,6 +142,17 @@ describe("the verification rule is discoverable (#259)", () => {
     );
   });
 
+  test("same-family fallback records standing approval without waiving gates", () => {
+    const skill = read(".agents/skills/reviewloop/SKILL.md").replace(/\s+/g, " ");
+    for (const fact of [
+      "when OpenCode is unavailable, same-family review is allowed without asking again per PR",
+      "Prefer an enabled working non-author family; otherwise use separate reviewer sessions",
+      "not model-family-independent reviews",
+      '"approvedBy": "owner"',
+      "It waives neither required lenses nor current-head 5/5",
+    ]) expect(skill).toContain(fact);
+  });
+
   test("review entry points link to the A/B protocol", () => {
     for (const [file, link] of [
       ["docs/engineering-workflow.md", "review-comparison.md"],

@@ -77,17 +77,20 @@ A failed probe stops that route, not the other enabled routes.
 
 Run the locally required review for every reviewable change, with depth selected by reachable risk under `docs/engineering-workflow.md`. Compact Standard is one focused `code-review` execution covering Standards, Spec and affected-test adequacy; mark `debate` and `test-audit` skipped with reasons. Ordinary Standard uses all three lenses; High-assurance requires all three and final-head debate after fixes. Record exactly what ran; the renderer accepts explicit skips but refuses an all-skipped round. Compact is never no-review or hosted-only.
 
-When no enabled non-author family is available, a round on the author's family is
-possible only with the owner's explicit approval, recorded in the payload:
+**Standing owner approval:** when OpenCode is unavailable, same-family review is allowed
+without asking again per PR. Unavailable includes disabled, not opted in, quota-limited
+or failed routes. Optional probes are not required. Prefer an enabled working non-author
+family; otherwise use separate reviewer sessions. This approval also covers using one
+family across multiple lenses. Disclose that these are separate executions, not
+model-family-independent reviews, and record the actual availability reason:
 
 ```json
-"independence": { "approvedBy": "owner", "reason": "only DeepSeek is available this week" }
+"independence": { "approvedBy": "owner", "reason": "Standing owner approval: OpenCode unavailable; same-family separate-session review" }
 ```
 
-Reuse an existing owner approval within its stated scope; do not ask for it again per PR.
-Do not require optional OpenCode probes or quota exhaustion before using that approval.
-Optional OpenCode does not itself grant a same-family exception. A lane cannot grant this
-approval to itself. The renderer prints the exception in the review and writes
+A lane records this owner approval, not its own. It waives neither required lenses nor
+current-head 5/5, finding resolution, verification or merge gates. For a condition outside
+this standing scope, obtain explicit owner approval. The renderer prints the exception in the review and writes
 `<!-- reviewloop_independence_exception -->` into the body.
 
 **Done when** the chosen pairs pass the guard in step 4.

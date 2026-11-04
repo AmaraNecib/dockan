@@ -63,8 +63,14 @@ import type { Database } from "bun:sqlite";
  * The bump is still owed: the shape changed, so a version-6 build refuses a
  * version-7 file instead of provisioning owner rows into the old shape
  * (ADR-0008 §4.5).
+ *
+ * Version 8 (issue 408): expense actor snapshots and the append-only signed
+ * `expense_corrections` ledger. A version-7 build would report the original
+ * amount and omit every correction delta, so it MUST refuse a version-8 file.
+ * Existing expense rows gain null actor snapshots rather than guessed actors;
+ * their original business and recording timestamps remain unchanged.
  */
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 
 /**
  * A database written by a newer app. The older build cannot know what the

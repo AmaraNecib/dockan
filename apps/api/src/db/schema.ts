@@ -370,9 +370,30 @@ export const expenses = sqliteTable("expenses", {
   /** whole dinars; positive by contract */
   amount: integer("amount").notNull(),
   note: text("note"),
-  /** Algeria-local moment of the expense (editable for backdating) */
+  /** Algeria-local business moment of the expense (editable for backdating) */
   occurredAt: text("occurred_at").notNull(),
+  /** server recording time; null actor snapshots mark legacy rows */
   createdAt: text("created_at").notNull(),
+  actorId: text("actor_id"),
+  actorName: text("actor_name"),
+});
+
+/** Immutable signed changes; `difference = after_amount - before_amount`. */
+export const expenseCorrections = sqliteTable("expense_corrections", {
+  id: text("id").primaryKey(),
+  expenseId: text("expense_id")
+    .notNull()
+    .references(() => expenses.id),
+  effectiveAt: text("effective_at").notNull(),
+  recordedAt: text("recorded_at").notNull(),
+  beforeAmount: integer("before_amount").notNull(),
+  afterAmount: integer("after_amount").notNull(),
+  difference: integer("difference").notNull(),
+  actorId: text("actor_id"),
+  actorName: text("actor_name"),
+  reason: text("reason"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  reversesCorrectionId: text("reverses_correction_id"),
 });
 
 // ---------------------------------------------------------------------------
@@ -457,8 +478,8 @@ export const verifications = sqliteTable("verification", {
 });
 
 /**
- * Schema DDL applied at startup via CREATE TABLE IF NOT EXISTS (MVP; no
- * migration tooling yet). Column names mirror the table definitions above.
+ * Additive schema DDL applied at startup. Versioned shape migrations run in
+ * connection setup before this list; column names mirror the table definitions.
  */
 export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -512,9 +533,14 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS supplier_return_lines (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES supplier_returns(id), invoice_line_id TEXT REFERENCES invoice_lines(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, unit_cost INTEGER NOT NULL, amount INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_supplier_return_lines_return ON supplier_return_lines(return_id)`,
   `CREATE TABLE IF NOT EXISTS expense_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, is_owner_withdrawal INTEGER NOT NULL DEFAULT 0 CHECK (is_owner_withdrawal IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category_id TEXT NOT NULL REFERENCES expense_categories(id), amount INTEGER NOT NULL CHECK (amount > 0), note TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category_id TEXT NOT NULL REFERENCES expense_categories(id), amount INTEGER NOT NULL CHECK (amount > 0), note TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, actor_id TEXT, actor_name TEXT, CHECK ((actor_id IS NULL AND actor_name IS NULL) OR (actor_id IS NOT NULL AND actor_name IS NOT NULL)))`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_occurred_at ON expenses(occurred_at)`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category_id)`,
+  `CREATE TABLE IF NOT EXISTS expense_corrections (id TEXT PRIMARY KEY, expense_id TEXT NOT NULL REFERENCES expenses(id), effective_at TEXT NOT NULL, recorded_at TEXT NOT NULL, before_amount INTEGER NOT NULL CHECK (before_amount > 0), after_amount INTEGER NOT NULL CHECK (after_amount > 0), difference INTEGER NOT NULL CHECK (difference <> 0), actor_id TEXT, actor_name TEXT, reason TEXT, idempotency_key TEXT NOT NULL, reverses_correction_id TEXT REFERENCES expense_corrections(id), CHECK (difference = after_amount - before_amount), CHECK ((actor_id IS NULL AND actor_name IS NULL) OR (actor_id IS NOT NULL AND actor_name IS NOT NULL)))`,
+  `CREATE INDEX IF NOT EXISTS idx_expense_corrections_expense ON expense_corrections(expense_id, recorded_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_expense_corrections_effective_at ON expense_corrections(effective_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_corrections_idempotency ON expense_corrections(expense_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_corrections_reversal ON expense_corrections(reverses_correction_id) WHERE reverses_correction_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT, email TEXT UNIQUE, emailVerified INTEGER NOT NULL DEFAULT 0, username TEXT UNIQUE, phoneNumber TEXT UNIQUE, phoneNumberVerified INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,

@@ -14,6 +14,11 @@ import {
   debtsOutputSchema,
   expenseCategoryCreateInputSchema,
   expenseCategorySchema,
+  expenseCorrectInputSchema,
+  expenseCorrectionHistoryInputSchema,
+  expenseCorrectionHistorySchema,
+  expenseCorrectionSchema,
+  expenseCorrectionUndoInputSchema,
   expenseCreateInputSchema,
   expenseListInputSchema,
   expenseListOutputSchema,
@@ -222,6 +227,9 @@ export const dokanContract = {
   expenseCategoriesCreate: oc.input(expenseCategoryCreateInputSchema).output(expenseCategorySchema),
   expensesList: oc.input(expenseListInputSchema).output(expenseListOutputSchema),
   expensesCreate: oc.input(expenseCreateInputSchema).output(expenseSchema),
+  expenseCorrectionHistory: oc.input(expenseCorrectionHistoryInputSchema).output(expenseCorrectionHistorySchema),
+  expensesCorrect: oc.input(expenseCorrectInputSchema).output(expenseCorrectionSchema),
+  expensesCorrectionUndo: oc.input(expenseCorrectionUndoInputSchema).output(expenseCorrectionSchema),
 
   // --- debts screen drill-down (ticket 9) ----------------------------------
   /** unpaid invoices for one person, matched by the same identity debtSummaries groups by */

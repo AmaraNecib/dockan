@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
   acquireSlot,
@@ -21,12 +23,20 @@ import {
   resetBase,
   run,
   setBinderForTest,
+  setProcessProbeForTest,
+  processState,
   status,
   treeAlive,
   tryTake,
+  TASKKILL_TIMEOUT_MS,
+  cancellationBudgetRemaining,
+  setTaskkillRunnerForTest,
+  setCancellationTimerForTest,
+  taskkillTree,
   unusableBanner,
   writeBase,
 } from "./heavy-slot";
+import { buildGcFixtureScript } from "./gc-fixture";
 
 // Spawned children and the injected-script imports resolve the tool from this
 // file's own location, never from the caller's cwd: `bun test heavy-slot.test.ts`
@@ -111,11 +121,98 @@ function leaveScenario(): void {
 }
 
 beforeAll(() => enterScenario());
-afterAll(() => leaveScenario());
+afterAll(() => {
+  leaveScenario();
+  rmSync(ROOT, { recursive: true, force: true });
+});
 
 console.log(`[heavy-slot-test] chosen base: ${TEST_BASE} (probed free at runtime), state root: ${ROOT}`);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function fixtureResponds(port: number, token: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    let response = "";
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (matches: boolean) => {
+      if (finished) return;
+      finished = true;
+      if (timer !== undefined) clearTimeout(timer);
+      socket.destroy();
+      resolve(matches);
+    };
+    timer = setTimeout(() => finish(false), 250);
+    socket.on("data", (chunk) => {
+      response += chunk.toString();
+      if (response.length >= token.length) finish(response === token);
+    });
+    socket.on("end", () => finish(response === token));
+    socket.on("error", () => finish(false));
+  });
+}
+
+async function waitForFixtureGone(port: number, token: string, timeoutMs: number, pid?: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const endpointGone = !(await fixtureResponds(port, token));
+    const processGone = pid === undefined || processState(pid) === "absent";
+    if (endpointGone && processGone) return true;
+    await sleep(50);
+  }
+  return !(await fixtureResponds(port, token)) && (pid === undefined || processState(pid) === "absent");
+}
+
+type BoundedWait<T> = { settled: true; value: T } | { settled: false };
+
+async function waitForPromise<T>(promise: Promise<T>, timeoutMs: number): Promise<BoundedWait<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ settled: false }>((resolve) => {
+    timer = setTimeout(() => resolve({ settled: false }), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ settled: true as const, value })),
+      timeout,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function waitOrCleanup<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  cleanup: () => Promise<void>,
+): Promise<BoundedWait<T>> {
+  const result = await waitForPromise(promise, timeoutMs);
+  if (!result.settled) await cleanup();
+  return result;
+}
+
+type CapturedFixture = {
+  isAlive: () => Promise<boolean>;
+  kill: () => "signalled" | "found" | "not-found" | "unknown";
+  waitForExit: (timeoutMs: number) => Promise<boolean>;
+};
+
+async function cleanupCapturedFixture(runDone: boolean, fixture: CapturedFixture, timeoutMs = 2000): Promise<void> {
+  if (!(await fixture.isAlive())) return;
+  const outcome = fixture.kill();
+  if (!(await fixture.waitForExit(timeoutMs))) {
+    const runnerState = runDone ? "already settled" : "still active";
+    throw new Error(`test-owned fixture did not exit within ${timeoutMs}ms; kill outcome=${outcome}, runner ${runnerState}`);
+  }
+}
+
+function throwTestFailures(primaryFailure: Error | undefined, cleanupFailure: Error | undefined): void {
+  if (primaryFailure && cleanupFailure) {
+    throw new AggregateError([primaryFailure, cleanupFailure], "test body and fixture cleanup both failed");
+  }
+  if (primaryFailure) throw primaryFailure;
+  if (cleanupFailure) throw cleanupFailure;
+}
 
 function freshDir(): string {
   return mkdtempSync(join(ROOT, "state-"));
@@ -142,6 +239,248 @@ function stubUnusable(matches: (port: number) => boolean): void {
 }
 
 describe("heavy-slot", () => {
+  test("cancellation uses only the time left in its original deadline", () => {
+    const startedAt = 1000;
+    expect(cancellationBudgetRemaining(startedAt, startedAt + TASKKILL_TIMEOUT_MS)).toBe(8000);
+    expect(cancellationBudgetRemaining(startedAt, startedAt + 10_000)).toBe(0);
+    expect(cancellationBudgetRemaining(startedAt, startedAt + 12_000)).toBe(0);
+  });
+
+  test("taskkill subprocess receives the fixed timeout budget", () => {
+    const calls: Array<{ pid: number; timeout?: number }> = [];
+    setTaskkillRunnerForTest((pid, options) => {
+      calls.push({ pid, timeout: options.timeout });
+      return { status: 0 };
+    });
+    try {
+      expect(taskkillTree(43210)).toBe("found");
+      expect(calls).toEqual([{ pid: 43210, timeout: TASKKILL_TIMEOUT_MS }]);
+    } finally {
+      setTaskkillRunnerForTest(null);
+    }
+  });
+
+  test("taskkill nonzero with a live PID is unknown, not absent", () => {
+    setTaskkillRunnerForTest(() => ({ status: 1 }));
+    setProcessProbeForTest(() => "present");
+    try {
+      expect(taskkillTree(43209)).toBe("unknown");
+    } finally {
+      setTaskkillRunnerForTest(null);
+      setProcessProbeForTest(null);
+    }
+  });
+
+  test("taskkill nonzero only confirms absence when the OS probe reports ESRCH", () => {
+    setTaskkillRunnerForTest(() => ({ status: 128 }));
+    setProcessProbeForTest(() => "absent");
+    try {
+      expect(taskkillTree(43208)).toBe("not-found");
+      setProcessProbeForTest(() => "unknown");
+      expect(taskkillTree(43208)).toBe("unknown");
+    } finally {
+      setTaskkillRunnerForTest(null);
+      setProcessProbeForTest(null);
+    }
+  });
+
+  test("taskkill timeout reports an unknown tree state instead of success or absence", () => {
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (...messages: unknown[]) => errors.push(messages.map(String).join(" "));
+    setTaskkillRunnerForTest(() => ({
+      status: null,
+      error: Object.assign(new Error("simulated taskkill timeout"), { code: "ETIMEDOUT" }),
+    }));
+    try {
+      expect(taskkillTree(43211)).toBe("unknown");
+      expect(errors.join("\n")).toContain(`${TASKKILL_TIMEOUT_MS}ms`);
+      expect(errors.join("\n")).toContain("state is unknown");
+    } finally {
+      setTaskkillRunnerForTest(null);
+      console.error = originalError;
+    }
+  });
+
+  test("taskkill spawn errors leave the process-tree state unknown", () => {
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (...messages: unknown[]) => errors.push(messages.map(String).join(" "));
+    setTaskkillRunnerForTest(() => ({
+      status: null,
+      error: Object.assign(new Error("simulated missing taskkill"), { code: "ENOENT" }),
+    }));
+    try {
+      expect(taskkillTree(43212)).toBe("unknown");
+      expect(errors.join("\n")).toContain("ENOENT");
+      expect(errors.join("\n")).toContain("state is unknown");
+    } finally {
+      setTaskkillRunnerForTest(null);
+      console.error = originalError;
+    }
+  });
+
+  test.skipIf(process.platform !== "win32")("run logs unverified descendant cleanup for every taskkill outcome", async () => {
+    for (const outcome of ["found", "not-found", "unknown"] as const) {
+      for (const wrapperAtRelease of ["absent", "present"] as const) {
+        const originalError = console.error;
+        const errors: string[] = [];
+        let probeCalls = 0;
+        let killCalls = 0;
+        console.error = (...messages: unknown[]) => errors.push(messages.map(String).join(" "));
+        setTaskkillRunnerForTest(() => {
+          killCalls += 1;
+          if (killCalls > 1) return { status: 0 };
+          return outcome === "found" ? { status: 0 } : { status: 1 };
+        });
+        setProcessProbeForTest(() => {
+          const call = probeCalls++;
+          if (outcome === "not-found" && call === 0) return "absent";
+          if (outcome === "unknown" && call === 0) return "unknown";
+          const releaseProbe = outcome === "found" ? 0 : 1;
+          return wrapperAtRelease === "present" && (call === releaseProbe || call === releaseProbe + 2) ? "present" : "absent";
+        });
+
+        try {
+          const baselineListeners = process.listenerCount("SIGINT");
+          const result = run("diagnostic-regression", `"${process.execPath}" -e "setTimeout(() => process.exit(0), 100)"`);
+          for (let attempt = 0; attempt < 200 && !errors.some((line) => line.includes("running:")); attempt++) await sleep(10);
+          expect(errors.some((line) => line.includes("running:"))).toBe(true);
+          expect(process.listenerCount("SIGINT")).toBeGreaterThan(baselineListeners);
+          process.emit("SIGINT");
+          expect(await waitForPromise(result, 3000)).toMatchObject({ settled: true });
+          expect(killCalls).toBeGreaterThan(0);
+          const diagnostic = errors.find((line) => line.includes("cancellation cleanup"));
+          expect(diagnostic).toBeDefined();
+          expect(diagnostic).toContain(wrapperAtRelease === "present" ? "wrapper remains observable" : "descendant exit was not independently verified");
+          expect(diagnostic).toContain("work possibly still running");
+        } finally {
+          setTaskkillRunnerForTest(null);
+          setProcessProbeForTest(null);
+          console.error = originalError;
+        }
+      }
+    }
+  }, 15000);
+
+  test.skipIf(process.platform === "win32")("POSIX run cancellation keeps process-group cleanup diagnostics unchanged", async () => {
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (...messages: unknown[]) => errors.push(messages.map(String).join(" "));
+    try {
+      const baselineListeners = process.listenerCount("SIGINT");
+      const result = run("posix-diagnostic-regression", `"${process.execPath}" -e "setInterval(() => {}, 1000)"`);
+      for (let attempt = 0; attempt < 200 && !errors.some((line) => line.includes("running:")); attempt++) await sleep(10);
+      expect(errors.some((line) => line.includes("running:"))).toBe(true);
+      expect(process.listenerCount("SIGINT")).toBeGreaterThan(baselineListeners);
+      process.emit("SIGINT");
+      expect(await waitForPromise(result, 2000)).toMatchObject({ settled: true });
+      expect(errors.join("\\n")).not.toContain("cancellation cleanup");
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  test.skipIf(process.platform !== "win32")("treeAlive treats a taskkill timeout as potentially alive", () => {
+    setTaskkillRunnerForTest(() => ({
+      status: null,
+      error: Object.assign(new Error("simulated taskkill timeout"), { code: "ETIMEDOUT" }),
+    }));
+    setProcessProbeForTest(() => "unknown");
+    try {
+      // SAFETY: this Windows-only branch reads only pid; other platforms skip the test.
+      expect(treeAlive({ pid: 43213 } as Parameters<typeof treeAlive>[0])).toBe(true);
+    } finally {
+      setTaskkillRunnerForTest(null);
+      setProcessProbeForTest(null);
+    }
+  });
+
+  test("fixture startup uncertainty signals cooperatively and requires bounded exit proof", async () => {
+    let signalWritten = false;
+    let exitProbeCalled = false;
+    await expect(cleanupCapturedFixture(true, {
+      // A recorded owned PID with no token listener yet is still a live fixture.
+      isAlive: async () => true,
+      kill: () => { signalWritten = true; return "signalled"; },
+      waitForExit: async () => { exitProbeCalled = true; return false; },
+    })).rejects.toThrow("test-owned fixture did not exit within 2000ms");
+    expect(signalWritten).toBe(true);
+    expect(exitProbeCalled).toBe(true);
+  });
+
+  test("fixture ownership probe errors remain visible without a PID kill", async () => {
+    let killCalled = false;
+    await expect(cleanupCapturedFixture(true, {
+      isAlive: async () => { throw new Error("probe unavailable"); },
+      kill: () => { killCalled = true; return "signalled"; },
+      waitForExit: async () => true,
+    })).rejects.toThrow("probe unavailable");
+    expect(killCalled).toBe(false);
+  });
+
+  test("test body and cleanup failures remain visible together", () => {
+    const primary = new Error("assertion failed");
+    const cleanup = new Error("fixture did not stop");
+    try {
+      throwTestFailures(primary, cleanup);
+      throw new Error("expected combined failure");
+    } catch (error) {
+      if (!(error instanceof AggregateError)) throw error;
+      expect(error.errors).toEqual([primary, cleanup]);
+    }
+  });
+
+  test("fixture finalizer kills and reaps a live child after the runner settled", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const childClosed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    const runner = await waitForPromise(Promise.resolve(0), 100);
+    expect(runner.settled).toBe(true);
+    expect(child.exitCode).toBeNull();
+
+    try {
+      await cleanupCapturedFixture(runner.settled, {
+        isAlive: async () => child.exitCode === null && child.signalCode === null,
+        kill: () => (child.kill("SIGKILL") ? "signalled" : "not-found"),
+        waitForExit: async (timeoutMs) => (await waitForPromise(childClosed, timeoutMs)).settled,
+      });
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      expect((await waitForPromise(childClosed, 2000)).settled).toBe(true);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await waitForPromise(childClosed, 2000);
+    }
+  });
+
+  test("bounded cancellation cleanup stops its owned child and restores scenario state", async () => {
+    const stateDir = freshDir();
+    const previousStateDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = stateDir;
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const childClosed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+
+    try {
+      const result = await waitOrCleanup(new Promise<never>(() => {}), 25, async () => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        const stopped = await waitForPromise(childClosed, 2000);
+        if (!stopped.settled) throw new Error("test-owned cleanup child did not exit");
+        if (previousStateDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+        else process.env.HEAVY_SLOT_STATE_DIR = previousStateDir;
+        rmSync(stateDir, { recursive: true, force: true });
+      });
+
+      expect(result.settled).toBe(false);
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      expect(process.env.HEAVY_SLOT_STATE_DIR === previousStateDir).toBe(true);
+      expect(existsSync(stateDir)).toBe(false);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (previousStateDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = previousStateDir;
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   test("the F18 premise holds on this machine: renameSync over an existing file replaces it", () => {
     const dir = freshDir();
     writeFileSync(join(dir, "record"), "1\n");
@@ -678,6 +1017,119 @@ describe("heavy-slot", () => {
     expect(freed).toBe(true);
   }, 15000);
 
+  test.skipIf(process.platform === "win32")("a POSIX wrapper that ignores SIGTERM is killed before its slot is released", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    const pidFile = join(dir, "ignoring-wrapper.pid");
+    const command = `echo $$ > "${pidFile}"; trap '' TERM; exec sleep 30`;
+    let runDone = false;
+    let runPromise: Promise<number> | undefined;
+    let pid: number | undefined;
+    try {
+      runPromise = run("ignore-term", command).finally(() => { runDone = true; });
+      for (const deadline = Date.now() + 5000; Date.now() < deadline && !existsSync(pidFile); ) await sleep(25);
+      expect(existsSync(pidFile)).toBe(true);
+      pid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+
+      process.emit("SIGINT");
+      const result = await runPromise;
+      expect(result).toBe(1);
+      expect(runDone).toBe(true);
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch (error) {
+        alive = !(error instanceof Error && "code" in error && error.code === "ESRCH");
+      }
+      expect(alive).toBe(false);
+    } finally {
+      if (!runDone && runPromise) {
+        process.emit("SIGINT");
+        await runPromise;
+      }
+      if (pid !== undefined) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* the test process already stopped it */ }
+      }
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      resetBase();
+    }
+  }, 15000);
+
+  // This injected Windows run-path test verifies the kill order and timer budget,
+  // not that taskkill actually removed an OS process; the POSIX test above checks
+  // real signal behavior on hosts that support process groups.
+  test.skipIf(process.platform !== "win32")("run schedules forced kill before the cancellation deadline", async () => {
+    resetBase();
+    const dir = freshDir();
+    const prevDir = process.env.HEAVY_SLOT_STATE_DIR;
+    process.env.HEAVY_SLOT_STATE_DIR = dir;
+    const script = join(ROOT, `cancel-timer-${process.pid}-${Date.now()}.mjs`);
+    const pidFile = join(dir, "cancel-fixture.pid");
+    const callbacks: { delay: number; callback: () => void }[] = [];
+    const killCalls: string[] = [];
+    let probe: "present" | "absent" = "present";
+    let runDone = false;
+    let runPromise: Promise<number> | undefined;
+    let pid: number | undefined;
+    try {
+      writeFileSync(script, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
+      setTaskkillRunnerForTest(() => {
+        killCalls.push(`taskkill-${killCalls.length + 1}`);
+        return { status: 0 };
+      });
+      setProcessProbeForTest(() => probe);
+      setCancellationTimerForTest((callback, delay) => {
+        callbacks.push({ callback, delay });
+        return setTimeout(() => {}, 60_000);
+      });
+
+      runPromise = run("cancel-deadline", `"${process.execPath}" "${script}"`).finally(() => { runDone = true; });
+      for (const deadline = Date.now() + 5000; Date.now() < deadline && !existsSync(pidFile); ) await sleep(25);
+      expect(existsSync(pidFile)).toBe(true);
+      pid = Number(readFileSync(pidFile, "utf8").trim());
+      process.emit("SIGINT");
+
+      expect(callbacks).toHaveLength(2);
+      const forcedKillDelay = callbacks[0]?.delay;
+      const deadlineDelay = callbacks[1]?.delay;
+      if (forcedKillDelay === undefined || deadlineDelay === undefined) {
+        throw new Error("run must schedule both forced kill and final cancellation timers");
+      }
+      expect(deadlineDelay - forcedKillDelay).toBe(TASKKILL_TIMEOUT_MS);
+      expect(forcedKillDelay).toBeLessThan(deadlineDelay);
+      expect(deadlineDelay).toBeLessThanOrEqual(10_000);
+      expect(killCalls).toEqual(["taskkill-1"]);
+      callbacks[0]?.callback();
+      expect(killCalls).toEqual(["taskkill-1", "taskkill-2"]);
+      probe = "absent";
+      callbacks[1]?.callback();
+      expect(await runPromise).toBe(1);
+      expect(runDone).toBe(true);
+    } finally {
+      probe = "absent";
+      if (!runDone && runPromise) {
+        process.emit("SIGINT");
+        callbacks[callbacks.length - 1]?.callback();
+        await runPromise;
+      }
+      if (pid !== undefined) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* fixture already exited */ }
+      }
+      setCancellationTimerForTest(null);
+      setProcessProbeForTest(null);
+      setTaskkillRunnerForTest(null);
+      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+      rmSync(script, { force: true });
+      resetBase();
+    }
+  }, 15000);
+
   test("a cancelled run's tree is confirmed dead before the slot could release", async () => {
     // The same spawn shape run() uses: a wrapper shell whose pid is the group
     // leader (POSIX, detached), and a real descendant beneath it that a plain
@@ -700,6 +1152,81 @@ describe("heavy-slot", () => {
     expect(exited || !treeAlive(sleeper)).toBe(true);
     if (exited) expect(treeAlive(sleeper)).toBe(false);
   }, 15000);
+
+  // [L342] The grandchild fixture the cancel test launches must be impossible to
+  // strand. run()'s cancel path is not the only way a test ends: an assertion
+  // failure between the launch and the cancel, bun's per-test timeout, or the
+  // runner itself being killed leaves the fixture running - and it used to live
+  // forever (issue #342: two bun.exe children from this very test were still
+  // serving their sockets ~20 hours later, gripping a port and a cwd whose tree
+  // the parent had already stripped). A bounded lifetime plus a unique shutdown
+  // file close both ends: the fixture dies by itself at its TTL even when no
+  // cleanup runs, and exits after the launcher creates the shutdown file.
+  test("the grandchild fixture dies by itself at its time-to-live", async () => {
+    const port = (await chooseFreeBase(TEST_BASE + 5 * BASE_STRIDE, 4)) ?? TEST_BASE;
+    const script = join(ROOT, `gc-ttl-${process.pid}-${Date.now()}.mjs`);
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      writeFileSync(script, buildGcFixtureScript(port, { ttlMs: 1500 }));
+      child = spawn(process.execPath, [script], { stdio: "ignore" });
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && child.exitCode === null) await sleep(100);
+      expect(child.exitCode).toBe(0);
+    } finally {
+      rmSync(script, { force: true });
+      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 10000);
+
+  test("the grandchild fixture still holds its socket until the TTL arrives", async () => {
+    const port = (await chooseFreeBase(TEST_BASE + 6 * BASE_STRIDE, 4)) ?? TEST_BASE;
+    const script = join(ROOT, `gc-pin-${process.pid}-${Date.now()}.mjs`);
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      writeFileSync(script, buildGcFixtureScript(port, { ttlMs: 2500 }));
+      child = spawn(process.execPath, [script], { stdio: "ignore" });
+      // The cancel test's own observable: "port bound" is "grandchild alive". The
+      // pin must survive well past run()'s whole cancellation budget, so the
+      // production TTL has to be the only thing that ends it.
+      await sleep(500);
+      expect(await isPortBound(port)).toBe(true);
+    } finally {
+      rmSync(script, { force: true });
+      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 10000);
+
+  test("the fixture exits after its cooperative shutdown file appears", async () => {
+    const port = (await chooseFreeBase(TEST_BASE + 7 * BASE_STRIDE, 4)) ?? TEST_BASE;
+    const dir = freshDir();
+    const pidFile = join(dir, "gc.pid");
+    const shutdownFile = join(dir, "gc.shutdown");
+    const script = join(ROOT, `gc-pid-${process.pid}-${Date.now()}.mjs`);
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      writeFileSync(script, buildGcFixtureScript(port, { ttlMs: 60000, pidFile, shutdownFile }));
+      child = spawn(process.execPath, [script], { stdio: "ignore" });
+      // The fixture writes its own pid on boot; wait until it has actually done so
+      // before signaling shutdown, so cleanup does not race fixture startup.
+      let wrote = false;
+      for (const deadline = Date.now() + 3000; Date.now() < deadline && !wrote; ) {
+        wrote = existsSync(pidFile);
+        if (!wrote) await sleep(50);
+      }
+      expect(wrote).toBe(true);
+      expect(readFileSync(pidFile, "utf8").trim()).toBe(String(child.pid));
+      // The launcher's cooperative signal file ends the fixture without a PID signal.
+      writeFileSync(shutdownFile, "stop");
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && child.exitCode === null) await sleep(100);
+      expect(child.exitCode).toBe(0);
+    } finally {
+      rmSync(pidFile, { force: true });
+      rmSync(shutdownFile, { force: true });
+      rmSync(script, { force: true });
+      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 10000);
 
   // [T2] run()'s cancel loop needs a grandchild the test can observe INDEPENDENTLY
   // of treeAlive, because treeAlive probes the (dead) wrapper's pid and that is
@@ -725,40 +1252,36 @@ describe("heavy-slot", () => {
     const gcPort = await chooseFreeBase(TEST_BASE + 3 * BASE_STRIDE, 4);
     if (gcPort === null) throw new Error("no free port for the grandchild");
     const pidFile = join(dir, "gc.pid");
+    const shutdownFile = join(dir, `shutdown-${randomUUID()}`);
+    const fixtureToken = randomUUID();
+    const gcScript = join(ROOT, `heavy-gc-${process.pid}-${Date.now()}.mjs`);
+    let wrapper: string | undefined;
+    writeFileSync(
+      gcScript,
+      buildGcFixtureScript(gcPort, { ttlMs: 90_000, pidFile, shutdownFile, ownershipToken: fixtureToken }),
+    );
+    const gcAlive = (): Promise<boolean> => fixtureResponds(gcPort, fixtureToken);
     let command: string;
-    const gcAlive =
-      process.platform === "win32"
-        ? (): Promise<boolean> => isPortBound(gcPort)
-        : async (): Promise<boolean> => {
-            try {
-              const pid = Number(readFileSync(pidFile, "utf8").trim());
-              process.kill(pid, 0);
-              return true;
-            } catch {
-              return false;
-            }
-          };
     if (process.platform === "win32") {
       // The wrapper is what run() sees; the grandchild outlives any early close.
-      const gcScript = join(ROOT, `heavy-gc-${process.pid}.mjs`);
-      writeFileSync(
-        gcScript,
-        `import net from "node:net";\nnet.createServer().listen(${gcPort}, "127.0.0.1");\n// no exit: the socket keeps the event loop running, that IS the pin\n`,
-      );
-      const wrapper = join(ROOT, `heavy-wrapper-${process.pid}.cmd`);
+      // The 90-second TTL remains a fallback if the test runner itself is killed.
+      wrapper = join(ROOT, `heavy-wrapper-${process.pid}.cmd`);
       writeFileSync(
         wrapper,
         `@echo off\r\nstart /b "" "${process.execPath}" "${gcScript}"\r\nping -n 8 127.0.0.1 > nul\r\n`,
       );
       command = `"${wrapper}"`;
     } else {
-      // The grandchild joins run()'s detached group (sh -c does not setsid), so a
-      // group kill or probe reaches it; the pid file makes that observable.
-      command = `sleep 100 & echo $! > ${pidFile}; sleep 6`;
+      // The fixture joins run()'s detached group; its private token endpoint proves
+      // that a captured PID still names this disposable fixture before cleanup.
+      command = `"${process.execPath}" "${gcScript}" & sleep 6`;
     }
 
     let violation: string | null = null;
+    let cleanupFailure: Error | undefined;
+    let primaryFailure: Error | undefined;
     let runDone = false;
+    let cancelSent = false;
     const runPromise = run("cancel-me", command).finally(() => {
       runDone = true;
     });
@@ -781,6 +1304,7 @@ describe("heavy-slot", () => {
 
       // Cancel: the script holds slot 1 already; its terminal writes into stderr
       // of the test are the tool's own progress lines (inherit), harmless here.
+      cancelSent = true;
       process.emit("SIGINT");
 
       // The invariant: while a grandchild is observable, the slot stays bound.
@@ -801,8 +1325,7 @@ describe("heavy-slot", () => {
       expect(code).toBeLessThanOrEqual(255);
       expect(violation).toBeNull();
 
-      // The grandchild is REALLY gone after cancel (POSIX: kill(grandchild,0)
-      // throws; Windows: its bind is released - taskkill /T traversed to it).
+      // The fixture is gone only when its private token endpoint stops answering.
       let gcGone = false;
       for (const deadline = Date.now() + 10000; Date.now() < deadline && !gcGone; ) {
         if (!(await gcAlive())) gcGone = true;
@@ -811,11 +1334,83 @@ describe("heavy-slot", () => {
       expect(gcGone).toBe(true);
       // Listener hygiene on the cancel path too: run() removed its pair.
       expect(process.listenerCount("SIGINT") + process.listenerCount("SIGTERM")).toBe(listenerBaseline);
+    } catch (error) {
+      primaryFailure = error instanceof Error ? error : new Error(String(error));
     } finally {
-      if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
-      else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
-      resetBase();
+      try {
+        // Keep a failed assertion from leaving run() and its child tree alive.
+        let fixturePid: number | undefined;
+        try {
+          const recordedPid = Number(readFileSync(pidFile, "utf8").trim());
+          if (Number.isInteger(recordedPid) && recordedPid > 0) fixturePid = recordedPid;
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+            cleanupFailure = new Error(`could not read fixture ownership record: ${String(error)}`);
+          }
+        }
+        if (!cancelSent && !runDone) {
+          cancelSent = true;
+          process.emit("SIGINT");
+        }
+        if (!runDone) {
+          const outcome = await waitOrCleanup(runPromise, 5000, async () => {
+            process.emit("SIGTERM");
+          });
+          if (!outcome.settled) {
+            const finalWait = await waitForPromise(runPromise, 12_000);
+            if (!finalWait.settled) cleanupFailure = new Error("cancelled run did not settle after forced fixture cleanup");
+          }
+        }
+        if (fixturePid !== undefined) {
+          const capturedPid = fixturePid;
+          await cleanupCapturedFixture(runDone, {
+            isAlive: async () => {
+              let recordedPid: number;
+              try {
+                recordedPid = Number(readFileSync(pidFile, "utf8").trim());
+              } catch (error) {
+                if (error instanceof Error && "code" in error && error.code === "ENOENT" &&
+                  !(await fixtureResponds(gcPort, fixtureToken)) && processState(capturedPid) === "absent") return false;
+                throw error;
+              }
+              if (recordedPid !== capturedPid) throw new Error("fixture PID ownership changed during cleanup");
+              if (await fixtureResponds(gcPort, fixtureToken)) return true;
+              const state = processState(capturedPid);
+              if (state === "absent") return false;
+              // PID ownership is pinned by the unique record. Signal cooperatively
+              // even if startup has not bound the token endpoint yet.
+              writeFileSync(shutdownFile, "stop");
+              return true;
+            },
+            kill: () => {
+              writeFileSync(shutdownFile, "stop");
+              return "signalled";
+            },
+            waitForExit: (timeoutMs) => waitForFixtureGone(gcPort, fixtureToken, timeoutMs, capturedPid),
+          });
+        } else {
+          // The unique signal is safe before PID publication, but an absent token
+          // endpoint alone cannot prove that a starting process has exited.
+          writeFileSync(shutdownFile, "stop");
+          cleanupFailure = new Error("fixture PID was unavailable; cooperative shutdown was signalled but exit could not be verified");
+        }
+      } catch (error) {
+        cleanupFailure = error instanceof Error ? error : new Error(String(error));
+      } finally {
+        if (prevDir === undefined) delete process.env.HEAVY_SLOT_STATE_DIR;
+        else process.env.HEAVY_SLOT_STATE_DIR = prevDir;
+        // Keep the cooperative signal and PID record when cleanup cannot prove
+        // exit, so a still-starting fixture can consume the signal later.
+        if (!cleanupFailure) {
+          rmSync(pidFile, { force: true });
+          rmSync(shutdownFile, { force: true });
+        }
+        rmSync(gcScript, { force: true });
+        if (wrapper) rmSync(wrapper, { force: true });
+        resetBase();
+      }
     }
+    throwTestFailures(primaryFailure, cleanupFailure);
   }, 30000);
 
   test("a launch that never starts returns a code, not a throw, and frees its slot (G1)", async () => {

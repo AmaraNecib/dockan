@@ -65,11 +65,13 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
       const inflowTotal = row.delta > 0 && row.unitCost !== null ? row.delta * row.unitCost : null;
       // Valid unit facts can have an unrepresentable total. Never return rounded money.
       const safeInflowTotal = inflowTotal !== null && Number.isSafeInteger(inflowTotal) ? inflowTotal : null;
+      const recordedSaleCogs = sale?.cogsExact;
+      const safeSaleCogs = recordedSaleCogs !== undefined && Number.isSafeInteger(recordedSaleCogs) ? recordedSaleCogs : null;
       return { ...row, supersededBySeq: superseded[index] ?? null, details: {
         sellingPrice: sale?.unitPrice ?? null,
         saleTotal: sale?.total ?? null,
         netSaleTotal: sale?.netTotal ?? null,
-        cost: { unitCost: recordedCost, total: sale?.cogsExact ?? safeInflowTotal },
+        cost: { unitCost: recordedCost, total: sale === undefined ? safeInflowTotal : safeSaleCogs },
         documents,
       } };
     });

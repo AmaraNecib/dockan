@@ -1,13 +1,20 @@
 import { describe, expect, it } from "bun:test";
+import { itemHistoryOutputSchema } from "../../../../packages/contracts/src/core";
 import type { StorePort, StoreReadPort } from "../store/port";
 import { readItemHistory } from "./item-history";
 
 class IterationCountedArray<T> extends Array<T> {
   iterations = 0;
+  filters = 0;
 
   override [Symbol.iterator](): ArrayIterator<T> {
     this.iterations += 1;
     return super[Symbol.iterator]();
+  }
+
+  override filter(predicate: (value: T, index: number, array: T[]) => boolean): T[] {
+    this.filters += 1;
+    return super.filter(predicate);
   }
 }
 
@@ -43,7 +50,13 @@ describe("item history projection scaling", () => {
       invoiceNumber: `INV-${index}`,
       invoiceKind: "PURCHASE" as const,
     }));
-    const links: Array<{ id: string; invoiceId: string; movementId: string; quantity: number; createdAt: string }> = [];
+    const links = Array.from({ length: count }, (_, index) => ({
+      id: `link-${index}`,
+      invoiceId: `invoice-${(index + 1) % count}`,
+      movementId: `movement-${index}`,
+      quantity: 1,
+      createdAt: "2025-01-01T00:00:00",
+    }));
     const trackedLines = new IterationCountedArray(...lines);
     const trackedLinks = new IterationCountedArray(...links);
     const tx = {
@@ -73,9 +86,91 @@ describe("item history projection scaling", () => {
 
     // At 1,000 rows the previous per-movement line/doc filters inspect ~2,000,000 line slots; these counts pin one index pass each without machine-dependent timing limits.
     expect(history.movements).toHaveLength(count);
-    expect(history.movements[0]?.details?.documents).toEqual([{ id: "invoice-0", number: "INV-0" }]);
-    expect(history.movements.at(-1)?.details?.documents).toEqual([{ id: `invoice-${count - 1}`, number: `INV-${count - 1}` }]);
+    expect(history.movements[0]?.details?.documents).toEqual([
+      { id: "invoice-0", number: "INV-0" },
+      { id: "invoice-1", number: "INV-1" },
+    ]);
+    expect(history.movements.at(-1)?.details?.documents).toEqual([
+      { id: "invoice-0", number: "INV-0" },
+      { id: `invoice-${count - 1}`, number: `INV-${count - 1}` },
+    ]);
     expect(trackedLines.iterations).toBe(1);
+    expect(trackedLines.filters).toBe(0);
     expect(trackedLinks.iterations).toBe(1);
+    expect(trackedLinks.filters).toBe(0);
+  });
+
+  it("returns null for unsafe recorded sale COGS and keeps the history contract valid", async () => {
+    const movements = [{
+      id: "00000000-0000-4000-8000-000000000002",
+      itemId: "00000000-0000-4000-8000-000000000001",
+      kind: "PURCHASE" as const,
+      delta: 2,
+      unitCost: Number.MAX_SAFE_INTEGER,
+      reason: null,
+      ref: "00000000-0000-4000-8000-000000000004",
+      returnMark: null,
+      occurredAt: "2025-01-01T00:00:00",
+      createdAt: "2025-01-01T00:00:00",
+      seq: 1,
+    }, {
+      id: "00000000-0000-4000-8000-000000000003",
+      itemId: "00000000-0000-4000-8000-000000000001",
+      kind: "SALE" as const,
+      delta: -2,
+      unitCost: Number.MAX_SAFE_INTEGER,
+      reason: null,
+      ref: "00000000-0000-4000-8000-000000000005",
+      returnMark: null,
+      occurredAt: "2025-01-02T00:00:00",
+      createdAt: "2025-01-02T00:00:00",
+      seq: 2,
+    }];
+    const lines = [{
+      id: "00000000-0000-4000-8000-000000000006",
+      invoiceId: "00000000-0000-4000-8000-000000000005",
+      itemId: "00000000-0000-4000-8000-000000000001",
+      description: "Sale item",
+      quantity: 2,
+      defaultUnitPrice: 20,
+      unitPrice: 20,
+      costAtSale: Number.MAX_SAFE_INTEGER,
+      cogsExact: Number.MAX_SAFE_INTEGER + 1,
+      total: 40,
+      discountAllocated: 0,
+      netTotal: 40,
+      invoiceNumber: "INV-SALE",
+      invoiceKind: "SALE" as const,
+    }];
+    const tx = {
+      getItemsByIds: async () => new Map([["00000000-0000-4000-8000-000000000001", {
+        id: "00000000-0000-4000-8000-000000000001",
+        name: "Indexed item",
+        barcode: null,
+        categoryId: "00000000-0000-4000-8000-000000000007",
+        costPrice: 10,
+        sellingPrice: 20,
+        lowStockThreshold: 0,
+        stockOnHand: 0,
+        createdAt: "2025-01-01T00:00:00",
+        updatedAt: "2025-01-01T00:00:00",
+      }]]),
+      listStockMovements: async () => movements,
+      listItemHistoryLines: async () => lines,
+      listStockLinksByItem: async () => [],
+      getReturnHeader: async () => undefined,
+      getSupplierReturn: async () => undefined,
+    } satisfies StoreReadPort;
+    const store: Pick<StorePort, "withReadTransaction"> = {
+      withReadTransaction: async <T>(callback: (readTx: StoreReadPort) => Promise<T>) => callback(tx),
+    };
+
+    const history = await readItemHistory(store, { itemId: "00000000-0000-4000-8000-000000000001", limit: 10 });
+
+    const sale = history.movements.find((movement) => movement.id === "00000000-0000-4000-8000-000000000003");
+    expect(sale?.details?.cost?.total).toBeNull();
+    const parsed = itemHistoryOutputSchema.safeParse(history);
+    if (!parsed.success) throw new Error(JSON.stringify(parsed.error.issues));
+    expect(parsed.success).toBe(true);
   });
 });

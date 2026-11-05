@@ -20,7 +20,7 @@ import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
-import { createBackup } from "../lib/backups";
+import { createBackup, createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { resolveVaultCredential } from "../lib/vault/session";
 import { tokenMatches } from "../lib/boot-token";
@@ -75,6 +75,7 @@ type RpcDeps = {
    * itself is untouched, so employee logins can be added later without
    * changing the vault.
    */
+  externalBackupValidator?: (path: string) => boolean;
   vault?: {
     sessionMatches(token: string | null | undefined): boolean;
     ownerId(): string | undefined;
@@ -2577,6 +2578,18 @@ export function createRpcRouter(deps: RpcDeps) {
       // today's JSONL tail; the contract clamps `lines` to 1..500 so the
       // bounded read is the caller's choice, newest-last (chronological)
       guardedInput(async ({ lines }) => deps.logger.tail(lines ?? 100)),
+    ),
+    externalBackupStatus: os.externalBackupStatus.handler(
+      guarded(async () => readExternalBackupStatus(deps.config.dataDir)),
+    ),
+    externalBackupDestinationSet: os.externalBackupDestinationSet.handler(
+      guardedInput(async ({ destination }) => setExternalBackupDestination(deps.config.dataDir, destination)),
+    ),
+    externalBackupRun: os.externalBackupRun.handler(
+      guarded(async () => {
+        if (deps.externalBackupValidator === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
+        return createExternalBackup({ store: deps.store, dataDir: deps.config.dataDir, validate: deps.externalBackupValidator });
+      }),
     ),
     backupManual: os.backupManual.handler(
       guarded(async () => {

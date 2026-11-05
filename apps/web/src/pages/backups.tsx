@@ -1,6 +1,6 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
@@ -17,6 +17,14 @@ import { backupRevealAvailable, BackupRevealError, revealBackup } from "../lib/b
 export function BackupsPage() {
   const { t } = useTranslation();
   const backup = useMutation(orpc.backupManual.mutationOptions());
+  const externalStatus = useQuery(orpc.externalBackupStatus.queryOptions());
+  const [destination, setDestination] = useState("");
+  const saveDestination = useMutation(orpc.externalBackupDestinationSet.mutationOptions({
+    onSuccess: () => { void externalStatus.refetch(); },
+  }));
+  const runExternal = useMutation(orpc.externalBackupRun.mutationOptions({
+    onSuccess: () => { void externalStatus.refetch(); },
+  }));
   const reveal = useMutation({ mutationFn: revealBackup });
   const dispatching = useRef(false);
   const exportButton = useRef<HTMLButtonElement>(null);
@@ -34,6 +42,31 @@ export function BackupsPage() {
       <p className="mt-1 text-sm text-muted-foreground">{t("backupsHint")}</p>
 
       <div className="mt-4 grid gap-3 rounded border bg-card p-4">
+        <form className="grid gap-2 border-b pb-4" onSubmit={(event) => {
+          event.preventDefault();
+          saveDestination.mutate({ destination });
+        }}>
+          <label htmlFor="external-backup-destination" className="text-sm font-medium">{t("backupsExternalDestination")}</label>
+          <input
+            id="external-backup-destination"
+            data-testid="external-backup-destination"
+            dir="ltr"
+            className="rounded border bg-background px-3 py-2 font-mono text-sm"
+            value={destination || externalStatus.data?.destination || ""}
+            onChange={(event) => setDestination(event.currentTarget.value)}
+            placeholder={t("backupsExternalDestinationHint")}
+          />
+          <div className="flex gap-2">
+            <Button type="submit" disabled={saveDestination.isPending}>{t("backupsExternalSave")}</Button>
+            <Button type="button" variant="outline" disabled={!externalStatus.data?.destination || runExternal.isPending} onClick={() => runExternal.mutate(undefined)}>
+              {runExternal.isPending ? t("backupsBusy") : t("backupsExternalRun")}
+            </Button>
+          </div>
+          {externalStatus.data?.lastSuccessAt && <p role="status" className="text-sm">{t("backupsExternalSuccess", { at: externalStatus.data.lastSuccessAt })}</p>}
+          {externalStatus.data?.lastError && <p role="alert" className="text-sm text-destructive">{t(`backupsExternalError_${externalStatus.data.lastError}`)}</p>}
+          {saveDestination.isError && <p role="alert" className="text-sm text-destructive">{tError(saveDestination.error.message)}</p>}
+          {runExternal.isError && <p role="alert" className="text-sm text-destructive">{tError(runExternal.error.message)}</p>}
+        </form>
         <div>
           <Button
             ref={exportButton}

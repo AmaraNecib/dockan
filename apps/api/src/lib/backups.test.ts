@@ -16,6 +16,9 @@ import {
   backupFilePath,
   createBackup as createBackupRaw,
   ensureDailyBackup as ensureDailyBackupRaw,
+  createExternalBackup,
+  readExternalBackupStatus,
+  setExternalBackupDestination,
 } from "./backups";
 import { localDate } from "./logger";
 
@@ -129,6 +132,36 @@ describe("manual export copy", () => {
     } finally {
       copy.close();
     }
+  });
+});
+
+describe("additional external backup", () => {
+  itHeavy("retains destination and last success across a failed retry without replacing the known-good artifact", async () => {
+    const dataDir = freshDataDir();
+    const external = freshDataDir();
+    await setExternalBackupDestination(dataDir, external);
+    const first = await createExternalBackup({ store, dataDir, validate: (file) => fs.readFileSync(file).length > 0 });
+    expect(first.lastError).toBeNull();
+    const knownGoodPath = first.lastPath;
+    expect(knownGoodPath).not.toBeNull();
+    if (knownGoodPath === null) throw new Error("expected an external backup artifact");
+    const savedBytes = fs.readFileSync(knownGoodPath);
+    const failingStore: StorePort = { ...store, copyDatabaseTo: async (partial) => { fs.writeFileSync(partial, "broken"); throw Object.assign(new Error("disk full"), { code: "ENOSPC" }); } };
+    await expect(createExternalBackup({ store: failingStore, dataDir, validate: () => false })).resolves.toMatchObject({
+      lastError: "full",
+      lastPath: knownGoodPath,
+    });
+    const failed = readExternalBackupStatus(dataDir);
+    expect(failed.lastError).toBe("full");
+    expect(failed.lastPath).toBe(knownGoodPath);
+    expect(fs.readFileSync(knownGoodPath).equals(savedBytes)).toBe(true);
+    expect(readExternalBackupStatus(dataDir)).toEqual(failed);
+  });
+
+  it("cancellation leaves the saved destination unchanged", async () => {
+    const dataDir = freshDataDir();
+    const saved = await setExternalBackupDestination(dataDir, freshDataDir());
+    expect(await setExternalBackupDestination(dataDir, null)).toEqual(saved);
   });
 });
 

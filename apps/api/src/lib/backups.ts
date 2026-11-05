@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { localDate, localDateTime } from "./logger";
 import type { StorePort } from "../store/port";
+import { z } from "zod";
 
 /**
  * Backups (ticket 13). A backup is a consistent copy of the SQLite file made
@@ -34,6 +35,97 @@ export function backupFilePath(dataDir: string, localDateString: string = localD
 }
 
 export type BackupResult = { path: string; createdAt: string };
+
+export type ExternalBackupStatus = {
+  destination: string | null;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: "disconnected" | "unwritable" | "full" | "invalid" | null;
+  lastPath: string | null;
+};
+
+const EXTERNAL_BACKUP_SETTINGS = "external-backup.json";
+const externalBackupStatusSchema = z.object({
+  destination: z.string().nullable(),
+  lastAttemptAt: z.string().nullable(),
+  lastSuccessAt: z.string().nullable(),
+  lastError: z.enum(["disconnected", "unwritable", "full", "invalid"]).nullable(),
+  lastPath: z.string().nullable(),
+});
+
+function externalSettingsPath(dataDir: string): string {
+  return path.join(dataDir, EXTERNAL_BACKUP_SETTINGS);
+}
+
+/** Read the persisted destination and last outcome without touching the drive. */
+export function readExternalBackupStatus(dataDir: string): ExternalBackupStatus {
+  try {
+    const parsed = externalBackupStatusSchema.safeParse(JSON.parse(fs.readFileSync(externalSettingsPath(dataDir), "utf8")));
+    return parsed.success ? parsed.data : { destination: null, lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+  } catch {
+    return { destination: null, lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+  }
+}
+
+async function persistExternalBackupStatus(dataDir: string, status: ExternalBackupStatus): Promise<void> {
+  const settingsPath = externalSettingsPath(dataDir);
+  const partial = `${settingsPath}.partial.${process.pid}.${crypto.randomBytes(6).toString("hex")}`;
+  try {
+    await fs.promises.writeFile(partial, JSON.stringify(status), { flag: "wx" });
+    await fs.promises.rename(partial, settingsPath);
+  } finally {
+    try { await fs.promises.unlink(partial); } catch { /* already renamed or never created */ }
+  }
+}
+
+/** Save a destination. Null is an explicit cancellation/no-change signal. */
+export async function setExternalBackupDestination(dataDir: string, destination: string | null): Promise<ExternalBackupStatus> {
+  const current = readExternalBackupStatus(dataDir);
+  if (destination === null) return current;
+  const selected = path.resolve(destination.trim());
+  if (!destination.trim()) throw new Error("BACKUP_DESTINATION_REQUIRED");
+  const next = { ...current, destination: selected };
+  await persistExternalBackupStatus(dataDir, next);
+  return next;
+}
+
+/** Make a unique, validated encrypted copy without replacing any existing set. */
+export async function createExternalBackup({ store, dataDir, validate }: {
+  store: StorePort;
+  dataDir: string;
+  validate: BackupFileValidator;
+}): Promise<ExternalBackupStatus> {
+  const current = readExternalBackupStatus(dataDir);
+  if (!current.destination) return current;
+  const at = localDateTime();
+  const targetDir = current.destination;
+  const stem = `dokan-${at.replaceAll(":", "-")}-${process.pid}-${crypto.randomBytes(5).toString("hex")}.dknvbak`;
+  const dest = path.join(targetDir, stem);
+  const partial = `${dest}.partial.${crypto.randomBytes(6).toString("hex")}`;
+  let next: ExternalBackupStatus;
+  try {
+    await fs.promises.access(targetDir, fs.constants.W_OK);
+    await store.copyDatabaseTo(partial);
+    if (!validate(partial)) throw new Error("BACKUP_INVALID");
+    // The destination name includes a cryptographic nonce; rename publishes the
+    // already-validated file atomically and never reuses the daily local name.
+    await fs.promises.rename(partial, dest);
+    next = { ...current, lastAttemptAt: at, lastSuccessAt: at, lastError: null, lastPath: dest };
+  } catch (error) {
+    const codeValue = error instanceof Error ? Object.getOwnPropertyDescriptor(error, "code")?.value : undefined;
+    const codeResult = z.string().safeParse(codeValue);
+    const code = codeResult.success ? codeResult.data : undefined;
+    const lastError = error instanceof Error && error.message === "BACKUP_INVALID"
+      ? "invalid"
+      : code === "ENOSPC" || code === "EDQUOT" ? "full"
+        : code === "ENOENT" || code === "ENODEV" || code === "EIO" ? "disconnected" : "unwritable";
+    next = { ...current, lastAttemptAt: at, lastError };
+  } finally {
+    try { await fs.promises.unlink(partial); } catch { /* partial absent or destination was unavailable */ }
+  }
+  await persistExternalBackupStatus(dataDir, next);
+  return next;
+}
 
 /**
  * How a backup file is checked before it is trusted as today's copy. The

@@ -7,6 +7,7 @@ import path from "node:path";
 import { buildEncryptedSnapshot, createEncryptedConnection } from "../../db/encrypted-connection";
 import type { KdfParams } from "./crypto";
 import { createVaultBackupBundle, extractVaultBackup, type ExtractVaultBackupOptions, readVaultBackupBundle } from "./backup";
+import { createExternalBackup, setExternalBackupDestination } from "../backups";
 import { VaultCore } from "./core";
 import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, parseVaultHeader, readSnapshotFence } from "./format";
 import { acquireVaultLock, VaultAlreadyLockedError, VaultLockLostError } from "./lock";
@@ -130,9 +131,18 @@ describe("vault backup bundle", () => {
     await store.createCategory({ name: "رحلة" });
     await sourceManager.commitSetup();
 
-    // the exported backup is ONE file; the key wraps travel with the snapshot
-    const bundlePath = path.join(source, "backup.dknvbak");
-    await store.copyDatabaseTo(bundlePath);
+    // The actual external-copy seam writes a unique, validated encrypted bundle.
+    const externalDir = tempDir("dokan-backup-external-");
+    await setExternalBackupDestination(source, externalDir);
+    const outcome = await createExternalBackup({
+      store,
+      dataDir: source,
+      validate: conn.validateSnapshotFile.bind(conn),
+    });
+    expect(outcome.lastError).toBeNull();
+    const bundlePath = outcome.lastPath;
+    expect(bundlePath).not.toBeNull();
+    if (bundlePath === null) throw new Error("external backup did not produce an artifact");
     expect(conn.validateSnapshotFile(bundlePath)).toBe(true);
     const bundle = fs.readFileSync(bundlePath);
     expect(readVaultBackupBundle(bundle)).toBeDefined();

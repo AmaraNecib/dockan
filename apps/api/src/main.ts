@@ -13,7 +13,7 @@ import { openConnection, type Connection } from "./db/connection";
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
 import { snapshotFailurePolicy } from "./db/snapshot-failure-policy";
 import { openVaultStore } from "./db/vault-store";
-import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
+import { createExternalBackup, ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
 import { classifyPlaintextCleanup } from "./lib/vault/cleanup-status";
 import { createOverlay, type RequestHandler } from "./lib/overlay";
@@ -402,7 +402,17 @@ async function runVaultDailyBackup(): Promise<void> {
     (error) => logger.error("SERVER_ERROR", "VAULT_PLAINTEXT_CLEANUP_UNKNOWN: daily backup deferred; manual verification required", error),
   );
   if (cleanup.status !== "clean") return;
-  await runDailyBackup(store, conn.validateSnapshotFile?.bind(conn));
+  const validate = conn.validateSnapshotFile?.bind(conn);
+  await runDailyBackup(store, validate);
+  if (validate !== undefined && readyHandlerFor(lockLost) === "live") {
+    try {
+      const result = await createExternalBackup({ store, dataDir: config.dataDir, validate });
+      if (result.lastError !== null) logger.warn("SERVER_ERROR", `external backup failed: ${result.lastError}`);
+    } catch (error) {
+      // External media is optional. Failure must never prevent the app from serving sales.
+      logger.error("SERVER_ERROR", "external encrypted backup outcome could not be saved", error instanceof Error ? error : new Error(String(error)));
+    }
+  }
 }
 
 async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
@@ -512,6 +522,7 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
       logger,
       store,
       auth,
+      externalBackupValidator: conn.validateSnapshotFile?.bind(conn),
       vault: {
         sessionMatches: (token) => vault.sessionMatches(token),
         ownerId: () => vault.ownerId(),

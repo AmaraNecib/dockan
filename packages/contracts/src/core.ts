@@ -1768,6 +1768,15 @@ export const backupManualOutputSchema = z.object({
   createdAt: localDateTimeSchema,
 });
 
+export const externalBackupStatusSchema = z.object({
+  destination: z.string().nullable(),
+  lastAttemptAt: localDateTimeSchema.nullable(),
+  lastSuccessAt: localDateTimeSchema.nullable(),
+  lastError: z.enum(["disconnected", "unwritable", "full", "invalid"]).nullable(),
+  lastPath: z.string().nullable(),
+});
+export const externalBackupDestinationInputSchema = z.object({ destination: z.string().trim().min(1).nullable() });
+
 // ---------------------------------------------------------------------------
 // Types (z.infer) — the API and web import these, never z directly.
 // ---------------------------------------------------------------------------

@@ -58,24 +58,34 @@ describe("session refresh protocol", () => {
     const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     try {
+      expect(stop).toBeInstanceOf(Function);
+      expect(restore).toBeInstanceOf(Function);
       publishSessionRefresh();
       window.dispatchEvent(new Event("focus"));
       expect(calls).toBe(1);
       expect(sessionRefreshGeneration()).toBe(start + 1);
     } finally {
-      restore();
+      restore?.();
       if (visibilityDescriptor !== undefined) Object.defineProperty(document, "visibilityState", visibilityDescriptor);
       else Reflect.deleteProperty(document, "visibilityState");
       if (descriptor !== undefined) Object.defineProperty(window, "localStorage", descriptor);
-      stop();
+      stop?.();
     }
+    expect(Object.getOwnPropertyDescriptor(window, "localStorage")).toEqual(descriptor);
     expect(window.localStorage).toBe(original);
   });
 
-  it("keeps an unconfirmed sign-out hold until the auth flow explicitly establishes a credential", () => {
+  it("publishes an advisory without clearing an unconfirmed sign-out hold", () => {
     markSignedOut();
+    window.localStorage.removeItem("better-auth.message");
     try {
       publishSessionRefresh();
+      expect(JSON.parse(window.localStorage.getItem("better-auth.message") ?? "null")).toEqual({
+        event: "session",
+        data: { trigger: "signout" },
+        clientId: expect.any(String),
+        timestamp: expect.any(Number),
+      });
       expect(authLossReason()).toBe("signed-out");
     } finally {
       clearAuthLost();

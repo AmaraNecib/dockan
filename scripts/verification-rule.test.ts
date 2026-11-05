@@ -128,6 +128,18 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(ci).toContain("The aggregate cannot establish branch-protection settings or bypass policy itself");
   });
 
+  test("pending activation retains executable local checks and requires the aggregate", () => {
+    const guard = read(".agents/skills/guard/SKILL.md");
+    const pending = guard.split("#### Before activation")[1]?.split("#### Browser verification")[0] ?? "";
+    for (const command of ["bun run typecheck", "bun run lint", "bun run skills:check", "bun run test", "bun run --filter @dokan/web build", "bun audit --audit-level=high"]) {
+      expect(pending, command).toContain(command);
+    }
+    const manual = read("docs/ci.md").split("## Required checks")[1]?.split("## Desktop release")[0] ?? "";
+    expect(manual).toContain("Select the exact `CI acceptance` check");
+    expect(manual).toContain("bypass");
+    expect(manual).not.toContain("Select the `typecheck, lint, test, audit`");
+  });
+
   test("activated CI-final policy has no unconditional local acceptance mandate", () => {
     const feature = read(".agents/skills/feature-implement/SKILL.md");
     const guard = read(".agents/skills/guard/SKILL.md");

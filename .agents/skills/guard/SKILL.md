@@ -45,6 +45,21 @@ The red-on-parent replay runs only in the PR `checks` job and must pass before m
 
 Distinguish the **PR red-on-parent gate** from **replay-tool self-tests**. The CI-only rule applies to replaying the actual branch against its parent for acceptance. The regular unit suite includes tests such as `scripts/red-on-parent.test.ts` that exercise the replay engine in small temporary fixture repositories with separate caches and cleanup. Those self-tests may run locally through the normal test queue; their output is not PR parent-replay acceptance evidence.
 
+#### Before activation
+
+Until enforcement and bypass verification is recorded, run this local baseline:
+
+```bash
+bun run typecheck
+bun run lint
+bun run skills:check
+bun run test
+bun run --filter @dokan/web build
+bun audit --audit-level=high
+```
+
+Use the heavy queue for the full suite and build. Browser checks follow the pre-activation selector procedure below; Rust changes also require the Phase 1 Rust checks. The actual-PR parent replay stays CI-only. After activation, replace this baseline with the risk-sized local checks above, not an automatic duplicate of CI.
+
 #### Browser verification: selector first
 
 For a browser-relevant change, commit the complete PR scope, then inspect the selector before starting a browser run:

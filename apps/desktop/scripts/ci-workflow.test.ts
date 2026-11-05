@@ -247,7 +247,31 @@ function isRustGate(condition: string): boolean {
   return expression === RUST_GATE;
 }
 
+function assertAcceptanceInputs(source: string): void {
+  const gate = stepNamed(parseSteps(source, "acceptance"), "Require successful applicable checks");
+  for (const [key, expression] of Object.entries({
+    CHANGES_RESULT: "${{ needs.changes.result }}",
+    CHECKS_RESULT: "${{ needs.checks.result }}",
+    E2E_RESULT: "${{ needs.e2e.result }}",
+    E2E_MODE: "${{ needs.changes.outputs.e2e_mode }}",
+    RUST_RESULT: "${{ needs.rust.result }}",
+    RUST_REQUIRED: "${{ needs.changes.outputs.rust }}",
+  })) expect(gate.env.get(key), key).toBe(expression);
+}
+
 describe("PR CI workflow", () => {
+  it("wires each aggregate input to its owning job result or selector output", () => {
+    assertAcceptanceInputs(WORKFLOW_SOURCE);
+    // A permissive replacement for any input must fail independently of the
+    // shell tests, which supply their own values.
+    for (const key of ["CHANGES_RESULT", "CHECKS_RESULT", "E2E_RESULT", "E2E_MODE", "RUST_RESULT", "RUST_REQUIRED"]) {
+      const pattern = new RegExp(`(          ${key}: )[^\\n]+`, "u");
+      const aggregate = WORKFLOW_SOURCE.slice(WORKFLOW_SOURCE.indexOf("\n  acceptance:"));
+      const mutated = aggregate.replace(pattern, "$1success");
+      expect(mutated).not.toBe(aggregate);
+      expect(() => assertAcceptanceInputs(`jobs:\n${mutated}`)).toThrow();
+    }
+  });
   it("has a stable aggregate check that accepts only explicit successful skips", () => {
     const aggregateSteps = parseSteps(WORKFLOW_SOURCE, "acceptance");
     const gate = stepNamed(aggregateSteps, "Require successful applicable checks");

@@ -1,0 +1,92 @@
+import { expect, it } from "bun:test";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnOwnedServer, stopOwnedServer, stopOwnedServers } from "../tests/e2e/owned-server-process";
+
+// Resolve once; every fixture process uses the actual absolute Node executable.
+const node = execFileSync("node", ["-p", "process.execPath"], { encoding: "utf8", cwd: process.cwd() }).trim();
+const cwd = process.cwd();
+async function started(child: ChildProcess): Promise<void> {
+  const message = once(child, "message");
+  await Promise.race([message, new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => reject(new Error("Node fixture did not start")), 3_000);
+    message.finally(() => clearTimeout(timer)).catch(() => {});
+  })]);
+}
+function gone(pid: number): boolean {
+  try { process.kill(pid, 0); return false; } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
+    return true;
+  }
+}
+
+it("stops an owned child and grandchild before removing only its fresh fixture", async () => {
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-owned-process-"));
+  const pidFile = path.join(fresh, "grandchild.pid");
+  const grandchild = `setInterval(() => {}, 1000); process.send('ready');`;
+  const script = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { cwd: ${JSON.stringify(cwd)}, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(grandchild.pid));
+    grandchild.once('message', () => process.send('ready'));
+    setInterval(() => {}, 1000);
+  `;
+  const child = spawnOwnedServer(node, ["-e", script], { cwd, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  try {
+    await started(child);
+    const grandchildPid = Number(fs.readFileSync(pidFile, "utf8"));
+    expect(Number.isSafeInteger(grandchildPid)).toBe(true);
+    expect(gone(grandchildPid)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    await stopOwnedServers([child, undefined]);
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    expect(gone(grandchildPid)).toBe(true);
+    fs.rmSync(fresh, { recursive: true });
+    expect(fs.existsSync(fresh)).toBe(false);
+    await stopOwnedServer(child);
+  } finally {
+    // Never remove this fresh fixture if shutdown fails.
+    await stopOwnedServer(child);
+  }
+}, 12_000);
+
+it("handles an already closed owned child and a failed spawn without waiting for a lost close event", async () => {
+  const child = spawnOwnedServer(node, ["-e", ""], { cwd, stdio: "ignore" });
+  await once(child, "close");
+  await stopOwnedServer(child);
+  await stopOwnedServer(child);
+  const missing = spawnOwnedServer(path.join(cwd, ".scratch", "nonexistent-sol-fixture-executable"), [], { cwd, stdio: "ignore" });
+  await stopOwnedServer(missing);
+});
+
+it("refuses an unowned child and preserves data when either stop fails", async () => {
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-owned-failure-"));
+  const unowned = spawn(node, ["-e", "setInterval(() => {}, 1000)"], { cwd, stdio: "ignore" });
+  const owned = spawnOwnedServer(node, ["-e", "setInterval(() => {}, 1000); process.send('ready')"], { cwd, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  try {
+    await started(owned);
+    await expect(stopOwnedServers([unowned, owned]).then(() => fs.rmSync(fresh, { recursive: true }))).rejects.toThrow("preserve fixture data");
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(owned.exitCode !== null || owned.signalCode !== null).toBe(true);
+    expect(unowned.exitCode).toBeNull();
+  } finally {
+    const closed = once(unowned, "close");
+    unowned.kill();
+    await closed;
+    await stopOwnedServer(owned);
+    fs.rmSync(fresh, { recursive: true });
+  }
+}, 12_000);
+
+it.skipIf(process.platform === "win32")("escalates an owned POSIX group that ignores SIGTERM", async () => {
+  const child = spawnOwnedServer(node, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.send('ready')"], { cwd, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  try {
+    await started(child);
+    await stopOwnedServer(child);
+    expect(child.signalCode).toBe("SIGKILL");
+  } finally { await stopOwnedServer(child); }
+}, 8_000);

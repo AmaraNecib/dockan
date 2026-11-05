@@ -37,14 +37,15 @@ function onStorage(event: StorageEvent): void {
 
 function onVisible(): void {
   // Do not discard a live draft merely because its tab gained focus. A missed
-  // stored message or unreadable storage warrants a check; no delivery guarantee
-  // is possible when the sender cannot write and this tab can still read.
+  // stored message can trigger verification; an unreadable store cannot establish
+  // a change. Delivery is best-effort when either tab cannot use storage.
   if (document.visibilityState === "hidden" || authLossReason() !== undefined) return;
   try {
     const value = window.localStorage.getItem(STORAGE_KEY);
     if (value !== lastMessage && value !== null) onStorage(new StorageEvent("storage", { key: STORAGE_KEY, newValue: value }));
   } catch {
-    refresh();
+    // A blocked read is not evidence of another tab's credential change.
+    // Delivery is best-effort when storage is unavailable; auth checks remain authoritative.
   }
 }
 

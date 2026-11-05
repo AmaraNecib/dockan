@@ -1,12 +1,16 @@
-import { afterEach, expect, it, mock } from "bun:test";
-import { act, StrictMode, type ReactNode } from "react";
+import { afterEach, expect, it, mock, spyOn } from "bun:test";
+import { act, StrictMode, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { flushSync } from "react-dom";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import type { Invoice } from "@dokan/contracts";
 import { z } from "zod";
 
 import "./i18n";
-import { clearAuthLost } from "./auth-refusal";
+import { clearAuthLost, markAuthLost } from "./auth-refusal";
+import { useRpc, type RpcBinding } from "./rpc-context";
+import { sessionRefreshGeneration } from "./session-refresh";
+import { replaceLocalStorage } from "../tests/local-storage-control";
 import { usePreference, parseBooleanPreference, serializeBooleanPreference } from "./preferences";
 
 // SAFETY: React's documented act environment flag is the only property written.
@@ -264,6 +268,112 @@ it.each([false, true])("settles failed setup after replacement without admitting
     await until(() => host.querySelector('[data-testid="vault-recovery-key"]') !== null);
     expect(requiredElement(host, '[data-testid="vault-recovery-key"]').textContent).toBe("RETRY-KEY");
     expect(ownerChecks).toBe(0);
+  }
+});
+
+it.each([false, true])("keeps StrictMode's active query and draft, then clears retired clients without reviving leases, same-turn completion %s", async (completeBeforeCleanup) => {
+  type Pending = { client: QueryClient; signal: AbortSignal; release: (value: string) => void; result: Promise<unknown>; mounts: number };
+  const pending = new Map<QueryClient, Pending>();
+  const mountClient = QueryClient.prototype.mount;
+  // Start a genuine query at provider mount, before the gate's asynchronous boot.
+  // This observes the actual client during StrictMode's setup/cleanup/setup cycle.
+  const mountedClient = spyOn(QueryClient.prototype, "mount").mockImplementation(function (this: QueryClient) {
+    mountClient.call(this);
+    const existing = pending.get(this);
+    if (existing !== undefined) { existing.mounts += 1; return; }
+    this.setQueryData(["private-seed"], "private cached data");
+    let release!: (value: string) => void;
+    let signal!: AbortSignal;
+    const held = new Promise<string>((resolve) => { release = resolve; });
+    const result = this.fetchQuery({ queryKey: ["private-deferred"], queryFn: (context) => { signal = context.signal; return held; } }).catch(() => "cancelled");
+    pending.set(this, { client: this, signal, release, result, mounts: 1 });
+  });
+  let binding!: RpcBinding;
+  let activeClient!: QueryClient;
+  function Draft() {
+    binding = useRpc();
+    activeClient = useQueryClient();
+    const [draft, setDraft] = useState("unsaved private draft");
+    return <button data-testid="draft" onClick={() => setDraft("edited private draft")}>{draft}</button>;
+  }
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+    const path = new URL(input instanceof Request ? input.url : String(input), window.location.origin).pathname;
+    if (path === "/api/vault/status") return new Response("not found", { status: 404 });
+    if (path.endsWith("/preferencesGet")) return envelope({ values: {} });
+    return envelope({ needsSetup: false, setupBlocked: false });
+  }, { preconnect: originalFetch.preconnect });
+  try {
+    const host = await mount(<Draft />, true);
+    await until(() => host.querySelector('[data-testid="draft"]') !== null);
+    const first = pending.get(activeClient);
+    expect(first).toBeDefined();
+    if (first === undefined) throw new Error("Missing active client query");
+    expect(first.mounts).toBeGreaterThanOrEqual(2);
+    expect(first.signal.aborted).toBe(false);
+    expect(first.client.getQueryData<string>(["private-seed"])).toBe("private cached data");
+    act(() => requiredElement<HTMLButtonElement>(host, '[data-testid="draft"]').click());
+    const oldBinding = binding;
+    const generation = sessionRefreshGeneration();
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    const restore = replaceLocalStorage({ getItem: () => { throw new Error("blocked read"); } });
+    try {
+      expect(() => window.localStorage.getItem("better-auth.message")).toThrow("blocked read");
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(sessionRefreshGeneration()).toBe(generation);
+      expect(activeClient).toBe(first.client);
+      expect(binding).toBe(oldBinding);
+      expect(host.querySelector('[data-testid="draft"]')?.textContent).toBe("edited private draft");
+    } finally { restore(); }
+    expect(Object.getOwnPropertyDescriptor(window, "localStorage")).toEqual(descriptor);
+    // Resolve the initial query after effect replay, proving it was not cancelled.
+    await act(async () => { first.release("first private answer"); await first.result; });
+    expect(first.client.getQueryData<string>(["private-deferred"])).toBe("first private answer");
+    await act(async () => {
+      flushSync(() => { advisory(); });
+      expect(host.querySelector('[data-testid="draft"]')).toBeNull();
+      // The captured lease retires before any cleanup microtask runs.
+      expect(oldBinding.lease?.isLive()).toBe(false);
+      expect(() => oldBinding.lease?.assertLive()).toThrow("SESSION_SCOPE_RETIRED");
+    });
+    await until(() => activeClient !== first.client && host.querySelector('[data-testid="draft"]') !== null);
+    expect(first.client.getQueryCache().getAll()).toHaveLength(0);
+    expect(host.querySelector('[data-testid="draft"]')?.textContent).toBe("unsaved private draft");
+    const second = pending.get(activeClient);
+    if (second === undefined) throw new Error("Missing replacement query");
+    const secondBinding = binding;
+    await act(async () => {
+      markAuthLost();
+      expect(secondBinding.lease?.isLive()).toBe(false);
+      clearAuthLost();
+      expect(secondBinding.lease?.isLive()).toBe(false);
+      // Complete the old request in the same turn as replacement, before its
+      // scheduled cleanup. It must never populate the replacement client.
+      if (completeBeforeCleanup) second.release("late private answer");
+    });
+    await until(() => activeClient !== second.client);
+    // Completed queries need no abort; still-pending retired queries must abort.
+    expect(second.signal.aborted).toBe(!completeBeforeCleanup);
+    expect(second.client.getQueryCache().getAll()).toHaveLength(0);
+    await act(async () => { second.release("late private answer"); await second.result; });
+    expect(second.client.getQueryCache().getAll()).toHaveLength(0);
+    expect(activeClient.getQueryData(["private-deferred"])).toBeUndefined();
+    expect(oldBinding.lease?.isLive()).toBe(false);
+    const last = pending.get(activeClient);
+    if (last === undefined) throw new Error("Missing final query");
+    const root = roots.pop();
+    if (root === undefined) throw new Error("Missing mounted root");
+    await act(async () => { root.unmount(); });
+    expect(last.signal.aborted).toBe(true);
+    expect(last.client.getQueryCache().getAll()).toHaveLength(0);
+    await act(async () => { last.release("answer after unmount"); await last.result; });
+    expect(last.client.getQueryCache().getAll()).toHaveLength(0);
+  } finally {
+    mountedClient.mockRestore();
+    for (const entry of pending.values()) entry.client.clear();
   }
 });
 

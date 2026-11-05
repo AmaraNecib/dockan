@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { spawnOwnedServer, stopOwnedServers } from "./owned-server-process";
 import fs from "node:fs";
 import path from "node:path";
 import { signIn } from "./auth-helpers";
@@ -51,6 +52,7 @@ const ports = resolveVaultPorts();
 const vaultUrl = `http://${resolveAppHost(process.env)}:${ports.web}`;
 let api: ChildProcess | undefined;
 let web: ChildProcess | undefined;
+let dataDir: string | undefined;
 
 async function ready(url: string) {
   await expect.poll(async () => {
@@ -58,29 +60,26 @@ async function ready(url: string) {
   }, { timeout: 30_000 }).toBe(true);
 }
 
-async function stop(child: ChildProcess | undefined) {
-  if (!child?.pid) return;
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-  if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-  else child.kill("SIGTERM");
-  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
-}
-
 test.describe("cross-tab vault credentials", () => {
   test.beforeAll(async () => {
-    const dataDir = fs.mkdtempSync(path.join(process.cwd(), ".scratch/cross-tab-vault-"));
-    api = spawn("bun", ["src/main.ts"], {
+    const fixtureDir = fs.mkdtempSync(path.join(process.cwd(), ".scratch/cross-tab-vault-"));
+    dataDir = fixtureDir;
+    api = spawnOwnedServer("bun", ["src/main.ts"], {
       cwd: path.join(process.cwd(), "apps/api"),
-      env: { ...process.env, DOKAN_VAULT: "enabled", DOKAN_PORT: String(ports.api), DOKAN_WEB_PORT: String(ports.web), DOKAN_DATA_DIR: dataDir, DOKAN_PORT_ROOT: path.join(dataDir, "run") },
+      env: { ...process.env, DOKAN_VAULT: "enabled", DOKAN_PORT: String(ports.api), DOKAN_WEB_PORT: String(ports.web), DOKAN_DATA_DIR: fixtureDir, DOKAN_PORT_ROOT: path.join(fixtureDir, "run") },
       stdio: "ignore",
     });
-    web = spawn("bun", ["run", "--filter", "@dokan/web", "dev"], {
+    web = spawnOwnedServer("bun", ["run", "--filter", "@dokan/web", "dev"], {
       cwd: process.cwd(), env: { ...process.env, DOKAN_PORT: String(ports.api), DOKAN_WEB_PORT: String(ports.web) }, stdio: "ignore",
     });
     await ready(`http://127.0.0.1:${ports.api}/api/vault/status`);
     await ready(`http://127.0.0.1:${ports.web}`);
   });
-  test.afterAll(async () => { await stop(web); await stop(api); });
+  test.afterAll(async () => {
+    await stopOwnedServers([web, api]);
+    if (dataDir !== undefined) fs.rmSync(dataDir, { recursive: true, force: true });
+    dataDir = undefined;
+  });
 
   test("unconfirmed sender stays held while receiver verifies its own live cookie; confirmed logout gates a sibling", async ({ page, context }) => {
     test.setTimeout(120_000);

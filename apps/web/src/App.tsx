@@ -62,12 +62,23 @@ function CredentialScope({ children, verify }: { children: ReactNode; verify: bo
   const revision = useAuthLossRevision();
   const binding = useMemo(() => createRpcBinding(), [revision]);
   const client = useMemo(() => new QueryClient({ defaultOptions: parentClient.getDefaultOptions() }), [parentClient, binding]);
-  useEffect(() => () => {
-    // Mutations cannot be unsubmitted. Their callbacks retain this retired
-    // client, never the replacement client's query or mutation cache.
-    void client.cancelQueries();
-    client.clear();
-  }, [client]);
+  // A replay may reuse this client; a revision replacement must not invalidate
+  // the retired client's cleanup merely because the component instance survives.
+  const lifecycle = useMemo(() => ({ setup: 0 }), [client]);
+  useEffect(() => {
+    const setup = ++lifecycle.setup;
+    return () => {
+      // StrictMode replays effects without replacing this scope. Let its paired
+      // setup invalidate this cleanup; a real replacement/unmount remains one-way.
+      queueMicrotask(() => {
+        if (lifecycle.setup !== setup) return;
+        // Mutations cannot be unsubmitted. Their callbacks retain this retired
+        // client, never the replacement client's query or mutation cache.
+        void client.cancelQueries();
+        client.clear();
+      });
+    };
+  }, [client, lifecycle]);
   return <RpcScopeProvider binding={binding}><QueryClientProvider client={client}><SessionGate verify={verify}>{children}</SessionGate></QueryClientProvider></RpcScopeProvider>;
 }
 

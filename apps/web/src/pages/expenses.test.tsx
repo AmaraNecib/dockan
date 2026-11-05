@@ -169,7 +169,6 @@ const category = (id: string, name: string, isOwnerWithdrawal = false): ExpenseC
 // The page pulls its data/mutations through orpc.*; mock the rpc module so the
 // rendered interaction is driven by fixtures without a network seam.
 mock.module("@/lib/rpc", () => ({
-  rpcClient: {},
   orpc: {
     expenseCategoriesList: {
       queryOptions: () => ({

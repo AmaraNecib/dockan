@@ -10,6 +10,7 @@ import readline from "node:readline";
 import { Database } from "bun:sqlite";
 
 import { readVaultBackupBundle } from "./backup";
+import { backupFilePath } from "../backups";
 
 /**
  * The desktop shell's pre-boot broker (DOKAN_VAULT_STDIN=1) over its real
@@ -218,6 +219,46 @@ describe("desktop shell vault broker", () => {
     // brand-new shop has a valid self-contained backup without another unlock
     const backupFile = await waitForBackupFile();
     expect(readVaultBackupBundle(fs.readFileSync(backupFile))).toBeDefined();
+  }, HEAVY_TEST_TIMEOUT_MS);
+
+  it("preserves today's unsupported plaintext history after unlock and a credential change", async () => {
+    child = spawnBroker(dir, port);
+    const setupLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    await setupLine();
+    send(child, "ack");
+    await waitForBackupFile();
+    await stopAndWait();
+
+    const backup = backupFilePath(dir);
+    fs.unlinkSync(backup);
+    const historical = new Database(backup);
+    historical.exec("CREATE TABLE recovery_history (note TEXT); INSERT INTO recovery_history VALUES ('history absent from live shop'); PRAGMA user_version = 2147483647;");
+    historical.close();
+    const original = fs.readFileSync(backup);
+
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    send(child, JSON.stringify({ action: "unlock", passphrase: "correct horse battery" }));
+    // SAFETY: the real broker's successful unlock reply carries its session token.
+    const reply = JSON.parse(await nextLine()) as { ok: boolean; sessionToken: string };
+    expect(reply.ok).toBe(true);
+    expect(reply.sessionToken).toBeString();
+    expect(fs.readFileSync(backup).equals(original)).toBe(true);
+
+    const changed = await fetch(`http://127.0.0.1:${port}/api/vault/change-passphrase`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-vault-session": reply.sessionToken },
+      body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "a different strong passphrase" }),
+    });
+    expect(changed.ok).toBe(true);
+    expect(fs.readFileSync(backup).equals(original)).toBe(true);
+    const restored = new Database(backup, { readonly: true });
+    try {
+      expect(restored.query("SELECT note FROM recovery_history").all()).toEqual([{ note: "history absent from live shop" }]);
+    } finally {
+      restored.close();
+    }
   }, HEAVY_TEST_TIMEOUT_MS);
 
   it("keeps unlock available and logs unknown cleanup when backup inventory becomes unreadable", async () => {

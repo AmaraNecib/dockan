@@ -510,6 +510,42 @@ describe("VaultManager", () => {
     vault.close();
   });
 
+  itHeavy("preserves committed WAL history when encrypted publication fails", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    // Exit without closing SQLite, as an interrupted writer would, so committed
+    // rows remain in a genuine WAL rather than a synthetic sidecar fixture.
+    const writer = Bun.spawnSync([process.execPath, "-e", `
+      const { Database } = require("bun:sqlite");
+      const db = new Database(process.argv[1]);
+      db.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE history(note TEXT); INSERT INTO history VALUES ('committed WAL history');");
+      process.kill(process.pid, "SIGKILL");
+    `, partial]);
+    expect(writer.success).toBe(false);
+    expect(fs.statSync(`${partial}-wal`).size).toBeGreaterThan(0);
+    const vault = manager();
+    await createVault(vault);
+    const open = fs.promises.open.bind(fs.promises);
+    const fault = spyOn(fs.promises, "open").mockImplementation((file, ...args) => String(file).includes(".dknvbak.tmp-")
+      ? Promise.reject(Object.assign(new Error("bundle write denied"), { code: "EACCES" })) : open(file, ...args));
+    try {
+      const outcome = await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {});
+      expect(outcome.status).toBe("remaining");
+      expect(outcome.remaining).toContain(partial);
+      expect(fs.existsSync(`${partial}.dknvbak`)).toBe(false);
+      const preserved = new Database(partial, { readonly: true });
+      try {
+        expect(preserved.query("SELECT note FROM history").all()).toEqual([{ note: "committed WAL history" }]);
+      } finally {
+        preserved.close();
+      }
+    } finally {
+      fault.mockRestore();
+      vault.close();
+    }
+  });
+
   itHeavy("stops backup publication and source deletion when folder ownership is lost", async () => {
     const backupsDir = path.join(dir, "backups");
     fs.mkdirSync(backupsDir);

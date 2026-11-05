@@ -25,6 +25,7 @@ it("retains the legacy fallback when A retires after its migration write dispatc
     return response;
   }, { preconnect: originalFetch.preconnect });
   const stop = subscribeSessionRefresh(() => {});
+  expect(stop).toBeInstanceOf(Function);
   try {
     const lease = createCredentialLease();
     const pending = migrateLegacySidebarCollapsed(createPreferenceClient(createDokanRpcClient(lease), lease));
@@ -35,7 +36,9 @@ it("retains the legacy fallback when A retires after its migration write dispatc
     expect(await pending).toBeNull();
     expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBe("true");
     expect(writes).toBe(1);
-  } finally { stop(); }
+  } finally {
+    stop?.();
+  }
 });
 
 it.each([undefined, "false"])("keeps the legacy fallback and submits zero writes after a held sidebar read retires, server value %s", async (serverValue) => {
@@ -49,6 +52,7 @@ it.each([undefined, "false"])("keeps the legacy fallback and submits zero writes
     return Response.json({ json: { key: SIDEBAR_COLLAPSED_KEY, value: "true" } });
   }, { preconnect: originalFetch.preconnect });
   const stop = subscribeSessionRefresh(() => {});
+  expect(stop).toBeInstanceOf(Function);
   try {
     const lease = createCredentialLease();
     const preferences = createPreferenceClient(createDokanRpcClient(lease), lease);
@@ -60,5 +64,7 @@ it.each([undefined, "false"])("keeps the legacy fallback and submits zero writes
     expect(await pending).toBeNull();
     expect(writes).toBe(0);
     expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBe("true");
-  } finally { stop(); }
+  } finally {
+    stop?.();
+  }
 });

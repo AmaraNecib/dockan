@@ -10,6 +10,7 @@ describe("session refresh protocol", () => {
     const start = sessionRefreshGeneration();
     let calls = 0;
     const stop = subscribeSessionRefresh(() => { calls += 1; });
+    expect(stop).toBeInstanceOf(Function);
     window.localStorage.removeItem("better-auth.message");
     for (const value of [null, "{", "null", "[]", '{"event":"other","data":{}}', '{"event":"session"}']) storage(value);
     storage('{"event":"session","data":{"trigger":"signout"},"clientId":"sibling","timestamp":1}', "unrelated");
@@ -39,6 +40,7 @@ describe("session refresh protocol", () => {
   it("falls back to visible focus checks when storage writes are blocked", () => {
     let calls = 0;
     const stop = subscribeSessionRefresh(() => { calls += 1; });
+    expect(stop).toBeInstanceOf(Function);
     const original = window.localStorage.setItem;
     const originalRead = window.localStorage.getItem;
     window.localStorage.setItem = () => { throw new Error("blocked"); };
@@ -51,7 +53,7 @@ describe("session refresh protocol", () => {
     } finally {
       window.localStorage.setItem = original;
       window.localStorage.getItem = originalRead;
-      stop();
+      stop?.();
     }
   });
 });

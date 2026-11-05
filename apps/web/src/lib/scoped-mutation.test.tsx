@@ -47,6 +47,10 @@ async function mount<TData, TVariables, TContext>(
       </QueryClientProvider>,
     );
   });
+  expect({ mutate: current?.mutate, mutateAsync: current?.mutateAsync }).toEqual({
+    mutate: expect.any(Function),
+    mutateAsync: expect.any(Function),
+  });
   return () => current;
 }
 

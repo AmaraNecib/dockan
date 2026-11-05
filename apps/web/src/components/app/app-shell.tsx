@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
@@ -11,7 +11,7 @@ import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { SLOW_REFETCH_MS } from "@/lib/freshness";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { focusInvoiceEntry } from "@/hooks/use-invoice-entry-shortcut";
-import { navigationDialogOpen, shortcutKeys } from "@/lib/keyboard-actions";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 import { Button } from "@/components/ui/button";
 import { AppSidebar, type ShellUser } from "./app-sidebar";
 import { DiscardDraftDialog } from "./discard-draft-dialog";
@@ -123,7 +123,6 @@ export function AppShell() {
   const navigate = useNavigate();
   const { draftDirtyRef, savePendingRef } = useSaleDraft();
   const [purchaseDiscardOpen, setPurchaseDiscardOpen] = useState(false);
-  const purchaseDiscardFocus = useRef<HTMLElement | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
@@ -162,7 +161,6 @@ export function AppShell() {
       return;
     }
     if (activeKey === "sale" && draftDirtyRef.current) {
-      purchaseDiscardFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setPurchaseDiscardOpen(true);
       return;
     }
@@ -250,9 +248,9 @@ export function AppShell() {
         confirmLabel={t("saleToPurchaseDiscardConfirm")}
         cancelLabel={t("dialogClose")}
         confirmTestId="new-sale-discard-confirm"
-        // Exit animation can finish after a newer modal has taken focus.
-        // Use the live dialog gate, which excludes this data-closed popup.
-        finalFocus={() => navigationDialogOpen() ? false : purchaseDiscardFocus.current}
+        // Boolean return-focus restores the original field only as a fallback.
+        // An explicit callback would override Base UI's newer-focus protection.
+        finalFocus={true}
         open={purchaseDiscardOpen}
         onOpenChange={setPurchaseDiscardOpen}
         onConfirm={() => {

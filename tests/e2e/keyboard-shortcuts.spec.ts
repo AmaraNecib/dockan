@@ -159,6 +159,47 @@ test("a closing purchase-discard popup cannot take focus from the newer picker",
   await expect(stock).toHaveValue("7");
 });
 
+test("a closing purchase-discard popup cannot take focus from a newer ordinary input", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+  const stock = page.getByTestId("sale-quick-stock");
+  const customer = page.getByTestId("sale-customer");
+  await stock.fill("7");
+
+  // Keep the real popup mounted until the customer explicitly owns focus.
+  await page.addStyleTag({
+    content: '[data-slot="dialog-popup"][data-closed] { animation-play-state: paused !important; }',
+  });
+  await page.keyboard.press("Control+b");
+  const discard = page.getByRole("dialog").filter({
+    has: page.getByTestId("new-sale-discard-confirm"),
+  });
+  await expect(discard).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(discard).toHaveAttribute("data-closed", "");
+  expect(await discard.evaluate((element) =>
+    element.getAnimations().map((animation) => animation.playState),
+  )).toEqual(["paused"]);
+
+  await stock.fill("");
+  await customer.focus();
+  await expect(customer).toBeFocused();
+  await discard.evaluate((element) => {
+    for (const animation of element.getAnimations()) animation.finish();
+  });
+  await expect(discard).toHaveCount(0);
+  // Drain the passive unmount cleanup and its return-focus microtask.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  await expect(customer).toBeFocused();
+  await page.keyboard.insertText("مسودة الاختصار");
+  await expect(customer).toHaveValue("مسودة الاختصار");
+  await expect(stock).toHaveValue("");
+});
+
 test("shortcut-entered purchase and sale persist, a refused sale keeps its draft for retry", async ({ page }) => {
   await signIn(page);
   const categoryId = await seedCategoryId(page, "تصنيف الاختصارات");

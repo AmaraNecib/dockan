@@ -396,6 +396,20 @@ export const expenseCorrections = sqliteTable("expense_corrections", {
   reversesCorrectionId: text("reverses_correction_id"),
 });
 
+/** Append-only expense cash recoveries, separate from supplier and purchase ledgers. */
+export const expenseRefunds = sqliteTable("expense_refunds", {
+  id: text("id").primaryKey(),
+  expenseId: text("expense_id").notNull().references(() => expenses.id),
+  difference: integer("difference").notNull(),
+  occurredAt: text("occurred_at").notNull(),
+  recordedAt: text("recorded_at").notNull(),
+  actorId: text("actor_id").notNull(),
+  actorName: text("actor_name"),
+  reason: text("reason"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  reversesRefundId: text("reverses_refund_id"),
+});
+
 // ---------------------------------------------------------------------------
 // better-auth tables (ticket 02 wires the adapter; schema lands here now)
 // ---------------------------------------------------------------------------
@@ -542,6 +556,11 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS expense_corrections (id TEXT PRIMARY KEY, expense_id TEXT NOT NULL REFERENCES expenses(id), effective_at TEXT NOT NULL, recorded_at TEXT NOT NULL, before_amount INTEGER NOT NULL CHECK (before_amount > 0), after_amount INTEGER NOT NULL CHECK (after_amount > 0), difference INTEGER NOT NULL CHECK (difference <> 0), actor_id TEXT, actor_name TEXT, reason TEXT, idempotency_key TEXT NOT NULL, reverses_correction_id TEXT REFERENCES expense_corrections(id), CHECK (difference = after_amount - before_amount), CHECK ((actor_id IS NULL AND actor_name IS NULL) OR (actor_id IS NOT NULL AND actor_name IS NOT NULL)))`,
   `CREATE INDEX IF NOT EXISTS idx_expense_corrections_expense ON expense_corrections(expense_id, recorded_at)`,
   `CREATE INDEX IF NOT EXISTS idx_expense_corrections_effective_at ON expense_corrections(effective_at)`,
+  `CREATE TABLE IF NOT EXISTS expense_refunds (id TEXT PRIMARY KEY, expense_id TEXT NOT NULL REFERENCES expenses(id), difference INTEGER NOT NULL CHECK (difference <> 0 AND difference BETWEEN -1000000000000 AND 1000000000000), occurred_at TEXT NOT NULL, recorded_at TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT, reason TEXT, idempotency_key TEXT NOT NULL, reverses_refund_id TEXT REFERENCES expense_refunds(id), CHECK (reverses_refund_id IS NOT NULL OR difference < 0))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_refunds_idempotency ON expense_refunds(expense_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_refunds_reversal ON expense_refunds(reverses_refund_id) WHERE reverses_refund_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_expense_refunds_expense ON expense_refunds(expense_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_expense_refunds_date ON expense_refunds(occurred_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_corrections_idempotency ON expense_corrections(expense_id, idempotency_key)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_corrections_reversal ON expense_corrections(reverses_correction_id) WHERE reverses_correction_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,

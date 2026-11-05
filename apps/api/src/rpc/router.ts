@@ -2331,6 +2331,60 @@ export function createRpcRouter(deps: RpcDeps) {
         });
       }),
     ),
+    expenseRefundHistory: os.expenseRefundHistory.handler(
+      guardedInput(async ({ expenseId }, _context, session) => {
+        const actor = await expenseActor(session);
+        const history = await deps.store.withReadTransaction((tx) => tx.getExpenseRefundHistory(expenseId));
+        if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+        return { ...history, requestActorId: actor.id };
+      }),
+    ),
+    expensesRefund: os.expensesRefund.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        const reason = input.reason?.trim() || null;
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const existing = await tx.findExpenseRefundByIdempotencyKey(input.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (existing.actorId === actor.id && existing.difference === -input.amount &&
+                existing.occurredAt === input.occurredAt && existing.reason === reason && existing.reversesRefundId === null) return existing;
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_KEY_REUSED" });
+          }
+          const history = await tx.getExpenseRefundHistory(input.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+          if (input.amount > history.refundableAmount) throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_EXCEEDS_BALANCE" });
+          return tx.insertExpenseRefund({
+            expenseId: input.expenseId, difference: -input.amount, occurredAt: input.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()),
+            actorId: actor.id, actorName: actor.name, reason, reversesRefundId: null, idempotencyKey: input.idempotencyKey,
+          });
+        });
+      }),
+    ),
+    expensesRefundUndo: os.expensesRefundUndo.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const target = await tx.getExpenseRefund(input.refundId);
+          if (target === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_REFUND_NOT_FOUND" });
+          const existing = await tx.findExpenseRefundByIdempotencyKey(target.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (existing.actorId === actor.id && existing.reversesRefundId === target.id) return existing;
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_KEY_REUSED" });
+          }
+          const history = await tx.getExpenseRefundHistory(target.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+          if (history.refunds.some((refund) => refund.reversesRefundId === target.id)) throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_ALREADY_REVERSED" });
+          const after = history.refundableAmount - target.difference;
+          if (after < 0 || after > history.expense.effectiveAmount) throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_EXCEEDS_BALANCE" });
+          return tx.insertExpenseRefund({
+            expenseId: target.expenseId, difference: -target.difference, occurredAt: target.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()), actorId: actor.id, actorName: actor.name,
+            reason: null, reversesRefundId: target.id, idempotencyKey: input.idempotencyKey,
+          });
+        });
+      }),
+    ),
     expenseCorrectionHistory: os.expenseCorrectionHistory.handler(
       guardedInput(async ({ expenseId }) => {
         const history = await deps.store.getExpenseCorrectionHistory(expenseId);
@@ -2362,6 +2416,10 @@ export function createRpcRouter(deps: RpcDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "EXPENSE_CORRECTION_NO_CHANGE" });
           }
 
+          const refunds = await tx.getExpenseRefundHistory(input.expenseId);
+          if (refunds !== undefined && input.amount + refunds.refundableAmount - history.effectiveAmount < 0) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_BELOW_REFUNDED" });
+          }
           return tx.insertExpenseCorrection({
             expenseId: input.expenseId,
             effectiveAt: history.original.occurredAt,
@@ -2404,6 +2462,10 @@ export function createRpcRouter(deps: RpcDeps) {
           const afterAmount = history.effectiveAmount + difference;
           if (afterAmount < 1 || afterAmount > MAX_EXPENSE_AMOUNT) {
             throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE" });
+          }
+          const refunds = await tx.getExpenseRefundHistory(target.expenseId);
+          if (refunds !== undefined && afterAmount + refunds.refundableAmount - history.effectiveAmount < 0) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_BELOW_REFUNDED" });
           }
           return tx.insertExpenseCorrection({
             expenseId: target.expenseId,

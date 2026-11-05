@@ -247,7 +247,63 @@ function isRustGate(condition: string): boolean {
   return expression === RUST_GATE;
 }
 
+function assertAcceptanceInputs(source: string): void {
+  const gate = stepNamed(parseSteps(source, "acceptance"), "Require successful applicable checks");
+  for (const [key, expression] of Object.entries({
+    CHANGES_RESULT: "${{ needs.changes.result }}",
+    CHECKS_RESULT: "${{ needs.checks.result }}",
+    E2E_RESULT: "${{ needs.e2e.result }}",
+    E2E_MODE: "${{ needs.changes.outputs.e2e_mode }}",
+    RUST_RESULT: "${{ needs.rust.result }}",
+    RUST_REQUIRED: "${{ needs.changes.outputs.rust }}",
+  })) expect(gate.env.get(key), key).toBe(expression);
+}
+
 describe("PR CI workflow", () => {
+  it("wires each aggregate input to its owning job result or selector output", () => {
+    assertAcceptanceInputs(WORKFLOW_SOURCE);
+    // A permissive replacement for any input must fail independently of the
+    // shell tests, which supply their own values.
+    for (const key of ["CHANGES_RESULT", "CHECKS_RESULT", "E2E_RESULT", "E2E_MODE", "RUST_RESULT", "RUST_REQUIRED"]) {
+      const pattern = new RegExp(`(          ${key}: )[^\\n]+`, "u");
+      const aggregate = WORKFLOW_SOURCE.slice(WORKFLOW_SOURCE.indexOf("\n  acceptance:"));
+      const mutated = aggregate.replace(pattern, "$1success");
+      expect(mutated).not.toBe(aggregate);
+      expect(() => assertAcceptanceInputs(`jobs:\n${mutated}`)).toThrow();
+    }
+  });
+  itShell("has a stable aggregate check that accepts only explicit successful skips", () => {
+    const aggregateSteps = parseSteps(WORKFLOW_SOURCE, "acceptance");
+    const gate = stepNamed(aggregateSteps, "Require successful applicable checks");
+    expect(jobField(WORKFLOW_SOURCE, "acceptance", "name")).toBe("CI acceptance");
+    expect(jobField(WORKFLOW_SOURCE, "acceptance", "if")).toContain("always()");
+    expect(jobField(WORKFLOW_SOURCE, "acceptance", "needs")).toContain("changes, checks, e2e, rust");
+    expect(gate.shell).toBe("bash");
+
+    const runGate = (values: Record<string, string>) =>
+      execFileSync(shellPath(), ["-c", gate.run], {
+        encoding: "utf8",
+        env: { ...process.env, ...values },
+        stdio: "pipe",
+      });
+    const passing = {
+      CHANGES_RESULT: "success",
+      CHECKS_RESULT: "success",
+      E2E_RESULT: "skipped",
+      E2E_MODE: "skip",
+      RUST_RESULT: "skipped",
+      RUST_REQUIRED: "false",
+    };
+    expect(() => runGate(passing)).not.toThrow();
+    expect(() => runGate({ ...passing, E2E_MODE: "full" })).toThrow();
+    expect(() => runGate({ ...passing, RUST_REQUIRED: "true" })).toThrow();
+    expect(() => runGate({ ...passing, CHECKS_RESULT: "cancelled" })).toThrow();
+    expect(() => runGate({ ...passing, CHANGES_RESULT: "failure" })).toThrow();
+    expect(() => runGate({ ...passing, E2E_RESULT: "cancelled" })).toThrow();
+    expect(() => runGate({ ...passing, RUST_RESULT: "failure" })).toThrow();
+    expect(() => runGate({ ...passing, E2E_RESULT: "success", E2E_MODE: "affected" })).not.toThrow();
+    expect(() => runGate({ ...passing, RUST_RESULT: "success", RUST_REQUIRED: "true" })).not.toThrow();
+  });
   it("keeps the existing bun and playwright jobs and their commands", () => {
     const checks = parseSteps(WORKFLOW_SOURCE, "checks");
     expect(stepNamed(checks, "Typecheck").run).toBe("bun run typecheck");
@@ -700,7 +756,7 @@ describe("PR CI workflow", () => {
     // assertions below pin its keys.
     const doc = Bun.YAML.parse(WORKFLOW_SOURCE) as { jobs?: object };
     expect(doc.jobs).toBeDefined();
-    expect(Object.keys(doc.jobs ?? {}).sort()).toEqual(["changes", "checks", "e2e", "rust"]);
+    expect(Object.keys(doc.jobs ?? {}).sort()).toEqual(["acceptance", "changes", "checks", "e2e", "rust"]);
   });
 
   it("builds the web frontend before cargo, because build.rs requires it", () => {

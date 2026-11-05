@@ -22,7 +22,11 @@ An **inert** diff (§3) cannot reach the product, so its measurement is the CI r
 The non-visual bar is the owner's own phrasing: *"You want evidence that it was right for you
 as the agent."* The parent has to be able to judge the change from the comment alone, without
 re-running it. A green check is not evidence that the right thing was built; it is evidence
-that something ran.
+that something ran. The stable CI job `CI acceptance` fails when a required job
+fails, is cancelled or skips without a successful selector proof. It does not
+prove that branch protection requires it. Local readiness is not CI acceptance
+or merge readiness; the owner must verify required-check enforcement and bypass
+policy before routine full local runs stop being required.
 
 ### Visual evidence, in its exact form
 
@@ -174,7 +178,7 @@ assertion is rejected only in the shapes the gate can distinguish.
 A pull request may be merged when **all four** hold. Not three. Any one missing sends it back to
 the queue or back to a lane.
 
-1. **The review confidence is 5/5.** Not 3, not 4. Compact review changes only the local review depth; it does not remove local review or this gate. `reviewloop` writes the local score. While the Greptile A/B trial runs, both current-head verdicts must be 5/5 with no unresolved actionable findings. Follow the [comparison protocol](review-comparison.md) until the owner ends the trial. A missing verdict blocks merging; scores are not averaged. A 3/5 naming two "silent escapes" is a refusal, not a note. A 5/5 cannot override an unresolved actionable finding.
+1. **The local review confidence is 5/5.** Not 3, not 4. Review depth follows reachable risk, but every reviewable change needs local review. A routine change uses one focused code-review session; a named high-risk failure uses the three initial lenses. `reviewloop` writes the local score. No unresolved actionable finding may remain at any score. Until the owner explicitly ends the [paired trial](review-comparison.md), both current-head verdicts must be 5/5 with no unresolved actionable findings. Request Greptile once per pushed head; a missing verdict blocks merge, including when credit is unavailable. Lean local review does not waive the hosted gate.
 2. **`Last reviewed commit` equals the current head SHA.** A verdict anchored to an older commit
    says nothing about the code being merged. A rebase or a fix invalidates the previous verdict —
    re-request the review.
@@ -185,9 +189,7 @@ the queue or back to a lane.
 4. **An evidence comment is present**, in the form section 1 requires for that change — and the
    evidence must be **at the head being merged**, not at some earlier commit.
 
-On top of the four: **every CI check is green or legitimately skipped** (a correctly gated job
-reporting `skipped` is fine; a `pending`, or `pending`-then-cancelled, check is not), and the PR
-is **not** `CONFLICTING`.
+On top of the four: **CI acceptance is green on the current head**, every required CI check is green or legitimately skipped (a correctly gated job reporting `skipped` is fine; a pending or pending-then-cancelled check is not), and the PR is not `CONFLICTING`. The parent verifies the stable check is required, including administrator enforcement, and obtains recorded owner acceptance of the bypass policy before activating reduced local checks. Only the owner decides whether bypass is acceptable.
 
 ### What the predicate scripts and what the parent checks
 

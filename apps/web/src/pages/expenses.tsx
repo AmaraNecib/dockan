@@ -20,6 +20,7 @@ import { editDateBound, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTi
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ExpenseRefundPanel } from "../components/expense-refund-panel";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -66,6 +67,7 @@ function isDefinitiveCorrectionRefusal(message: string): boolean {
     "EXPENSE_CORRECTION_ALREADY_REVERSED",
     "EXPENSE_CORRECTION_NOT_REVERSIBLE",
     "EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE",
+    "EXPENSE_CORRECTION_BELOW_REFUNDED",
   ].includes(message);
 }
 
@@ -466,6 +468,7 @@ function ExpenseCorrectionRow({
                   </ol>
                 </>
               ) : null}
+              <ExpenseRefundPanel expenseId={entry.id} />
               {undoConfirmationId !== null && (
                 <div className="grid gap-2 rounded border bg-card p-3" role="group" aria-labelledby={`expense-correction-undo-prompt-${undoConfirmationId}`} data-testid="expense-correction-undo-confirm">
                   <p id={`expense-correction-undo-prompt-${undoConfirmationId}`} className="text-sm">{t("expenseCorrectionUndoConfirm")}</p>

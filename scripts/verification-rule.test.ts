@@ -173,6 +173,10 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(workflow).not.toContain("Standard otherwise uses all three lenses");
     expect(reviewloop).toContain("A routine reversible localized change gets one fresh `code-review` session");
     expect(reviewloop).toContain("Record only executions that actually happened");
+    const debate = read(".agents/skills/debate/SKILL.md");
+    expect(debate).toContain("Run one reviewer session with explicit critic and defender sections");
+    expect(debate).not.toContain("Run two parallel reviewer sub-agents");
+    expect(debate).not.toContain("critic + defender sub-agents");
   });
 
   test("a review fix gets one bounded fresh review without a full restart", () => {

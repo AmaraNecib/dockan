@@ -272,7 +272,7 @@ describe("PR CI workflow", () => {
       expect(() => assertAcceptanceInputs(`jobs:\n${mutated}`)).toThrow();
     }
   });
-  it("has a stable aggregate check that accepts only explicit successful skips", () => {
+  itShell("has a stable aggregate check that accepts only explicit successful skips", () => {
     const aggregateSteps = parseSteps(WORKFLOW_SOURCE, "acceptance");
     const gate = stepNamed(aggregateSteps, "Require successful applicable checks");
     expect(jobField(WORKFLOW_SOURCE, "acceptance", "name")).toBe("CI acceptance");

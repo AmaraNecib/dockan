@@ -1,11 +1,11 @@
 ---
 name: debate
-description: "Run an adversarial review with critic + defender sub-agents on an implementation, design, or PR diff. The critic finds every flaw, the defender argues for the design. The parent agent synthesizes both and decides what to fix, defer, or dismiss."
+description: "Run one adversarial reviewer session on an implementation, design, or PR diff. The reviewer presents critic and defender cases; the parent verifies findings and decides their disposition. Add another reviewer only for a concrete unresolved question."
 ---
 
 # Debate — Adversarial Review (Critic + Defender)
 
-Run two parallel reviewer sub-agents with opposing goals, then synthesize.
+Run one reviewer session with explicit critic and defender sections, then synthesize. Add another session only for a concrete unresolved question.
 
 ## Parameters
 

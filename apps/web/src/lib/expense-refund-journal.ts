@@ -14,12 +14,16 @@ const requestSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("undo"), input: expenseRefundUndoInputSchema }),
 ]);
 
-/** A reply from a previous session scope must not erase a newer pending operation. */
-export function clearExpenseRefundRequest(storage: Storage, key: string, request: ExpenseRefundRequest): void {
-  const raw = storage.getItem(key);
-  if (raw === null) return;
-  const pending = requestSchema.parse(JSON.parse(raw));
-  if (pending.kind === request.kind && pending.input.idempotencyKey === request.input.idempotencyKey) storage.removeItem(key);
+/** Each dispatch owns one journal generation, even when retrying the same money request. */
+export function persistExpenseRefundRequest(storage: Storage, key: string, request: ExpenseRefundRequest): string {
+  const entry = JSON.stringify({ ...request, dispatchId: crypto.randomUUID() });
+  storage.setItem(key, entry);
+  return entry;
+}
+
+/** Comparison and removal are synchronous; stale replies cannot erase a newer dispatch. */
+export function clearExpenseRefundRequest(storage: Storage, key: string, entry: string): void {
+  if (storage.getItem(key) === entry) storage.removeItem(key);
 }
 
 export function readExpenseRefundRequest(storage: Storage, key: string, expenseId: string): ExpenseRefundRequest | null {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { clearExpenseRefundRequest, expenseRefundJournalKey, readExpenseRefundRequest, type ExpenseRefundRequest } from "./expense-refund-journal";
+import { clearExpenseRefundRequest, expenseRefundJournalKey, persistExpenseRefundRequest, readExpenseRefundRequest, type ExpenseRefundRequest } from "./expense-refund-journal";
 
 const expenseId = "87a6df8a-309e-433c-b5dd-044b92b9c361";
 const key = expenseRefundJournalKey("actor-1", expenseId);
@@ -40,16 +40,28 @@ describe("expense refund reload journal", () => {
       { kind: "refund", input: { ...old.input, amount: 100, idempotencyKey: crypto.randomUUID() } },
       { kind: "undo", input: { refundId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID() } },
     ] satisfies ExpenseRefundRequest[]) {
-      storage.setItem(key, JSON.stringify(old));
-      clearExpenseRefundRequest(storage, key, old);
+      const oldEntry = persistExpenseRefundRequest(storage, key, old);
+      clearExpenseRefundRequest(storage, key, oldEntry);
       expect(storage.getItem(key)).toBeNull();
-      storage.setItem(key, JSON.stringify(newer));
+      const newerEntry = persistExpenseRefundRequest(storage, key, newer);
       // The original editor's success or definitive refusal arrives after a new scope retried A and began B.
-      clearExpenseRefundRequest(storage, key, old);
+      clearExpenseRefundRequest(storage, key, oldEntry);
       expect(readExpenseRefundRequest(storage, key, expenseId)).toEqual(newer);
-      clearExpenseRefundRequest(storage, key, newer);
+      clearExpenseRefundRequest(storage, key, newerEntry);
       expect(storage.getItem(key)).toBeNull();
     }
+  });
+
+  it("isolates dispatch generations without changing the immutable retry payload", () => {
+    const storage = memoryStorage();
+    const request: ExpenseRefundRequest = { kind: "undo", input: { refundId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID() } };
+    const first = persistExpenseRefundRequest(storage, key, request);
+    const retry = persistExpenseRefundRequest(storage, key, request);
+    expect(first).not.toBe(retry);
+    clearExpenseRefundRequest(storage, key, first);
+    expect(readExpenseRefundRequest(storage, key, expenseId)).toEqual(request);
+    clearExpenseRefundRequest(storage, key, retry);
+    expect(storage.getItem(key)).toBeNull();
   });
 
   it("fails closed on corrupt, wrong-expense, invalid and inaccessible journals", () => {

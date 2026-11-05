@@ -32,6 +32,53 @@ const { ExpenseRefundPanel } = await import("./expense-refund-panel");
 beforeEach(() => { refunds = []; inputs = []; sessionStorage.clear(); });
 afterEach(async () => { await unmountAllMountedPages(); sessionStorage.clear(); });
 
+it("retains a same-key in-flight retry when the old attempt's refusal arrives", async () => {
+  let refuseOld: (() => void) | undefined;
+  let finishRetry: (() => void) | undefined;
+  delayed = (input) => {
+    if (inputs.length === 1) return new Promise((_resolve, reject) => { refuseOld = () => reject(new Error("EXPENSE_REFUND_EXCEEDS_BALANCE")); });
+    const row = saved(input);
+    if (inputs.length === 2) return new Promise((resolve) => { finishRetry = () => resolve(row); });
+    return Promise.resolve(row);
+  };
+  const page = await mountWithProviders(<SessionCacheScopeProvider scopeId="original"><ExpenseRefundPanel expenseId={expenseId} /></SessionCacheScopeProvider>);
+  const open = async () => {
+    await act(async () => { page.query<HTMLButtonElement>("expense-refund-open")?.click(); });
+    await page.poll(() => page.query<HTMLButtonElement>("expense-refund-save")?.disabled === false, "editor ready");
+  };
+  const submit = async () => act(async () => { page.query<HTMLFormElement>("expense-refund-form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+  const remount = async (scopeId: string) => act(async () => {
+    page.root.render(<QueryClientProvider client={page.queryClient}><SessionCacheScopeProvider scopeId={scopeId}><ExpenseRefundPanel key={scopeId} expenseId={expenseId} /></SessionCacheScopeProvider></QueryClientProvider>);
+  });
+  await open();
+  await act(async () => {
+    const input = page.query<HTMLInputElement>("expense-refund-amount");
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "300");
+    input?.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await submit();
+  await page.poll(() => inputs.length === 1, "first attempt pending");
+  const request = inputs[0];
+  if (request === undefined) throw new Error("first attempt not dispatched");
+  expect(refunds).toEqual([]);
+  await remount("unlocked");
+  await open();
+  await submit();
+  await page.poll(() => inputs.length === 2, "same-key retry committed with delayed response");
+  expect(inputs[1]).toEqual(request);
+  expect(refunds.map((row) => row.difference)).toEqual([-300]);
+  await act(async () => { refuseOld?.(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+  expect(readExpenseRefundRequest(sessionStorage, journalKey, expenseId)).toEqual({ kind: "refund", input: request });
+  await remount("reloaded");
+  await open();
+  expect(page.query("expense-refund-uncertain")).not.toBeNull();
+  await submit();
+  await page.poll(() => inputs.length === 3 && sessionStorage.getItem(journalKey) === null, "retry acknowledged after reload");
+  expect(inputs[2]).toEqual(request);
+  expect(refunds.map((row) => row.difference)).toEqual([-300]);
+  await act(async () => { finishRetry?.(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+});
+
 for (const outcome of ["success", "definitive refusal"] as const) {
   it(`retains B across a scope change and reload when A's old ${outcome} arrives`, async () => {
     let finishA: (() => void) | undefined;

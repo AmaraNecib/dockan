@@ -1,0 +1,76 @@
+import fs from "node:fs";
+import path from "node:path";
+import { expect, test } from "@playwright/test";
+import { signIn } from "./auth-helpers";
+import { callRpc, seedCategoryId } from "./rpc-helpers";
+import { chooseSelectOption } from "./select-helpers";
+
+test.use({ video: "on" });
+
+type ItemCreate = { name: string; categoryId: string; costPrice: number; sellingPrice: number; lowStockThreshold: number };
+type InvoiceCreate = { kind: "PURCHASE"; invoiceDate: string; lines: Array<{ itemId: string; quantity: number; unitPrice: number }> };
+
+test("invoice list filters persisted ranges, sorts business dates, and clears defaults (#406)", async ({ page }) => {
+  await signIn(page);
+  const stamp = Date.now().toString();
+  const categoryId = await seedCategoryId(page, `range-${stamp}`);
+  const item = await callRpc<{ id: string }, ItemCreate>(page, "itemsCreate", {
+    name: `range item ${stamp}`, categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0,
+  });
+  const seeded: Array<{ invoiceNumber: string; invoiceDate: string }> = [];
+  for (const invoiceDate of ["2090-01-01", "2090-01-02", "2090-01-03"]) {
+    const invoice = await callRpc<{ invoiceNumber: string }, InvoiceCreate>(page, "invoicesCreate", {
+      kind: "PURCHASE", invoiceDate, lines: [{ itemId: item.id, quantity: 1, unitPrice: 100 }],
+    });
+    seeded.push({ invoiceNumber: invoice.invoiceNumber, invoiceDate });
+  }
+  const [first, second, third] = seeded;
+  if (first === undefined || second === undefined || third === undefined) throw new Error("expected three persisted invoice fixtures");
+
+  await page.goto("/invoices");
+  const surface = page.getByTestId("invoices-page");
+  await expect(surface).toBeVisible();
+  const fromDate = page.getByTestId("invoices-from-date");
+  const toDate = page.getByTestId("invoices-to-date");
+  const fromNumber = page.getByTestId("invoices-from-number");
+  const toNumber = page.getByTestId("invoices-to-number");
+  const rows = page.getByTestId("invoice-row");
+  const rowNumbers = async () => (await rows.all()).map(async (row) => (await row.locator("td").first().innerText()).trim());
+  const visibleNumbers = async () => Promise.all(await rowNumbers());
+
+  await fromDate.fill("2090-01-02");
+  await toDate.fill("2090-01-02");
+  await fromNumber.fill("2");
+  await toNumber.fill("SUP-3");
+  await expect(rows).toHaveCount(1);
+  expect(await visibleNumbers()).toEqual([second.invoiceNumber]);
+
+  await fromDate.fill("2090-01-01");
+  await toDate.fill("2090-01-03");
+  await fromNumber.fill("2");
+  await toNumber.fill("3");
+  await expect(rows).toHaveCount(2);
+  const order = page.getByTestId("invoices-order-filter");
+  await order.click();
+  await page.getByRole("option", { name: "الأقدم أولاً" }).click();
+  await expect.poll(visibleNumbers).toEqual([second.invoiceNumber, third.invoiceNumber]);
+  await order.click();
+  await page.getByRole("option", { name: "الأحدث أولاً" }).click();
+  await expect.poll(visibleNumbers).toEqual([third.invoiceNumber, second.invoiceNumber]);
+
+  await fromDate.fill("2090-01-03");
+  await toDate.fill("2090-01-01");
+  await expect(page.getByTestId("invoices-range-error")).toContainText("تاريخ البداية");
+  await expect(rows).toHaveCount(0);
+
+  const evidence = path.resolve(process.cwd(), ".scratch/evidence/406");
+  fs.mkdirSync(evidence, { recursive: true });
+  await page.getByTestId("invoices-filters-clear").click();
+  await expect(rows).toHaveCount(3);
+  await expect(page.getByTestId("invoices-range-error")).toHaveCount(0);
+  await chooseSelectOption(page, page.getByTestId("invoices-kind-filter"), "المشتريات");
+  await chooseSelectOption(page, page.getByTestId("invoices-status-filter"), "غير مدفوعة");
+  await page.getByTestId("invoices-search").fill(`range item ${stamp}`);
+  await expect(rows).toHaveCount(3);
+  await page.getByTestId("invoices-page").screenshot({ path: path.join(evidence, "after-invoice-page.png") });
+});

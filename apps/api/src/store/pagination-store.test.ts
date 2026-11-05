@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createAppConfig } from "../config";
+import type { InvoiceListFilters } from "@dokan/contracts";
 import { openConnection, type Connection } from "../db/connection";
 import { localDate, localDateTime } from "../lib/logger";
 import { createDrizzleStore } from "./drizzle-store";
@@ -212,6 +213,39 @@ describe("store pagination (issue 163)", () => {
     expect((await store.listInvoices({ search: "حالي" })).items.map(row => row.id)).toEqual([legacy]);
     expect((await store.listInvoices({ search: "LEGACY-405" })).total).toBe(0);
     expect((await store.listInvoices({ search: "CURRENT-405" })).items.map(row => row.id)).toEqual([legacy]);
+  });
+
+  it("filters inclusive business dates and sequence-based INV/SUP number ranges before paging, with stable oldest/newest order (#406)", async () => {
+    const fixtures = [
+      { invoiceNumber: "INV-00111", invoiceDate: "2086-01-01", description: "range match" },
+      { invoiceNumber: "SUP-00112", invoiceDate: "2086-01-02", description: "range match" },
+      { invoiceNumber: "INV-00113", invoiceDate: "2086-01-03", description: "range match" },
+      { invoiceNumber: "SUP-00114", invoiceDate: "2086-01-02", description: "range match" },
+      { invoiceNumber: "INV-LEGACY-406", invoiceDate: "2086-01-02", description: "range match" },
+    ];
+    const ids: string[] = [];
+    for (const fixture of fixtures) {
+      const invoice = await store.insertInvoice({ invoiceNumber: fixture.invoiceNumber, invoiceDate: fixture.invoiceDate, kind: fixture.invoiceNumber.startsWith("SUP") ? "PURCHASE" : "SALE", counterpartyId: null, counterpartyName: null, totalAmount: 100, paidAmount: 0, remainingAmount: 100, notes: null });
+      await store.insertInvoiceLine({ invoiceId: invoice.id, itemId: null, description: fixture.description, quantity: 1, unitPrice: 100, costAtSale: 0, total: 100 });
+      ids.push(invoice.id);
+    }
+    const bounds = { fromDate: "2086-01-01", toDate: "2086-01-03", fromNumber: "111", toNumber: "113", search: "range match" };
+    const list406 = (filters: InvoiceListFilters) => store.listInvoices(filters);
+    const oldest = await list406({ ...bounds, order: "OLDEST", limit: 1, offset: 0 });
+    const middle = await list406({ ...bounds, order: "OLDEST", limit: 1, offset: 1 });
+    const newest = await list406({ ...bounds, order: "NEWEST", limit: 10, offset: 0 });
+    expect(oldest.total).toBe(3);
+    expect((await list406({ ...bounds, kind: "SALE", status: "UNPAID" })).total).toBe(2);
+    expect(oldest.items.map(row => row.id)).toEqual([ids[0]!]);
+    expect(middle.items.map(row => row.id)).toEqual([ids[1]!]);
+    expect(newest.items.map(row => row.id)).toEqual([ids[2]!, ids[1]!, ids[0]!]);
+    expect((await list406({ fromNumber: "111" })).items.map(row => row.invoiceNumber)).toContain("SUP-00112");
+    expect((await list406({ fromNumber: "111", toNumber: "113" })).items.map(row => row.invoiceNumber)).not.toContain("INV-LEGACY-406");
+    expect((await list406({ ...bounds, fromDate: "2086-01-02", toDate: "2086-01-02" })).total).toBe(1);
+    const sameDate = await list406({ fromDate: "2086-01-02", toDate: "2086-01-02", fromNumber: "1", order: "OLDEST" });
+    expect(sameDate.items.map(row => row.invoiceNumber)).toEqual(["SUP-00112", "SUP-00114"]);
+    const sameDateNewest = await list406({ fromDate: "2086-01-02", toDate: "2086-01-02", fromNumber: "1", order: "NEWEST" });
+    expect(sameDateNewest.items.map(row => row.invoiceNumber)).toEqual(["SUP-00114", "SUP-00112"]);
   });
 
   it("normalizes the literal-search mode once per request (#405)", async () => {

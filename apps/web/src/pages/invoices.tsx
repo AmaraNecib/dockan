@@ -19,6 +19,14 @@ import { Input } from "@/components/ui/input";
 
 type KindFilter = "" | InvoiceKind;
 type StatusFilter = "" | "UNPAID" | "PARTIAL" | "PAID";
+type InvoiceOrder = "OLDEST" | "NEWEST";
+
+function invoiceNumberSequence(value: string): number | undefined {
+  const match = /^(?:(?:INV|SUP)-)?(\d+)$/iu.exec(value.trim());
+  if (match === null) return undefined;
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) ? sequence : undefined;
+}
 
 /**
  * Ticket 8 — invoice list (/invoices). Both kinds are payable in instalments,
@@ -32,11 +40,23 @@ export function InvoicesPage() {
   const searchRef = useRef<HTMLInputElement>(null);
   const [kind, setKind] = useState<KindFilter>("");
   const [status, setStatus] = useState<StatusFilter>("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [fromNumber, setFromNumber] = useState("");
+  const [toNumber, setToNumber] = useState("");
+  const [order, setOrder] = useState<InvoiceOrder>("NEWEST");
+  const fromSequence = fromNumber.trim() === "" ? undefined : invoiceNumberSequence(fromNumber);
+  const toSequence = toNumber.trim() === "" ? undefined : invoiceNumberSequence(toNumber);
+  const dateRangeInvalid = fromDate !== "" && toDate !== "" && fromDate > toDate;
+  const numberRangeInvalid = (fromNumber.trim() !== "" && fromSequence === undefined) || (toNumber.trim() !== "" && toSequence === undefined) ||
+    (fromSequence !== undefined && toSequence !== undefined && fromSequence > toSequence);
+  const rangeError = dateRangeInvalid ? t("invoicesDateRangeInvalid") : numberRangeInvalid ? t("invoicesNumberRangeInvalid") : "";
+  const hasFilters = search.trim() !== "" || kind !== "" || status !== "" || fromDate !== "" || toDate !== "" || fromNumber.trim() !== "" || toNumber.trim() !== "" || order !== "NEWEST";
   // Which filter the owner last CHANGED. After clearing, focus must go to the control
   // that narrowed the list, and "whichever value is non-empty" cannot answer that: with
   // both set, focusing `kind` sends a keyboard user to a control that did not empty the
   // view (review on #245).
-  const lastFilterRef = useRef<"kind" | "status" | "search" | null>(null);
+  const lastFilterRef = useRef<"kind" | "status" | "search" | "range" | "order" | null>(null);
   const pager = usePagination();
 
   useEffect(() => {
@@ -59,9 +79,15 @@ export function InvoicesPage() {
         search: debouncedSearch || undefined,
         kind: kind === "" ? undefined : kind,
         status: status === "" ? undefined : status,
+        fromDate: fromDate || undefined,
+        toDate: dateRangeInvalid ? undefined : toDate || undefined,
+        fromNumber: fromSequence === undefined ? undefined : fromNumber.trim(),
+        toNumber: toSequence === undefined ? undefined : toNumber.trim(),
+        order: order === "NEWEST" ? undefined : order,
         ...pager.pagination,
       },
     }),
+    enabled: rangeError === "",
     placeholderData: (previousData) => previousData,
   });
 
@@ -92,6 +118,43 @@ export function InvoicesPage() {
           }}>{t("invoicesSearchClear")}</Button>
         )}
       </div>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <label className="grid gap-1 text-sm">
+          {t("invoicesFromDate")}
+          <Input type="date" value={fromDate} data-testid="invoices-from-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setFromDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+        </label>
+        <label className="grid gap-1 text-sm">
+          {t("invoicesToDate")}
+          <Input type="date" value={toDate} data-testid="invoices-to-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setToDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+        </label>
+        <label className="grid gap-1 text-sm">
+          {t("invoicesFromNumber")}
+          <Input value={fromNumber} inputMode="text" data-testid="invoices-from-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setFromNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+        </label>
+        <label className="grid gap-1 text-sm">
+          {t("invoicesToNumber")}
+          <Input value={toNumber} inputMode="text" data-testid="invoices-to-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setToNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+        </label>
+        <p className="col-span-2 text-xs text-muted-foreground">{t("invoicesNumberRangeHint")}</p>
+        <label className="grid gap-1 text-sm">
+          {t("invoicesOrder")}
+          <Select value={order} onValueChange={(value) => {
+            // SAFETY: this select exposes only the declared NEWEST/OLDEST options.
+            setOrder((value ?? "NEWEST") as InvoiceOrder); lastFilterRef.current = "order"; pager.reset();
+          }} items={[
+            { value: "NEWEST", label: t("invoicesOrderNewest") },
+            { value: "OLDEST", label: t("invoicesOrderOldest") },
+          ]}>
+            <SelectTrigger className="w-full" data-testid="invoices-order-filter"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="NEWEST">{t("invoicesOrderNewest")}</SelectItem><SelectItem value="OLDEST">{t("invoicesOrderOldest")}</SelectItem></SelectContent>
+          </Select>
+        </label>
+        {hasFilters && <Button className="self-end" variant="outline" data-testid="invoices-filters-clear" onClick={() => {
+          setSearch(""); setDebouncedSearch(""); setKind(""); setStatus(""); setFromDate(""); setToDate(""); setFromNumber(""); setToNumber(""); setOrder("NEWEST"); pager.reset(); searchRef.current?.focus();
+        }}>{t("invoicesFiltersClear")}</Button>}
+      </div>
+      {rangeError !== "" && <p className="mt-2 text-sm text-destructive" role="alert" data-testid="invoices-range-error">{rangeError}</p>}
+
       <div className="mt-4 grid grid-cols-2 gap-3">
         <label className="grid gap-1 text-sm">
           {t("invoiceKind")}
@@ -155,7 +218,7 @@ export function InvoicesPage() {
           {t("invoicesLoading")}
         </p>
       )}
-      {list.isPending ? (
+      {rangeError !== "" ? null : list.isPending ? (
         <div className="mt-4 grid gap-2" aria-hidden="true">
           <Skeleton className="h-6 w-full" />
           <Skeleton className="h-6 w-full" />
@@ -172,9 +235,9 @@ export function InvoicesPage() {
           card
           className="mt-4"
           title={t("invoicesEmpty")}
-          hint={t(search.trim() === "" && kind === "" && status === "" ? "invoicesEmptyHint" : "invoicesEmptyFilteredHint")}
+          hint={t(!hasFilters ? "invoicesEmptyHint" : "invoicesEmptyFilteredHint")}
           action={
-            search.trim() === "" && kind === "" && status === "" ? (
+            !hasFilters ? (
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <Button asChild size="lg">
                   <Link to="/sale" data-testid="invoices-empty-action">{t("saleNew")}</Link>
@@ -197,10 +260,16 @@ export function InvoicesPage() {
                   const target =
                     last ?? (kind !== "" ? "kind" : status !== "" ? "status" : "kind");
                   const filter =
-                    target === "search" ? "invoices-search" : target === "status" ? "invoices-status-filter" : "invoices-kind-filter";
+                    target === "search" ? "invoices-search" : target === "status" ? "invoices-status-filter" : target === "range" ? "invoices-from-date" : "invoices-kind-filter";
                   setSearch("");
+                  setDebouncedSearch("");
                   setKind("");
                   setStatus("");
+                  setFromDate("");
+                  setToDate("");
+                  setFromNumber("");
+                  setToNumber("");
+                  setOrder("NEWEST");
                   pager.reset();
                   focusByTestId(filter);
                 }}

@@ -153,6 +153,18 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(feature).toContain("The parent explicitly passes the verification mode");
   });
 
+  test("entry references cannot restore the retired local baseline", () => {
+    for (const file of ["docs/development-workflow.md", "docs/ci.md", "docs/verification-and-merge-gate.md"]) {
+      const doc = read(file);
+      expect(doc, file).toContain("engineering-workflow.md#current-activation");
+      expect(doc, file).not.toContain("keep the prior local baseline");
+      expect(doc, file).not.toContain("Keep the pre-activation local baseline");
+      expect(doc, file).not.toContain("before activating reduced local");
+    }
+    expect(read("docs/engineering-workflow.md")).toContain("A pending CI check does not block local implementation, review or publication");
+    expect(read("docs/agent-delegation-template.md")).toContain("ordinary failing-first focused test");
+  });
+
   test("delegation template keeps task input readable and bounded", () => {
     const template = read("docs/agent-delegation-template.md");
     expect(template).toContain("findings verbatim");

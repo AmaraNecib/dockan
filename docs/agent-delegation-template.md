@@ -19,10 +19,10 @@ Scope and authority
 [Files or behavior owned; preservation constraints; whether the child is an implementation worker or read-only reviewer. Name prohibited publication actions. A reviewer is read-only on the source tree and may write only the explicitly named local report artifact.]
 
 Verification mode
-[The explicit mode selected by the parent. State checks inherited from CI and focused local proof required. Heavy work needs a named uncertainty or CI coverage gap; queue availability is not scope authorization.]
+[The explicit mode selected by the parent. State checks inherited from CI and focused local proof required. A full local suite, production build or audit needs a named uncertainty or CI coverage gap. Targeted browser proof also uses the queue; queue availability is not scope authorization.]
 
 Concrete proof
-[Exact changed behavior and tests or checks that prove it. For a fix, require red on the parent where feasible, then green after the change. Name any evidence path.]
+[Exact changed behavior and tests or checks that prove it. For a fix, require an ordinary failing-first focused test against the unfixed behavior, then green after the change. Actual-PR parent replay remains CI-only. Name any evidence path.]
 
 Completion report
 [Return absolute worktree path, branch and SHA, changed files, checks and results, evidence paths, unresolved findings, and applied/excluded wisdom. Implementation commits include Model, Thinking, Harness and Agent trailers.]

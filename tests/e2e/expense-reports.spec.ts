@@ -565,6 +565,8 @@ test("correct and undo an expense without moving it out of its original report p
 });
 
 test("expense refunds preserve cash dates, cancellation, failure retries and compensation", async ({ page }) => {
+  // Four full reloads and injected storage/transport refusals exceed the default journey budget.
+  test.slow();
   await ensureAuthed(page);
   await page.goto("/expenses");
   await selectExpenseCategory(page, "كراء المحل");
@@ -596,6 +598,24 @@ test("expense refunds preserve cash dates, cancellation, failure retries and com
   await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
   await history.getByTestId("expense-refund-amount").fill("300");
   await history.getByTestId("expense-refund-reason").fill("cash recovery");
+  let refundWrites = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/rpc/expensesRefund")) refundWrites += 1;
+  });
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key.includes("expense-refund-pending")) {
+        Storage.prototype.setItem = original;
+        throw new DOMException("Storage refused", "QuotaExceededError");
+      }
+      original.call(this, key, value);
+    };
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  expect(refundWrites).toBe(0);
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
   let firstPayload = "";
   let lostResponse = false;
   await page.route("**/api/rpc/expensesRefund", async (route) => {
@@ -618,8 +638,25 @@ test("expense refunds preserve cash dates, cancellation, failure retries and com
   await afterLossRow.getByTestId("expense-correction-open-history").click();
   await afterLossRow.locator("xpath=following-sibling::tr[1]").getByTestId("expense-refund-open").click();
   await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await page.evaluate(() => {
+    const original = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function (key) {
+      if (key.includes("expense-refund-pending")) throw new DOMException("Cleanup refused", "SecurityError");
+      original.call(this, key);
+    };
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-amount")).toBeDisabled();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  await page.reload();
+  await row.getByTestId("expense-correction-open-history").click();
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
   await history.getByTestId("expense-refund-save").click();
   await expect(history.getByTestId("expense-refund-saved")).toBeVisible();
+  expect(refundWrites).toBe(3);
   await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
   await expect(history.getByTestId("expense-refund-balance")).toContainText("700");
   const saved = history.getByTestId("expense-refund-entry");
@@ -628,8 +665,30 @@ test("expense refunds preserve cash dates, cancellation, failure retries and com
   await saved.getByTestId("expense-refund-undo").click();
   await history.getByTestId("expense-refund-confirm-cancel").click();
   await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  let firstUndoPayload = "";
+  let undoRequests = 0;
+  await page.route("**/api/rpc/expensesRefundUndo", async (route) => {
+    const payload = route.request().postData() ?? "";
+    undoRequests += 1;
+    if (undoRequests === 1) {
+      firstUndoPayload = payload;
+      await route.fetch();
+      await route.abort("failed");
+    } else {
+      expect(payload).toBe(firstUndoPayload);
+      await route.continue();
+    }
+  });
   await saved.getByTestId("expense-refund-undo").click();
   await history.getByTestId("expense-refund-confirm-save").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await page.reload();
+  await row.getByTestId("expense-correction-open-history").click();
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-saved")).toBeVisible();
+  expect(undoRequests).toBe(2);
   await expect(history.getByTestId("expense-refund-entry")).toHaveCount(2);
   await expect(history.getByTestId("expense-refund-balance")).toContainText("1,000");
   await history.screenshot({ path: path.join(evidenceDir, "refund-after.png") });
@@ -641,4 +700,5 @@ test("expense refunds preserve cash dates, cancellation, failure retries and com
   await expect(reloadedHistory.getByTestId("expense-refund-entry")).toHaveCount(2);
   await expect(reloadedHistory.getByTestId("expense-correction-original")).toBeVisible();
   await page.unroute("**/api/rpc/expensesRefund");
+  await page.unroute("**/api/rpc/expensesRefundUndo");
 });

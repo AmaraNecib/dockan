@@ -163,14 +163,44 @@ describe("expense refunds (#409)", () => {
   it("rejects unauthenticated writes/reads and invalid inputs without adding records", async () => {
     const original = await originalExpense();
     const input = { expenseId: original.id, amount: 200, occurredAt: "2018-05-01T09:00:00", idempotencyKey: randomUUID() };
+    const existing = await client.expensesRefund({ ...input, amount: 1, idempotencyKey: randomUUID() });
     const before = await client.expenseRefundHistory({ expenseId: original.id });
-    await expect(anonymousClient.expensesRefund(input)).rejects.toThrow();
-    await expect(anonymousClient.expenseRefundHistory({ expenseId: original.id })).rejects.toThrow();
-    await expect(anonymousClient.expensesRefundUndo({ refundId: randomUUID(), idempotencyKey: randomUUID() })).rejects.toThrow();
+    await expect(anonymousClient.expensesRefund(input)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(anonymousClient.expenseRefundHistory({ expenseId: original.id })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(anonymousClient.expensesRefundUndo({ refundId: existing.id, idempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     for (const amount of [0, -1, 1.5, 1000000000001]) await expect(client.expensesRefund({ ...input, amount })).rejects.toThrow();
     await expect(client.expensesRefund({ ...input, occurredAt: "2018-02-31T09:00:00" })).rejects.toThrow();
     await expect(client.expensesRefund({ ...input, expenseId: randomUUID() })).rejects.toThrow("EXPENSE_NOT_FOUND");
     expect(await client.expenseRefundHistory({ expenseId: original.id })).toEqual(before);
+  });
+
+  it("leaves supplier accounts, purchase returns and stock unchanged across expense refund, retry and compensation", async () => {
+    const supplier = await client.suppliersCreate({ name: "Isolated supplier" });
+    const category = await client.categoriesCreate({ name: "Isolated stock" });
+    const item = await client.itemsCreate({ name: "Isolation item", categoryId: category.id, costPrice: 100, sellingPrice: 150 });
+    await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: 3, unitPrice: 100 }] });
+    await client.suppliersReturn({ supplierId: supplier.id, itemId: item.id, quantity: 1, amount: 100 });
+    const snapshot = async () => ({
+      supplier: await client.suppliersGet({ id: supplier.id }),
+      returns: await store.listSupplierReturns({ supplierId: supplier.id }),
+      stock: await store.listStockMovements(item.id),
+      item: (await client.itemsAll()).items.find((row) => row.id === item.id),
+    });
+    const before = await snapshot();
+    expect(before.stock).toHaveLength(2);
+    expect(before.returns.total).toBe(1);
+    expect(before.item?.stockOnHand).toBe(2);
+    const original = await originalExpense();
+    const input = { expenseId: original.id, amount: 300, occurredAt: "2018-06-01T10:00:00", idempotencyKey: randomUUID() };
+    const refund = await client.expensesRefund(input);
+    expect(await snapshot()).toEqual(before);
+    expect(await client.expensesRefund(input)).toEqual(refund);
+    expect(await snapshot()).toEqual(before);
+    const undoInput = { refundId: refund.id, idempotencyKey: randomUUID() };
+    const compensation = await client.expensesRefundUndo(undoInput);
+    expect(await snapshot()).toEqual(before);
+    expect(await client.expensesRefundUndo(undoInput)).toEqual(compensation);
+    expect(await snapshot()).toEqual(before);
   });
 
   it("posts an immutable cash recovery after corrections, on its cash date, once", async () => {

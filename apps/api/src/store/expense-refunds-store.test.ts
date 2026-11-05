@@ -17,6 +17,8 @@ const expenseId = randomUUID();
 const categoryId = randomUUID();
 const correctionId = randomUUID();
 const actorId = randomUUID();
+const legacyCorrectionKey = randomUUID();
+let legacyCorrectionRows: unknown[];
 const configFor = () => createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") });
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-refund-v8-"));
@@ -28,9 +30,10 @@ beforeAll(async () => {
     CREATE TABLE expense_corrections (id TEXT PRIMARY KEY, expense_id TEXT NOT NULL REFERENCES expenses(id), effective_at TEXT NOT NULL, recorded_at TEXT NOT NULL, before_amount INTEGER NOT NULL, after_amount INTEGER NOT NULL, difference INTEGER NOT NULL, actor_id TEXT, actor_name TEXT, reason TEXT, idempotency_key TEXT NOT NULL, reverses_correction_id TEXT);
     INSERT INTO expense_categories VALUES ('${categoryId}', 'v8 rent', 0, '2019-01-01T00:00:00', '2019-01-01T00:00:00');
     INSERT INTO expenses VALUES ('${expenseId}', '${categoryId}', 1000, 'legacy', '2019-01-15T10:00:00', '2019-01-16T11:00:00', NULL, NULL);
-    INSERT INTO expense_corrections VALUES ('${correctionId}', '${expenseId}', '2019-01-15T10:00:00', '2026-10-28T13:00:00', 1000, 800, -200, '${actorId}', 'Owner', NULL, '${randomUUID()}', NULL);
+    INSERT INTO expense_corrections VALUES ('${correctionId}', '${expenseId}', '2019-01-15T10:00:00', '2026-10-28T13:00:00', 1000, 800, -200, '${actorId}', 'Owner', 'legacy reason', '${legacyCorrectionKey}', NULL);
     PRAGMA user_version = 8;
   `);
+  legacyCorrectionRows = conn.raw.query("SELECT * FROM expense_corrections").all();
   store = createDrizzleStore(conn);
   await store.setup();
 });
@@ -50,7 +53,14 @@ describe("expense refund storage (#409)", () => {
     expect(() => assertSchemaVersionSupported(conn.raw, 8)).toThrow(UnsupportedSchemaVersionError);
     const before = await store.getExpenseCorrectionHistory(expenseId);
     expect(before).toMatchObject({ original: { amount: 1000, actorId: null, actorName: null, occurredAt: "2019-01-15T10:00:00", createdAt: "2019-01-16T11:00:00" }, effectiveAmount: 800 });
-    expect(before?.corrections[0]?.id).toBe(correctionId);
+    expect(conn.raw.query("SELECT * FROM expense_corrections").all()).toEqual(legacyCorrectionRows);
+    expect(before?.corrections[0]).toEqual({
+      id: correctionId, expenseId, effectiveAt: "2019-01-15T10:00:00", recordedAt: "2026-10-28T13:00:00",
+      beforeAmount: 1000, afterAmount: 800, difference: -200, actorId, actorName: "Owner",
+      reason: "legacy reason", reversesCorrectionId: null, reversedByCorrectionId: null,
+    });
+    const legacyRetry = await store.findExpenseCorrectionByIdempotencyKey(expenseId, legacyCorrectionKey);
+    expect(legacyRetry).toMatchObject({ id: correctionId, reason: "legacy reason", actorId });
     const input = request();
     const refund = await store.withTransactionImmediate((tx) => tx.insertExpenseRefund(input));
     const history = await store.getExpenseRefundHistory(expenseId);
@@ -65,6 +75,8 @@ describe("expense refund storage (#409)", () => {
     expect(await store.getExpenseRefundHistory(expenseId)).toEqual(history);
     expect(await store.findExpenseRefundByIdempotencyKey(expenseId, input.idempotencyKey)).toEqual(refund);
     expect(await store.getExpenseCorrectionHistory(expenseId)).toEqual(before);
+    expect(conn.raw.query("SELECT * FROM expense_corrections").all()).toEqual(legacyCorrectionRows);
+    expect(await store.findExpenseCorrectionByIdempotencyKey(expenseId, legacyCorrectionKey)).toEqual(legacyRetry);
   });
 
   it("limits competing refunds across independent database connections", async () => {
@@ -99,22 +111,28 @@ describe("expense refund storage (#409)", () => {
   });
 
   it("refuses unlocked, excessive, malformed and cross-expense compensation writes atomically", async () => {
-    const before = await store.getExpenseRefundHistory(expenseId);
-    await expect(store.insertExpenseRefund(request())).rejects.toThrow("require an immediate transaction");
+    const original = await store.insertExpense({ categoryId, amount: 800, occurredAt: "2019-01-01T00:00:00" });
+    const ownRequest = () => ({ ...request(), expenseId: original.id });
+    const prior = await store.withTransactionImmediate((tx) => tx.insertExpenseRefund(ownRequest()));
+    const before = await store.getExpenseRefundHistory(original.id);
+    expect(before?.refundableAmount).toBe(500);
+    await expect(store.insertExpenseRefund(ownRequest())).rejects.toThrow("require an immediate transaction");
     for (const change of [{ difference: -501 }, { difference: 1 }, { difference: 0 }, { difference: -1.5 }, { occurredAt: "2019-02-31T00:00:00" }, { reversesRefundId: randomUUID(), difference: 300 }]) {
-      await expect(store.withTransactionImmediate((tx) => tx.insertExpenseRefund({ ...request(), ...change }))).rejects.toThrow();
-      expect(await store.getExpenseRefundHistory(expenseId)).toEqual(before);
+      await expect(store.withTransactionImmediate((tx) => tx.insertExpenseRefund({ ...ownRequest(), ...change }))).rejects.toThrow();
+      expect(await store.getExpenseRefundHistory(original.id)).toEqual(before);
     }
-    const prior = before?.refunds[0];
-    if (prior === undefined) throw new Error("missing earlier refund");
     const other = await store.insertExpense({ categoryId, amount: 1000, occurredAt: "2019-01-01T00:00:00" });
-    await expect(store.withTransactionImmediate((tx) => tx.insertExpenseRefund({ ...request(), expenseId: other.id, difference: 300, reversesRefundId: prior.id }))).rejects.toThrow();
-    expect(await store.getExpenseRefundHistory(expenseId)).toEqual(before);
-    expect((await store.getExpenseRefundHistory(other.id))?.refunds).toEqual([]);
+    await store.withTransactionImmediate((tx) => tx.insertExpenseRefund({ ...request(), expenseId: other.id }));
+    const otherBefore = await store.getExpenseRefundHistory(other.id);
+    expect(otherBefore?.refundableAmount).toBe(700);
+    // Positive 300 fits this balance; only the foreign reversal link must reject it.
+    await expect(store.withTransactionImmediate((tx) => tx.insertExpenseRefund({ ...request(), expenseId: other.id, difference: 300, reversesRefundId: prior.id }))).rejects.toThrow("invalid expense refund reversal link");
+    expect(await store.getExpenseRefundHistory(original.id)).toEqual(before);
+    expect(await store.getExpenseRefundHistory(other.id)).toEqual(otherBefore);
     await expect(store.withTransactionImmediate(async (tx) => {
-      await tx.insertExpenseRefund(request());
+      await tx.insertExpenseRefund(ownRequest());
       throw new Error("simulated failure after insertion");
     })).rejects.toThrow("simulated failure");
-    expect(await store.getExpenseRefundHistory(expenseId)).toEqual(before);
+    expect(await store.getExpenseRefundHistory(original.id)).toEqual(before);
   });
 });

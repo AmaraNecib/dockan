@@ -61,13 +61,9 @@ Quality check — relevant skills
     ↓
 Commit complete reviewable scope
     ↓
-Debate — default at Standard, required at High-assurance
+Risk-sized local review — one code-review for routine changes; three lenses only for named elevated risk
     ↓
-Test audit — default at Standard, required at High-assurance
-    ↓
-Code-review — Standards + Spec axes against pinned base SHA
-    ↓
-Local reviewloop payload and 5/5 — selected lenses, no unresolved actionable findings
+Local reviewloop payload and 5/5 — selected executions, no unresolved actionable findings
     ↓
 Guard Phase 2 — verify committed HEAD; commit fixes and refresh checks if needed
     ↓
@@ -77,9 +73,9 @@ Handoff verified SHA and local evidence — the lane stops here
     ↓
 Push + open PR
     ↓
-Hosted review — paired current-head 5/5 during the trial; refresh local review if the head changes
+CI acceptance — required on the current head before merge
     ↓
-Architecture review — improve-codebase-architecture (only once the code is accepted)
+Architecture review — parent-only when a module, seam, adapter or interface changed
     ↓
 Guard Phase 3 — pre-report gate
     ↓
@@ -103,6 +99,14 @@ map remains fail-closed; CI keeps its own event-range and override behavior.
 
 Do not run a later phase without recording the earlier gate, its commands, and its result.
 
+## Local verification and CI acceptance
+
+Local proof targets the changed behavior and direct callers. Run focused regression and affected integration tests first. Add relevant typecheck, lint and generated-file checks; build locally only when bundling, imports, configuration or packaging changed. Run browser cases for affected rendering, focus, navigation or interaction, and integration plus negative tests for money, security and recovery contracts. Full suites, full browser runs, production builds and dependency audits are CI-final, not per-commit or per-fix chores. Name a concrete uncertainty or CI coverage gap before running one locally. Tests must detect a named reachable failure with an independent expected result; test counts, deletion quotas and blanket mock bans are not quality measures.
+
+The stable aggregate `CI acceptance` check is mandatory for merge. It must fail closed when required jobs fail, cancel or skip without a successful selector proof; critical selectors and full-run overrides remain part of CI. The owner has approved moving routine acceptance to CI, but the parent must verify required-check enforcement on the current PR head, including administrator enforcement, and obtain recorded owner acceptance of the bypass policy before activating the reduced local baseline. The parent verifies effective rules; only the owner decides whether bypass is acceptable.
+
+Bootstrap exception: this policy PR may be published after focused local proof and review while `CI acceptance` is pending, because publication creates the check run. It is not merge-ready and does not activate the new routine policy until the parent records remote enforcement evidence and recorded owner acceptance of the bypass policy. Do not run the retired full local baseline on this policy PR merely to publish the gate. Other PRs retain the existing local baseline until the parent verifies activation. Local readiness, a pending check and CI acceptance are distinct states.
+
 ## Review invariants
 
 - **Evidence is always required; only its form changes.** A visual change needs
@@ -112,8 +116,8 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   four-part merge gate it feeds, is written down in
   [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md).
 - **Verify every finding against the reviewed tree.** If stale or factually wrong, show code evidence and obtain reviewer resolution. Never mark a valid finding resolved by calling it a refinement; the complete disposition rule is below.
-- **Every reviewable change gets local review, sized to reachable risk.** Standard is the normal depth; High-assurance gets all required scrutiny. Compact is one focused local `code-review` covering Standards, Spec and affected-test adequacy for a routine, reversible, localized change with no named high-assurance failure mode, new public interface or seam, cross-package behavior, schema/dependency/CI/security/merge-policy decision. Size and path alone never qualify; uncertainty means ordinary Standard or High-assurance. Compact skips `debate` and `test-audit` with reasons in the existing payload. It is local review, never no-review or hosted-only. Record a short risk rationale, selected depth and skips in the existing design or PR handoff; use it for the author account too. Do not run the deep architecture pass when no module, seam, adapter or interface moved. Standard otherwise uses all three lenses; High-assurance uses all three plus final-head debate after fixes.
-- **One accountable set of genuine reviewer executions.** The parent verifies the exact base/head, reviewer session, model family, provenance and report. A worker's claim is not evidence, but a valid execution on the exact current tree is reusable; do not duplicate it automatically. Run required lenses separately when the selected depth calls for them. Preserve family independence and scoped owner exceptions in `reviewloop`.
+- **Review follows reachable risk, not size or path.** Every reviewable change gets local review and a reviewloop 5/5 with no unresolved actionable finding. A routine, reversible, localized change uses one fresh `code-review` context for Standards, Spec and affected-test adequacy. Record the risk rationale and explicit `debate`/`test-audit` skips in the existing payload. A new interface, cross-package behavior, integration uncertainty, or a concrete CI, security, schema, dependency, money, recovery, auth, crypto, release or merge-policy failure mode escalates the review. Name the failure mode; matching a path alone is not enough. High-assurance runs three distinct sessions initially: `debate`, `test-audit` and `code-review`. Specialist fanout is for a specific unanswered question, not the default. Review mechanics and evidence format live in `reviewloop`.
+- **Verify each finding against source.** The parent checks base/head, actual reviewer session and model IDs, provenance and report. A worker claim is not evidence; reuse an exact-tree execution rather than duplicating it. Use an enabled non-author family when available. OpenCode is opt-in and never a quota fallback. When no independent family is enabled, the owner's standing exception permits separate same-family sessions; record actual model IDs, the availability reason and the `independence` object. The exception does not waive review, 5/5 or finding resolution.
 - **The lenses run on a different model family than the author (owner decision, 2026-10-19; family
   rule 2026-10-26).** The author is the lane's model, read from its commit trailer, never the
   parent's. Independence is a family, not an exact ID: free and paid DeepSeek are one opinion.
@@ -122,11 +126,7 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   probe or request it unless the owner opts in for the current scope. With more than one lens,
   at least two families must appear unless an approved exception applies.
   The owner gives standing approval for same-family review when OpenCode is unavailable; no new per-PR approval is needed. Prefer an enabled working non-author family; otherwise use separate reviewer sessions and disclose the shared family. Record the standing approval in `independence: { approvedBy, reason }` under `reviewloop`. All required lenses, current-head 5/5 and finding-resolution gates still apply.
-- **Run both reviews until the owner ends the trial.** The parent runs `reviewloop` and
-  Greptile on the same pinned boundary across several PRs. Follow the
-  [comparison protocol](review-comparison.md) for independent first-pass records, verified
-  findings, time and cost. Neither review replaces the other automatically.
-- **Both required verdicts remain 5/5 at the current head.** During the paired trial, local reviewloop and hosted review must each reach 5/5 with no unresolved actionable findings. The score never excuses an unresolved finding. Verify every finding against the reviewed tree. Fix valid blockers here when bounded; split substantial work and hold dependent PRs until resolved. Dispute stale or factually wrong findings with code evidence and reviewer resolution. A valid finding cannot be ignored, deferred, downgraded or marked addressed as a refinement; the parent cannot award its own 5/5. Any code change requires applicable review at the exact new head.
+- **A bounded fix gets one bounded review.** Commit the fix, rerun checks it affects, then ask one fresh reviewer to inspect the combined delta and direct affected callers. The reviewer reads prior findings and explicitly carries forward unchanged conclusions. Rerun another lens only if the fix creates a concrete risk that lens covers. After three fix rounds, reassess the design. Never clear or defer an actionable finding to reach 5/5; a score cannot override one. A new head needs current-head evidence for the fix review, not a full restart of every initial lens.
 - **Small related refinements may stay in the PR.** They must serve the same acceptance goal, stay localized, add no behavior, risk, decision, dependency or architecture scope, and fit bounded tests and review. Copy clarification or local duplication cleanup may qualify; a new goal, cross-cutting change, auth redesign or schema migration belongs in a separate PR. One focus line that can reach saved prices is not compact. Correctness and safety dependencies are blockers. Reassess review depth, batch refinements before final review and stop opportunistic chains. A nonblocking improvement is optional only when the reviewer accepts its disposition and applicable gates allow it.
 - **A lens returns findings, not an essay.** The evidence file holds the detail; the message back to
 the parent holds the finding list, each one line with file:line, severity and the smallest fix. A
@@ -237,19 +237,11 @@ that can bypass a session check is High-assurance.
 
 | Tier | Decision: what the change can break | Required review |
 | --- | --- | --- |
-| Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
-| Standard | Everything else: code, tests, config, UI, API, skills, docs | Default: guard 1 → quality check → risk-sized local review and local reviewloop 5/5 → guard 2 → publication and hosted review → guard 3. Compact routine changes use one focused code-review execution; ordinary Standard uses all three lenses. |
-| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | All three lenses required, plus a debate re-run on the final head once the fixes are in; all other Standard gates still apply |
+| Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard and quality checks only |
+| Standard | Everything else without a named elevated failure mode | One focused code-review context for Standards, Spec and affected-test adequacy; local reviewloop 5/5 |
+| High-assurance | A named reachable failure could affect money, inventory, debt direction, auth/session/RBAC/secrets, security/crypto, recovery/backup, schema or dependencies; CI/release/merge policy; a new interface, cross-package behavior, or unresolved integration uncertainty | Three distinct initial sessions: debate, test-audit and code-review; local reviewloop 5/5. A bounded fix uses the one-review process above, not a repeated three-lens cycle. |
 
-Auth/RBAC, backup/restore, invoice & debt money calculations, security and a
-schema-version bump are **examples that hint at a failure mode, never a test**.
-The same goes for paths such as `apps/api/src/auth/**` or `store/**`. A path that
-matches one of these does not by itself make a change High-assurance; a path that
-matches none does not exempt it. Money only travels through *some* store
-functions, so `store/**` is not blanket High-assurance, and naming that pattern
-would make every lane High-assurance forever. Dokan examples that exercise these
-modes: stock quantity going below zero, average-cost recomputation, payment
-amounts exceeding invoice totals, debt direction (who owes whom), auth login.
+Examples include stock going negative, incorrect average cost or invoice totals, wrong debt direction, a bypassed session check, lost backup data, or a dependency/configuration change that can break a release. Name the affected contract and reachable failure. A path match is only a prompt to inspect callers, never a tier assignment; a path outside these areas does not exempt a real risk.
 
 Record the tier and a short risk rationale in the existing design or PR handoff. Do not create an extra mandatory artifact just to justify review depth. Compare prototypes early when visual behavior is uncertain; a prototype comparison is not required for every document or change.
 
@@ -300,9 +292,7 @@ cheap to reverse, so it auto-merges too, once its before/after packet is posted 
 A lane never merges at all; squash merges only. A 5/5 reviewloop verdict with no findings,
 anchored to the current head SHA, and every CI check green is the **bar to merge at
 all** — auto-merging below it is not allowed, and a REFUSED verdict never merges.
-Until the owner ends the [paired review trial](review-comparison.md), both current-head
-reviews must be 5/5 with no actionable findings. Investigate disagreement before
-merging; a missing verdict blocks the gate and scores are not averaged.
+The local reviewloop verdict must be 5/5 with no unresolved actionable findings. Until the owner ends the [paired trial](review-comparison.md), both current-head verdicts must be 5/5 with no unresolved actionable findings. Request Greptile once per pushed head; a missing hosted verdict blocks merge, including when credit is unavailable. Lean local review does not retire that requirement.
 
 The gate itself is [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md):
 the four reasons (5/5, `Last reviewed commit` == head, no comments after the

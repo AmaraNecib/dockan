@@ -10,7 +10,7 @@ Verify every node and edge against the pinned code before publishing. Name real 
 
 The renderer makes Summary and Diagram independently collapsible and open by default. The confidence score and verdict remain visible outside them. Findings include every verified severity, including P2, with fix prompts in the summary and inline comments whenever findings exist. This is fixed default behavior, not a hosted settings page or a new configuration API.
 
-Keep the reviewloop status check enabled and require 5/5 for a pass. A Greptile settings screenshot with confidence threshold zero does not override the repository's merge gate. During the paired trial, read Greptile's actual score separately even when its check is green. Collapsing a section changes presentation only, never the evidence or pass criteria.
+Keep the reviewloop status check enabled and require 5/5 for a pass. A hosted-review settings screenshot with confidence threshold zero does not override the repository's merge gate. When a hosted review is configured, verify its actual findings separately from the local score. Collapsing a section changes presentation only, never the evidence or pass criteria.
 
 ## Source-backed diagram checks
 

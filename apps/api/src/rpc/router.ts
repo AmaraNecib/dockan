@@ -12,7 +12,8 @@ import type { AppLogger, LogContext } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
+import { StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
+import { readItemHistory } from "./item-history";
 import { itemStockProjection, recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
@@ -845,29 +846,7 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
-    itemsHistory: os.itemsHistory.handler(
-      guardedInput(async (input) => {
-        const item = (await deps.store.getItemsByIds([input.itemId])).get(input.itemId);
-        if (item === undefined) {
-          throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
-        }
-        // `stockAfter` is cumulative, so the whole ledger is projected first;
-        // only the projected rows are sliced. `total` is the full ledger count.
-        const movements = await deps.store.listStockMovements(item.id);
-        const projected = historyWithRemaining(movements);
-        const { limit, offset } = resolvePagination(input);
-        const page = projected.slice(offset, offset + limit);
-        // Precedence is resolved for the page's window only (issue 222). The
-        // index still walks the ledger above the page, so a correction on a
-        // prior page badges its superseded row (issue 215) without re-scanning
-        // those rows for every page row.
-        const superseded = supersededByCorrectionSeq(projected, offset, offset + page.length);
-        const rows = page.map((row, index) => ({ ...row, supersededBySeq: superseded[index] ?? null }));
-        // the last running balance IS stock on hand (same delta sum)
-        const stockOnHand = projected.at(-1)?.stockAfter ?? 0;
-        return { movements: rows, total: movements.length, stockOnHand };
-      }),
-    ),
+    itemsHistory: os.itemsHistory.handler(guardedInput((input) => readItemHistory(deps.store, input))),
 
     // --- parties (issue 120): customers & suppliers share one code path -------
     customersList: os.customersList.handler(guarded(async () => ({ items: await deps.store.listParties("customer") }))),
@@ -2497,9 +2476,25 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- UI preferences (issue 97 follow-up) ---------------------------------
     // shell state, not store identity: cheap read/write, no audit entry (the
     // sidebar toggle alone would spam the activity log)
-    preferencesGet: os.preferencesGet.handler(guarded(async () => ({ values: await deps.store.getPreferences() }))),
+    preferencesGet: os.preferencesGet.handler(guarded(async (context) => {
+      const session = await requireSession(context);
+      const stored = await deps.store.getPreferences();
+      // Price mode belongs to the operator, including the vault owner. Never
+      // project another operator's choice into the shared shell preferences.
+      const priceModeKey = `ui.sale.priceMode.${session.user.id}`;
+      const values = Object.fromEntries(Object.entries(stored).filter(([key]) => key !== "ui.sale.priceMode" && !key.startsWith("ui.sale.priceMode.")));
+      if (stored[priceModeKey] !== undefined) values["ui.sale.priceMode"] = stored[priceModeKey];
+      return { values };
+    })),
+
     preferencesSet: os.preferencesSet.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, context) => {
+        if (input.key === "ui.sale.priceMode") {
+          if (input.value !== "AMOUNT" && input.value !== "PERCENTAGE") throw new ORPCError("BAD_REQUEST", { message: "PREFERENCE_NOT_WRITABLE" });
+          const session = await requireSession(context);
+          await deps.store.setPreference(`ui.sale.priceMode.${session.user.id}`, input.value);
+          return { key: input.key, value: input.value };
+        }
         // the completion milestone is derived from shop records, so a client
         // must not be able to set it: setting it would hide the checklist
         // forever with nothing behind it. Only the keys the owner owns pass,

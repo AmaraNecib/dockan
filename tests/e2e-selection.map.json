@@ -102,6 +102,7 @@
         "blankness-mark-only.spec.ts",
         "catalog-scan.spec.ts",
         "stock-ledger.spec.ts",
+        "item-history.spec.ts",
         "pagination.spec.ts",
         "arabic-search.spec.ts",
         "01-empty-states.spec.ts",
@@ -113,6 +114,7 @@
       "match": ["apps/web/src/pages/sale.test.tsx"],
       "specs": [
         "sale-checkout.spec.ts",
+        "sale-price-editor.spec.ts",
         "keyboard-shortcuts.spec.ts",
         "no-write-window.spec.ts",
         "pagination.spec.ts",

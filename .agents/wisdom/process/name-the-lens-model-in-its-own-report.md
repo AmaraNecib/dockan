@@ -1,51 +1,16 @@
-# Name the reviewer model in the report, on its own line
+# Record the model that actually reviewed the tree
 
-**Area:** process — review lenses, evidence
+Seen in: #282, #285, #335.
 
-A lens report is evidence, and evidence says who produced it. #282's code-review report opened with
-`Read-only reviewer (zen-proxy/deepseek-v4.1-flash-free family, author-owned for fixing)`, which names
-the *author's* model inside a sentence about the reviewer. Greptile read it as the reviewer and filed a
-P2 asking for the lens to be re-run on the required model. The lens may well have run on the right
-model; the report made that impossible to tell, and an unverifiable claim is a defect on its own.
+A report once named the author's model where the reader expected the reviewer's.
+Later templates kept model IDs after their routes changed.
 
-Every lens report carries these two lines right under its title, and nothing sits between them:
+Record actual reviewer and author model IDs, reviewed base/head and execution
+identity. Take model identity from execution metadata, not copied prose.
+Different model names within one family do not establish independence. Select
+enabled routes and record any scoped owner exception under `reviewloop`;
+this lesson provides no model catalogue or fallback order.
 
-```
-Reviewer model: zen-proxy/minimax-m3.1-flash-free
-Author model:   zen-proxy/deepseek-v4.1-flash-free
-```
-
-Those IDs are the pair in force now. They were first named on 2026-10-19, when OpenCode's free tier began refusing
-this box's IP: the reviewer has always been `zen-proxy/minimax-m3.1-flash-free` — the same MiniMax model is also
-advertised as `opencode-go/minimax-m3.1-flash-free`, and that route answered a CLI probe but returned `404 status code
-(no body)` from a real sub-agent run, so the `zen-proxy` route is the one to use. The author was the paid
-`opencode-go/deepseek-v4.1-flash` until that route left the catalogue, so the author id moved to
-`zen-proxy/deepseek-v4.1-flash-free`. For part of that day the owner required a single model for both roles, which
-removed the separation this entry exists to protect; the owner then opened a free second model, so the split is back.
-`zen-proxy/beam-free` is the next free reviewer, then `zen-proxy/glm-5.3-flash-free` and
-`zen-proxy/mimo-v2.6-flash-free`; free lenses take no parallelism slot. A DeepSeek route is not a reviewer fallback:
-it is the author model. The rule is the lines, not those strings: name the models that actually ran. If a round ever
-runs reviewer and author on one model, say so in the report rather than let a reader assume a separation that was not
-there.
-
-Why it matters past tidiness: the reason the reviewer is a second model is that the author's blind
-spots are not the reviewer's. If the report does not name the reviewer, the gate cannot check that
-separation, and the next reader has to take it on trust — which is the failure a second model exists to
-prevent.
-
-**A harness a PR commits is evidence too, and it has to run for the next reader.** #285's
-`capture.mjs` rewrote a file it had just made tracked and then asserted a clean `git status`, so its
-own log read as a tracked change and the re-run failed on a clean checkout. Anything that asserts
-cleanliness excludes its own artifacts, and evidence tooling is proven by re-running it, not by having
-worked once.
-
-**Media and its harness do not go in the reviewable diff.** `develop` tracks 794 files under
-`.scratch/reviews/` and 105 under `.scratch/implementation/`, and **zero** under `.scratch/evidence/`.
-Images, GIFs and mp4s are hosted on R2 — the layout is in #263: `<PR>/before/`, `<PR>/after/`, and the
-Full HD pair under `<PR>/after/hd/`. A capture harness stays local until another person needs it.
-#285 committed both, which is how a dev tool carrying a `git status` assertion ended up inside a code
-review for a web fix and earned the P2 above. The media is the evidence; the tooling is a convenience
-that has to earn its place, and the default is that it does not.
-
-**Seen in:** #282 (code-review header, Greptile P2), #285 (`capture.mjs:157`, Greptile P2), #335 (the author id in the
-template and in the two other rule files went stale when the paid route left the catalogue, Greptile P2).
+Keep review reports and capture artifacts local and untracked under the current
+evidence policy. Preserve their original execution identity. A new filename
+cannot turn an old review into a current-head review.

@@ -67,6 +67,8 @@ async function expectNoWriteDuring(page: Page, wrote: () => boolean, windowMs = 
  * and the invoice's remaining agree.
  */
 test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم agree with the invoice", async ({ page }) => {
+  // The trace reached the final /debts check at ~29.6s; this test gets a 60s budget.
+  test.setTimeout(60_000);
   await signIn(page);
 
   const stamp = Date.now().toString();

@@ -33,6 +33,9 @@ import {
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
+import { SaleLinePriceEditor } from "@/components/catalog/sale-line-price-editor";
+import { parseSalePriceMode } from "@/lib/sale-price-editor";
+import { usePreference } from "@/lib/preferences";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { useSaleDraft } from "@/components/app/sale-draft";
@@ -111,6 +114,7 @@ export function SalePage() {
     return () => releaseOwner(draftOwner);
   }, [claimOwner, draftOwner, releaseOwner]);
   const categories = useQuery(orpc.categoriesList.queryOptions());
+  const priceMode = usePreference("ui.sale.priceMode", "AMOUNT", parseSalePriceMode, String);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
@@ -505,6 +509,7 @@ export function SalePage() {
             </form>
           )}
 
+          {(priceMode.writeFailed || priceMode.isError) && <p role="status" className="px-4 text-sm text-destructive">{t("salePriceModeNotSaved")}</p>}
           <div className="p-4">
             {lines.length === 0 ? (
               <div data-testid="sale-empty">
@@ -522,7 +527,7 @@ export function SalePage() {
             ) : (
               <table className="w-full" data-testid="sale-lines">
                 <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toAmountKind(value ?? ""); if (next === line.overrideType) return; draft.patch(line.item.id, { overrideType: next, overrideValue: "" }); setDraftDirty(true); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => draft.patch(line.item.id, { overrideValue: event.target.value })} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); } setDraftDirty(lines.length > 1 || anyTyped([customer.name, last ? "" : discountValue, payment.amount, payment.percentage]) || (!last && discountType !== "") || quickDraft); }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
+                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><SaleLinePriceEditor line={line} preferredMode={priceMode.value} onMode={(mode) => priceMode.setValue(mode)} onChange={(override) => { draft.patch(line.item.id, override); setDraftDirty(true); }} disabled={createInvoice.isPending} /></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); } setDraftDirty(lines.length > 1 || anyTyped([customer.name, last ? "" : discountValue, payment.amount, payment.percentage]) || (!last && discountType !== "") || quickDraft); }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
               </table>
             )}
           </div>

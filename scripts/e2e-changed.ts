@@ -25,10 +25,10 @@
 // proves nothing about the branch. `dirty` means the diff is `merge-base..HEAD`
 // while tracked files have uncommitted edits turbo's affected set *would* see.
 //
-// The diff is `<merge-base>..HEAD`, and CI is not reading that: the `changes`
-// job diffs `base.sha..head.sha` (on a stacked PR, the parent branch) and
-// overrides the decision for `push`, `workflow_dispatch` and the `e2e:full`
-// label. The map is shared; the range and the overrides are not.
+// The local diff is `merge-base(base, HEAD)..HEAD`. CI also uses a merge base,
+// but starts from event base/head SHAs and falls back to the event base SHA if
+// merge-base fails. CI overrides selection for `push`, `workflow_dispatch` and
+// the `e2e:full` label. The map is shared; inputs and overrides can differ.
 //
 // Run it as `bun run test:e2e:changed`. `bun scripts/e2e-changed.ts` works too,
 // but the npm-script spelling is the one the bash heavy-work guard recognises,

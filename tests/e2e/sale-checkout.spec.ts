@@ -185,6 +185,8 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   // Choosing an override type with an EMPTY value must not submit a free
   // (0 DZD) line: save is rejected, the error is shown, the cart stays intact.
   await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  // Choosing a mode now shows the default. Clearing it is still a refusal.
+  await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-error")).toContainText("أدخل تعديلاً صحيحاً للسعر");
   await expect(page.getByTestId("sale-subtotal")).toContainText("3,000");

@@ -53,6 +53,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
 
   await page.goto("/items");
   await openItemsTab(page, "add");
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), "بطاريات");
   await page.getByTestId("item-name").fill("مكواة 27");
   await page.getByLabel("سعر الشراء (دج)").fill("2000");
   await page.getByLabel("سعر البيع (دج)").fill("3500");
@@ -60,6 +61,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
   // other spec files' assertions stay deterministic
   await page.getByLabel("حد التنبيه").fill("0");
   await page.getByRole("button", { name: "حفظ" }).click();
+  await expect(page.getByTestId("item-name")).toHaveValue("");
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /مكواة 27/ })).toBeVisible();
 

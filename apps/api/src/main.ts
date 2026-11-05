@@ -395,6 +395,13 @@ async function runVaultDailyBackup(): Promise<void> {
   const store = vaultStoreForBackup;
   const conn = activeConnection;
   if (store === undefined || conn === undefined) return;
+  // Every caller, including credential changes, must preserve recovery files
+  // that the sweep could not convert. The daily writer replaces invalid files.
+  const cleanup = await classifyPlaintextCleanup(
+    () => vaultManager?.cleanupLegacyPlaintext() ?? Promise.reject(new Error("vault manager unavailable")),
+    (error) => logger.error("SERVER_ERROR", "VAULT_PLAINTEXT_CLEANUP_UNKNOWN: daily backup deferred; manual verification required", error),
+  );
+  if (cleanup.status !== "clean") return;
   await runDailyBackup(store, conn.validateSnapshotFile?.bind(conn));
 }
 
@@ -530,9 +537,12 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     // A committed vault owns the data; a plaintext database (live or under
     // backups/) left behind by a failed or interrupted first-run cleanup is
     // stale and must not survive. Retry on every unlock until it is gone.
-    const cleanup = await vault.cleanupLegacyPlaintext();
-    if (cleanup.plaintextRemaining.length > 0) {
-      logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after unlock: ${cleanup.plaintextRemaining.join(", ")}`);
+    const cleanup = await classifyPlaintextCleanup(
+      () => vault.cleanupLegacyPlaintext(),
+      (error) => logger.error("SERVER_ERROR", "VAULT_PLAINTEXT_CLEANUP_UNKNOWN: could not verify plaintext cleanup after unlock; manual verification required", error),
+    );
+    if (cleanup.status === "remaining") {
+      logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after unlock: ${cleanup.remaining.join(", ")}`);
     }
     // unlock path only: the first-run path runs this after commitSetup, when
     // the header exists and a self-contained backup can actually be written.
@@ -926,6 +936,7 @@ function openVaultManager(): VaultManager {
     dataDir: config.dataDir,
     legacyDbPath: config.db.path,
     logger,
+    cleanupWriteGuard: requireHeldLock(vaultLock),
   });
   vaultManager = manager;
   vaultApp = createVaultHttpApp({

@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { constants, Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -742,9 +742,12 @@ export type LegacyDatabaseImage = { image: Buffer; schemaVersion: number };
  * database produces an image the in-memory deserialiser refuses. The schema
  * version is checked BEFORE any write (a newer database is refused untouched).
  */
-export function readLegacyDatabaseImage(legacyPath: string): LegacyDatabaseImage {
+export function readLegacyDatabaseImage(legacyPath: string, options: { noFollow?: boolean } = {}): LegacyDatabaseImage {
   if (!fs.existsSync(legacyPath)) throw new Error(`legacy database not found at ${legacyPath}`);
-  const db = new Database(legacyPath);
+  // Backup inventory must not follow a file redirected after its lstat probe.
+  const db = options.noFollow
+    ? new Database(legacyPath, constants.SQLITE_OPEN_READWRITE | constants.SQLITE_OPEN_NOFOLLOW)
+    : new Database(legacyPath);
   try {
     db.exec("PRAGMA busy_timeout = 5000;");
     const schemaVersion = readSchemaVersion(db);

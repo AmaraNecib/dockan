@@ -397,6 +397,7 @@ const resources = {
       // issue #113 — a client asked to write a derived/completion preference;
       // the api's refusal is stable and must never render as the generic copy
       PREFERENCE_NOT_WRITABLE: "هذا الإعداد غير قابل للتعديل.",
+      ENCRYPTED_BACKUP_REQUIRED: "النسخ الخارجي متاح فقط عند تفعيل الخزنة المشفّرة.",
       // ADR-0008 §4.6 — the unified vault gate
       VAULT_WRONG_PASSPHRASE: "كلمة المرور غير صحيحة. تحقّق منها ثم أعد المحاولة.",
       VAULT_WRONG_RECOVERY: "مفتاح الاسترداد غير صحيح. تحقّق منه ثم أعد المحاولة.",

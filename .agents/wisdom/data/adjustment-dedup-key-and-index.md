@@ -55,16 +55,6 @@
    roll the whole `BEGIN IMMEDIATE` unit back — never treat it as "already
    applied".
 
-7. **The full Playwright suite is environment-flaky here; isolate the cause
-   before blaming your diff.** Orphaned API/web servers from an interrupted run
-   keep serving stale in-memory data on the expected port even after the DB file
-   is wiped (`wipe-e2e.mjs` deletes `.e2e-data`, but the old process answers the
-   health check). Symptom: cross-spec contamination (`duplicate item` strict-mode
-   violations, an activity log whose newest row is another spec's customer).
-   Before a full run, kill listeners on the API/web ports and wipe `.e2e-data`;
-   to prove flakiness is pre-existing, run the same suite on the base commit
-   (it failed 10 specs there while the clean branch run passed 53).
-
 8. **Derive a dedup "escape hatch" from the predicate, and test it — docs about
    money behaviour drift silently.** ADR-0011 told callers to separate an
    identical repeat by changing `ref`; `ref` is in neither `adjustmentDedupKey`

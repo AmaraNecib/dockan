@@ -55,14 +55,6 @@ and clamping at the edge (`safeWhole`: non-negative whole, ≤ `MAX_SAFE_INTEGER
 keeps one bad legacy row from failing `dinarsSchema` output validation and
 blanking the whole page.
 
-## Process: multi-round review evidence goes stale on every fix
-
-Fixing debate findings after the evidence file is written makes that evidence
-stale by the guard's own rule. The cheap discipline: batch review-driven fixes,
-then regenerate all three gate files (debate, test-audit, code-review) at the
-final SHA in one parallel workflow. The final round's reviewers should read the
-earlier evidence files and verify resolutions instead of repeating round 1.
-
 ## E2E specs share one database: settle the money you created
 
 A new spec that creates an unpaid debt leaks into every later spec that asserts

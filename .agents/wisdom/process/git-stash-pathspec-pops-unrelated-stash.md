@@ -1,32 +1,15 @@
-# Wisdom — 2026-10-14 · `git stash push -- <path>` with nothing to stash pops an unrelated stash
+# A successful stash command may have saved nothing
 
-## What happened
+Observed during a mutation check in the 2026-10-14 session.
 
-A mutation check wanted to temporarily revert one committed file:
+`git stash push -- <path>` can exit successfully when the path has no changes.
+An unconditional `git stash pop` then applies an unrelated older stash.
 
-```bash
-git stash push -- apps/web/src/pages/expenses.tsx && bun test ... ; git stash pop
-```
+For a controlled mutation, preserve the exact original file and restore only that
+path after the check. Verify the restored diff. If using stash, compare its
+object ID before and after creation; apply only the newly created stash after
+confirming its contents. A message or `stash@{0}` alone is not stable identity.
 
-The file had **no uncommitted changes**, so `git stash push` saved nothing (and
-exited 0 in this git version). The `git stash pop` then popped the *only* stash
-in the list — a months-old "local checkout state before syncing to develop" —
-dumping ~100 staged files and four merge conflicts into a clean worktree.
-
-## How to avoid it
-
-- Before stashing a path for a mutation check, confirm the file is dirty:
-  `git status --porcelain -- <path>` must be non-empty.
-- Prefer a reversible in-place edit for mutation checks on committed files:
-  `cp file file.bak`, edit, test, `cp file.bak file` (or `git checkout -- file`).
-  No stash involved.
-- If you must stash, record the stash ref:
-  `git stash push -m tmp -- <path>` then `git stash pop stash@{0}` only after
-  `git stash list` shows the expected message at `stash@{0}`.
-
-## Recovery
-
-`git reset --hard HEAD` discards the popped-but-conflicted application; the
-original stash stays in the list (a conflicted `pop` does not drop it). Save the
-patch first (`git stash show -p stash@{0} > /tmp/old.patch`) before resetting, in
-case it is needed.
+A conflicted pop retains its stash. Preserve current staged and unstaged changes
+before recovery. Resolve affected paths individually; whole-tree reset can
+destroy unrelated work and requires the destructive-action approval process.

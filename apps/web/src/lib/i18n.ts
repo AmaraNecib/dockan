@@ -1028,6 +1028,7 @@ const resources = {
       partySaving: "جاري الحفظ…",
       partySaved: "تم الحفظ",
       partyDeleted: "تم الحذف",
+      partyDetails: "تفاصيل",
       partyEdit: "تعديل",
       partyDelete: "حذف",
       partyCancel: "إلغاء",

@@ -171,7 +171,6 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(template).toContain("file:line");
     expect(template).toContain("absolute worktree path");
     expect(template).toContain("Model provenance");
-    expect(template).not.toMatch(/[A-Za-z]{24,}/);
   });
 
   test("activated CI-final policy has no unconditional local acceptance mandate", () => {

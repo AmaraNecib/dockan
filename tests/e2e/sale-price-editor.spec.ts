@@ -4,6 +4,12 @@ import { signIn } from "./auth-helpers";
 import { actAndAck, callRpc, seedCategoryId } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
+let barcodeSequence = 0;
+
+function freshBarcode() {
+  return `${Date.now().toString().slice(-10)}${String(++barcodeSequence).padStart(2, "0")}`;
+}
+
 const evidence = process.env.PRICE_EVIDENCE === "1";
 test.use({ viewport: { width: 1920, height: 1080 }, video: evidence ? { mode: "on", size: { width: 1920, height: 1080 } } : "off" });
 
@@ -15,7 +21,7 @@ async function scan(page: Page, barcode: string) {
 
 async function fixture(page: Page, sellingPrice = 333) {
   const categoryId = await seedCategoryId(page, "أسعار البيع");
-  const barcode = `PRICE397-${Date.now()}`;
+  const barcode = freshBarcode();
   const item = await callRpc<Item, object>(page, "itemsCreateWithStock", { name: evidence ? "مصباح أمامي" : `مصباح-${barcode}`, barcode, categoryId, costPrice: 100, sellingPrice, stockOnHand: 20 });
   await page.goto("/sale");
   await scan(page, barcode);
@@ -94,8 +100,9 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
 test("resetting a sale price leaves keyboard barcode scans out of the price editor (#397)", async ({ page }) => {
   await signIn(page);
   const { item } = await fixture(page, 333);
+  const barcode = freshBarcode();
   const barcodeItem = await callRpc<Item, object>(page, "itemsCreateWithStock", {
-    name: `Short barcode ${Date.now()}`, barcode: "397", categoryId: await seedCategoryId(page, "أسعار البيع"),
+    name: `Short barcode ${barcode}`, barcode, categoryId: await seedCategoryId(page, "أسعار البيع"),
     costPrice: 100, sellingPrice: 250, stockOnHand: 20,
   });
   const lines = page.getByTestId("sale-lines");
@@ -107,7 +114,7 @@ test("resetting a sale price leaves keyboard barcode scans out of the price edit
   await expect(reset).toBeFocused();
   await expect(originalPrice).not.toBeFocused();
 
-  await page.keyboard.type("397", { delay: 8 });
+  await page.keyboard.type(barcode, { delay: 8 });
   await page.keyboard.press("Enter");
 
   await expect(lines).toContainText(barcodeItem.name);

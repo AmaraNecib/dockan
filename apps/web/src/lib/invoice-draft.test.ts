@@ -5,6 +5,7 @@ import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 import type { Item } from "@dokan/contracts";
 
 import { PURCHASE_QUICK, PURCHASE_QUICK_NOT_WORK } from "./purchase-quick";
+import { parseSalePriceMode, salePriceInput, switchSalePriceMode } from "./sale-price-editor";
 import {
   EMPTY_PAYMENT_PAIR,
   addDraftLine,
@@ -55,6 +56,71 @@ function item(id: string, sellingPrice = 1000, costPrice = 400): Item {
 function saleLine(id: string, quantityDraft = "1", sellingPrice = 1000): SaleDraftLine {
   return { item: item(id, sellingPrice), quantityDraft, overrideType: "", overrideValue: "" };
 }
+
+function priceEditorLine(sellingPrice = 333): SaleDraftLine {
+  return saleLine("price-editor-397", "1", sellingPrice);
+}
+
+describe("sale price editor adapter", () => {
+  it("refuses amounts outside the persisted safe-integer contract (#397)", () => {
+    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: String(Number.MAX_SAFE_INTEGER) })).toBe(false);
+    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: String(Number.MAX_SAFE_INTEGER + 1) })).toBe(true);
+  });
+  it("defaults unknown remembered modes to amount, never a saved transaction value", () => {
+    for (const raw of [undefined, "", "DISCOUNT", "900", "AMOUNT"]) expect(parseSalePriceMode(raw)).toBe("AMOUNT");
+    expect(parseSalePriceMode("PERCENTAGE")).toBe("PERCENTAGE");
+    expect(salePriceInput(priceEditorLine(), "AMOUNT")).toBe("333");
+    expect(salePriceInput(priceEditorLine(), "PERCENTAGE")).toBe("100");
+    expect(salePriceInput(priceEditorLine(0), "AMOUNT")).toBe("0");
+  });
+
+  function requireSwitch(draft: SaleDraftLine, mode: "AMOUNT" | "PERCENTAGE") {
+    const switched = switchSalePriceMode(draft, mode);
+    if (switched === null) throw new Error("expected an exact mode conversion");
+    return switched;
+  }
+
+  it("switches repeated edits without reapplying percentages or losing whole-DZD rounding", () => {
+    let draft: SaleDraftLine = { ...priceEditorLine(), overrideType: "PERCENTAGE", overrideValue: "٨٠" };
+    expect(saleUnitPrice(draft)).toBe(266);
+    for (let edit = 0; edit < 5; edit++) {
+      draft = { ...draft, ...requireSwitch(draft, "AMOUNT") };
+      expect(draft.overrideValue).toBe("266");
+      expect(saleUnitPrice(draft)).toBe(266);
+      draft = { ...draft, ...requireSwitch(draft, "PERCENTAGE") };
+      expect(draft.overrideValue).toBe("80");
+      expect(saleUnitPrice(draft)).toBe(266);
+    }
+  });
+
+  it("refuses unsupported conversions instead of changing the effective price", () => {
+    for (const price of [301, 500]) {
+      const draft: SaleDraftLine = { ...priceEditorLine(), overrideType: "AMOUNT", overrideValue: String(price) };
+      expect(switchSalePriceMode(draft, "PERCENTAGE")).toBeNull();
+      expect(saleUnitPrice(draft)).toBe(price);
+    }
+  });
+
+  it("never launders blank, fractional, negative, NaN or over-range drafts by switching modes", () => {
+    for (const overrideType of ["AMOUNT", "PERCENTAGE"] as const) {
+      for (const overrideValue of ["", "\u200f", "-1", "12.5", "NaN", "Infinity", ...(overrideType === "PERCENTAGE" ? ["101"] : [])]) {
+        const draft = { ...priceEditorLine(), overrideType, overrideValue };
+        expect(saleOverrideInvalid(draft)).toBe(true);
+        expect(switchSalePriceMode(draft, overrideType === "AMOUNT" ? "PERCENTAGE" : "AMOUNT")).toBeNull();
+        expect(salePriceInput(draft, overrideType)).toBe(overrideValue);
+      }
+    }
+  });
+
+  it("preserves explicit zero and omits overrides for untouched and reset defaults", () => {
+    const defaultLine = priceEditorLine();
+    expect(switchSalePriceMode(defaultLine, "PERCENTAGE")).toEqual({ overrideType: "", overrideValue: "" });
+    const free: SaleDraftLine = { ...defaultLine, overrideType: "AMOUNT", overrideValue: "٠" };
+    expect(saleOverrideInvalid(free)).toBe(false);
+    expect(switchSalePriceMode(free, "PERCENTAGE")).toEqual({ overrideType: "PERCENTAGE", overrideValue: "0" });
+    expect(saleUnitPrice({ ...free, ...requireSwitch(free, "PERCENTAGE") })).toBe(0);
+  });
+});
 
 function purchaseLine(id: string, quantityDraft = "1", unitCost = 400): PurchaseDraftLine {
   return { item: item(id, 1000, unitCost), quantityDraft, unitCost };

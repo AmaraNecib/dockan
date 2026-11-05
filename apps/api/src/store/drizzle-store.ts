@@ -54,7 +54,7 @@ import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersionLocked } from "../lib/schema-version";
-import type { DashboardAggregates, ExpenseReportEntry, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
+import type { DashboardAggregates, ExpenseReportEntry, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, StoreReadPort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
 import { sameParty, trimSql } from "./trim-chars";
 
@@ -955,46 +955,48 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    * immediate=true uses BEGIN IMMEDIATE, which takes the write lock BEFORE the
    * first read — see withTransactionImmediate's comment for why money paths
    * need it (no SQLITE_BUSY_SNAPSHOT on read-to-write upgrade). */
-  const runTransaction = <T>(immediate: boolean, fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+  const runTransaction = <T>(immediate: boolean, fn: (tx: StorePort) => Promise<T>, readOnly = false): Promise<T> => {
     // serialized against every other store call; the unit keeps the queue
     // for its whole run so no second BEGIN can appear mid-transaction. The
     // callback receives an unqueued store (directSeed) so its internal calls
     // never deadlock, while every EXTERNAL operation queues behind the unit
     // and can never land inside this transaction (greptile P1).
     return runSerialized(async () => {
-      const tx = directSeed(store);
-      conn.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
-      // set the flag only after BEGIN succeeded: a failed BEGIN must never
-      // leave persistence permanently disabled, and the catch below must only
-      // run with a real open transaction
-      conn.inTransaction = true;
-      immediateTransaction = immediate;
-      let committed = false;
+      const queryOnly = readOnly ? conn.raw.query<{ query_only: number }, []>("PRAGMA query_only").get()?.query_only ?? 0 : 0;
+      if (readOnly) conn.raw.exec("PRAGMA query_only = ON");
       try {
-        const result = await fn(tx);
-        conn.raw.exec("COMMIT");
-        committed = true;
-        // the unit committed: vault mode must persist the image before the
-        // caller sees the result (a crash after a money response must not
-        // lose the money); the file-backed connection ignores this seam
-        conn.inTransaction = false;
-        conn.markDirty();
-        await persistOrFail();
-        return result;
-      } catch (err) {
-        conn.inTransaction = false;
-        // only a unit that never committed may be rolled back; after COMMIT a
-        // failed snapshot write is fail-stop (never reported as a failed call)
-        if (!committed) {
-          try {
-            conn.raw.exec("ROLLBACK");
-          } catch {
-            // a failed BEGIN leaves no transaction to roll back
+        const tx = directSeed(store);
+        conn.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
+        // Set only after BEGIN succeeds; a failed BEGIN opened no transaction.
+        conn.inTransaction = true;
+        immediateTransaction = immediate;
+        let committed = false;
+        try {
+          const result = await fn(tx);
+          conn.raw.exec("COMMIT");
+          committed = true;
+          conn.inTransaction = false;
+          // Write units remain durable before success; read snapshots never dirty it.
+          if (!readOnly) {
+            conn.markDirty();
+            await persistOrFail();
           }
+          return result;
+        } catch (err) {
+          conn.inTransaction = false;
+          // A committed write must never roll back after persistence fails.
+          if (!committed) {
+            try {
+              conn.raw.exec("ROLLBACK");
+            } catch {
+              // Keep the original failure if rollback also fails.
+            }
+          }
+          throw err;
         }
-        throw err;
       } finally {
         immediateTransaction = false;
+        if (readOnly && queryOnly === 0) conn.raw.exec("PRAGMA query_only = OFF");
       }
     });
   };
@@ -1003,9 +1005,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // SAFETY: a port object exposes only documented members
     const entries = Object.entries(raw) as Array<[keyof StorePort, unknown]>;
     const wrapEntry = ([key, value]: readonly [keyof StorePort, unknown]): readonly [string, StorePort[keyof StorePort]] => {
-      if (key === "withTransaction") {
-        // SAFETY: withTransaction keeps its own serialization; no wrapper needed
-        return [key, value as StorePort["withTransaction"]];
+      if (key === "withTransaction" || key === "withReadTransaction") {
+        // SAFETY: both transaction methods keep their own serialization.
+        return [key, value as StorePort[typeof key]];
       }
       if (key === "withTransactionImmediate") {
         // SAFETY: same serialization contract as withTransaction; no wrapper needed
@@ -1911,6 +1913,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .orderBy(sql`rowid`);
       return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
     },
+    async listItemHistoryLines(itemId) {
+      const rows = await db.select({ line: invoiceLines, number: invoices.invoiceNumber, kind: invoices.kind })
+        .from(invoiceLines).innerJoin(invoices, eq(invoices.id, invoiceLines.invoiceId))
+        .where(eq(invoiceLines.itemId, itemId));
+      return rows.map((row) => ({ ...toInvoiceLine(row.line), invoiceNumber: row.number, invoiceKind: row.kind }));
+    },
     async countStockMovements(itemId) {
       return db.$count(stockMovements, eq(stockMovements.itemId, itemId));
     },
@@ -2314,6 +2322,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // bun-sqlite transaction committed before awaited callbacks finished
     // (proven by the store transactions test), so units would lose atomicity.
     withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => runTransaction(false, fn),
+    withReadTransaction: <T>(fn: (tx: StoreReadPort) => Promise<T>): Promise<T> => runTransaction(false, fn, true),
     // Money paths (payments) acquire the WRITE lock BEFORE any read: a deferred
     // BEGIN can take a WAL read snapshot that a second process committed over,
     // and the later read-to-write upgrade then fails with SQLITE_BUSY_SNAPSHOT

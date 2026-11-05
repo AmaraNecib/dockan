@@ -102,6 +102,7 @@
         "blankness-mark-only.spec.ts",
         "catalog-scan.spec.ts",
         "stock-ledger.spec.ts",
+        "item-history.spec.ts",
         "pagination.spec.ts",
         "arabic-search.spec.ts",
         "01-empty-states.spec.ts",
@@ -113,6 +114,7 @@
       "match": ["apps/web/src/pages/sale.test.tsx"],
       "specs": [
         "sale-checkout.spec.ts",
+        "sale-price-editor.spec.ts",
         "keyboard-shortcuts.spec.ts",
         "no-write-window.spec.ts",
         "pagination.spec.ts",
@@ -239,7 +241,7 @@
     {
       "$comment": "auth is the one API area with dedicated specs; the rest of apps/api is critical",
       "match": ["apps/api/src/auth/**"],
-      "specs": ["login.spec.ts", "00-onboarding.spec.ts", "owner-profile.spec.ts"]
+      "specs": ["login.spec.ts", "00-onboarding.spec.ts", "owner-profile.spec.ts", "cross-tab-session.spec.ts"]
     }
   ]
 }

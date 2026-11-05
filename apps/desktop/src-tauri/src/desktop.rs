@@ -259,6 +259,9 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Reveal is not granted by the wildcard-port gate capability. Only this
+    // verified launch's exact origin receives its separate native authority.
+    app.add_capability(backup_reveal_capability(port).to_string())?;
     if let Some(window) = app.get_webview_window("main") {
         navigate(window, &setup_navigation_url(port, &boot_token))?;
     }
@@ -618,6 +621,243 @@ pub async fn vault_logout(app: AppHandle) -> Result<(), String> {
         Ok(())
     })
     .await
+}
+
+fn backup_reveal_capability(port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "identifier": "backup-reveal-sidecar",
+        "description": "Reveal recorded backups from the verified sidecar only",
+        "windows": ["main"],
+        "local": false,
+        "remote": {"urls": [format!("http://127.0.0.1:{port}")]},
+        "permissions": ["allow-backup-reveal"]
+    })
+}
+
+fn reveal_origin_matches(url: &tauri::Url, port: u16) -> bool {
+    url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
+        && url.port_or_known_default() == Some(port)
+        && url.username().is_empty() && url.password().is_none()
+}
+
+/// Validate the live native launch before HTTP and again after it. The second
+/// call receives a newly-read origin and the captured PID, so replacement,
+/// shutdown, or navigation during the request invalidates the operation.
+fn capture_live_reveal_launch(
+    slot: &mut SidecarSlot,
+    window_label: &str,
+    origin: &tauri::Url,
+    shutting_down: bool,
+    expected_pid: Option<u32>,
+) -> Result<(SidecarConfig, u32), &'static str> {
+    let config = slot.config.clone().ok_or(crate::backup_reveal::FAILED)?;
+    if window_label != "main" || !reveal_origin_matches(origin, config.port) || shutting_down {
+        return Err(crate::backup_reveal::FAILED);
+    }
+    let sidecar = slot.sidecar.as_mut().ok_or(crate::backup_reveal::FAILED)?;
+    let pid = sidecar.child.id();
+    if !sidecar.served || !matches!(sidecar.child.try_wait(), Ok(None))
+        || expected_pid.is_some_and(|expected| expected != pid)
+    {
+        return Err(crate::backup_reveal::FAILED);
+    }
+    Ok((config, pid))
+}
+
+const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+struct BackupAuditPage {
+    items: Vec<BackupAuditItem>,
+    total: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct BackupAuditItem {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "ref")]
+    reference: BackupAuditReference,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum BackupAuditReference {
+    Null,
+    Path(String),
+}
+
+/// Read the existing authenticated audit RPC, never a renderer-selected URL.
+/// All pages share one deadline; each raw response keeps the fixed size cap.
+fn backup_audit(
+    port: u16,
+    session_token: &str,
+    path: &Path,
+) -> Result<serde_json::Value, &'static str> {
+    backup_audit_with_timeout(port, session_token, path, Duration::from_secs(3))
+}
+
+fn backup_audit_with_timeout(
+    port: u16,
+    session_token: &str,
+    path: &Path,
+    timeout: Duration,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    // VaultManager tokens are 32 random bytes in base64url. This also prevents
+    // a renderer from injecting HTTP headers into the native request.
+    if session_token.len() != 43 || !session_token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
+        return Err(FAILED);
+    }
+    find_backup_audit_with_timeout(path, timeout, |offset, remaining| {
+        backup_audit_page(port, session_token, offset, remaining)
+    })
+}
+
+/// Paginate inside the native audit module. The activity RPC accepts offsets
+/// and reports the unfiltered total; a missing match on page one is not proof
+/// that an older backup lacks an audit record.
+fn find_backup_audit_with_timeout(
+    path: &Path,
+    timeout: Duration,
+    mut fetch_page: impl FnMut(usize, Duration) -> Result<serde_json::Value, &'static str>,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    let deadline = Instant::now().checked_add(timeout).ok_or(FAILED)?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(FAILED)
+    };
+    let mut offset = 0usize;
+    loop {
+        let page = fetch_page(offset, remaining()?)?;
+        remaining()?;
+        let parsed: BackupAuditPage =
+            serde::Deserialize::deserialize(page.get("json").ok_or(FAILED)?).map_err(|_| FAILED)?;
+        let items = parsed.items;
+        let total = parsed.total;
+        let next_offset = offset.checked_add(items.len()).ok_or(FAILED)?;
+        if items.len() > 500
+            || offset > total
+            || next_offset > total
+            || items.len() != 500.min(total - offset)
+        {
+            return Err(FAILED);
+        }
+        if items.iter().any(|item| {
+            item.kind == "BACKUP_CREATED"
+                && matches!(&item.reference, BackupAuditReference::Path(recorded) if Path::new(recorded) == path)
+        }) {
+            return Ok(page);
+        }
+        if next_offset >= total {
+            return Err(FAILED);
+        }
+        offset = next_offset;
+    }
+}
+
+fn backup_audit_page(
+    port: u16,
+    session_token: &str,
+    offset: usize,
+    timeout: Duration,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    let deadline = Instant::now().checked_add(timeout).ok_or(FAILED)?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(FAILED)
+    };
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, remaining()?).map_err(|_| FAILED)?;
+    let body = format!(r#"{{"json":{{"limit":500,"offset":{offset}}}}}"#);
+    let request = format!("POST /api/rpc/activitiesList HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {session_token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    stream.set_write_timeout(Some(remaining()?)).map_err(|_| FAILED)?;
+    stream.write_all(request.as_bytes()).map_err(|_| FAILED)?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        stream.set_read_timeout(Some(remaining()?)).map_err(|_| FAILED)?;
+        let count = stream.read(&mut chunk).map_err(|_| FAILED)?;
+        if count == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(count) > BACKUP_AUDIT_MAX_RESPONSE {
+            return Err(FAILED);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    let response = std::str::from_utf8(&bytes).map_err(|_| FAILED)?;
+    let (headers, body) = response.split_once("\r\n\r\n").ok_or(FAILED)?;
+    let mut lines = headers.lines();
+    let status = lines.next().ok_or(FAILED)?;
+    let mut status_parts = status.split_whitespace();
+    if !matches!(status_parts.next(), Some("HTTP/1.0" | "HTTP/1.1"))
+        || status_parts.next() != Some("200")
+    {
+        return Err(FAILED);
+    }
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or(FAILED)?;
+        if name.is_empty() {
+            return Err(FAILED);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding")
+            || name.eq_ignore_ascii_case("content-encoding")
+        {
+            return Err(FAILED);
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(FAILED);
+            }
+            content_length = Some(value.trim().parse::<usize>().map_err(|_| FAILED)?);
+        }
+    }
+    if content_length != Some(body.len()) {
+        return Err(FAILED);
+    }
+    serde_json::from_str(body).map_err(|_| FAILED)
+}
+
+/// Native authority comes from SidecarConfig and the authenticated audit, not
+/// the renderer's path. Recheck the launch after HTTP; never hold the lifecycle
+/// mutex across network/Shell work, because shutdown must still kill the child.
+#[tauri::command]
+pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, session_token: String) -> Result<(), String> {
+    use crate::backup_reveal::FAILED;
+    let origin = window.url().map_err(|_| FAILED.to_string())?;
+    let window_label = window.label().to_string();
+    let reveal_window = window.clone();
+    run_broker_task(move || {
+        use crate::backup_reveal::{check_candidate, reveal_backup};
+        if !cfg!(windows) { return Err("BACKUP_REVEAL_UNSUPPORTED".to_string()); }
+        let state = app.state::<SidecarState>();
+        let (config, pid) = {
+            let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
+            capture_live_reveal_launch(&mut guard, &window_label, &origin, shutdown_began(), None)
+                .map_err(str::to_string)?
+        };
+        let path = Path::new(&path);
+        check_candidate(path, &config.data_dir).map_err(str::to_string)?;
+        let audit = backup_audit(config.port, &session_token, path).map_err(str::to_string)?;
+        let current_origin = reveal_window.url().map_err(|_| FAILED.to_string())?;
+        if reveal_window.label() != "main" || !reveal_origin_matches(&current_origin, config.port) {
+            return Err(FAILED.to_string());
+        }
+        {
+            let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
+            capture_live_reveal_launch(&mut guard, reveal_window.label(), &current_origin, shutdown_began(), Some(pid))
+                .map_err(str::to_string)?;
+        }
+        reveal_backup(path, &config.data_dir, &audit).map_err(str::to_string)
+    }).await
 }
 
 /// The bundled sidecar lands in the resource dir under its plain name; the
@@ -1330,6 +1570,331 @@ mod tests {
             });
             assert!(allowed, "{command} must be allowed from the remote sidecar origin");
         }
+    }
+
+    fn reveal_test_config() -> SidecarConfig {
+        SidecarConfig {
+            binary: PathBuf::from("dokan-api"), data_dir: PathBuf::from("C:\\data"),
+            port_root: PathBuf::from("C:\\data\\run"), web_dist: PathBuf::from("C:\\ui"),
+            port: 4318, boot_token: "test-token".to_string(),
+        }
+    }
+
+    fn reveal_test_slot(with_config: bool) -> SidecarSlot {
+        let mut slot = SidecarSlot::default();
+        if with_config { slot.config = Some(reveal_test_config()); }
+        let mut sidecar = dummy_sidecar();
+        sidecar.served = true;
+        slot.sidecar = Some(sidecar);
+        slot
+    }
+
+    #[test]
+    fn reveal_launch_gate_rejects_wrong_window_origin_missing_launch_shutdown_and_dead_child() {
+        let origin: tauri::Url = "http://127.0.0.1:4318/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "settings", &origin, false, None).is_err());
+        let wrong_origin: tauri::Url = "http://127.0.0.1:4319/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "main", &wrong_origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut SidecarSlot::default(), "main", &origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(false), "main", &origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "main", &origin, true, None).is_err());
+        let mut dead = reveal_test_slot(true);
+        let child = &mut dead.sidecar.as_mut().unwrap().child;
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(capture_live_reveal_launch(&mut dead, "main", &origin, false, None).is_err());
+        if let Some(sidecar) = dead.sidecar.take() { reap_sidecar(sidecar); }
+        let mut unserved = reveal_test_slot(true);
+        unserved.sidecar.as_mut().unwrap().served = false;
+        assert!(capture_live_reveal_launch(&mut unserved, "main", &origin, false, None).is_err());
+        if let Some(sidecar) = unserved.sidecar.take() { reap_sidecar(sidecar); }
+    }
+
+    #[test]
+    fn reveal_launch_recheck_rejects_replacement_shutdown_and_reread_origin_change() {
+        let origin: tauri::Url = "http://127.0.0.1:4318/backups".parse().unwrap();
+        let mut slot = reveal_test_slot(true);
+        let (_, captured_pid) = capture_live_reveal_launch(&mut slot, "main", &origin, false, None).unwrap();
+        let old = slot.sidecar.take().unwrap();
+        reap_sidecar(old);
+        let mut replacement = dummy_sidecar();
+        replacement.served = true;
+        slot.sidecar = Some(replacement);
+        assert!(capture_live_reveal_launch(&mut slot, "main", &origin, false, Some(captured_pid)).is_err());
+        assert!(capture_live_reveal_launch(&mut slot, "main", &origin, true, Some(captured_pid)).is_err());
+        let changed_origin: tauri::Url = "http://127.0.0.1:4319/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut slot, "main", &changed_origin, false, Some(captured_pid)).is_err());
+        if let Some(sidecar) = slot.sidecar.take() { reap_sidecar(sidecar); }
+    }
+
+    #[test]
+    fn reveal_capability_is_only_for_the_exact_native_sidecar_origin() {
+        use std::collections::BTreeMap;
+        use tauri::utils::acl::{capability::Capability, manifest::Manifest, resolved::Resolved, ExecutionContext};
+        use tauri::utils::platform::Target;
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |name: &str| std::fs::read_to_string(manifest.join("gen/schemas").join(name)).unwrap();
+        let acl: BTreeMap<String, Manifest> = serde_json::from_str(&read("acl-manifests.json")).unwrap();
+        let mut capabilities: BTreeMap<String, Capability> = serde_json::from_str(&read("capabilities.json")).unwrap();
+        let static_acl = Resolved::resolve(&acl, capabilities.clone(), Target::Windows).unwrap();
+        assert!(!static_acl.allowed_commands.contains_key("backup_reveal"), "no wildcard or asset capability may grant reveal");
+        let cap: Capability = serde_json::from_value(backup_reveal_capability(4318)).unwrap();
+        assert!(!cap.local);
+        assert_eq!(cap.windows, ["main"]);
+        capabilities.insert(cap.identifier.clone(), cap);
+        let resolved = Resolved::resolve(&acl, capabilities, Target::Windows).unwrap();
+        let commands = resolved.allowed_commands.get("backup_reveal").expect("runtime reveal permission resolves");
+        for (text, expected) in [("http://127.0.0.1:4318/backups", true),
+            ("http://127.0.0.1:4319/backups", false), ("http://dokan.localhost:4318/", false),
+            ("http://localhost:4318/", false), ("https://127.0.0.1:4318/", false), ("tauri://localhost/", false)] {
+            let url: tauri::Url = text.parse().unwrap();
+            assert_eq!(commands.iter().any(|command| matches!(&command.context, ExecutionContext::Remote { url: pattern } if pattern.test(&url))), expected, "{text}");
+            assert_eq!(reveal_origin_matches(&url, 4318), expected, "runtime origin: {text}");
+        }
+    }
+
+    #[test]
+    fn reveal_audit_refuses_missing_invalid_and_revoked_sessions() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        for token in [
+            format!("{}!", "a".repeat(42)),
+            format!("{}=", "a".repeat(42)),
+        ] {
+            assert_eq!(token.len(), 43);
+            assert!(backup_audit(port, &token, Path::new("C:/shop/backups/completed.db")).is_err());
+        }
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ), "invalid tokens must be rejected before connecting");
+
+        let (port, responder, _listener) = spawn_responder(|request| {
+            assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+            assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
+            "HTTP/1.0 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+        });
+        assert!(backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).is_err());
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_rejects_malformed_truncated_encoded_and_mismatched_responses() {
+        let malformed = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n{";
+        let truncated = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n{}";
+        let transfer_encoded = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}";
+        let content_encoded = "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 2\r\n\r\n{}";
+        let mismatched = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n{}";
+
+        for response in [malformed, truncated, transfer_encoded, content_encoded, mismatched] {
+            let response = response.to_string();
+            let (port, responder, _listener) = spawn_responder(move |_| response.clone());
+            assert!(backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).is_err());
+            responder.join().unwrap();
+        }
+    }
+
+    fn audit_page(total: usize, items: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"json":{"items":items,"total":total}})
+    }
+
+    fn full_audit_page() -> serde_json::Value {
+        let items = (0..500)
+            .map(|index| serde_json::json!({"type":"ITEM_CREATED","ref":format!("item-{index}")}))
+            .collect();
+        audit_page(501, serde_json::Value::Array(items))
+    }
+
+    #[test]
+    fn reveal_audit_finds_a_backup_after_the_first_500_activity_rows() {
+        let path = Path::new("C:/shop/backups/older.db");
+        let mut offsets = Vec::new();
+        let audit = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+            offsets.push(offset);
+            match offset {
+                0 => Ok(full_audit_page()),
+                500 => Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]))),
+                other => panic!("unexpected activity offset {other}"),
+            }
+        })
+        .expect("the older completed backup remains auditable");
+
+        assert_eq!(offsets, [0, 500]);
+        assert_eq!(audit["json"]["items"][0]["type"], "BACKUP_CREATED");
+        assert_eq!(audit["json"]["items"][0]["ref"], path.to_string_lossy().as_ref());
+    }
+
+    #[test]
+    fn reveal_audit_exhausts_reported_pages_before_refusing_a_missing_backup() {
+        let path = Path::new("C:/shop/backups/missing.db");
+        let mut offsets = Vec::new();
+        let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+            offsets.push(offset);
+            match offset {
+                0 => Ok(full_audit_page()),
+                500 => Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED","ref":null}]))),
+                other => panic!("unexpected activity offset {other}"),
+            }
+        });
+
+        assert_eq!(offsets, [0, 500]);
+        assert!(result.is_err(), "a completed full scan without the target must fail closed");
+    }
+
+    #[test]
+    fn reveal_audit_rejects_malformed_or_failed_later_pages() {
+        let path = Path::new("C:/shop/backups/older.db");
+        for second_page in [
+            Err(crate::backup_reveal::FAILED),
+            Ok(serde_json::json!({"json":{"items":[]}})),
+            Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED"}]))),
+        ] {
+            let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+                match offset {
+                    0 => Ok(full_audit_page()),
+                    500 => second_page.clone(),
+                    other => panic!("unexpected activity offset {other}"),
+                }
+            });
+            assert!(result.is_err(), "invalid later page must fail closed");
+        }
+    }
+
+    #[test]
+    fn reveal_audit_deadline_covers_every_page() {
+        let path = Path::new("C:/shop/backups/older.db");
+        let calls = std::cell::Cell::new(0);
+        let result = find_backup_audit_with_timeout(path, Duration::from_millis(20), |offset, _| {
+            calls.set(calls.get() + 1);
+            match offset {
+                0 => Ok(full_audit_page()),
+                500 => {
+                    std::thread::sleep(Duration::from_millis(40));
+                    Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}])))
+                }
+                other => panic!("unexpected activity offset {other}"),
+            }
+        });
+
+        assert!(result.is_err(), "the deadline must include time spent on later pages");
+        assert_eq!(calls.get(), 2, "the second page began before the shared deadline expired");
+    }
+
+    #[test]
+    fn reveal_audit_accepts_exact_raw_response_limit_and_rejects_one_byte_over() {
+        fn response_with_raw_length(target: usize) -> String {
+            let mut body_len = target - 64;
+            for _ in 0..4 {
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n");
+                body_len = target - header.len();
+            }
+            let body = format!("{{}}{}", " ".repeat(body_len - 2));
+            http200(&body)
+        }
+
+        for raw_length in [BACKUP_AUDIT_MAX_RESPONSE, BACKUP_AUDIT_MAX_RESPONSE + 1] {
+            let response = response_with_raw_length(raw_length);
+            assert_eq!(response.len(), raw_length);
+            let (port, responder, _listener) = spawn_responder(move |_| response.clone());
+            let result = backup_audit_page(port, &"a".repeat(43), 0, Duration::from_secs(3));
+            if raw_length == BACKUP_AUDIT_MAX_RESPONSE {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.is_err());
+            }
+            responder.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn reveal_audit_has_a_total_deadline_against_a_slow_trickling_responder() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let acceptor = listener.try_clone().unwrap();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = acceptor.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            for byte in b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" {
+                if stream.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        });
+
+        assert!(backup_audit_with_timeout(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db"), Duration::from_millis(250)).is_err());
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_uses_only_the_fixed_authenticated_read_rpc() {
+        let (port, responder, _listener) = spawn_responder(|request| {
+            assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+            assert!(request.contains(r#"{"json":{"limit":500,"offset":0}}"#));
+            http200(r#"{"json":{"items":[{"type":"BACKUP_CREATED","ref":"C:/shop/backups/completed.db"}],"total":1}}"#)
+        });
+        let audit = backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).unwrap();
+        assert_eq!(audit["json"]["items"][0]["type"], "BACKUP_CREATED");
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_requests_each_activity_offset_from_the_native_sidecar() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let responder = std::thread::spawn(move || {
+            for offset in [0, 500] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+                assert!(request.contains(&format!(r#""limit":500,"offset":{offset}"#)));
+                assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
+                let page = if offset == 0 {
+                    full_audit_page()
+                } else {
+                    audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]))
+                };
+                stream.write_all(http200(&page.to_string()).as_bytes()).unwrap();
+            }
+        });
+
+        let path = Path::new("C:/shop/backups/older.db");
+        let audit = backup_audit(port, &"a".repeat(43), path).unwrap();
+        assert_eq!(audit["json"]["items"][0]["ref"], path.to_string_lossy().as_ref());
+        responder.join().unwrap();
+    }
+
+    /// Opt-in wire/native proof against a real broker-mode API. The harness
+    /// supplies a native-owned root and the session over its process environment.
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "requires a running authenticated API and interactive Windows desktop"]
+    fn recorded_backup_native_wire_proof() {
+        let root = std::env::var("DOKAN_401_NATIVE_ROOT").unwrap();
+        let path = std::env::var("DOKAN_401_NATIVE_PATH").unwrap();
+        let port: u16 = std::env::var("DOKAN_401_NATIVE_PORT").unwrap().parse().unwrap();
+        let token = std::env::var("DOKAN_401_NATIVE_SESSION").unwrap();
+        let path = Path::new(&path);
+        let before = std::fs::read(path).unwrap();
+        let audit = backup_audit(port, &token, path).expect("live session must read the real API audit");
+        assert_eq!(crate::backup_reveal::reveal_backup(path, Path::new(&root), &audit), Ok(()));
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert!(backup_audit(port, &"x".repeat(43), path).is_err(), "invalid session must be refused by the API");
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let logout = format!("POST /api/vault/logout HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {token}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+        stream.write_all(logout.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.lines().next().unwrap().contains(" 200 "), "fixture logout must revoke the real session");
+        assert!(backup_audit(port, &token, path).is_err(), "the previously valid session must no longer authorize the audit");
+        println!("Authenticated audit read refused the revoked session.");
+        println!("Authenticated native reveal selected completed backup: {}", path.display());
+        println!("Backup bytes unchanged: {}", before.len());
     }
 
     /// Test-only sibling of [`kill_sidecar`] (which needs an AppHandle).

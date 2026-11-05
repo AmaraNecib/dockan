@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
-import { saveQuickAdd } from "./rpc-helpers";
+import { callRpc, saveQuickAdd, seedCategoryId } from "./rpc-helpers";
 
 /**
  * Issue #94 — learnability. A fresh profile reads the nav in words, the empty
@@ -55,6 +55,15 @@ async function seedItem(
   await page.getByTestId("item-save").click();
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: new RegExp(itemName) })).toBeVisible();
+}
+
+/** Adds one line to the sale through the catalog picker. */
+async function addPickedSaleLine(page: import("@playwright/test").Page, itemName: string): Promise<void> {
+  await page.getByTestId("sale-open-picker").click();
+  const picker = page.getByTestId("picker-dialog");
+  await picker.getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
+  await picker.getByRole("button", { name: new RegExp(itemName) }).first().click();
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
 }
 
 /** Adds one line to the purchase through the catalog picker. */
@@ -180,11 +189,27 @@ test("the checkout bar stays pinned while a long invoice scrolls", async ({ page
   await signIn(page);
 
   const stamp = Date.now().toString();
-  const categoryName = `تثبيت-تصنيف-${stamp}`;
-  await seedCategory(page, categoryName);
+  const categoryId = await seedCategoryId(page, `تثبيت-تصنيف-${stamp}`);
+  const itemNames = Array.from({ length: 9 }, (_, index) => `تثبيت-منتج-${stamp}-${index}`);
+  for (const name of itemNames) {
+    await callRpc<{ id: string }, {
+      name: string;
+      categoryId: string;
+      costPrice: number;
+      sellingPrice: number;
+      stockOnHand: number;
+    }>(page, "itemsCreateWithStock", {
+      name,
+      categoryId,
+      costPrice: 400,
+      sellingPrice: 1000,
+      stockOnHand: 5,
+    });
+  }
+
   await page.goto("/sale");
-  for (let index = 0; index < 9; index += 1) {
-    await addStockedLine(page, `تثبيت-منتج-${stamp}-${index}`, categoryName);
+  for (const itemName of itemNames) {
+    await addPickedSaleLine(page, itemName);
   }
 
   // Prove the page really overflows, then pin the bar mid-scroll: a bar in

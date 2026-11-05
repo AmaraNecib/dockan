@@ -776,7 +776,8 @@ test("a late invoice success cannot clear a new sale owner's draft after sidebar
   await page.route(routePattern, async (route) => {
     reached();
     await held;
-    await route.continue();
+    const response = await route.fetch();
+    await route.fulfill({ response });
   });
 
   let saved: Promise<InvoiceDetail> | undefined;

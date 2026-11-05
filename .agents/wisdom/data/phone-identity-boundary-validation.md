@@ -1,10 +1,9 @@
-# Phone identity boundary: validate the change, share the cleaner, and watch e2e load
+# Phone identity boundary: validate the change and share the cleaner
 
 **Date:** 2026-10-15 · **Issue:** #129 · **Area:** packages/contracts, apps/api
 store/router, apps/web party forms/picker, tests/e2e
 
-Issue #129 refused non-numeric phone text at the party-identity boundary. Three
-lessons generalize.
+Issue #129 refused non-numeric phone text at the party-identity boundary.
 
 ## Gate a form-side identity rule on "changed", not on "present" (🟠 Major)
 
@@ -30,20 +29,3 @@ that this exact cleaning drifted before, splitting one identity into two. Extrac
 one `cleanPhoneText` and call it from both the predicate and the canonicalizer;
 a separator added to one path and not the other is an identity-split bug in the
 code that exists to prevent splits.
-
-## Isolated e2e ports stop collisions, not CPU contention (🟡 Process)
-
-`AGENTS.md` says a lane that claims `DOKAN_PORT`/`DOKAN_WEB_PORT` **and**
-`DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT` can run vault-touching e2e beside
-siblings. True for ports — and still misleading under load. A full run flaked
-only in `vault.spec.ts` ("first run: passphrase → recovery key", and once the
-reveal test), while that spec passed 3/3 in isolation on the same ports. The
-failure is the vault spec's `expect(...).toBeVisible()` 5s cap: the vault-create
-test derives a key and writes a snapshot while the shared api/web pair **and**
-the vault pair **and** sibling lanes all compete for CPU. `bun run test:e2e`
-eventually passed 58/58 unchanged once load eased.
-
-**Always**: for a full e2e gate on a busy host, read an isolated
-`vault.spec.ts` pass plus "the failing set differs run to run" as contention, not
-a regression. Re-run the full suite when the host is calmer; do not "fix" the
-vault spec's timeout as part of an unrelated change.

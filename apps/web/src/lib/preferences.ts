@@ -13,7 +13,12 @@ import { createCredentialLease, type CredentialLease } from "./credential-lease"
 export function createPreferenceClient(client: DokanClient = rpcClient, lease: CredentialLease = createCredentialLease()) {
   return Object.freeze({
     isLive: lease.isLive,
-    read: () => { lease.assertLive(); return readPreferences(client); },
+    read: async () => {
+      lease.assertLive();
+      const values = await readPreferences(client);
+      lease.assertLive();
+      return values;
+    },
     write: (key: string, value: string) => { lease.assertLive(); return writePreference(key, value, client); },
   });
 }
@@ -183,7 +188,7 @@ export function usePreference<T>(
     const isCurrent = () => active.current && preferences.isLive() && scope === writeScope();
     let failed = false;
     void preferences.write(key, serialize(next))
-      .then((stored) => {
+      .then(async (stored) => {
         if (!isCurrent()) return;
         if (stored === null) {
           // the write failed; the server value stands and the caller is told
@@ -191,8 +196,25 @@ export function usePreference<T>(
           setWriteFailed(true);
           return;
         }
-        // install only the server's own returned value, and never create a
-        // partial map: the cache holds full server reads only
+        // Discard older reads before installing this acknowledged choice.
+        await queryClient.cancelQueries({ queryKey: PREFERENCES_QUERY_KEY, exact: true });
+        if (!isCurrent()) return;
+        if (queryClient.getQueryData<Preferences>(PREFERENCES_QUERY_KEY) === undefined) {
+          // A failed boot read leaves no full map to merge. Recover that map
+          // rather than creating a cache entry containing only this key.
+          try {
+            await queryClient.fetchQuery({ queryKey: PREFERENCES_QUERY_KEY, queryFn: preferences.read, staleTime: 0 });
+          } catch {
+            if (!isCurrent()) return;
+            // Persistence succeeded, but a failed recovery leaves mounted
+            // consumers on their defaults. Invalidate once so the active
+            // shared query gets one bounded refetch. This is still a successful
+            // write; only a later successful full-map read clears query.isError.
+            await queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY, exact: true });
+            return;
+          }
+        }
+        if (!isCurrent()) return;
         queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) => {
           if (previous === undefined) return previous;
           return { ...previous, [key]: stored };

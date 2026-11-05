@@ -1602,12 +1602,22 @@ export const itemHistoryInputSchema = z.object({
  * WHOLE ledger, so the badge survives pagination. `null` means no such
  * correction supersedes the row.
  */
+export const itemHistoryDetailsSchema = z.object({
+  sellingPrice: dinarsSchema.nullable(),
+  saleTotal: dinarsSchema.nullable(),
+  netSaleTotal: dinarsSchema.nullable(),
+  cost: z.object({ unitCost: dinarsSchema.nullable(), total: dinarsSchema.nullable() }).nullable(),
+  documents: z.array(z.object({ id: idSchema, number: z.string() })),
+});
+
 export const itemHistoryMovementSchema = stockMovementWithBalanceSchema.extend({
+  details: itemHistoryDetailsSchema.optional(),
   seq: z.number().int().min(1).optional(),
   supersededBySeq: z.number().int().min(1).nullable().optional(),
 });
 
 export const itemHistoryOutputSchema = z.object({
+  item: z.object({ id: idSchema, name: z.string() }).optional(),
   movements: z.array(itemHistoryMovementSchema),
   /** number of movements in the whole ledger, not just this page */
   total: z.number().int().min(0),

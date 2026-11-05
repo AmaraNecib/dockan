@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../lib/scoped-mutation";
 import { Link, useParams } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -350,12 +349,18 @@ function pageLocalSupersededByCorrection(rows: readonly PrecedenceRow[]): Set<nu
   return superseded;
 }
 
+function HistoryAmount({ value }: { value: number | null | undefined }) {
+  const { t } = useTranslation();
+  return value == null ? <>{t("historyUnavailable")}</> : <Amount value={value} />;
+}
+
 export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?: number } = {}) {
   const { orpc } = useRpc();
   const { t } = useTranslation();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
   const pager = usePagination();
+  useEffect(() => { pager.reset(); }, [itemId]);
   const history = useQuery({
     ...orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }),
     // #295 — the running stock column on this screen is a hot counter too: a
@@ -372,22 +377,26 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
 
   return (
     <section>
-      <Button asChild variant="outline" size="sm">
-        <Link to="/items">
-          {/* RTL: back points right, and the arrow leads the label on its right */}
-          <ArrowRight size={16} aria-hidden="true" />
-          {t("historyBack")}
-        </Link>
-      </Button>
-      <h1 className="mt-2 text-xl font-bold">{t("historyTitle")}</h1>
+      <nav aria-label={t("historyBreadcrumb")} className="flex items-center gap-2 text-sm">
+        <Link to="/items" className="text-primary underline underline-offset-4">{t("navItems")}</Link>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{t("historyTitle")}</span>
+      </nav>
+      <h1 className="mt-2 text-xl font-bold">{t("historyTitle")}{history.data?.item ? <>: <bdi>{history.data.item.name}</bdi></> : null}</h1>
+      {history.isError && (
+        <div role="alert" className="mt-4 rounded border border-destructive p-3">
+          <p>{t("historyLoadError")}</p>
+          <Button variant="outline" className="mt-2" onClick={() => void history.refetch()}>{t("itemsSearchRetry")}</Button>
+        </div>
+      )}
 
-      {history.isPending || !history.data ? (
+      {history.isPending ? (
         <div className="mt-4 grid gap-3 rounded border bg-card p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
-      ) : history.data.total === 0 ? (
+      ) : !history.data ? null : history.data.total === 0 ? (
         <EmptyState
           testId="history-empty"
           card
@@ -403,7 +412,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
               <th className="p-3">{t("historyDate")}</th>
               <th className="p-3">{t("historyKind")}</th>
               <th className="p-3">{t("historyDelta")}</th>
-              <th className="p-3">{t("stockUnitCost")}</th>
+              <th className="p-3">{t("historyDetails")}</th>
               <th className="p-3">{t("historyStockAfter")}</th>
             </tr>
           </thead>
@@ -429,9 +438,27 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                   )}
                 </td>
                 <td className={`p-3 ${movementDeltaClass(movement.delta)}`}>
-                  {movement.delta > 0 ? `+${movement.delta}` : movement.delta}
+                  <bdi dir="ltr">{movement.delta > 0 ? `+${movement.delta}` : movement.delta}</bdi>
                 </td>
-                <td className="p-3">{movement.unitCost ?? "—"}</td>
+                <td className="p-3 align-top">
+                  <details className="max-w-md" key={`${itemId}-${movement.id}`}>
+                    <summary className="cursor-pointer rounded text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2">
+                      {t("historyDetails")}
+                    </summary>
+                    <dl className="mt-3 grid gap-2 text-sm">
+                      <div><dt className="text-muted-foreground">{t("stockSellingPrice")}</dt><dd data-testid="history-selling-price">{movement.details?.sellingPrice == null ? t("historyUnavailable") : <Amount value={movement.details.sellingPrice} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("stockUnitCost")}</dt><dd><HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} /></dd></div>
+                      <div><dt className="text-muted-foreground">{t("historySaleTotal")}</dt><dd data-testid="history-sale-total">{movement.details?.saleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.saleTotal} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("historyNetSaleTotal")}</dt><dd>{movement.details?.netSaleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.netSaleTotal} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("historyCostTotal")}</dt><dd data-testid="history-cost-total">{movement.details?.cost?.total == null ? t("historyUnavailable") : <Amount value={movement.details.cost.total} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("historyRecordedAt")}</dt><dd>{formatDateTime(movement.createdAt)}</dd></div>
+                    </dl>
+                    <p className="mt-2 text-xs text-muted-foreground">{t("historyFactsHint")}</p>
+                    {movement.details?.documents.map((document) => (
+                      <Link key={document.id} to="/invoices/$invoiceId" params={{ invoiceId: document.id }} className="mt-2 block text-primary underline underline-offset-4"><bdi dir="ltr">{document.number}</bdi></Link>
+                    ))}
+                  </details>
+                </td>
                 <td className="p-3 font-semibold" data-testid="stock-after">
                   {movement.stockAfter}
                 </td>

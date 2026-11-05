@@ -2541,9 +2541,12 @@ test("rejects zero", () => {
       expect(status).toBe(2);
     } finally {
       if (parentRelaxed) chmodSync(fixture.cache, 0o755);
-      holder?.kill();
-      await holderClosed;
-      fixture.cleanup();
+      try {
+        if (holder && holder.exitCode === null && holder.signalCode === null) holder.kill();
+        await holderClosed;
+      } finally {
+        fixture.cleanup();
+      }
     }
   }, 60_000);
 

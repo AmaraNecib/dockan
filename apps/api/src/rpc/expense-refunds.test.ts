@@ -241,6 +241,22 @@ describe("expense refunds (#409)", () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it("records the authenticated refunding actor rather than the historical expense actor", async () => {
+    const currentOwnerExpense = await originalExpense();
+    const formerActorId = randomUUID();
+    // Historical/imported audit facts may name a former owner. HTTP remains single-admin.
+    const original = await store.insertExpense({
+      categoryId: currentOwnerExpense.categoryId, amount: 1000, occurredAt: "2017-01-15T12:00:00",
+      actorId: formerActorId, actorName: "Former owner",
+    });
+    expect(original.actorId).not.toBe(currentOwnerExpense.actorId);
+    expect(original.actorName).not.toBe(currentOwnerExpense.actorName);
+    const refund = await successfulRefund({ expenseId: original.id, amount: 300, occurredAt: "2017-02-12T10:00:00", idempotencyKey: randomUUID() });
+    expect(refund).toMatchObject({ actorId: currentOwnerExpense.actorId, actorName: currentOwnerExpense.actorName, recordedAt: "2026-10-28T13:34:56" });
+    await expect(client.expenseRefundHistory({ expenseId: original.id })).resolves.toMatchObject({ expense: { original }, refunds: [refund] });
+    expect((await store.getExpenseCorrectionHistory(original.id))?.original).toEqual(original);
+  });
+
   it("posts an immutable cash recovery after corrections, on its cash date, once", async () => {
     const category = (await client.expenseCategoriesList()).items[0];
     if (category === undefined) throw new Error("missing seeded category");

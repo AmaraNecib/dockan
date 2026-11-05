@@ -70,7 +70,9 @@ import type { Database } from "bun:sqlite";
  * Existing expense rows gain null actor snapshots rather than guessed actors;
  * their original business and recording timestamps remain unchanged.
  */
-export const CURRENT_SCHEMA_VERSION = 8;
+// Version 9 (#409): expense refunds contribute on their own cash-return date.
+// A v8 reader omits those signed facts and must refuse instead of overstating expenses.
+export const CURRENT_SCHEMA_VERSION = 9;
 
 /**
  * A database written by a newer app. The older build cannot know what the

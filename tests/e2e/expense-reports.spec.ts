@@ -563,3 +563,142 @@ test("correct and undo an expense without moving it out of its original report p
   await expect.poll(readOperating).toBe(baseline - originalAmount);
   await holdForReading();
 });
+
+test("expense refunds preserve cash dates, cancellation, failure retries and compensation", async ({ page }) => {
+  // Four full reloads and injected storage/transport refusals exceed the default journey budget.
+  test.slow();
+  await ensureAuthed(page);
+  await page.goto("/expenses");
+  await selectExpenseCategory(page, "كراء المحل");
+  const note = `refund-409-${Date.now()}`;
+  await page.getByTestId("expense-amount").fill("1000");
+  await page.getByTestId("expense-note").fill(note);
+  await page.getByTestId("expense-save").click();
+  await expect(page.getByTestId("expense-saved")).toBeVisible();
+  const row = page.getByTestId("expense-row").filter({ hasText: note });
+  await row.getByTestId("expense-correction-open-history").click();
+  const history = row.locator("xpath=following-sibling::tr[1]").getByTestId("expense-correction-history");
+  await expect(history.getByTestId("expense-correction-original")).toBeVisible();
+  const evidenceDir = path.join(process.cwd(), ".scratch", "evidence", "409");
+  mkdirSync(evidenceDir, { recursive: true });
+  await history.screenshot({ path: path.join(evidenceDir, "refund-before.png") });
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-form")).toBeVisible();
+  await history.getByTestId("expense-refund-amount").fill("300");
+  await history.getByTestId("expense-refund-date").fill("12/02/2020 10:00");
+  await history.getByTestId("expense-refund-reason").fill("cash recovery");
+  await history.getByTestId("expense-refund-cancel").click();
+  await expect(history.getByTestId("expense-refund-form")).toHaveCount(0);
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
+  await history.getByTestId("expense-refund-amount").fill("1001");
+  await history.getByTestId("expense-refund-date").fill("12/02/2020 10:00");
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
+  await history.getByTestId("expense-refund-amount").fill("300");
+  await history.getByTestId("expense-refund-reason").fill("cash recovery");
+  let refundWrites = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/rpc/expensesRefund")) refundWrites += 1;
+  });
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key.includes("expense-refund-pending")) {
+        Storage.prototype.setItem = original;
+        throw new DOMException("Storage refused", "QuotaExceededError");
+      }
+      original.call(this, key, value);
+    };
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  expect(refundWrites).toBe(0);
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
+  let firstPayload = "";
+  let lostResponse = false;
+  await page.route("**/api/rpc/expensesRefund", async (route) => {
+    const payload = route.request().postData() ?? "";
+    if (!lostResponse) {
+      firstPayload = payload;
+      lostResponse = true;
+      await route.fetch();
+      await route.abort("failed");
+    } else {
+      expect(payload).toBe(firstPayload);
+      await route.continue();
+    }
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-amount")).toBeDisabled();
+  await page.reload();
+  const afterLossRow = page.getByTestId("expense-row").filter({ hasText: note });
+  await afterLossRow.getByTestId("expense-correction-open-history").click();
+  await afterLossRow.locator("xpath=following-sibling::tr[1]").getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await page.evaluate(() => {
+    const original = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function (key) {
+      if (key.includes("expense-refund-pending")) throw new DOMException("Cleanup refused", "SecurityError");
+      original.call(this, key);
+    };
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-amount")).toBeDisabled();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  await page.reload();
+  await row.getByTestId("expense-correction-open-history").click();
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-saved")).toBeVisible();
+  expect(refundWrites).toBe(3);
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  await expect(history.getByTestId("expense-refund-balance")).toContainText("700");
+  const saved = history.getByTestId("expense-refund-entry");
+  await expect(saved).toContainText("12/02/2020 10:00");
+  await expect(saved).toContainText("cash recovery");
+  await saved.getByTestId("expense-refund-undo").click();
+  await history.getByTestId("expense-refund-confirm-cancel").click();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  let firstUndoPayload = "";
+  let undoRequests = 0;
+  await page.route("**/api/rpc/expensesRefundUndo", async (route) => {
+    const payload = route.request().postData() ?? "";
+    undoRequests += 1;
+    if (undoRequests === 1) {
+      firstUndoPayload = payload;
+      await route.fetch();
+      await route.abort("failed");
+    } else {
+      expect(payload).toBe(firstUndoPayload);
+      await route.continue();
+    }
+  });
+  await saved.getByTestId("expense-refund-undo").click();
+  await history.getByTestId("expense-refund-confirm-save").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await page.reload();
+  await row.getByTestId("expense-correction-open-history").click();
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-saved")).toBeVisible();
+  expect(undoRequests).toBe(2);
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(2);
+  await expect(history.getByTestId("expense-refund-balance")).toContainText("1,000");
+  await history.screenshot({ path: path.join(evidenceDir, "refund-after.png") });
+  await page.reload();
+  const reloadedRow = page.getByTestId("expense-row").filter({ hasText: note });
+  await reloadedRow.getByTestId("expense-correction-open-history").click();
+  const reloadedHistory = reloadedRow.locator("xpath=following-sibling::tr[1]").getByTestId("expense-correction-history");
+  await reloadedHistory.getByTestId("expense-refund-open").click();
+  await expect(reloadedHistory.getByTestId("expense-refund-entry")).toHaveCount(2);
+  await expect(reloadedHistory.getByTestId("expense-correction-original")).toBeVisible();
+  await page.unroute("**/api/rpc/expensesRefund");
+  await page.unroute("**/api/rpc/expensesRefundUndo");
+});

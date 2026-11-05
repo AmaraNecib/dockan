@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
-import { assertSchemaVersionSupported, readSchemaVersion, UnsupportedSchemaVersionError } from "../lib/schema-version";
+import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, UnsupportedSchemaVersionError } from "../lib/schema-version";
 import { createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
 
@@ -67,7 +67,7 @@ afterAll(() => {
 
 describe("expense correction storage (#408)", () => {
   it("upgrades v7 without inventing legacy actor facts or rewriting expense dates", async () => {
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
     const original = (await store.listExpenseRecords({})).find((row) => row.id === expenseId);
     expect(original).toMatchObject({
       amount: 1_000,
@@ -82,7 +82,7 @@ describe("expense correction storage (#408)", () => {
     expect(columns.map(({ name }) => name)).toContain("actor_name");
     expect(() => assertSchemaVersionSupported(conn.raw, 7)).toThrow(UnsupportedSchemaVersionError);
     await store.setup();
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
     expect((await store.getExpenseCorrectionHistory(expenseId))?.corrections).toEqual([]);
     await expect(store.insertExpense({
       categoryId, amount: 100, occurredAt: "2020-01-01T10:00:00", actorId: "missing-name", actorName: null,
@@ -93,8 +93,41 @@ describe("expense correction storage (#408)", () => {
     expect(await store.listExpenseRecords({})).toHaveLength(1);
   });
 
+  it("enforces the refunded floor for direct corrections and reversals without changing history", async () => {
+    const original = await store.insertExpense({ categoryId, amount: 1000, occurredAt: "2020-01-09T10:00:00" });
+    const correction = {
+      expenseId: original.id, effectiveAt: original.occurredAt, recordedAt: "2026-10-28T13:34:56",
+      beforeAmount: 1000, afterAmount: 1200, difference: 200, actorId: null, actorName: null,
+      reason: null, reversesCorrectionId: null, idempotencyKey: randomUUID(),
+    };
+    const increase = await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection(correction));
+    await store.withTransactionImmediate((tx) => tx.insertExpenseRefund({
+      expenseId: original.id, difference: -1100, occurredAt: "2020-02-12T10:00:00",
+      recordedAt: "2026-10-28T13:35:00", actorId: randomUUID(), actorName: "Owner",
+      reason: null, reversesRefundId: null, idempotencyKey: randomUUID(),
+    }));
+    const before = await store.getExpenseRefundHistory(original.id);
+    expect(before).toMatchObject({ refundableAmount: 100, expense: { effectiveAmount: 1200 } });
+    for (const change of [
+      { afterAmount: 1099, difference: -101, reversesCorrectionId: null },
+      { afterAmount: 1000, difference: -200, reversesCorrectionId: increase.id },
+    ]) {
+      await expect(store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+        ...correction, beforeAmount: 1200, ...change, idempotencyKey: randomUUID(),
+      }))).rejects.toThrow("EXPENSE_CORRECTION_BELOW_REFUNDED");
+      expect(await store.getExpenseRefundHistory(original.id)).toEqual(before);
+    }
+    await store.withTransactionImmediate((tx) => tx.insertExpenseCorrection({
+      ...correction, beforeAmount: 1200, afterAmount: 1100, difference: -100, idempotencyKey: randomUUID(),
+    }));
+    expect(await store.getExpenseRefundHistory(original.id)).toMatchObject({
+      refundableAmount: 0, expense: { original, effectiveAmount: 1100, corrections: [increase, expect.objectContaining({ afterAmount: 1100 })] },
+      refunds: before?.refunds,
+    });
+  });
+
   it("appends a linked signed row inside an immediate transaction and refuses stale or unlocked writes", async () => {
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
     const first = await store.withTransactionImmediate((tx) =>
       tx.insertExpenseCorrection({
         expenseId,
@@ -373,6 +406,6 @@ describe("expense correction storage (#408)", () => {
     expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey)).toEqual(correction);
     expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey)).toEqual(reversal);
     expect(await store.getExpenseCorrectionHistory(expenseId)).toEqual(legacyBefore);
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
   });
 });

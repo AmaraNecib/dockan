@@ -8,6 +8,8 @@ import type {
   ExpenseCategory,
   ExpenseCorrection,
   ExpenseCorrectionHistory,
+  ExpenseRefund,
+  ExpenseRefundHistory,
   ExpenseListItem,
   Invoice,
   InvoiceDetail,
@@ -53,6 +55,8 @@ export interface ExpenseReportEntry {
   categoryId: string;
   amount: number;
   occurredAt: string;
+  /** Original expenses count once; cash recoveries and compensations count zero. */
+  expenseCount: 0 | 1;
 }
 
 /**
@@ -274,7 +278,7 @@ export type PartyDeleteResult = "DELETED" | "HAS_INVOICES" | "NOT_FOUND";
 /** Read methods needed by composed snapshot reads; no write or transaction handle. */
 export type StoreReadPort = Pick<StorePort,
   "getItemsByIds" | "listStockMovements" | "listItemHistoryLines" |
-  "listStockLinksByItem" | "getReturnHeader" | "getSupplierReturn"
+  "listStockLinksByItem" | "getReturnHeader" | "getSupplierReturn" | "getExpenseRefundHistory"
 >;
 
 export interface StorePort {
@@ -333,6 +337,11 @@ export interface StorePort {
   findExpenseCorrectionByIdempotencyKey(expenseId: string, idempotencyKey: string): Promise<ExpenseCorrection | undefined>;
   /** appends only; caller must hold `withTransactionImmediate` */
   insertExpenseCorrection(input: Omit<ExpenseCorrection, "id"> & { idempotencyKey: string }): Promise<ExpenseCorrection>;
+  getExpenseRefundHistory(expenseId: string): Promise<ExpenseRefundHistory | undefined>;
+  getExpenseRefund(refundId: string): Promise<ExpenseRefund | undefined>;
+  findExpenseRefundByIdempotencyKey(expenseId: string, key: string): Promise<ExpenseRefund | undefined>;
+  /** Append only; requires withTransactionImmediate and rechecks the effective balance. */
+  insertExpenseRefund(input: Omit<ExpenseRefund, "id"> & { idempotencyKey: string }): Promise<ExpenseRefund>;
   /** original amount and signed deltas, each on its effective business date */
   listExpenseReportEntries(filters: { categoryIds?: string[]; from: string; to: string }): Promise<ExpenseReportEntry[]>;
   /** raw SALE line facts (netTotal/costAtSale/cogsExact) for invoices dated in [from, to] */

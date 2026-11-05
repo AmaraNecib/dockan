@@ -12,6 +12,8 @@ import type {
   ExpenseCategory,
   ExpenseCorrection,
   ExpenseCorrectionHistory,
+  ExpenseRefund,
+  ExpenseRefundHistory,
   ExpenseListItem,
   Invoice,
   InvoiceDetail,
@@ -44,11 +46,11 @@ import type {
   SupplierEntryKind,
   SupplierReturnRecord,
 } from "@dokan/contracts";
-import { MAX_EXPENSE_AMOUNT, arabicIncludes, foldArabic, ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
+import { expenseRefundSchema, MAX_EXPENSE_AMOUNT, arabicIncludes, foldArabic, ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SnapshotPersistenceError } from "../db/encrypted-connection";
 import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
@@ -852,6 +854,7 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "createExpenseCategory",
   "insertExpense",
   "insertExpenseCorrection",
+  "insertExpenseRefund",
   "createParty",
   "updateParty",
   "deleteParty",
@@ -1788,6 +1791,23 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     } satisfies ExpenseCorrectionHistory;
   };
 
+  const readExpenseRefunds = async (expenseId: string) => {
+    const rows = await db.select().from(expenseRefunds).where(eq(expenseRefunds.expenseId, expenseId)).orderBy(sql`expense_refunds.rowid ASC`);
+    return rows.map(({ idempotencyKey: _key, ...refund }) => refund);
+  };
+
+  const readExpenseRefundHistory = async (expenseId: string): Promise<ExpenseRefundHistory | undefined> => {
+    const expense = await readExpenseCorrectionHistory(expenseId);
+    if (expense === undefined) return undefined;
+    const refunds = await readExpenseRefunds(expenseId);
+    const reversedBy = new Map(refunds.flatMap((refund) => refund.reversesRefundId === null ? [] : [[refund.reversesRefundId, refund.id] as const]));
+    return {
+      expense,
+      refundableAmount: expense.effectiveAmount + refunds.reduce((sum, refund) => sum + refund.difference, 0),
+      refunds: refunds.map((refund) => ({ ...refund, reversedByRefundId: reversedBy.get(refund.id) ?? null })),
+    };
+  };
+
   const store: StorePort = {
     setup,
 
@@ -2059,6 +2079,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (input.beforeAmount !== history.effectiveAmount || input.effectiveAt !== history.original.occurredAt) {
         throw new Error("expense correction does not match the current expense state");
       }
+      const refunds = await readExpenseRefunds(input.expenseId);
+      if (input.afterAmount + refunds.reduce((sum, refund) => sum + refund.difference, 0) < 0) {
+        throw new Error("EXPENSE_CORRECTION_BELOW_REFUNDED");
+      }
       if (input.reversesCorrectionId !== null) {
         const target = await readExpenseCorrection(input.reversesCorrectionId);
         const alreadyReversed = history.corrections.some((entry) => entry.reversesCorrectionId === input.reversesCorrectionId);
@@ -2080,6 +2104,41 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       );
       return toExpenseCorrection(row);
     },
+    async getExpenseRefundHistory(expenseId) {
+      return readExpenseRefundHistory(expenseId);
+    },
+    async getExpenseRefund(refundId) {
+      const row = (await db.select().from(expenseRefunds).where(eq(expenseRefunds.id, refundId)).limit(1))[0];
+      if (row === undefined) return undefined;
+      const { idempotencyKey: _key, ...refund } = row;
+      return refund;
+    },
+    async findExpenseRefundByIdempotencyKey(expenseId, key) {
+      const row = (await db.select().from(expenseRefunds).where(and(eq(expenseRefunds.expenseId, expenseId), eq(expenseRefunds.idempotencyKey, key))).limit(1))[0];
+      if (row === undefined) return undefined;
+      const { idempotencyKey: _key, ...refund } = row;
+      return refund;
+    },
+    async insertExpenseRefund(input) {
+      if (!conn.inTransaction || !immediateTransaction) throw new Error("expense refund writes require an immediate transaction");
+      expenseRefundSchema.omit({ id: true }).parse(input);
+      if (!Number.isSafeInteger(input.difference) || input.difference === 0 || Math.abs(input.difference) > MAX_EXPENSE_AMOUNT ||
+          !input.actorId) throw new Error("invalid expense refund invariant");
+      const history = await readExpenseRefundHistory(input.expenseId);
+      if (history === undefined) throw new Error("expense refund references a missing expense");
+      const after = history.refundableAmount + input.difference;
+      if (after < 0 || after > history.expense.effectiveAmount) throw new Error("EXPENSE_REFUND_EXCEEDS_BALANCE");
+      if (input.reversesRefundId === null) {
+        if (input.difference > 0) throw new Error("invalid expense refund sign");
+      } else {
+        const target = history.refunds.find((refund) => refund.id === input.reversesRefundId);
+        if (target === undefined || target.reversedByRefundId !== null || input.difference !== -target.difference ||
+            input.occurredAt !== target.occurredAt) throw new Error("invalid expense refund reversal link");
+      }
+      const row = firstRowOf(await db.insert(expenseRefunds).values({ id: id(), ...input }).returning());
+      const { idempotencyKey: _key, ...refund } = row;
+      return refund satisfies ExpenseRefund;
+    },
     async listExpenseReportEntries(filters) {
       const categoryFilter =
         filters.categoryIds === undefined || filters.categoryIds.length === 0
@@ -2091,9 +2150,14 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const rows = (await db.all(sql`
         SELECT e.category_id AS categoryId,
                e.amount + COALESCE((SELECT SUM(c.difference) FROM expense_corrections c WHERE c.expense_id = e.id), 0) AS amount,
-               e.occurred_at AS occurredAt
+               e.occurred_at AS occurredAt, 1 AS expenseCount
         FROM expenses e
         WHERE e.occurred_at >= ${filters.from} AND e.occurred_at <= ${filters.to}
+        ${categoryFilter}
+        UNION ALL
+        SELECT e.category_id AS categoryId, r.difference AS amount, r.occurred_at AS occurredAt, 0 AS expenseCount
+        FROM expense_refunds r JOIN expenses e ON e.id = r.expense_id
+        WHERE r.occurred_at >= ${filters.from} AND r.occurred_at <= ${filters.to}
         ${categoryFilter}
       `)) as ExpenseReportEntry[];
       return rows;

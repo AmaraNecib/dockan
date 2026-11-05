@@ -99,8 +99,8 @@ test("external backup destination persists, cancels edits, reports media failure
     lastPath: null,
   };
   let failNextCopy = true;
-  await page.route("**/api/rpc/externalBackupStatus", (route) => route.fulfill({ json: externalStatus }));
-  await page.route("**/api/rpc/externalBackupDevice", (route) => route.fulfill({ json: "same" }));
+  await page.route("**/api/rpc/externalBackupStatus", (route) => route.fulfill({ json: { json: externalStatus } }));
+  await page.route("**/api/rpc/externalBackupDevice", (route) => route.fulfill({ json: { json: "same" } }));
   await page.route("**/api/rpc/externalBackupDestinationSet", async (route) => {
     const parsed = z.object({ json: externalBackupDestinationInputSchema }).safeParse(route.request().postDataJSON());
     if (!parsed.success) throw new Error("external destination route received invalid input");
@@ -112,14 +112,14 @@ test("external backup destination persists, cancels edits, reports media failure
       lastError: null,
       lastPath: null,
     };
-    await route.fulfill({ json: externalStatus });
+    await route.fulfill({ json: { json: externalStatus } });
   });
   await page.route("**/api/rpc/externalBackupRun", async (route) => {
     externalStatus = failNextCopy
       ? { ...externalStatus, lastAttemptAt: "2026-11-05T10:00:00", lastError: "disconnected" }
       : { ...externalStatus, lastAttemptAt: "2026-11-05T10:01:00", lastSuccessAt: "2026-11-05T10:01:00", lastError: null, lastPath: "D:/existing-backups/dokan-backup-set/dokan-backup.dknvbak" };
     failNextCopy = false;
-    await route.fulfill({ json: externalStatus });
+    await route.fulfill({ json: { json: externalStatus } });
   });
 
   await page.goto("/backups");

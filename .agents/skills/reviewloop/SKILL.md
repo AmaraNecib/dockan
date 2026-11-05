@@ -75,7 +75,7 @@ entry is neither permission to use a provider nor proof that it works.
 For an enabled route that has not answered recently, run a one-line probe before the round.
 A failed probe stops that route, not the other enabled routes.
 
-Run the locally required review for every reviewable change, with depth selected by reachable risk under `docs/engineering-workflow.md`. Compact Standard is one focused `code-review` execution covering Standards, Spec and affected-test adequacy; mark `debate` and `test-audit` skipped with reasons. Ordinary Standard uses all three lenses; High-assurance requires all three and final-head debate after fixes. Record exactly what ran; the renderer accepts explicit skips but refuses an all-skipped round. Compact is never no-review or hosted-only.
+Select depth from `docs/engineering-workflow.md`. A routine reversible localized change gets one fresh `code-review` session covering Standards, Spec and affected-test adequacy; mark unused lenses skipped with a reason in the existing payload. High-assurance gets separate initial `debate`, `test-audit` and `code-review` sessions for a named reachable risk. Do not launch specialist reviewers without a concrete question. Record only executions that actually happened. The renderer accepts explicit skips but refuses an all-skipped round.
 
 **Standing owner approval:** when OpenCode is unavailable, same-family review is allowed
 without asking again per PR. Unavailable includes disabled, not opted in, quota-limited
@@ -97,7 +97,7 @@ this standing scope, obtain explicit owner approval. The renderer prints the exc
 
 ### 3. Run the selected lenses
 
-Run only the lenses required by the selected depth. Compact Standard runs one focused `code-review`; ordinary Standard runs `debate`, `test-audit`, then `code-review`; High-assurance runs all three and a final-head debate after fixes. Each required lens is its own reviewer execution, uses its selected model and saves a report to `.scratch/reviews/<issue>/<head>-<lens>.md` with the full head SHA. Only the critic/defender inside `debate` and specialists within another lens may parallelize. `code-review` covers Standards and Spec; include affected-test adequacy for compact review.
+Run the sessions selected by the risk tier. Each is a distinct reviewer execution with its actual model and report at `.scratch/reviews/<issue>/<head>-<lens>.md`. `code-review` covers Standards and Spec; routine reviews also assess affected-test adequacy. Debate's critic and defender are internal debate roles, not extra lens claims. Specialist fanout requires a named unanswered question.
 
 Each lens reads the existing author account first, if present. Every report opens with two lines, nothing between them:
 
@@ -223,32 +223,21 @@ invalid flag or unsupported filename also exits 2, as does a failed artifact wri
 
 ### 5. Verify and resolve findings
 
-Every finding is a claim. Read the cited code and verify it. Fix a valid blocker in this PR when bounded; split substantial work and hold dependent work until the blocker is resolved. Dispute a stale or factually wrong finding with code evidence and obtain reviewer resolution. A parent cannot unilaterally dismiss a valid finding as optional or addressed. A genuinely nonblocking improvement is optional only when the reviewer accepts that disposition and applicable gates allow it. A finding raised by one lens remains a finding even if others missed it.
+Every finding is a claim. Verify it against the cited code. Fix valid blockers when bounded; hold dependent work for substantial blockers. Dispute stale or false findings with code evidence and reviewer resolution. A finding from one lens remains actionable even when others missed it.
 
-The rendered score is not enough: no unresolved actionable finding may remain at any score. An unresolved finding cannot be hidden in `summary.dismissed` or overridden by a numerical score.
+The score is not enough: no unresolved actionable finding may remain at any score. Do not hide one in `summary.dismissed` or override it numerically. A P2 still blocks the mandated clean-result gate until resolved or the reviewer confirms it is non-actionable.
 
 **Done when** every finding has a verified resolution and any dispute has reviewer resolution.
 
-### 6. Loop on the new head
+### 6. Review a new head
 
-Any fix moves the head, and evidence for the old head is stale. Re-run steps 2-5
-on the new head: the lenses, not just the renderer.
+A code change makes prior reports stale. Commit the fix, rerun checks it affects, then use one fresh reviewer session to inspect the combined delta and direct affected callers. The reviewer reads prior findings and explicitly carries forward unchanged conclusions. Run another lens only if the fix creates a concrete risk that lens covers. Do not restart every lens after a bounded fix. After three fix rounds, reassess the design; do not continue an unchanged cycle. Render against the exact new head. A 5/5 with zero unresolved actionable findings remains mandatory.
 
-Stop only at **5/5 with no unresolved actionable findings**, or after five iterations. A fifth round that still has an unresolved finding is blocked and reported to the owner; do not award a clean verdict.
-
-**Done when** the renderer exits 0, or you report the remaining findings and the
-iteration count.
+**Done when** current-head evidence records the fresh fix review, all unchanged conclusions are accounted for, and the renderer reports 5/5 with no actionable finding.
 
 ### 7. Report
 
-During the trial, run this review beside Greptile using the
-[comparison protocol](../../../docs/review-comparison.md). Preserve each system's
-unexposed findings and record verified defects, false positives, time and cost.
-The parent checks both current-head verdicts before merging. Continue across PRs
-until the owner decides which path to keep; this renderer does not score Greptile.
-
-Local mode: the head SHA, the score, the finding counts, and the paths the
-renderer wrote. Nothing is committed.
+Local mode returns the head SHA, score, finding counts and artifact paths. Reports stay untracked.
 
 PR mode, parent only: follow the [native finding-thread protocol](../../../docs/review-findings.md).
 Post `<head>-review.json` as one native GitHub review pinned by `commit_id`, with

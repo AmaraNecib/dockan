@@ -1,11 +1,11 @@
 ---
 name: debate
-description: "Run an adversarial review with critic + defender sub-agents on an implementation, design, or PR diff. The critic finds every flaw, the defender argues for the design. The parent agent synthesizes both and decides what to fix, defer, or dismiss."
+description: "Run one adversarial reviewer session on an implementation, design, or PR diff. The reviewer presents critic and defender cases; the parent verifies findings and decides their disposition. Add another reviewer only for a concrete unresolved question."
 ---
 
 # Debate — Adversarial Review (Critic + Defender)
 
-Run two parallel reviewer sub-agents with opposing goals, then synthesize.
+Run one reviewer session with explicit critic and defender sections, then synthesize. Add another session only for a concrete unresolved question.
 
 ## Parameters
 
@@ -16,52 +16,15 @@ The caller (feature-implement) provides:
 
 ## When to run
 
-After implementation is complete but before local verification and code-review.
-Standard and High-assurance changes both run it; only Lightweight (truly
-non-reviewable files) skips it. The tier decides how much scrutiny a failure
-mode earns, not whether the debate happens.
+The review tier in `docs/engineering-workflow.md` decides whether this lens runs. It is one of three distinct initial sessions for a named High-assurance risk. Routine changes do not run it by default.
 
 ## How to run
 
-### 1. Launch both sub-agents in parallel
+Read the pinned diff, full changed files, issue/spec and existing design note. In one reviewer execution, make the critic case first: identify reachable defects, risk and unnecessary complexity with file:line evidence. Then make the defender case for the design choices and their evidence. Keep these as two explicit sections in one report; they are roles within this lens, not separate reviewer executions.
 
-Both agents read the same context: the diff between base SHA and HEAD, the
-full changed files, the issue/spec, and any design doc.
+A second reviewer is allowed only for a concrete unresolved question. Never claim a defender or specialist ran unless a separate session actually did.
 
-**Critic task:**
-```
-You are a HARSH CRITIC. Find every flaw, risk, over-engineering, missing edge
-case, and design problem. Score each 1-10 (1=minor nit, 10=must-fix blocker).
-Be ruthless.
-
-Read: git diff <base-sha>...HEAD -- packages/,
-      full changed files, the issue spec,
-      .scratch/implementation/<issue-id>-design.md if it exists.
-
-Note: Test quality is evaluated separately by the test-audit skill.
-Focus this review on the implementation code itself.
-
-Report each finding with: severity, location (file:line), explanation.
-```
-
-**Defender task:**
-```
-You are a CHARITABLE DEFENDER. Argue FOR the implementation. Find what it does
-RIGHT. Defend every design decision. Show why the complexity is justified.
-
-Read: git diff <base-sha>...HEAD -- packages/,
-      full changed files, the issue spec,
-      .scratch/implementation/<issue-id>-design.md if it exists.
-
-Cite file paths and line numbers. Give a confidence score (1-10) for each
-defense.
-```
-
-### 2. Wait for both to finish
-
-Collect both outputs.
-
-### 3. Synthesize
+### Synthesize
 
 Go through each critic finding and classify:
 
@@ -74,13 +37,13 @@ Go through each critic finding and classify:
 | Any | Out of scope | **Create issue, document in PR** |
 | Any | Defender disproved (false alarm) | **Dismiss** — note in PR it was considered |
 
-### 4. Apply fixes — in the authoring session
+### 3. Apply fixes — in the authoring session
 
 The reviewers return findings; neither writes to the worktree. The session that
 authored the change fixes everything classified as "Fix it" above and commits,
 and the lens is re-run on the result when the tier requires a fresh look.
 
-### 5. Document remaining items
+### 4. Document remaining items
 
 For everything deferred or dismissed, each non-dismissed item needs a path
 forward — either a fix now, a GitHub issue, or a lesson for the parent to
@@ -93,13 +56,13 @@ record.
 | Dismissed (false alarm) | Note in PR that it was considered and dismissed. |
 | Pattern worth remembering | **Put it in the report** — the parent owns `.agents/wisdom/` and writes an entry only when the pattern repeats. |
 
-### 6. Save evidence
+### 5. Save evidence
 
 Save the full findings to `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
 This file is used by guard to verify review completeness before the parent pushes.
 
 The parent session publishes a summary as a PR comment after the PR is opened.
 
-### 7. Proceed
+### 6. Proceed
 
 After fixes are committed and deferred items are documented, proceed.

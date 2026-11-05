@@ -1,12 +1,12 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
-const owned = new WeakMap<ChildProcess, { closed: boolean; groupGone: boolean }>();
+const owned = new WeakMap<ChildProcess, { closed: boolean; groupGone: boolean; windowsTreeStopped: boolean }>();
 const pause = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
 
 /** Only children launched here may be signalled as detached POSIX groups. */
 export function spawnOwnedServer(command: string, args: string[], options: SpawnOptions): ChildProcess {
   const child = spawn(command, args, { ...options, detached: process.platform !== "win32" });
-  const state = { closed: false, groupGone: false };
+  const state = { closed: false, groupGone: false, windowsTreeStopped: false };
   owned.set(child, state);
   child.once("close", () => { state.closed = true; });
   // A failed spawn still emits close. Consume error so teardown can handle it.
@@ -33,7 +33,14 @@ export async function stopOwnedServer(child: ChildProcess | undefined): Promise<
     return;
   }
   if (process.platform === "win32") {
-    if (child.exitCode === null && child.signalCode === null) {
+    if (state.windowsTreeStopped) {
+      if (!await waitUntil(() => state.closed, 2_000)) throw new Error(`Owned server ${pid} did not close`);
+      return;
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`Owned server ${pid} leader exited before a successful tree stop; preserve fixture data`);
+    }
+    {
       const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
       let finished = false;
       let code: number | null = null;
@@ -50,6 +57,7 @@ export async function stopOwnedServer(child: ChildProcess | undefined): Promise<
       if (code !== 0) {
         throw new Error(`Tree kill failed for owned server ${pid}: ${code}`);
       }
+      state.windowsTreeStopped = true;
     }
     if (!await waitUntil(() => state.closed, 2_000)) throw new Error(`Owned server ${pid} did not close`);
     return;

@@ -22,6 +22,17 @@ function gone(pid: number): boolean {
     return true;
   }
 }
+async function waitForGone(pid: number): Promise<void> {
+  if (!await waitUntil(() => gone(pid), 3_000)) throw new Error(`Owned test grandchild ${pid} did not exit`);
+}
+async function waitUntil(check: () => boolean, milliseconds: number): Promise<boolean> {
+  const deadline = Date.now() + milliseconds;
+  while (!check()) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return true;
+}
 
 it("stops an owned child and grandchild before removing only its fresh fixture", async () => {
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-owned-process-"));
@@ -57,11 +68,55 @@ it("stops an owned child and grandchild before removing only its fresh fixture",
 it("handles an already closed owned child and a failed spawn without waiting for a lost close event", async () => {
   const child = spawnOwnedServer(node, ["-e", ""], { cwd, stdio: "ignore" });
   await once(child, "close");
-  await stopOwnedServer(child);
-  await stopOwnedServer(child);
+  if (process.platform === "win32") {
+    await expect(stopOwnedServer(child)).rejects.toThrow("leader exited before a successful tree stop");
+  } else {
+    await stopOwnedServer(child);
+    await stopOwnedServer(child);
+  }
   const missing = spawnOwnedServer(path.join(cwd, ".scratch", "nonexistent-sol-fixture-executable"), [], { cwd, stdio: "ignore" });
   await stopOwnedServer(missing);
 });
+
+it.skipIf(process.platform !== "win32")("preserves the fixture when an owned Windows leader exits before tree stop", async () => {
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-owned-exited-leader-"));
+  const readyFile = path.join(fresh, "grandchild.ready");
+  const pidFile = path.join(fresh, "grandchild.pid");
+  const grandchildScript = `require('node:fs').writeFileSync(${JSON.stringify(readyFile)}, 'ready'); setInterval(() => {}, 1000);`;
+  const parentScript = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildScript)}], { cwd: ${JSON.stringify(cwd)}, stdio: 'ignore', detached: true });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(grandchild.pid));
+    const deadline = Date.now() + 3000;
+    const poll = setInterval(() => {
+      if (fs.existsSync(${JSON.stringify(readyFile)})) { clearInterval(poll); process.send({ grandchildPid: grandchild.pid }); process.exit(0); }
+      if (Date.now() > deadline) process.exit(1);
+    }, 10);
+  `;
+  const child = spawnOwnedServer(node, ["-e", parentScript], { cwd, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  let grandchildPid: number | undefined;
+  try {
+    const [message] = await once(child, "message");
+    // SAFETY: The fixture parent sends this field only after spawn returns the grandchild's numeric PID.
+    const { grandchildPid: reportedPid } = message as { grandchildPid: number };
+    grandchildPid = reportedPid;
+    await once(child, "close");
+    expect(Number.isSafeInteger(grandchildPid)).toBe(true);
+    expect(gone(grandchildPid)).toBe(false);
+    await expect(stopOwnedServer(child)).rejects.toThrow("leader exited before a successful tree stop");
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(gone(grandchildPid)).toBe(false);
+  } finally {
+    if (grandchildPid === undefined && fs.existsSync(pidFile)) grandchildPid = Number(fs.readFileSync(pidFile, "utf8"));
+    if (grandchildPid !== undefined && !gone(grandchildPid)) {
+      process.kill(grandchildPid, "SIGTERM");
+      await waitForGone(grandchildPid);
+    }
+    await stopOwnedServer(child).catch(() => {});
+    fs.rmSync(fresh, { recursive: true });
+  }
+}, 12_000);
 
 it("refuses an unowned child and preserves data when either stop fails", async () => {
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-owned-failure-"));

@@ -519,6 +519,41 @@ export const expenseCorrectionHistorySchema = z.object({
   corrections: z.array(expenseCorrectionHistoryEntrySchema),
 });
 
+const expenseRefundMomentSchema = localDateTimeSchema.and(z.iso.datetime({ local: true }));
+
+/** Expense cash recovery; negative difference is cash returned, positive compensates it. */
+export const expenseRefundSchema = z.object({
+  id: idSchema,
+  expenseId: idSchema,
+  difference: z.number().int().min(-MAX_EXPENSE_AMOUNT).max(MAX_EXPENSE_AMOUNT),
+  occurredAt: expenseRefundMomentSchema,
+  recordedAt: expenseRefundMomentSchema,
+  actorId: idSchema,
+  actorName: z.string().nullable(),
+  reason: z.string().max(500).nullable(),
+  reversesRefundId: idSchema.nullable(),
+});
+export const expenseRefundHistorySchema = z.object({
+  expense: expenseCorrectionHistorySchema,
+  refundableAmount: z.number().int().min(0).max(MAX_EXPENSE_AMOUNT),
+  refunds: z.array(expenseRefundSchema.extend({ reversedByRefundId: idSchema.nullable() })),
+});
+export const expenseRefundInputSchema = z.object({
+  expenseId: idSchema,
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  occurredAt: expenseRefundMomentSchema,
+  reason: z.string().trim().max(500).optional(),
+  idempotencyKey: idSchema,
+});
+export const expenseRefundUndoInputSchema = z.object({
+  refundId: idSchema,
+  idempotencyKey: idSchema,
+});
+export type ExpenseRefund = z.infer<typeof expenseRefundSchema>;
+export type ExpenseRefundHistory = z.infer<typeof expenseRefundHistorySchema>;
+export type ExpenseRefundInput = z.infer<typeof expenseRefundInputSchema>;
+export type ExpenseRefundUndoInput = z.infer<typeof expenseRefundUndoInputSchema>;
+
 /** Flexible report windows, computed in Algeria local time (ticket 31). */
 export const reportRangePresets = [
   "24H",

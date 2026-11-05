@@ -320,6 +320,10 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: UndoMutationOptions) => ({
         mutationFn: async (input: UndoInput): Promise<ExpenseCorrection> => {
           undoInputs.push(input);
+          if (correctionFailuresRemaining > 0) {
+            correctionFailuresRemaining -= 1;
+            throw new Error(correctionFailureMessage);
+          }
           const duplicate = undoResults.get(input.idempotencyKey);
           if (duplicate !== undefined) return duplicate;
           const history = [...correctionHistories.values()].find((entry) => entry.corrections.some((row) => row.id === input.correctionId));
@@ -2172,13 +2176,13 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
     listFails = false;
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
-    expect(await ui.waitFor(() => lastReturnedIds[0] !== "exp-1" && queryClient.isFetching() === 0)).toBe(true);
-    expect(ui.query("expense-row-note")?.textContent).toBe("إيصال قديم");
+    expect(await ui.waitFor(() => lastReturnedIds[0] !== "exp-1" && queryClient.isFetching() === 0 && ui.queryAll("expense-row-note").length === lastReturnedIds.length + 1)).toBe(true);
+    expect([...ui.queryAll("expense-row-note")].map((note) => note.textContent)).toContain("إيصال قديم");
 
     listItems = [];
     listTotal = 0;
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
-    expect(ui.query("expense-row-note")?.textContent).toBe("إيصال قديم");
+    expect(await ui.waitFor(() => ui.queryAll("expense-row-note").length === 1 && ui.query("expense-row-note")?.textContent === "إيصال قديم")).toBe(true);
     await ui.unmount();
 
     const remounted = await mountPage(queryClient);
@@ -2841,7 +2845,8 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     await remounted.unmount();
   });
 
-  it("clears a definitive no-change refusal so a corrected draft can proceed", async () => {
+  it.each(["EXPENSE_CORRECTION_NO_CHANGE", "EXPENSE_CORRECTION_BELOW_REFUNDED"])("clears definitive %s so a corrected draft can proceed", async (message) => {
+    correctionFailureMessage = message;
     correctionFailuresRemaining = 1;
     const ui = await mountPage(queryClient);
     expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
@@ -2856,6 +2861,28 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(correctionInputs[1]?.amount).toBe(800);
     expect(correctionInputs[1]?.idempotencyKey).not.toBe(correctionInputs[0]?.idempotencyKey);
     expect(correctionHistories.get("exp-1")?.effectiveAmount).toBe(800);
+    await ui.unmount();
+  });
+
+  it("clears a definitive below-refunded undo refusal before a new attempt", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-correction-open-editor") !== null)).toBe(true);
+    await ui.click("expense-correction-open-editor");
+    await ui.type("expense-correction-amount", "800");
+    await ui.submit("expense-correction-form");
+    expect(await ui.waitFor(() => correctionInputs.length === 1 && ui.query("expense-correction-form") === null)).toBe(true);
+    expect(await ui.waitFor(() => ui.query("expense-correction-undo") !== null)).toBe(true);
+    correctionFailureMessage = "EXPENSE_CORRECTION_BELOW_REFUNDED";
+    correctionFailuresRemaining = 1;
+    await ui.click("expense-correction-undo");
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 1 && queryClient.isFetching() === 0)).toBe(true);
+    const recovery = queryClient.getQueryData<Record<string, { undoRequests: Record<string, string> }>>(expenseCorrectionRecoveryQueryKey("test-session"));
+    expect(recovery?.["exp-1"]).toBeDefined();
+    expect(recovery?.["exp-1"]?.undoRequests["correction-1"]).toBeUndefined();
+    await ui.click("expense-correction-undo-confirm-button");
+    expect(await ui.waitFor(() => undoInputs.length === 2 && ui.query("expense-correction-undo-confirm") === null)).toBe(true);
+    expect(undoInputs[1]?.idempotencyKey).not.toBe(undoInputs[0]?.idempotencyKey);
     await ui.unmount();
   });
 

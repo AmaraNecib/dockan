@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { orpc } from "./rpc";
+import { useRpc } from "./rpc-context";
 
 /**
  * One shared pending-return count query for the shell badge and the dashboard
@@ -18,6 +18,7 @@ import { orpc } from "./rpc";
  * for which lever carries which case.
  */
 export function usePendingReturnsCount(refreshMs: number) {
+  const { orpc } = useRpc();
   return useQuery({
     ...orpc.returnsPendingCount.queryOptions(),
     refetchInterval: refreshMs,

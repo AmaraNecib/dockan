@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
+import { users, accounts } from "../db/schema";
 import type { DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
@@ -125,6 +126,43 @@ describe("phone normalization", () => {
     expect(normalizeAlgerianPhone("٠٥٥٠١٢٣١٢٣")).toBe(ascii);
     expect(normalizeAlgerianPhone("۰۵۵۰۱۲۳۱۲۳")).toBe(ascii);
     expect(ascii).toBe("+213550123123");
+  });
+});
+
+describe("current owner profile", () => {
+  it("refuses a real signed session for another user", async () => {
+    const [owner] = await conn.db.select().from(users).limit(1);
+    const [credential] = await conn.db.select().from(accounts).limit(1);
+    if (!owner || !credential) throw new Error("provisioned fixture missing");
+    const foreignId = crypto.randomUUID();
+    await conn.db.insert(users).values({ ...owner, id: foreignId, username: "213660123123", phoneNumber: "+213660123123" });
+    await conn.db.insert(accounts).values({ ...credential, id: crypto.randomUUID(), accountId: foreignId, userId: foreignId });
+    const response = await signIn("213660123123", PASSWORD);
+    expect(response.status).toBe(200);
+    const cookie = response.headers.get("set-cookie") ?? "";
+    expect(cookie).not.toBe("");
+    const foreign: DokanClient = createORPCClient(linkFor(cookie));
+    await expect(foreign.currentOwner()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("returns only the provisioned profile, and refuses anonymous, invalid, revoked and foreign sessions", async () => {
+    const anonymous: DokanClient = createORPCClient(linkFor(""));
+    await expect(anonymous.currentOwner()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    const invalid: DokanClient = createORPCClient(linkFor("better-auth.session_token=invalid"));
+    await expect(invalid.currentOwner()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    const login = await signIn(USERNAME, PASSWORD);
+    const cookie = login.headers.get("set-cookie") ?? "";
+    const client: DokanClient = createORPCClient(linkFor(cookie));
+    const id = await store.getSetting("adminUserId");
+    expect(await client.currentOwner()).toEqual({ id: id!, name: "مالك الاختبار", phone: PHONE, role: "owner" });
+    await store.setSetting("adminUserId", "foreign-owner");
+    try {
+      await expect(client.currentOwner()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    } finally {
+      await store.setSetting("adminUserId", id!);
+    }
+    await auth.handler(new Request("http://localhost/api/auth/sign-out", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" }));
+    await expect(client.currentOwner()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 });
 

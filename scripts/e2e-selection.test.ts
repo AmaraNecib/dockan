@@ -93,6 +93,12 @@ describe("e2e-selection map", () => {
     expect(orphans).toEqual([]);
   });
 
+  test("auth changes select the cross-tab session journey", () => {
+    const scope = selectSpecs(["apps/api/src/auth/auth.ts"], map);
+    expect(scope.mode).toBe("affected");
+    expect(scope.specs).toEqual(["00-onboarding.spec.ts", "cross-tab-session.spec.ts", "login.spec.ts", "owner-profile.spec.ts"]);
+  });
+
   test("every spec a rule names exists on disk", () => {
     const missing = [...new Set(map.features.flatMap((f) => f.specs))].filter((s) => !onDisk.includes(s));
     expect(missing).toEqual([]);

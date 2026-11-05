@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import type { InvoiceKind } from "@dokan/contracts";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { formatDate } from "../lib/dates";
 import { focusByTestId } from "../lib/focus";
 import { usePagination } from "../hooks/use-pagination";
@@ -34,6 +34,7 @@ function invoiceNumberSequence(value: string): number | undefined {
  * the detail screen where the payment history lives.
  */
 export function InvoicesPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");

@@ -22,16 +22,15 @@ export const authClient = createAuthClient({
 export type SessionData = Awaited<ReturnType<typeof authClient.getSession>>["data"];
 
 /**
- * React hook over authClient.getSession. This better-auth version exposes
- * useSession as a signal atom; the component reloads after sign-in/out, so a
- * mount-time fetch is enough and keeps the dependency surface honest.
+ * Mount-local session read. RequireSession remounts this hook when an advisory
+ * refresh arrives; every admission asks the server rather than its cookie cache.
  */
 export function useSession() {
   const [data, setData] = useState<SessionData | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
     authClient
-      .getSession()
+      .getSession({ query: { disableCookieCache: true } })
       .then((result) => {
         if (alive) setData(result.data);
       })

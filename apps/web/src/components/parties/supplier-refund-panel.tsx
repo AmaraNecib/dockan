@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@/lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
 
 import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
@@ -8,7 +9,7 @@ import { Button } from "@/components/ui/button";
 
 import { tError } from "@/lib/i18n";
 import { invalidatePartyMoney } from "@/lib/party-cache-key";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 
 /**
  * #161 — «استرداد رصيد من المورّد»: the supplier hands back cash to close the
@@ -30,6 +31,7 @@ export function SupplierRefundPanel({
   onWriteFailed?: () => void;
   onCancel: () => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [value, setValue] = useState<AmountPercentageValue>(() => (availableCredit > 0 ? { amount: String(availableCredit), percentage: "100" } : { amount: "", percentage: "" }));

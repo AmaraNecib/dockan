@@ -2503,6 +2503,18 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
 
     // --- settings (ticket 10: store identity for the invoice header) ----
+    currentOwner: os.currentOwner.handler(async ({ context }) => {
+      const session = await requireSession(context);
+      // Vault credentials resolve the owner ID in memory. Verify the same
+      // persisted provisioning invariant before disclosing the profile.
+      const ownerId = await deps.store.getSetting("adminUserId");
+      if (ownerId !== session.user.id) throw new ORPCError("FORBIDDEN", { message: "FORBIDDEN" });
+      const [owner] = await deps.db.select({ id: users.id, name: users.name, phone: users.phoneNumber })
+        .from(users).where(eq(users.id, session.user.id)).limit(1);
+      if (!owner) throw new ORPCError("FORBIDDEN", { message: "FORBIDDEN" });
+      return { ...owner, role: "owner" as const };
+    }),
+
     settingsGet: os.settingsGet.handler(guarded(async () => deps.store.getSettings())),
     settingsUpdate: os.settingsUpdate.handler(
       guardedInput(async (input) => {

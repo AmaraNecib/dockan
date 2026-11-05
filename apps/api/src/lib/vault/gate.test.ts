@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { serve } from "@hono/node-server";
+import { eq } from "drizzle-orm";
+import { users } from "../../db/schema";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
@@ -305,6 +307,19 @@ describe("vault HTTP gate", () => {
       phoneNumber: "0550123123",
       storeName: "متجر الاختبار",
     });
+    const expectedOwner = { id: h.manager.ownerId()!, name: "مالك الاختبار", phone: "+213550123123", role: "owner" as const };
+    expect(await provisioned.currentOwner()).toEqual(expectedOwner);
+    expect(await h.linkWith({ cookie: `dokan.vault.session=${setupToken}` }).currentOwner()).toEqual(expectedOwner);
+    await expect(unauthed.currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
+    await expect(h.linkWith({ "x-vault-session": "invalid" }).currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
+    const ownerId = h.manager.ownerId()!;
+    await h.store().setSetting("adminUserId", "foreign-owner");
+    await expect(provisioned.currentOwner()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await h.store().setSetting("adminUserId", ownerId);
+    const [ownerRow] = await h.connection().db.select().from(users).where(eq(users.id, ownerId));
+    await h.connection().db.delete(users).where(eq(users.id, ownerId));
+    await expect(provisioned.currentOwner()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await h.connection().db.insert(users).values(ownerRow!);
     const categories = await provisioned.categoriesList();
     expect(categories.items.some((category) => category.name === "عام")).toBe(true);
 
@@ -313,6 +328,7 @@ describe("vault HTTP gate", () => {
 
     // the recovery key unlocks again after a close
     h.manager.close();
+    await expect(provisioned.currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
     const recoveryUnlock = await h.gate.request("/api/vault/unlock-recovery", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -932,6 +948,20 @@ describe("vault gate hardening (review supplement)", () => {
     // loopback through the same overlay still reaches first-run setup
     const local = await overlay(setupRequest(), { incoming: { socket: { remoteAddress: "127.0.0.1" } } });
     expect(local.status).toBe(200);
+  });
+
+  itHeavy("reads the current owner using the native broker credential and refuses it after revocation", async () => {
+    const h = harness(tempDir("dokan-owner-broker-"), { broker: true });
+    await h.manager.prepareSetup("correct horse battery");
+    h.manager.finishSetupBootstrap();
+    const session = await h.manager.commitSetup();
+    await h.bootstrapApp({ masterKey: h.manager.requireMasterKey(), vaultId: h.manager.metadata().vaultId, fresh: true });
+    const client = h.linkWith({ "x-vault-session": session.token });
+    await client.firstTimeSetup({ ownerName: "Amara أمارة", phoneNumber: "0550123123", storeName: "متجر" });
+    expect(await client.currentOwner()).toEqual({ id: h.manager.ownerId()!, name: "Amara أمارة", phone: "+213550123123", role: "owner" });
+    await h.gate.request("/api/vault/logout", { method: "POST", headers: { "x-vault-session": session.token } });
+    await expect(client.currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
+    h.manager.close();
   });
 
   itHeavy("refuses HTTP pre-boot credential routes in broker mode; post-unlock routes stay HTTP (issue #141)", async () => {
@@ -1808,6 +1838,8 @@ describe("the server arbitrates the one live session (#319 round 2)", () => {
 
     // the header is the broker transport and works
     expect((await h.linkWith({ "x-vault-session": session.token }).categoriesList()).items.length).toBeGreaterThan(0);
+    expect((await h.linkWith({ "x-vault-session": session.token }).currentOwner()).role).toBe("owner");
+    await expect(h.linkWith({ cookie: `dokan.vault.session=${session.token}` }).currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
     // the same live token in a COOKIE is not a credential on this server: the
     // packaged desktop's promise is that the secret never crosses the network,
     // so a page holding a cookie of the same name cannot act as the shell

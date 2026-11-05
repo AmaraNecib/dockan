@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@/lib/scoped-mutation";
 import { Trans, useTranslation } from "react-i18next";
 
 import type { Invoice } from "@dokan/contracts";
@@ -12,7 +13,7 @@ import { draftBlank, parseLooseNumber, parseWholeAmount } from "@/lib/amount-par
 
 import { tError } from "@/lib/i18n";
 import { invalidatePartyMoney } from "@/lib/party-cache-key";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import { parseCashBackDraft, parseReturnQuantities } from "./supplier-return-draft";
 
 type ReturnMode = "INVOICE_LINKED" | "FREE_STANDING";
@@ -44,6 +45,7 @@ export function SupplierReturnPanel({
   onWriteFailed?: () => void;
   onCancel: () => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<ReturnMode>("INVOICE_LINKED");

@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -8,10 +9,11 @@ import { EmptyState } from "@/components/ui/empty-state";
 
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 
 export function CategoriesPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const categories = useQuery(orpc.categoriesList.queryOptions());

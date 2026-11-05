@@ -1,10 +1,9 @@
 import {
   hasPreferenceWrite,
   parseBooleanPreference,
-  readPreferences,
+  createPreferenceClient,
   serializeBooleanPreference,
   usePreference,
-  writePreference,
 } from "@/lib/preferences";
 
 /**
@@ -33,17 +32,18 @@ export function useSidebarCollapsed() {
  * Returns the server value it imported (or null), so the caller can refresh
  * the shared preferences query without waiting for its next refetch.
  */
-export async function migrateLegacySidebarCollapsed(): Promise<string | null> {
+export async function migrateLegacySidebarCollapsed(preferences = createPreferenceClient()): Promise<string | null> {
   const legacy = readLegacySidebarCollapsed();
   if (legacy === undefined) return null;
 
   let serverValue: string | undefined;
   try {
-    serverValue = (await readPreferences())[SIDEBAR_COLLAPSED_KEY];
+    serverValue = (await preferences.read())[SIDEBAR_COLLAPSED_KEY];
   } catch {
     // server unreachable: keep the legacy value and retry next launch
     return null;
   }
+  if (!preferences.isLive()) return null;
   if (serverValue !== undefined) {
     // already migrated (or chosen afresh): drop the stale legacy key
     clearLegacySidebarCollapsed();
@@ -56,8 +56,8 @@ export async function migrateLegacySidebarCollapsed(): Promise<string | null> {
     return null;
   }
 
-  const stored = await writePreference(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(legacy));
-  if (stored === null) return null; // write failed: retry next launch
+  const stored = await preferences.write(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(legacy));
+  if (!preferences.isLive() || stored === null) return null; // write failed: retry next launch
   clearLegacySidebarCollapsed();
   return stored;
 }

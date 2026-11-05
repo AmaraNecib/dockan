@@ -48,6 +48,8 @@ mock.module("@tanstack/react-router", () => ({
 }));
 
 let pendingFetchCount = 0;
+const defaultProfileRead = async () => ({ id: "owner-id", name: "عبد الرحمن Amara بن محمد صاحب المتجر ذو الاسم الطويل", phone: "+213550123123", role: "owner" as const });
+let profileRead = defaultProfileRead;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -63,6 +65,7 @@ mock.module("@/lib/rpc", () => ({
   },
   // the sidebar's collapsed preference reads through the same seam
   rpcClient: {
+    currentOwner: () => profileRead(),
     preferencesGet: async () => ({ values: {} }),
     preferencesSet: async (input: { key: string; value: string }) => input,
   },
@@ -85,6 +88,66 @@ async function waitFor(check: () => boolean): Promise<boolean> {
   }
   return false;
 }
+
+describe("AppShell verified identity", () => {
+  afterEach(async () => {
+    profileRead = defaultProfileRead;
+    const { clearAuthLost } = await import("@/lib/auth-refusal");
+    await act(async () => clearAuthLost());
+  });
+  it("shows the verified mixed name and role without putting the phone in the header, and clears identity on auth loss", async () => {
+    const { markAuthLost, clearAuthLost } = await import("@/lib/auth-refusal");
+    clearAuthLost();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><ThemeProvider><SaleDraftProvider><AppShell /></SaleDraftProvider></ThemeProvider></QueryClientProvider>));
+      expect(await waitFor(() => host.querySelector('[data-testid="account-menu-trigger"]') !== null)).toBe(true);
+      const header = host.querySelector("header");
+      if (!header) throw new Error("shell header missing");
+      expect(header.textContent).toContain("عبد الرحمن Amara بن محمد");
+      expect(header.textContent).toContain("المالك");
+      expect(header.textContent).not.toContain("+213550123123");
+      await act(async () => markAuthLost());
+      expect(header.textContent).not.toContain("عبد الرحمن");
+      expect(host.querySelector('[data-testid="account-menu-trigger"]')).toBeNull();
+      expect(header.textContent).not.toContain("جارٍ تحميل الحساب");
+      expect(header.textContent).toContain("الحساب غير متاح.");
+      expect(header.textContent).not.toContain("أعد المحاولة");
+      profileRead = async () => { throw new Error("network unavailable"); };
+      await act(async () => clearAuthLost());
+      expect(await waitFor(() => header.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
+      expect(header.textContent).not.toContain("المالك");
+
+      let resolveOld = (_owner: Awaited<ReturnType<typeof defaultProfileRead>>) => {};
+      let resolveNew = (_owner: Awaited<ReturnType<typeof defaultProfileRead>>) => {};
+      const oldRead = new Promise<Awaited<ReturnType<typeof defaultProfileRead>>>((resolve) => { resolveOld = resolve; });
+      const newRead = new Promise<Awaited<ReturnType<typeof defaultProfileRead>>>((resolve) => { resolveNew = resolve; });
+      let reads = 0;
+      profileRead = () => { reads += 1; return reads === 1 ? oldRead : newRead; };
+      const retry = header.querySelector("button[title='تعذّر تحميل الحساب. أعد المحاولة.']");
+      if (!(retry instanceof HTMLButtonElement)) throw new Error("account retry missing");
+      await act(async () => retry.click());
+      expect(reads).toBe(1);
+      await act(async () => markAuthLost());
+      await act(async () => clearAuthLost());
+      expect(reads).toBe(2);
+      const owner = await defaultProfileRead();
+      await act(async () => resolveNew({ ...owner, name: "المالك الجديد" }));
+      expect(header.textContent).toContain("المالك الجديد");
+      await act(async () => resolveOld({ ...owner, name: "المالك السابق" }));
+      expect(header.textContent).toContain("المالك الجديد");
+      expect(header.textContent).not.toContain("المالك السابق");
+    } finally {
+      await act(async () => root.unmount());
+      queryClient.clear();
+      host.remove();
+      profileRead = defaultProfileRead;
+    }
+  });
+});
 
 describe("AppShell pending-returns badge (#295)", () => {
   let queryClient: QueryClient;

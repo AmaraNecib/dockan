@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@/lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 
@@ -7,7 +8,7 @@ import type { PartyCreate, PartyRole } from "@dokan/contracts";
 import { displayAlgerianPhone, isPartyPhoneText, normalizeTextKey } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import { tError } from "@/lib/i18n";
 import { invalidateParties } from "./party-forms";
 import { duplicateNameParty, filterParties, partyQueryLooksLikePhone, phoneMatchParty } from "./party-match";
@@ -48,6 +49,7 @@ interface PartyPickerProps {
  * Deliberately not a dialog: the owner keeps the invoice in view while picking.
  */
 export function PartyPicker({ role, label, value, onChange, disabled = false, testId }: PartyPickerProps) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const inputId = `${testId}-input`;

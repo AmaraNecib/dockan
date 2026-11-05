@@ -6,16 +6,18 @@ import { z } from "zod";
 const execFileAsync = promisify(execFile);
 export type PhysicalDeviceRelation = "same" | "different" | "unknown";
 
-// Constant PowerShell source. Paths travel as execFile arguments, never through a shell string.
+// Constant PowerShell source. User paths are encoded as single-quoted PowerShell literals, then the whole script uses -EncodedCommand; no shell parses the paths.
 const windowsDiskQuery = String.raw`
-$paths = @($args[0], $args[1])
+$ProgressPreference = "SilentlyContinue"
+$paths = @(__SOURCE_PATH__, __DESTINATION_PATH__)
 $volumes = @(Get-CimInstance Win32_Volume -ErrorAction Stop)
+$partitions = @(Get-Partition -ErrorAction Stop)
 $numbers = @()
 foreach ($target in $paths) {
   $volume = $volumes | Where-Object { $_.Name -and $target.StartsWith($_.Name, [StringComparison]::OrdinalIgnoreCase) } | Sort-Object { $_.Name.Length } -Descending | Select-Object -First 1
   if ($null -eq $volume) { $numbers += $null; continue }
   try {
-    $partition = Get-Partition -ErrorAction Stop | Where-Object { $_.AccessPaths -contains $volume.DeviceID } | Select-Object -First 1
+    $partition = $partitions | Where-Object { $_.AccessPaths -contains $volume.DeviceID } | Select-Object -First 1
     if ($null -eq $partition) { $numbers += $null } else { $numbers += [string]$partition.DiskNumber }
   } catch { $numbers += $null }
 }
@@ -38,10 +40,15 @@ export async function comparePhysicalDevice(
 ): Promise<PhysicalDeviceRelation> {
   if (platform === "win32") {
     try {
+      const powershellLiteral = (value: string) => `'${value.replaceAll("'", "''")}'`;
+      const script = windowsDiskQuery
+        .replace("__SOURCE_PATH__", powershellLiteral(dataDir))
+        .replace("__DESTINATION_PATH__", powershellLiteral(destination));
+      const encodedScript = Buffer.from(script, "utf16le").toString("base64");
       const result = await execFileAsync(
         "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", windowsDiskQuery, dataDir, destination],
-        { timeout: 2500, maxBuffer: 2048, windowsHide: true },
+        ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodedScript],
+        { timeout: 7500, maxBuffer: 2048, windowsHide: true },
       );
       const parsed = diskNumbersSchema.safeParse(JSON.parse(result.stdout));
       return parsed.success ? compareWindowsDiskNumbers(parsed.data) : "unknown";

@@ -26,6 +26,11 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
   }
   const [first, second, third] = seeded;
   if (first === undefined || second === undefined || third === undefined) throw new Error("expected three persisted invoice fixtures");
+  const sequenceOf = (invoiceNumber: string): string => {
+    const match = /^SUP-(\d+)$/u.exec(invoiceNumber);
+    if (match?.[1] === undefined) throw new Error(`unexpected generated purchase number: ${invoiceNumber}`);
+    return match[1];
+  };
 
   await page.goto("/invoices");
   const surface = page.getByTestId("invoices-page");
@@ -40,15 +45,15 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
 
   await fromDate.fill("2090-01-02");
   await toDate.fill("2090-01-02");
-  await fromNumber.fill("2");
-  await toNumber.fill("SUP-3");
+  await fromNumber.fill(sequenceOf(second.invoiceNumber));
+  await toNumber.fill(third.invoiceNumber);
   await expect(rows).toHaveCount(1);
   expect(await visibleNumbers()).toEqual([second.invoiceNumber]);
 
   await fromDate.fill("2090-01-01");
   await toDate.fill("2090-01-03");
-  await fromNumber.fill("2");
-  await toNumber.fill("3");
+  await fromNumber.fill(sequenceOf(second.invoiceNumber));
+  await toNumber.fill(sequenceOf(third.invoiceNumber));
   await expect(rows).toHaveCount(2);
   const order = page.getByTestId("invoices-order-filter");
   await order.click();

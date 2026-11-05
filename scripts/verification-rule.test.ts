@@ -182,6 +182,44 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(feature).toContain("Commit the complete reviewable scope before step 6");
   });
 
+  test("finding dispositions and refinements cannot bypass review gates", () => {
+    const workflow = read("docs/engineering-workflow.md");
+    const gate = workflow.match(/^- \*\*Both required verdicts[^\r\n]*/m)?.[0] ?? "";
+    for (const fact of [
+      "split substantial work and hold dependent PRs until resolved",
+      "code evidence and reviewer resolution",
+      "A valid finding cannot be ignored, deferred, downgraded or marked addressed as a refinement",
+    ]) expect(gate).toContain(fact);
+    const refinement = workflow.match(/^- \*\*Small related refinements[^\r\n]*/m)?.[0] ?? "";
+    for (const fact of [
+      "serve the same acceptance goal, stay localized",
+      "add no behavior, risk, decision, dependency or architecture scope",
+      "optional only when the reviewer accepts its disposition and applicable gates allow it",
+    ]) expect(refinement).toContain(fact);
+    const skill = read(".agents/skills/reviewloop/SKILL.md");
+    const resolution = skill.split("### 5. Verify and resolve findings")[1]?.split("### 6.")[0] ?? "";
+    for (const fact of [
+      "hold dependent work until the blocker is resolved",
+      "obtain reviewer resolution",
+      "no unresolved actionable finding may remain at any score",
+      "cannot be hidden in `summary.dismissed`",
+    ]) expect(resolution).toContain(fact);
+  });
+
+  test("shared implementation ownership retains every safety condition", () => {
+    const agents = read("AGENTS.md");
+    const ownership = agents.match(/^\*\*One writer owns[^\r\n]*/m)?.[0] ?? "";
+    for (const fact of [
+      "One writer owns the PR worktree at a time",
+      'one implementation worker with `delegate_task` and `isolation: "shared"`',
+      "the parent gives up edits while the worker owns it",
+      "Reviewers may share the same tree read-only at the pinned head",
+      "Freeze source during final verification and review",
+      "Before replacing a writer, cancel it and confirm it stopped",
+      "never use the shared project root for concurrent writes",
+    ]) expect(ownership).toContain(fact);
+  });
+
   test("same-family fallback records standing approval without waiving gates", () => {
     const skill = read(".agents/skills/reviewloop/SKILL.md").replace(/\s+/g, " ");
     for (const fact of [

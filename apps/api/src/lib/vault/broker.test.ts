@@ -221,6 +221,37 @@ describe("desktop shell vault broker", () => {
     expect(readVaultBackupBundle(fs.readFileSync(backupFile))).toBeDefined();
   }, HEAVY_TEST_TIMEOUT_MS);
 
+  it("preserves today's unsupported plaintext history through first-run setup and its daily backup", async () => {
+    const backup = backupFilePath(dir);
+    fs.mkdirSync(path.dirname(backup), { recursive: true });
+    const historical = new Database(backup);
+    historical.exec("CREATE TABLE recovery_history (note TEXT); INSERT INTO recovery_history VALUES ('history before first setup'); PRAGMA user_version = 2147483647;");
+    historical.close();
+    const original = fs.readFileSync(backup);
+    // The real HTTP setup response waits for afterSetup, unlike the broker's
+    // early recovery-key reply, so it proves the daily-backup attempt finished.
+    child = spawn("bun", ["src/main.ts"], {
+      cwd: path.join(import.meta.dir, "..", "..", ".."),
+      env: { ...brokerEnvironment(dir, port), DOKAN_VAULT_STDIN: "0" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    await waitForHealth(port);
+    const response = await fetch(`http://127.0.0.1:${port}/api/vault/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(response.ok).toBe(true);
+    expect(await response.json()).toMatchObject({ ok: true, plaintextStatus: "remaining", plaintextRemaining: [backup] });
+    expect(fs.readFileSync(backup).equals(original)).toBe(true);
+    const preserved = new Database(backup, { readonly: true });
+    try {
+      expect(preserved.query("SELECT note FROM recovery_history").all()).toEqual([{ note: "history before first setup" }]);
+    } finally {
+      preserved.close();
+    }
+  }, HEAVY_TEST_TIMEOUT_MS);
+
   it("preserves today's unsupported plaintext history after unlock and a credential change", async () => {
     child = spawnBroker(dir, port);
     const setupLine = lineReader(child);

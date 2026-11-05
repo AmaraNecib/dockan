@@ -44,6 +44,19 @@ async function createVault(vault: VaultManager): Promise<VaultSession> {
   return await vault.commitSetup();
 }
 
+function writeCrashedWalBackup(file: string): void {
+  // Kill this isolated writer without closing SQLite so committed rows stay
+  // in a genuine WAL instead of a synthetic sidecar fixture.
+  const writer = Bun.spawnSync([process.execPath, "-e", `
+    const { Database } = require("bun:sqlite");
+    const db = new Database(process.argv[1]);
+    db.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE history(note TEXT); INSERT INTO history VALUES ('committed WAL history');");
+    process.kill(process.pid, "SIGKILL");
+  `, file]);
+  expect(writer.success).toBe(false);
+  expect(fs.statSync(`${file}-wal`).size).toBeGreaterThan(0);
+}
+
 describe("VaultManager", () => {
   itHeavy("reports unconfigured, then locked, then unlocked", async () => {
     const vault = manager();
@@ -514,16 +527,7 @@ describe("VaultManager", () => {
     const backupsDir = path.join(dir, "backups");
     fs.mkdirSync(backupsDir);
     const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
-    // Exit without closing SQLite, as an interrupted writer would, so committed
-    // rows remain in a genuine WAL rather than a synthetic sidecar fixture.
-    const writer = Bun.spawnSync([process.execPath, "-e", `
-      const { Database } = require("bun:sqlite");
-      const db = new Database(process.argv[1]);
-      db.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE history(note TEXT); INSERT INTO history VALUES ('committed WAL history');");
-      process.kill(process.pid, "SIGKILL");
-    `, partial]);
-    expect(writer.success).toBe(false);
-    expect(fs.statSync(`${partial}-wal`).size).toBeGreaterThan(0);
+    writeCrashedWalBackup(partial);
     const vault = manager();
     await createVault(vault);
     const open = fs.promises.open.bind(fs.promises);
@@ -542,6 +546,33 @@ describe("VaultManager", () => {
       }
     } finally {
       fault.mockRestore();
+      vault.close();
+    }
+  });
+
+  itHeavy("converts committed crashed-writer WAL history into a restorable encrypted bundle", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    writeCrashedWalBackup(partial);
+    const vault = manager();
+    await createVault(vault);
+    try {
+      expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "clean", remaining: [] });
+      for (const suffix of ["", "-wal", "-shm"]) expect(fs.existsSync(`${partial}${suffix}`)).toBe(false);
+      const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-wal-restore-"));
+      extraDirs.push(restoreDir);
+      await extractVaultBackup(fs.readFileSync(`${partial}.dknvbak`), restoreDir);
+      const restored = new VaultManager({ dataDir: restoreDir, legacyDbPath: path.join(restoreDir, "dokan.db"), logger: new AppLogger(restoreDir), kdf: FAST_KDF });
+      await restored.unlock(PASSPHRASE);
+      const connection = createEncryptedConnection({ snapshotPath: restored.snapshotPath, masterKey: restored.requireMasterKey(), vaultId: restored.metadata().vaultId });
+      try {
+        expect(connection.raw.query("SELECT note FROM history").all()).toEqual([{ note: "committed WAL history" }]);
+      } finally {
+        await connection.close();
+        restored.close();
+      }
+    } finally {
       vault.close();
     }
   });

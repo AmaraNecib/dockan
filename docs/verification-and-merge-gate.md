@@ -189,7 +189,7 @@ the queue or back to a lane.
 4. **An evidence comment is present**, in the form section 1 requires for that change — and the
    evidence must be **at the head being merged**, not at some earlier commit.
 
-On top of the four: **CI acceptance is green on the current head**, every required CI check is green or legitimately skipped (a correctly gated job reporting `skipped` is fine; a pending or pending-then-cancelled check is not), and the PR is not `CONFLICTING`. The parent verifies the stable check is required, including administrator enforcement, and obtains recorded owner acceptance of the bypass policy before activating reduced local checks. Only the owner decides whether bypass is acceptable.
+On top of the four: **CI acceptance is green on the current head**, every required CI check is green or legitimately skipped (a correctly gated job reporting `skipped` is fine; a pending or pending-then-cancelled check is not), and the PR is not `CONFLICTING`. The parent verifies effective protection using [Current activation](engineering-workflow.md#current-activation), which records the existing owner acceptance. Only the owner changes protection or accepts bypass; a regression blocks merge.
 
 ### What the predicate scripts and what the parent checks
 

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 
@@ -16,7 +17,7 @@ import { tError } from "@/lib/i18n";
 import { focusByTestId } from "@/lib/focus";
 import { supplierBalanceDirectionKey, supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import {
   MAX_OPENING_BALANCE_ROWS,
   droppedFilledDrafts,
@@ -76,6 +77,7 @@ function navigatesCurrentTab(event: ReactMouseEvent): boolean {
  * entry asks for confirmation first.
  */
 export function SupplierOpeningBalancePage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();

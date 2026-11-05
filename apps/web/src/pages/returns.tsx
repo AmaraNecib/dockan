@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -13,7 +14,7 @@ import { inputClass } from "@/components/ui/input";
 import { Amount } from "@/components/ui/amount";
 import { Pager } from "@/components/ui/pager";
 import { EmptyState } from "@/components/ui/empty-state";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 
 /**
  * Returns review (/returns). Every recorded return, pending first: the owner
@@ -24,6 +25,7 @@ import { orpc } from "../lib/rpc";
  * like PaymentPanel on the invoice screen.
  */
 export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[] }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [rejectReasons, setRejectReasons] = useState<Record<string, string>>({});
@@ -142,6 +144,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
 }
 
 export function ReturnsPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const pager = usePagination();
   const query = useQuery(orpc.returnsList.queryOptions({ input: { ...pager.pagination } }));
@@ -214,6 +217,7 @@ export function ReturnsPage() {
  * on-demand voucher.
  */
 export function SupplierReturnsList() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const pager = usePagination();
   const query = useQuery(orpc.suppliersReturnsList.queryOptions({ input: { ...pager.pagination } }));

@@ -1,10 +1,10 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 import { backupRevealAvailable, BackupRevealError, revealBackup } from "../lib/backup-reveal";
 
@@ -15,6 +15,7 @@ import { backupRevealAvailable, BackupRevealError, revealBackup } from "../lib/b
  * and reports where the file landed.
  */
 export function BackupsPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const backup = useMutation(orpc.backupManual.mutationOptions());
   const reveal = useMutation({ mutationFn: revealBackup });

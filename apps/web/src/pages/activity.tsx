@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Pager } from "@/components/ui/pager";
 import { EmptyState } from "@/components/ui/empty-state";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { usePagination } from "../hooks/use-pagination";
 import { formatDateTime } from "../lib/dates";
 import { adjustmentDirectionKey } from "../lib/supplier-entry-display";
@@ -250,6 +250,7 @@ export function activitySummaryText(t: TFunction, summary: string): ReactNode {
  */
 
 export function ActivityLogPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const pager = usePagination();
   const activities = useQuery(orpc.activitiesList.queryOptions({ input: { ...pager.pagination } }));

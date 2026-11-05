@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -13,7 +14,7 @@ import { inputClass } from "@/components/ui/input";
 import { focusByTestId } from "../lib/focus";
 import { expenseCorrectionRecoveryQueryKey } from "../lib/query-keys";
 import { useSessionCacheScope } from "../lib/session-query-scope";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { usePagination } from "../hooks/use-pagination";
 import { editDateBound, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTimeText, type DateBound } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
@@ -100,6 +101,7 @@ function ExpenseCorrectionRow({
   onUndoRequestChange: (expenseId: string, correctionId: string, key: string | null, expectedKey?: string) => void;
   recovery: ExpenseCorrectionRecovery;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
@@ -550,6 +552,7 @@ function ExpenseCorrectionRow({
 type RecordError = { message: string; field: "amount" | "category" | "date" | "save" };
 
 export function ExpensesPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const sessionCacheScope = useSessionCacheScope();

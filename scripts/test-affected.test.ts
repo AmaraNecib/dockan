@@ -492,7 +492,18 @@ describe("the impacted filter, live against turbo", () => {
     // actually select a package, because a filter that selects only `//` runs
     // zero tasks and exits 0. The old test looped over the answer and was green
     // when the answer was empty, which is the case it existed for.
-    const plan = planAffected(BASE_REF, ROOT, () => ["apps/web/src/pages/sale.tsx"]);
+    const observed: {
+      step: string[];
+      cwd: string;
+      selection: ReturnType<typeof enumeratePackages>;
+    }[] = [];
+    const plan = planAffected(BASE_REF, ROOT, () => ["apps/web/src/pages/sale.tsx"], {
+      select: (step, cwd) => {
+        const selection = enumeratePackages(step, cwd);
+        observed.push({ step: [...step], cwd, selection });
+        return selection;
+      },
+    });
     // #369: vouch on the whole Plan first — on the parent's hollow stand-in
     // this is `expect(undefined).toEqual(...)` reding as an AssertionError.
     // The vouch is deliberately thin, because either scope is a live answer on
@@ -507,7 +518,10 @@ describe("the impacted filter, live against turbo", () => {
       note: expect.any(String),
     });
     if (plan.scope === "filtered") {
-      const live = enumeratePackages(plan.steps[0] ?? [], ROOT);
+      expect(observed.map(({ step, cwd }) => ({ step, cwd }))).toEqual([
+        { step: plan.steps[0] ?? [], cwd: ROOT },
+      ]);
+      const live = observed[0]?.selection;
       const real = live?.packages.filter((name) => name !== "//") ?? [];
       expect([live === undefined ? "<hollow>" : live.refusal, real.length > 0]).toEqual([
         null,

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { clearAuthLost, markAuthLost } from "./auth-refusal";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
@@ -188,6 +189,74 @@ describe("preferences client (issue 97 follow-up)", () => {
     }
   });
 
+  it("does not start recovery or install a retired write after query cancellation awaits", async () => {
+    failRead = true;
+    const handle = await mountProbe("ui.test.cancel-retirement");
+    expect(await waitFor(() => text(handle.host, "read-error") === "true")).toBe(true);
+    failRead = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const cancel = spyOn(handle.client, "cancelQueries").mockImplementation(() => gate);
+    const fetch = spyOn(handle.client, "fetchQuery");
+    let settled = 0;
+    const unsubscribe = onPreferenceWriteSettled(() => { settled += 1; });
+    try {
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(cancel).toHaveBeenCalledTimes(1);
+      markAuthLost();
+      clearAuthLost();
+      await act(async () => {
+        release();
+        await gate;
+      });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(handle.client.getQueryData(["preferences"])).toBeUndefined();
+      expect(settled).toBe(0);
+    } finally {
+      unsubscribe();
+      release();
+      cancel.mockRestore();
+      fetch.mockRestore();
+      clearAuthLost();
+      await handle.unmount();
+    }
+  });
+
+  it("discards a recovery read retired during its await without refetching under a new credential", async () => {
+    failRead = true;
+    const handle = await mountProbe("ui.test.read-retirement");
+    expect(await waitFor(() => text(handle.host, "read-error") === "true")).toBe(true);
+    failRead = false;
+    let release!: () => void;
+    readGate = new Promise<void>((resolve) => { release = resolve; });
+    const fetch = spyOn(handle.client, "fetchQuery");
+    const invalidate = spyOn(handle.client, "invalidateQueries");
+    let settled = 0;
+    const unsubscribe = onPreferenceWriteSettled(() => { settled += 1; });
+    try {
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const recovery = fetch.mock.results[0]?.value;
+      expect(recovery).toBeDefined();
+      markAuthLost();
+      clearAuthLost();
+      await act(async () => {
+        release();
+        await expect(recovery).rejects.toThrow("SESSION_SCOPE_RETIRED");
+      });
+      expect(handle.client.getQueryData(["preferences"])).toBeUndefined();
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(settled).toBe(0);
+    } finally {
+      unsubscribe();
+      release();
+      fetch.mockRestore();
+      invalidate.mockRestore();
+      clearAuthLost();
+      await handle.unmount();
+    }
+  });
+
   it("reports a failed write instead of pretending it landed", async () => {
     failWrite = true;
     const handle = await mountProbe("ui.test.c");
@@ -199,6 +268,24 @@ describe("preferences client (issue 97 follow-up)", () => {
     expect(text(handle.host, "value")).toBe("false");
     expect(store["ui.test.c"]).toBeUndefined();
     await handle.unmount();
+  });
+
+  it("drops queued old-scope writes and settlement notifications after unmount", async () => {
+    let release!: () => void;
+    writeGate = new Promise<void>((resolve) => { release = resolve; });
+    const handle = await mountProbe("ui.test.retired");
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+    let settled = 0;
+    const stop = onPreferenceWriteSettled(() => { settled += 1; });
+    try {
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='unset']")?.click());
+      await handle.unmount();
+      release();
+      await flush();
+      expect(writeCalls).toBe(1);
+      expect(settled).toBe(0);
+    } finally { stop(); }
   });
 
   it("does not drop a second change made while a write is in flight", async () => {

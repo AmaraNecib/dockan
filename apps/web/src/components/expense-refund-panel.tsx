@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { clearExpenseRefundRequest, expenseRefundJournalKey, persistExpenseRefundRequest, readExpenseRefundRequest, type ExpenseRefundRequest as Request } from "../lib/expense-refund-journal";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
+import { useMutation } from "../lib/scoped-mutation";
 import { useSessionCacheScope } from "../lib/session-query-scope";
 import { parseGroupedAmount } from "../lib/amount-parse";
 import { formatDateTime, nowDateTimeText, parseDateTimeText } from "../lib/dates";
@@ -26,6 +27,7 @@ export function ExpenseRefundPanel({ expenseId }: { expenseId: string }) {
 
 function RefundIdentityGate({ expenseId, onCancel }: { expenseId: string; onCancel: () => void }) {
   const { t } = useTranslation();
+  const { orpc } = useRpc();
   const scope = useSessionCacheScope();
   const options = orpc.expenseRefundHistory.queryOptions({ input: { expenseId } });
   const history = useQuery({ ...options, queryKey: [...options.queryKey, scope] });
@@ -37,6 +39,7 @@ function RefundIdentityGate({ expenseId, onCancel }: { expenseId: string; onCanc
 
 function RefundEditor({ expenseId, actorId, onCancel }: { expenseId: string; actorId: string; onCancel: () => void }) {
   const { t } = useTranslation();
+  const { orpc } = useRpc();
   const queryClient = useQueryClient();
   const scope = useSessionCacheScope();
   const recoveryKey = ["expenseRefundRecovery", scope, expenseId, actorId];

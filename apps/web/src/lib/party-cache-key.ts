@@ -118,7 +118,7 @@ export function invalidatePartyMoney(queryClient: CacheInvalidator, identity: Pa
  */
 export function partyBalanceQueryOptions(
   identity: PartyBalanceIdentity,
-  options: { refreshMs?: number; enabled?: boolean } = {},
+  options: { refreshMs?: number; enabled?: boolean; rpc?: typeof orpc } = {},
 ): ReturnType<typeof orpc.debtsByParty.queryOptions> & { enabled: boolean } & ReturnType<typeof hotCounterRefresh> {
   const input = partyBalanceInput(identity);
   // the raw identity keeps the key well-formed for the disabled entry. It is
@@ -130,7 +130,7 @@ export function partyBalanceQueryOptions(
     counterpartyName: identity.counterpartyName,
   };
   return {
-    ...orpc.debtsByParty.queryOptions({ input: input ?? wellFormed }),
+    ...(options.rpc ?? orpc).debtsByParty.queryOptions({ input: input ?? wellFormed }),
     enabled: (options.enabled ?? true) && input !== null,
     ...hotCounterRefresh(options.refreshMs ?? PARTY_BALANCE_REFETCH_MS),
   };

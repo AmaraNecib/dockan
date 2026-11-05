@@ -243,7 +243,7 @@
     {
       "$comment": "auth is the one API area with dedicated specs; the rest of apps/api is critical",
       "match": ["apps/api/src/auth/**"],
-      "specs": ["login.spec.ts", "00-onboarding.spec.ts"]
+      "specs": ["login.spec.ts", "00-onboarding.spec.ts", "owner-profile.spec.ts", "cross-tab-session.spec.ts"]
     }
   ]
 }

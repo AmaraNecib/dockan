@@ -22,7 +22,7 @@ function saved(input: ExpenseRefundInput): ExpenseRefund {
   return row;
 }
 
-mock.module("../lib/rpc", () => ({ orpc: {
+mock.module("../lib/rpc", () => ({ rpcClient: {}, orpc: {
   expenseRefundHistory: { queryOptions: () => ({ queryKey: ["refund-history", expenseId], queryFn: async () => ({ requestActorId: actorId, refundableAmount: 1000 + refunds.reduce((sum, row) => sum + row.difference, 0), refunds: refunds.map((row) => ({ ...row, reversedByRefundId: null })) }) }) },
   expensesRefund: { mutationOptions: () => ({ mutationFn: (input: ExpenseRefundInput) => { inputs.push(input); return delayed(input); } }) },
   expensesRefundUndo: { mutationOptions: () => ({ mutationFn: async () => { throw new Error("unexpected compensation"); } }) },

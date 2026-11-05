@@ -5,7 +5,7 @@ import { displayAlgerianPhone } from "@dokan/contracts";
 
 import { Skeleton } from "@/components/ui/skeleton";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 
 /**
  * Ticket 10 — invoice header. Prints the store identity (name + phone from
@@ -18,6 +18,7 @@ import { orpc } from "../lib/rpc";
  * its own dir="ltr" span.
  */
 export function InvoiceHeader() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const settings = useQuery(orpc.settingsGet.queryOptions());
 

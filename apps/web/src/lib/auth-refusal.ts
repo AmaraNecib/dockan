@@ -96,7 +96,12 @@ function forgetSignedOut(): void {
 let refusalLost = false;
 const listeners = new Set<() => void>();
 
+let revision = 0;
+
+export function authLossRevision(): number { return revision; }
+
 function notify(): void {
+  revision += 1;
   for (const listener of listeners) listener();
 }
 
@@ -192,6 +197,11 @@ function subscribe(listener: () => void): () => void {
 export function authLossReason(): "refusal" | "signed-out" | undefined {
   const reason = authLostState();
   return reason === false ? undefined : reason;
+}
+
+/** Revisions still change if loss and recovery occur before React renders. */
+export function useAuthLossRevision(): number {
+  return useSyncExternalStore(subscribe, authLossRevision, authLossRevision);
 }
 
 /**

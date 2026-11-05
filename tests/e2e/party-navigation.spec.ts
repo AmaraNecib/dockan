@@ -141,6 +141,7 @@ for (const role of ["customer", "supplier"] as const) {
       await page.keyboard.press("Tab");
       await expect(details).toBeFocused();
       const popupPromise = page.context().waitForEvent("page", { timeout: 10_000 });
+      void popupPromise.catch(() => undefined);
       await details.click({ modifiers: ["ControlOrMeta"] });
       const popup = await popupPromise;
       try {

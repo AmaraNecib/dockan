@@ -45,6 +45,7 @@ describe("session refresh protocol", () => {
     const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
     const original = window.localStorage;
     const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    expect(descriptor).toBeDefined();
     const restore = replaceLocalStorage({ getItem: () => { throw new Error("blocked"); } });
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     try {
@@ -58,10 +59,11 @@ describe("session refresh protocol", () => {
       expect(calls).toBe(1);
       expect(sessionRefreshGeneration()).toBe(start + 1);
     } finally {
-      restore();
+      restore?.();
       if (visibilityDescriptor !== undefined) Object.defineProperty(document, "visibilityState", visibilityDescriptor);
       else Reflect.deleteProperty(document, "visibilityState");
-      stop();
+      if (descriptor !== undefined) Object.defineProperty(window, "localStorage", descriptor);
+      stop?.();
     }
     expect(Object.getOwnPropertyDescriptor(window, "localStorage")).toEqual(descriptor);
     expect(window.localStorage).toBe(original);
@@ -74,6 +76,7 @@ describe("session refresh protocol", () => {
     const stop = subscribeSessionRefresh(() => { calls += 1; });
     const original = window.localStorage;
     const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    expect(descriptor).toBeDefined();
     const restore = replaceLocalStorage({ setItem: () => { throw new Error("blocked write"); } });
     const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
@@ -88,10 +91,11 @@ describe("session refresh protocol", () => {
       document.dispatchEvent(new Event("visibilitychange"));
       expect(calls).toBe(1);
     } finally {
-      restore();
+      restore?.();
       if (visibilityDescriptor !== undefined) Object.defineProperty(document, "visibilityState", visibilityDescriptor);
       else Reflect.deleteProperty(document, "visibilityState");
-      stop();
+      if (descriptor !== undefined) Object.defineProperty(window, "localStorage", descriptor);
+      stop?.();
     }
     expect(Object.getOwnPropertyDescriptor(window, "localStorage")).toEqual(descriptor);
     expect(window.localStorage).toBe(original);

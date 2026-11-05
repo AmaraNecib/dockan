@@ -8,7 +8,9 @@ import { z } from "zod";
 
 import "./i18n";
 import { clearAuthLost, markAuthLost } from "./auth-refusal";
-import { useRpc, type RpcBinding } from "./rpc-context";
+import { RpcScopeProvider, useRpc, type RpcBinding } from "./rpc-context";
+import { orpc, rpcClient } from "./rpc";
+import { createCredentialLease } from "./credential-lease";
 import { sessionRefreshGeneration } from "./session-refresh";
 import { replaceLocalStorage } from "../tests/local-storage-control";
 import { usePreference, parseBooleanPreference, serializeBooleanPreference } from "./preferences";
@@ -23,6 +25,28 @@ mock.module("@/lib/auth-client", () => ({
 }));
 const { RequireSession } = await import("../App");
 const { CustomerSettlePanel } = await import("../components/parties/customer-settle-panel");
+
+function assertRpcScopeContract() {
+  const lease = createCredentialLease();
+  expect(lease).toBeDefined();
+  expect(lease.isLive).toBeInstanceOf(Function);
+  expect(lease.isLive()).toBe(true);
+  const binding: RpcBinding = { rpcClient, orpc, lease };
+  let observed: RpcBinding | undefined;
+  function BindingProbe() {
+    observed = useRpc();
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    act(() => root.render(<RpcScopeProvider binding={binding}><BindingProbe /></RpcScopeProvider>));
+    expect(observed).toBe(binding);
+    expect(observed?.lease?.isLive()).toBe(true);
+  } finally {
+    act(() => root.unmount());
+  }
+}
+it("provides the active RPC binding and live credential lease through its scope", assertRpcScopeContract);
 
 const originalFetch = globalThis.fetch;
 const roots: ReturnType<typeof createRoot>[] = [];
@@ -50,6 +74,7 @@ async function until(check: () => boolean) {
   expect(check()).toBe(true);
 }
 async function mount(children: ReactNode, strict = false) {
+  assertRpcScopeContract();
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);

@@ -91,6 +91,7 @@ describe("item history projection scaling", () => {
       listStockLinksByItem: async () => trackedLinks,
       getReturnHeader: async () => undefined,
       getSupplierReturn: async () => undefined,
+      getExpenseRefundHistory: async () => undefined,
     } satisfies StoreReadPort;
     const store: Pick<StorePort, "withReadTransaction"> = {
       withReadTransaction: async <T>(callback: (readTx: StoreReadPort) => Promise<T>) => callback(tx),
@@ -190,6 +191,7 @@ describe("item history projection scaling", () => {
       listStockLinksByItem: async () => [],
       getReturnHeader: async () => undefined,
       getSupplierReturn: async () => undefined,
+      getExpenseRefundHistory: async () => undefined,
     } satisfies StoreReadPort;
     const store: Pick<StorePort, "withReadTransaction"> = {
       withReadTransaction: async <T>(callback: (readTx: StoreReadPort) => Promise<T>) => callback(tx),
@@ -233,6 +235,7 @@ describe("item history projection scaling", () => {
       listStockLinksByItem: async () => [],
       getReturnHeader: async () => undefined,
       getSupplierReturn: async () => undefined,
+      getExpenseRefundHistory: async () => undefined,
     } satisfies StoreReadPort;
     const store: Pick<StorePort, "withReadTransaction"> = {
       withReadTransaction: async <T>(callback: (readTx: StoreReadPort) => Promise<T>) => callback(tx),

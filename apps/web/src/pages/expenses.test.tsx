@@ -2176,13 +2176,13 @@ describe("ExpensesPage — immutable expense corrections (#408)", () => {
     expect(ui.query<HTMLButtonElement>("expense-correction-open-editor")?.disabled).toBe(true);
     listFails = false;
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
-    expect(await ui.waitFor(() => lastReturnedIds[0] !== "exp-1" && queryClient.isFetching() === 0)).toBe(true);
-    expect(ui.query("expense-row-note")?.textContent).toBe("إيصال قديم");
+    expect(await ui.waitFor(() => lastReturnedIds[0] !== "exp-1" && queryClient.isFetching() === 0 && ui.queryAll("expense-row-note").length === lastReturnedIds.length + 1)).toBe(true);
+    expect([...ui.queryAll("expense-row-note")].map((note) => note.textContent)).toContain("إيصال قديم");
 
     listItems = [];
     listTotal = 0;
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ["expenses"] }); });
-    expect(ui.query("expense-row-note")?.textContent).toBe("إيصال قديم");
+    expect(await ui.waitFor(() => ui.queryAll("expense-row-note").length === 1 && ui.query("expense-row-note")?.textContent === "إيصال قديم")).toBe(true);
     await ui.unmount();
 
     const remounted = await mountPage(queryClient);

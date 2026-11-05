@@ -2334,7 +2334,7 @@ export function createRpcRouter(deps: RpcDeps) {
     expenseRefundHistory: os.expenseRefundHistory.handler(
       guardedInput(async ({ expenseId }, _context, session) => {
         const actor = await expenseActor(session);
-        const history = await deps.store.getExpenseRefundHistory(expenseId);
+        const history = await deps.store.withReadTransaction((tx) => tx.getExpenseRefundHistory(expenseId));
         if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
         return { ...history, requestActorId: actor.id };
       }),

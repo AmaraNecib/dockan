@@ -112,6 +112,7 @@ describe("expense refund storage (#409)", () => {
 
   it("refuses unlocked, excessive, malformed and cross-expense compensation writes atomically", async () => {
     const original = await store.insertExpense({ categoryId, amount: 800, occurredAt: "2019-01-01T00:00:00" });
+    expect(store).toHaveProperty("insertExpenseRefund", expect.any(Function));
     const ownRequest = () => ({ ...request(), expenseId: original.id });
     const prior = await store.withTransactionImmediate((tx) => tx.insertExpenseRefund(ownRequest()));
     const before = await store.getExpenseRefundHistory(original.id);

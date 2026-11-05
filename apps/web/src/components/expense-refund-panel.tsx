@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { expenseRefundJournalKey, readExpenseRefundRequest, type ExpenseRefundRequest as Request } from "../lib/expense-refund-journal";
+import { clearExpenseRefundRequest, expenseRefundJournalKey, readExpenseRefundRequest, type ExpenseRefundRequest as Request } from "../lib/expense-refund-journal";
 import { orpc } from "../lib/rpc";
 import { useSessionCacheScope } from "../lib/session-query-scope";
 import { parseGroupedAmount } from "../lib/amount-parse";
@@ -77,7 +77,7 @@ function RefundEditor({ expenseId, actorId, onCancel }: { expenseId: string; act
     queryClient.setQueryData<Recovery>(recoveryKey, { ...current, request, inFlight: true, notice: false });
     try {
       const saved = request.kind === "refund" ? await refund.mutateAsync(request.input) : await undo.mutateAsync(request.input);
-      sessionStorage.removeItem(journalKey);
+      clearExpenseRefundRequest(sessionStorage, journalKey, request);
       queryClient.setQueryData<Recovery>(recoveryKey, { request: null, inFlight: false, acknowledgedId: saved.id, notice: true });
       setAmountText("");
       setReason("");
@@ -87,7 +87,7 @@ function RefundEditor({ expenseId, actorId, onCancel }: { expenseId: string; act
       const definitive = message !== undefined && ["EXPENSE_REFUND_EXCEEDS_BALANCE", "EXPENSE_REFUND_ALREADY_REVERSED", "EXPENSE_REFUND_KEY_REUSED", "EXPENSE_REFUND_NOT_FOUND", "EXPENSE_NOT_FOUND"].includes(message);
       let cleared = false;
       if (definitive) {
-        try { sessionStorage.removeItem(journalKey); cleared = true; }
+        try { clearExpenseRefundRequest(sessionStorage, journalKey, request); cleared = true; }
         catch { /* Retain the exact request if durable cleanup failed. */ }
       }
       queryClient.setQueryData<Recovery>(recoveryKey, { ...current, request: cleared ? null : request, inFlight: false });

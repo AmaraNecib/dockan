@@ -89,11 +89,49 @@ afterAll(() => {
 
 
 describe("expense refunds (#409)", () => {
+  async function successfulRefund(input: Parameters<DokanClient["expensesRefund"]>[0]) {
+    const result = client.expensesRefund(input);
+    await expect(result).resolves.toMatchObject({ expenseId: input.expenseId, difference: -input.amount, occurredAt: input.occurredAt });
+    return result;
+  }
+
   async function originalExpense(amount = 1000) {
     const category = (await client.expenseCategoriesList()).items.find((row) => !row.isOwnerWithdrawal);
     if (category === undefined) throw new Error("missing operating category");
     return client.expensesCreate({ categoryId: category.id, amount, occurredAt: "2018-01-15T12:00:00" });
   }
+
+  it("reads history in one snapshot while another connection raises the gross and refunds", async () => {
+    const original = await originalExpense();
+    const before = client.expenseRefundHistory({ expenseId: original.id });
+    await expect(before).resolves.toMatchObject({ refundableAmount: 1000 });
+    const saved = await before;
+    const originalRead = store.withReadTransaction.bind(store);
+    const writer = openConnection(config);
+    let snapshotEntered = false;
+    store.withReadTransaction = async (fn) => originalRead(async (tx) => {
+      snapshotEntered = true;
+      const first = await tx.getExpenseRefundHistory(original.id);
+      // An independent WAL connection commits after this reader's first SELECT.
+      writer.raw.exec("BEGIN IMMEDIATE");
+      try {
+        writer.raw.query("INSERT INTO expense_corrections (id, expense_id, effective_at, recorded_at, before_amount, after_amount, difference, actor_id, actor_name, reason, idempotency_key, reverses_correction_id) VALUES (?, ?, ?, ?, 1000, 2000, 1000, ?, ?, NULL, ?, NULL)").run(randomUUID(), original.id, original.occurredAt, original.createdAt, original.actorId, original.actorName, randomUUID());
+        writer.raw.query("INSERT INTO expense_refunds (id, expense_id, difference, occurred_at, recorded_at, actor_id, actor_name, reason, idempotency_key, reverses_refund_id) VALUES (?, ?, -1500, ?, ?, ?, ?, NULL, ?, NULL)").run(randomUUID(), original.id, "2018-02-01T09:00:00", original.createdAt, original.actorId, original.actorName, randomUUID());
+        writer.raw.exec("COMMIT");
+      } catch (error) { writer.raw.exec("ROLLBACK"); throw error; }
+      expect(await tx.getExpenseRefundHistory(original.id)).toEqual(first);
+      return fn(tx);
+    });
+    try {
+      const history = client.expenseRefundHistory({ expenseId: original.id });
+      await expect(history).resolves.toEqual(saved);
+      expect(snapshotEntered).toBe(true);
+    } finally {
+      store.withReadTransaction = originalRead;
+      await writer.close();
+    }
+    await expect(client.expenseRefundHistory({ expenseId: original.id })).resolves.toMatchObject({ expense: { effectiveAmount: 2000 }, refundableAmount: 500, refunds: [expect.objectContaining({ difference: -1500 })] });
+  });
 
   it("counts original expenses, not refund or compensation entries, including refunds-only withdrawal periods", async () => {
     const categories = (await client.expenseCategoriesList()).items;
@@ -101,7 +139,7 @@ describe("expense refunds (#409)", () => {
       const category = categories.find((row) => row.isOwnerWithdrawal === withdrawal);
       if (category === undefined) throw new Error("missing category");
       const original = await client.expensesCreate({ categoryId: category.id, amount: 1000, occurredAt: "2016-01-15T12:00:00" });
-      const refund = await client.expensesRefund({ expenseId: original.id, amount: 300, occurredAt: "2016-02-12T10:00:00", idempotencyKey: randomUUID() });
+      const refund = await successfulRefund({ expenseId: original.id, amount: 300, occurredAt: "2016-02-12T10:00:00", idempotencyKey: randomUUID() });
       const refundPeriod = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2016-02-01T00:00:00", customTo: "2016-02-29T23:59:59" });
       expect(refundPeriod.byCategory.find((row) => row.categoryId === category.id)).toMatchObject({ total: -300, count: 0 });
       await client.expensesRefundUndo({ refundId: refund.id, idempotencyKey: randomUUID() });
@@ -113,7 +151,7 @@ describe("expense refunds (#409)", () => {
   it("serializes competing refunds and deduplicates identical concurrent retries", async () => {
     const original = await originalExpense();
     const input = { expenseId: original.id, amount: 700, occurredAt: "2018-02-01T09:00:00", idempotencyKey: randomUUID() };
-    const [first, retry] = await Promise.all([client.expensesRefund(input), client.expensesRefund(input)]);
+    const [first, retry] = await Promise.all([successfulRefund(input), successfulRefund(input)]);
     expect(first).toEqual(retry);
     const attempts = await Promise.allSettled([200, 200].map((amount) => client.expensesRefund({ ...input, amount, idempotencyKey: randomUUID() })));
     expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -131,7 +169,7 @@ describe("expense refunds (#409)", () => {
   it("preserves compensation chains and refuses corrections below outstanding recoveries", async () => {
     const original = await originalExpense();
     const correction = await client.expensesCorrect({ expenseId: original.id, amount: 1200, idempotencyKey: randomUUID() });
-    const refund = await client.expensesRefund({ expenseId: original.id, amount: 1100, occurredAt: "2018-03-15T09:00:00", idempotencyKey: randomUUID() });
+    const refund = await successfulRefund({ expenseId: original.id, amount: 1100, occurredAt: "2018-03-15T09:00:00", idempotencyKey: randomUUID() });
     await expect(client.expensesCorrect({ expenseId: original.id, amount: 1099, idempotencyKey: randomUUID() })).rejects.toThrow("EXPENSE_CORRECTION_BELOW_REFUNDED");
     await expect(client.expensesCorrectionUndo({ correctionId: correction.id, idempotencyKey: randomUUID() })).rejects.toThrow("EXPENSE_CORRECTION_BELOW_REFUNDED");
     const undoInput = { refundId: refund.id, idempotencyKey: randomUUID() };
@@ -152,7 +190,7 @@ describe("expense refunds (#409)", () => {
 
   it("refuses redo when later refunds exhausted the balance and persists no partial entry", async () => {
     const original = await originalExpense();
-    const refund = await client.expensesRefund({ expenseId: original.id, amount: 1000, occurredAt: "2018-04-01T09:00:00", idempotencyKey: randomUUID() });
+    const refund = await successfulRefund({ expenseId: original.id, amount: 1000, occurredAt: "2018-04-01T09:00:00", idempotencyKey: randomUUID() });
     const compensation = await client.expensesRefundUndo({ refundId: refund.id, idempotencyKey: randomUUID() });
     await client.expensesRefund({ expenseId: original.id, amount: 1, occurredAt: "2018-04-02T09:00:00", idempotencyKey: randomUUID() });
     const before = await client.expenseRefundHistory({ expenseId: original.id });
@@ -163,7 +201,7 @@ describe("expense refunds (#409)", () => {
   it("rejects unauthenticated writes/reads and invalid inputs without adding records", async () => {
     const original = await originalExpense();
     const input = { expenseId: original.id, amount: 200, occurredAt: "2018-05-01T09:00:00", idempotencyKey: randomUUID() };
-    const existing = await client.expensesRefund({ ...input, amount: 1, idempotencyKey: randomUUID() });
+    const existing = await successfulRefund({ ...input, amount: 1, idempotencyKey: randomUUID() });
     const before = await client.expenseRefundHistory({ expenseId: original.id });
     await expect(anonymousClient.expensesRefund(input)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     await expect(anonymousClient.expenseRefundHistory({ expenseId: original.id })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
@@ -192,7 +230,7 @@ describe("expense refunds (#409)", () => {
     expect(before.item?.stockOnHand).toBe(2);
     const original = await originalExpense();
     const input = { expenseId: original.id, amount: 300, occurredAt: "2018-06-01T10:00:00", idempotencyKey: randomUUID() };
-    const refund = await client.expensesRefund(input);
+    const refund = await successfulRefund(input);
     expect(await snapshot()).toEqual(before);
     expect(await client.expensesRefund(input)).toEqual(refund);
     expect(await snapshot()).toEqual(before);
@@ -210,7 +248,7 @@ describe("expense refunds (#409)", () => {
     await client.expensesCorrect({ expenseId: original.id, amount: 800, idempotencyKey: randomUUID() });
     await client.expensesCorrect({ expenseId: original.id, amount: 900, idempotencyKey: randomUUID() });
     const input = { expenseId: original.id, amount: 300, occurredAt: "2020-02-12T10:00:00", reason: "cash returned", idempotencyKey: randomUUID() };
-    const refund = await client.expensesRefund(input);
+    const refund = await successfulRefund(input);
     expect(refund).toMatchObject({ expenseId: original.id, difference: -300, occurredAt: input.occurredAt, recordedAt: "2026-10-28T13:34:56", actorId: original.actorId, actorName: original.actorName, reason: "cash returned", reversesRefundId: null });
     expect(await client.expensesRefund(input)).toEqual(refund);
     const history = await client.expenseRefundHistory({ expenseId: original.id });

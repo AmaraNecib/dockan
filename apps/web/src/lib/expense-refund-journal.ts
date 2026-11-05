@@ -14,6 +14,14 @@ const requestSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("undo"), input: expenseRefundUndoInputSchema }),
 ]);
 
+/** A reply from a previous session scope must not erase a newer pending operation. */
+export function clearExpenseRefundRequest(storage: Storage, key: string, request: ExpenseRefundRequest): void {
+  const raw = storage.getItem(key);
+  if (raw === null) return;
+  const pending = requestSchema.parse(JSON.parse(raw));
+  if (pending.kind === request.kind && pending.input.idempotencyKey === request.input.idempotencyKey) storage.removeItem(key);
+}
+
 export function readExpenseRefundRequest(storage: Storage, key: string, expenseId: string): ExpenseRefundRequest | null {
   const raw = storage.getItem(key);
   if (raw === null) return null;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { expenseRefundJournalKey, readExpenseRefundRequest, type ExpenseRefundRequest } from "./expense-refund-journal";
+import { clearExpenseRefundRequest, expenseRefundJournalKey, readExpenseRefundRequest, type ExpenseRefundRequest } from "./expense-refund-journal";
 
 const expenseId = "87a6df8a-309e-433c-b5dd-044b92b9c361";
 const key = expenseRefundJournalKey("actor-1", expenseId);
@@ -31,6 +31,25 @@ describe("expense refund reload journal", () => {
       expect(readExpenseRefundRequest(storage, key, expenseId)).toBeNull();
     }
     expect(expenseRefundJournalKey("actor-1", expenseId)).not.toBe(expenseRefundJournalKey("actor-1", "other-expense"));
+  });
+
+  it("keeps a newer refund or compensation journal when an older reply finishes", () => {
+    const storage = memoryStorage();
+    const old: ExpenseRefundRequest = { kind: "refund", input: { expenseId, amount: 300, occurredAt: "2020-02-12T10:00:00", idempotencyKey: crypto.randomUUID() } };
+    for (const newer of [
+      { kind: "refund", input: { ...old.input, amount: 100, idempotencyKey: crypto.randomUUID() } },
+      { kind: "undo", input: { refundId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID() } },
+    ] satisfies ExpenseRefundRequest[]) {
+      storage.setItem(key, JSON.stringify(old));
+      clearExpenseRefundRequest(storage, key, old);
+      expect(storage.getItem(key)).toBeNull();
+      storage.setItem(key, JSON.stringify(newer));
+      // The original editor's success or definitive refusal arrives after a new scope retried A and began B.
+      clearExpenseRefundRequest(storage, key, old);
+      expect(readExpenseRefundRequest(storage, key, expenseId)).toEqual(newer);
+      clearExpenseRefundRequest(storage, key, newer);
+      expect(storage.getItem(key)).toBeNull();
+    }
   });
 
   it("fails closed on corrupt, wrong-expense, invalid and inaccessible journals", () => {

@@ -91,6 +91,7 @@ const updateInputs: CapturedUpdateInput[] = [];
 const stockInputs: CapturedStockInput[] = [];
 /** makes the category read reject, so the items empty state cannot offer the add form */
 let categoriesListFails = false;
+let createRefuses: string | null = null;
 /** knobs the edit tests drive: reject, or hold the mutation open */
 let updateFails = false;
 let updateDeferred = false;
@@ -157,6 +158,7 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: MutationOptions) => ({
         mutationFn: async (input: CapturedCreateInput) => {
           createInputs.push(input);
+          if (createRefuses !== null) throw new Error(createRefuses);
           return { id: "created" };
         },
         ...opts,
@@ -414,6 +416,7 @@ beforeEach(() => {
   updateInputs.length = 0;
   stockInputs.length = 0;
   categoriesListFails = false;
+  createRefuses = null;
   updateFails = false;
   updateDeferred = false;
   resolveUpdate = null;
@@ -717,6 +720,26 @@ describe("item creation keyboard lifecycle #391", () => {
     await act(async () => { resolveCreateWithStock?.(); await settle(); });
     await waitFor(() => inputByTestId("item-name").value === "");
     expect(document.activeElement === products).toBe(true);
+  });
+
+  it("retains the draft and focuses the category after a server category refusal", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "تصنيف محذوف");
+    setInput("item-cost", "0");
+    setInput("item-sell", "10");
+    setInput("item-barcode", "39100001");
+    createRefuses = "CATEGORY_NOT_FOUND";
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    const category = el<HTMLElement>('[data-testid="item-form"] [role="combobox"]');
+    await waitFor(() => document.activeElement === category);
+    expect(el<HTMLButtonElement>('[data-testid="item-save"]').disabled).toBe(false);
+    expect(inputByTestId("item-name").value).toBe("تصنيف محذوف");
+    expect(inputByTestId("item-cost").value).toBe("0");
+    expect(inputByTestId("item-sell").value).toBe("10");
+    expect(inputByTestId("item-barcode").value).toBe("39100001");
+    expect(el<HTMLElement>('[data-testid="form-error"]').textContent).toContain(i18n.t("CATEGORY_NOT_FOUND"));
   });
 
   it("consumes barcode Enter without submitting an incomplete or complete draft", async () => {

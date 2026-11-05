@@ -81,6 +81,8 @@ export type VaultManagerOptions = {
   /** legacy plaintext database path (migrated on first setup, then deleted) */
   legacyDbPath: string;
   logger: AppLogger;
+  /** Production rechecks folder ownership at every cleanup mutation. */
+  cleanupWriteGuard?: () => void;
   now?: () => Date;
   /** override for tests; production uses DEFAULT_KDF_PARAMS */
   kdf?: KdfParams;
@@ -118,6 +120,7 @@ export class VaultManager {
   readonly snapshotPath: string;
   private readonly legacyDbPath: string;
   private readonly backupsDir: string;
+  private readonly cleanupWriteGuard: () => void;
   private readonly logger: AppLogger;
   private readonly now: () => Date;
   private readonly kdf: KdfParams | undefined;
@@ -149,6 +152,7 @@ export class VaultManager {
     this.snapshotPath = path.join(options.dataDir, "dokan.db.enc");
     this.legacyDbPath = options.legacyDbPath;
     this.backupsDir = backupDirFor(options.dataDir);
+    this.cleanupWriteGuard = options.cleanupWriteGuard ?? (() => {});
     this.logger = options.logger;
     this.now = options.now ?? (() => new Date());
     this.kdf = options.kdf;
@@ -513,6 +517,7 @@ export class VaultManager {
     // 1. the live legacy database and its sidecars
     for (const suffix of ["", "-wal", "-shm"] as const) {
       const candidate = `${this.legacyDbPath}${suffix}`;
+      this.cleanupWriteGuard();
       try {
         await fs.promises.unlink(candidate);
         this.logger.warn("VAULT_LEGACY_PLAINTEXT_REMOVED", `removed stale plaintext database ${candidate}`);
@@ -533,6 +538,12 @@ export class VaultManager {
     // on the stick; converted files are never scanned again (round-4 perf)
     remaining.push(...(await this.encryptLegacyBackups()));
     return { plaintextRemaining: remaining };
+  }
+
+  private assertBackupRoot(): void {
+    this.cleanupWriteGuard();
+    const stat = fs.lstatSync(this.backupsDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("legacy backup root is not an owned directory");
   }
 
   /** Read only the leading magic bytes of a file; never the whole file. */
@@ -561,6 +572,7 @@ export class VaultManager {
     const backupsDir = this.backupsDir;
     let entries: string[];
     try {
+      this.assertBackupRoot();
       entries = await fs.promises.readdir(backupsDir);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
@@ -569,8 +581,10 @@ export class VaultManager {
     const vaultId = this.core?.metadata().vaultId ?? "";
     if (vaultId === "") return [];
     const remaining: string[] = [];
+    const backupName = /^dokan-.*\.db(?:\.partial\.\d+\.[a-f0-9]{12})?$/;
     for (const entry of entries) {
-      if (!/^dokan-.*\.db(?:\.partial\.\d+\.[a-f0-9]{12})?$/.test(entry)) continue;
+      if (!backupName.test(entry)) continue;
+      this.assertBackupRoot();
       const file = path.join(backupsDir, entry);
       let head: Buffer;
       try {
@@ -593,10 +607,30 @@ export class VaultManager {
       }
       const converted = entry.endsWith(".db") ? file.replace(/\.db$/, ".dknvbak") : `${file}.dknvbak`;
       try {
-        const { image } = readLegacyDatabaseImage(file);
+        this.assertBackupRoot();
+        const { image } = readLegacyDatabaseImage(file, { noFollow: true });
         const bundle = createVaultBackupBundle(headerText, buildEncryptedSnapshot(masterKey, vaultId, image));
-        await writeFileAtomic(converted, bundle);
-        // the plaintext original leaves only after its replacement is durable
+        this.assertBackupRoot();
+        await writeFileAtomic(converted, bundle, { beforeRename: () => this.assertBackupRoot() });
+        // Keep the database available for retries until its sidecars are gone.
+        let sidecarFailed = false;
+        for (const suffix of ["-wal", "-shm"] as const) {
+          const sidecar = `${file}${suffix}`;
+          this.assertBackupRoot();
+          try {
+            await fs.promises.unlink(sidecar);
+          } catch (error) {
+            if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+            remaining.push(sidecar);
+            sidecarFailed = true;
+          }
+        }
+        if (sidecarFailed) {
+          remaining.push(file);
+          continue;
+        }
+        // The plaintext original leaves only after its replacement is durable.
+        this.assertBackupRoot();
         try {
           await fs.promises.unlink(file);
         } catch (error) {
@@ -608,13 +642,6 @@ export class VaultManager {
           );
           continue;
         }
-        for (const suffix of ["-wal", "-shm"] as const) {
-          try {
-            await fs.promises.unlink(`${file}${suffix}`);
-          } catch {
-            /* no sidecar */
-          }
-        }
         this.logger.info("VAULT_LEGACY_BACKUP_ENCRYPTED", `encrypted legacy plaintext backup ${entry} as ${path.basename(converted)}`);
       } catch (error) {
         remaining.push(file);
@@ -624,6 +651,14 @@ export class VaultManager {
           error instanceof Error ? error : new Error(String(error)),
         );
       }
+    }
+    // A previous crash may have removed the database but left its sidecars.
+    // Without a confirmed source, retain those recovery bytes for the owner.
+    const after = await fs.promises.readdir(backupsDir);
+    for (const entry of after) {
+      if (!/-(?:wal|shm)$/.test(entry) || !backupName.test(entry.slice(0, -4))) continue;
+      const file = path.join(backupsDir, entry);
+      if (!remaining.includes(file)) remaining.push(file);
     }
     return remaining;
   }

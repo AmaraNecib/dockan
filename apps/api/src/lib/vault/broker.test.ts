@@ -220,6 +220,32 @@ describe("desktop shell vault broker", () => {
     expect(readVaultBackupBundle(fs.readFileSync(backupFile))).toBeDefined();
   }, HEAVY_TEST_TIMEOUT_MS);
 
+  it("keeps unlock available and logs unknown cleanup when backup inventory becomes unreadable", async () => {
+    child = spawnBroker(dir, port);
+    const setupLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    await setupLine();
+    send(child, "ack");
+    await waitForBackupFile();
+    await stopAndWait();
+
+    child = spawnBroker(dir, port);
+    let errors = "";
+    child.stderr.on("data", (chunk) => { errors += String(chunk); });
+    const nextLine = lineReader(child);
+    await waitForHealth(port);
+    const backupsDir = path.join(dir, "backups");
+    fs.renameSync(backupsDir, path.join(dir, "preserved-backups"));
+    fs.writeFileSync(backupsDir, "temporarily unreadable backup inventory");
+    send(child, JSON.stringify({ action: "unlock", passphrase: "correct horse battery" }));
+    const reply: unknown = JSON.parse(await nextLine());
+    expect(reply).toMatchObject({ ok: true });
+    expect(errors).toContain("VAULT_PLAINTEXT_CLEANUP_UNKNOWN");
+    expect(fs.readFileSync(backupsDir, "utf8")).toBe("temporarily unreadable backup inventory");
+    const response = await fetch(`http://127.0.0.1:${port}/api/vault/status`);
+    expect(await response.json()).toMatchObject({ state: "unlocked" });
+  }, HEAVY_TEST_TIMEOUT_MS);
+
   it("refuses a wrong passphrase with the Arabic code and exits without serving", async () => {
     // create a vault first
     child = spawnBroker(dir, port);

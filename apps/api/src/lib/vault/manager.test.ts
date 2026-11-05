@@ -471,6 +471,130 @@ describe("VaultManager", () => {
     vault.close();
   });
 
+  itHeavy("reports failed sidecar removal and orphaned sidecars without losing their recovery source", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    const db = new Database(partial, { create: true });
+    db.exec("CREATE TABLE t(a TEXT); PRAGMA user_version = 1");
+    db.close();
+    const vault = manager();
+    await createVault(vault);
+    const sidecar = `${partial}-wal`;
+    const rename = fs.promises.rename.bind(fs.promises);
+    const renameSpy = spyOn(fs.promises, "rename").mockImplementation(async (source, dest) => {
+      await rename(source, dest);
+      if (String(dest) === `${partial}.dknvbak`) fs.writeFileSync(sidecar, "readable historical page");
+    });
+    const unlink = fs.promises.unlink.bind(fs.promises);
+    const unlinkSpy = spyOn(fs.promises, "unlink").mockImplementation((file) => String(file) === sidecar
+      ? Promise.reject(Object.assign(new Error("sidecar denied"), { code: "EACCES" })) : unlink(file));
+    try {
+      const outcome = await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {});
+      expect(outcome.status).toBe("remaining");
+      expect(outcome.remaining).toContain(sidecar);
+      expect(outcome.remaining).toContain(partial);
+      expect(fs.existsSync(partial)).toBe(true);
+      expect(fs.readFileSync(sidecar, "utf8")).toBe("readable historical page");
+    } finally {
+      renameSpy.mockRestore();
+      unlinkSpy.mockRestore();
+    }
+    expect(await vault.cleanupLegacyPlaintext()).toEqual({ plaintextRemaining: [] });
+    expect(fs.existsSync(sidecar)).toBe(false);
+    expect(fs.existsSync(partial)).toBe(false);
+    const orphan = path.join(backupsDir, "dokan-2020-01-02.db.partial.456.abcdef012345-shm");
+    fs.writeFileSync(orphan, "orphan recovery data");
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "remaining", remaining: [orphan] });
+    expect(fs.readFileSync(orphan, "utf8")).toBe("orphan recovery data");
+    vault.close();
+  });
+
+  itHeavy("stops backup publication and source deletion when folder ownership is lost", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    const db = new Database(partial, { create: true });
+    db.exec("CREATE TABLE t(a TEXT); PRAGMA user_version = 1");
+    db.close();
+    let held = true;
+    const options = {
+      dataDir: dir, legacyDbPath: path.join(dir, "dokan.db"), logger: new AppLogger(dir), kdf: FAST_KDF,
+      cleanupWriteGuard: () => { if (!held) throw new Error("folder ownership lost"); },
+    };
+    const vault = new VaultManager(options);
+    await createVault(vault);
+    const open = fs.promises.open.bind(fs.promises);
+    const fault = spyOn(fs.promises, "open").mockImplementation(async (file, ...args) => {
+      const handle = await open(file, ...args);
+      if (String(file).includes(".dknvbak.tmp-")) held = false;
+      return handle;
+    });
+    try {
+      expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).not.toEqual({ status: "clean", remaining: [] });
+      expect(fs.existsSync(partial)).toBe(true);
+      expect(fs.existsSync(`${partial}.dknvbak`)).toBe(false);
+    } finally {
+      fault.mockRestore();
+    }
+    held = true;
+    expect(await vault.cleanupLegacyPlaintext()).toEqual({ plaintextRemaining: [] });
+    expect(fs.existsSync(partial)).toBe(false);
+    vault.close();
+  });
+
+  itHeavy("refuses a redirected backup root without touching another directory", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-outside-backups-"));
+    extraDirs.push(outside);
+    const file = path.join(outside, "dokan-2020-01-01.db");
+    const db = new Database(file, { create: true });
+    db.exec("CREATE TABLE t(a TEXT); PRAGMA user_version = 1");
+    db.close();
+    const original = fs.readFileSync(file);
+    const backupsDir = path.join(dir, "backups");
+    fs.symlinkSync(outside, backupsDir, process.platform === "win32" ? "junction" : "dir");
+    const vault = manager();
+    await createVault(vault);
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "unknown", remaining: [] });
+    expect(fs.readFileSync(file)).toEqual(original);
+    expect(fs.readdirSync(outside)).toEqual(["dokan-2020-01-01.db"]);
+    vault.close();
+  });
+
+  // Windows file symlinks require a privilege unavailable on the local runner.
+  // The junction/root case above runs on Windows; CI exercises this file race.
+  it.skipIf(process.platform === "win32")("refuses a backup replaced by a symlink after inventory inspection", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const outside = path.join(dir, "outside.db");
+    const db = new Database(outside, { create: true });
+    db.exec("CREATE TABLE t(a TEXT); PRAGMA user_version = 1");
+    db.close();
+    const original = fs.readFileSync(outside);
+    const candidate = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    fs.copyFileSync(outside, candidate);
+    const vault = manager();
+    await createVault(vault);
+    const open = fs.promises.open.bind(fs.promises);
+    const fault = spyOn(fs.promises, "open").mockImplementation(async (file, ...args) => {
+      const handle = await open(file, ...args);
+      if (String(file) === candidate) {
+        fs.unlinkSync(candidate);
+        fs.symlinkSync(outside, candidate, "file");
+      }
+      return handle;
+    });
+    try {
+      expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "remaining", remaining: [candidate] });
+      expect(fs.readFileSync(outside)).toEqual(original);
+      expect(fs.lstatSync(candidate).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(`${candidate}.dknvbak`)).toBe(false);
+    } finally {
+      fault.mockRestore();
+      vault.close();
+    }
+  });
+
   itHeavy("reports a plaintext backup it could not encrypt (never silently succeeds)", async () => {
     const backupsDir = path.join(dir, "backups");
     fs.mkdirSync(backupsDir, { recursive: true });

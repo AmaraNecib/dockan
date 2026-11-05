@@ -231,7 +231,7 @@ export const dokanContract = {
   expenseCategoriesCreate: oc.input(expenseCategoryCreateInputSchema).output(expenseCategorySchema),
   expensesList: oc.input(expenseListInputSchema).output(expenseListOutputSchema),
   expensesCreate: oc.input(expenseCreateInputSchema).output(expenseSchema),
-  expenseRefundHistory: oc.input(expenseCorrectionHistoryInputSchema).output(expenseRefundHistorySchema),
+  expenseRefundHistory: oc.input(expenseCorrectionHistoryInputSchema).output(expenseRefundHistorySchema.extend({ requestActorId: z.string().min(1) })),
   expensesRefund: oc.input(expenseRefundInputSchema).output(expenseRefundSchema),
   expensesRefundUndo: oc.input(expenseRefundUndoInputSchema).output(expenseRefundSchema),
   expenseCorrectionHistory: oc.input(expenseCorrectionHistoryInputSchema).output(expenseCorrectionHistorySchema),

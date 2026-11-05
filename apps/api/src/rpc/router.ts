@@ -2332,10 +2332,11 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     expenseRefundHistory: os.expenseRefundHistory.handler(
-      guardedInput(async ({ expenseId }) => {
+      guardedInput(async ({ expenseId }, _context, session) => {
+        const actor = await expenseActor(session);
         const history = await deps.store.getExpenseRefundHistory(expenseId);
         if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
-        return history;
+        return { ...history, requestActorId: actor.id };
       }),
     ),
     expensesRefund: os.expensesRefund.handler(

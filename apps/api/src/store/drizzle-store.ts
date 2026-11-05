@@ -2150,12 +2150,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const rows = (await db.all(sql`
         SELECT e.category_id AS categoryId,
                e.amount + COALESCE((SELECT SUM(c.difference) FROM expense_corrections c WHERE c.expense_id = e.id), 0) AS amount,
-               e.occurred_at AS occurredAt
+               e.occurred_at AS occurredAt, 1 AS expenseCount
         FROM expenses e
         WHERE e.occurred_at >= ${filters.from} AND e.occurred_at <= ${filters.to}
         ${categoryFilter}
         UNION ALL
-        SELECT e.category_id AS categoryId, r.difference AS amount, r.occurred_at AS occurredAt
+        SELECT e.category_id AS categoryId, r.difference AS amount, r.occurred_at AS occurredAt, 0 AS expenseCount
         FROM expense_refunds r JOIN expenses e ON e.id = r.expense_id
         WHERE r.occurred_at >= ${filters.from} AND r.occurred_at <= ${filters.to}
         ${categoryFilter}

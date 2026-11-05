@@ -66,6 +66,7 @@ function isDefinitiveCorrectionRefusal(message: string): boolean {
     "EXPENSE_CORRECTION_ALREADY_REVERSED",
     "EXPENSE_CORRECTION_NOT_REVERSIBLE",
     "EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE",
+    "EXPENSE_CORRECTION_BELOW_REFUNDED",
   ].includes(message);
 }
 

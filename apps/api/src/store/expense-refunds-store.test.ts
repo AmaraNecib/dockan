@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, UnsupportedSchemaVersionError } from "../lib/schema-version";
@@ -55,7 +56,7 @@ describe("expense refund storage (#409)", () => {
     const history = await store.getExpenseRefundHistory(expenseId);
     expect(history?.refundableAmount).toBe(500);
     expect(history?.expense).toEqual(before);
-    expect(await store.listExpenseReportEntries({ from: "2019-02-01T00:00:00", to: "2019-02-28T23:59:59" })).toEqual([{ categoryId, amount: -300, occurredAt: input.occurredAt }]);
+    expect(await store.listExpenseReportEntries({ from: "2019-02-01T00:00:00", to: "2019-02-28T23:59:59" })).toEqual([{ categoryId, amount: -300, occurredAt: input.occurredAt, expenseCount: 0 }]);
     conn.close();
     conn = openConnection(configFor());
     store = createDrizzleStore(conn);
@@ -64,6 +65,37 @@ describe("expense refund storage (#409)", () => {
     expect(await store.getExpenseRefundHistory(expenseId)).toEqual(history);
     expect(await store.findExpenseRefundByIdempotencyKey(expenseId, input.idempotencyKey)).toEqual(refund);
     expect(await store.getExpenseCorrectionHistory(expenseId)).toEqual(before);
+  });
+
+  it("limits competing refunds across independent database connections", async () => {
+    const original = await store.insertExpense({ categoryId, amount: 1000, occurredAt: "2019-06-01T10:00:00" });
+    const program = `
+      import { createAppConfig } from ${JSON.stringify(pathToFileURL(path.resolve(import.meta.dir, "../config.ts")).href)};
+      import { openConnection } from ${JSON.stringify(pathToFileURL(path.resolve(import.meta.dir, "../db/connection.ts")).href)};
+      import { createDrizzleStore } from ${JSON.stringify(pathToFileURL(path.resolve(import.meta.dir, "./drizzle-store.ts")).href)};
+      const conn = openConnection(createAppConfig(${JSON.stringify({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") })}));
+      const store = createDrizzleStore(conn);
+      try {
+        await store.withTransactionImmediate(async (tx) => {
+          await Bun.sleep(150);
+          await tx.insertExpenseRefund(${JSON.stringify({ ...request(), expenseId: original.id, difference: -700 })});
+        });
+        console.log("saved");
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+      } finally { conn.close(); }
+    `;
+    const children = [0, 1].map(() => Bun.spawn([process.execPath, "-e", program], { stdout: "pipe", stderr: "pipe" }));
+    const outcomes = await Promise.all(children.map(async (child) => {
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(exit).toBe(0);
+      expect(stderr).toBe("");
+      return stdout.trim();
+    }));
+    expect(outcomes.sort()).toEqual(["EXPENSE_REFUND_EXCEEDS_BALANCE", "saved"]);
+    const history = await store.getExpenseRefundHistory(original.id);
+    expect(history?.refundableAmount).toBe(300);
+    expect(history?.refunds).toHaveLength(1);
   });
 
   it("refuses unlocked, excessive, malformed and cross-expense compensation writes atomically", async () => {

@@ -915,6 +915,7 @@ const resources = {
       expenseRefundReverses: "يعوّض القيد",
       expenseRefundReversedBy: "عُوّض بالقيد",
       expenseRefundReadError: "لم يُؤكّد السجل الحالي. أعد تحميله قبل تسجيل قيد جديد.",
+      expenseRefundJournalError: "تعذّر حفظ هوية الطلب في هذا التبويب. لم يُرسل طلب جديد. أبقِ التبويب مفتوحاً وتحقّق من إتاحة تخزين المتصفح قبل إعادة المحاولة.",
       expenseRefundUncertain: "نتيجة الطلب غير مؤكدة. أعد محاولة نفس الطلب دون تغيير بياناته لتجنّب تكرار القيد. الإلغاء يخفي النموذج ولا يتراجع عن طلب وصل للخادم.",
       expenseCorrectionHistoryButton: "السجل",
       expenseCorrectionEditButton: "تصحيح",

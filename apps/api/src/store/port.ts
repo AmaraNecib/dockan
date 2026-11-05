@@ -55,6 +55,8 @@ export interface ExpenseReportEntry {
   categoryId: string;
   amount: number;
   occurredAt: string;
+  /** Original expenses count once; cash recoveries and compensations count zero. */
+  expenseCount: 0 | 1;
 }
 
 /**

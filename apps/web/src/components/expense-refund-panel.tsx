@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import type { ExpenseRefundInput, ExpenseRefundUndoInput } from "@dokan/contracts";
+import { expenseRefundJournalKey, readExpenseRefundRequest, type ExpenseRefundRequest as Request } from "../lib/expense-refund-journal";
 import { orpc } from "../lib/rpc";
 import { useSessionCacheScope } from "../lib/session-query-scope";
 import { parseGroupedAmount } from "../lib/amount-parse";
@@ -11,27 +11,43 @@ import { Amount } from "./ui/amount";
 import { Button } from "./ui/button";
 import { inputClass } from "./ui/input";
 
-type Request = { kind: "refund"; input: ExpenseRefundInput } | { kind: "undo"; input: ExpenseRefundUndoInput };
 type Recovery = { request: Request | null; inFlight: boolean; acknowledgedId: string | null; notice: boolean };
 const EMPTY: Recovery = { request: null, inFlight: false, acknowledgedId: null, notice: false };
 
-/** Recovery is mount-independent but session-local; uncertain requests keep their exact identity. */
+/** Pending operations retain their exact identity across remounts and full reloads. */
 export function ExpenseRefundPanel({ expenseId }: { expenseId: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return <section className="grid gap-3 border-t pt-3" data-testid="expense-refund-section">
     <Button type="button" variant="outline" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="expense-refund-open">{t("expenseRefundTitle")}</Button>
-    {open && <RefundEditor expenseId={expenseId} onCancel={() => setOpen(false)} />}
+    {open && <RefundIdentityGate expenseId={expenseId} onCancel={() => setOpen(false)} />}
   </section>;
 }
 
-function RefundEditor({ expenseId, onCancel }: { expenseId: string; onCancel: () => void }) {
+function RefundIdentityGate({ expenseId, onCancel }: { expenseId: string; onCancel: () => void }) {
+  const { t } = useTranslation();
+  const scope = useSessionCacheScope();
+  const options = orpc.expenseRefundHistory.queryOptions({ input: { expenseId } });
+  const history = useQuery({ ...options, queryKey: [...options.queryKey, scope] });
+  if (history.data === undefined) {
+    return <div role="status">{history.isError ? <><p role="alert">{t("expenseRefundReadError")}</p><Button onClick={() => void history.refetch()}>{t("expenseCorrectionRetry")}</Button></> : t("expensesLoading")}</div>;
+  }
+  return <RefundEditor key={history.data.requestActorId} actorId={history.data.requestActorId} expenseId={expenseId} onCancel={onCancel} />;
+}
+
+function RefundEditor({ expenseId, actorId, onCancel }: { expenseId: string; actorId: string; onCancel: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const scope = useSessionCacheScope();
-  const recoveryKey = ["expenseRefundRecovery", scope, expenseId];
-  const { data: recovery = EMPTY } = useQuery<Recovery>({ queryKey: recoveryKey, queryFn: () => EMPTY, enabled: false, gcTime: Infinity });
-  const history = useQuery(orpc.expenseRefundHistory.queryOptions({ input: { expenseId } }));
+  const recoveryKey = ["expenseRefundRecovery", scope, expenseId, actorId];
+  const journalKey = expenseRefundJournalKey(actorId, expenseId);
+  const [journal] = useState(() => {
+    try { return { request: readExpenseRefundRequest(sessionStorage, journalKey, expenseId), failed: false }; }
+    catch { return { request: null, failed: true }; }
+  });
+  const { data: recovery = EMPTY } = useQuery<Recovery>({ queryKey: recoveryKey, queryFn: () => EMPTY, initialData: { ...EMPTY, request: journal.request }, enabled: false, gcTime: Infinity });
+  const historyOptions = orpc.expenseRefundHistory.queryOptions({ input: { expenseId } });
+  const history = useQuery({ ...historyOptions, queryKey: [...historyOptions.queryKey, scope] });
   const refund = useMutation(orpc.expensesRefund.mutationOptions());
   const undo = useMutation(orpc.expensesRefundUndo.mutationOptions());
   const [amountText, setAmountText] = useState(recovery.request?.kind === "refund" ? String(recovery.request.input.amount) : "");
@@ -41,23 +57,27 @@ function RefundEditor({ expenseId, onCancel }: { expenseId: string; onCancel: ()
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const submitting = useRef(false);
   const confirmed = recovery.acknowledgedId === null || history.data?.refunds.some((row) => row.id === recovery.acknowledgedId) === true;
-  const blocked = recovery.inFlight || history.isFetching || history.isError || history.data === undefined || !confirmed;
+  const blocked = journal.failed || recovery.inFlight || history.isFetching || history.isError || history.data === undefined || !confirmed;
   const locked = blocked || recovery.request !== null;
 
   useEffect(() => {
     if (recovery.acknowledgedId !== null && confirmed) {
-      queryClient.setQueryData<Recovery>(["expenseRefundRecovery", scope, expenseId], (current) => ({ ...(current ?? EMPTY), acknowledgedId: null }));
+      queryClient.setQueryData<Recovery>(["expenseRefundRecovery", scope, expenseId, actorId], (current) => ({ ...(current ?? EMPTY), acknowledgedId: null }));
     }
-  }, [confirmed, recovery.acknowledgedId, queryClient, scope, expenseId]);
+  }, [confirmed, recovery.acknowledgedId, queryClient, scope, expenseId, actorId]);
 
   async function send(request: Request) {
     const current = queryClient.getQueryData<Recovery>(recoveryKey) ?? EMPTY;
     if (submitting.current || current.inFlight) return;
+    // Persist before dispatch. A storage refusal must never become an unjournaled write.
+    try { sessionStorage.setItem(journalKey, JSON.stringify(request)); }
+    catch { setError(t("expenseRefundJournalError")); return; }
     submitting.current = true;
     setError(null);
     queryClient.setQueryData<Recovery>(recoveryKey, { ...current, request, inFlight: true, notice: false });
     try {
       const saved = request.kind === "refund" ? await refund.mutateAsync(request.input) : await undo.mutateAsync(request.input);
+      sessionStorage.removeItem(journalKey);
       queryClient.setQueryData<Recovery>(recoveryKey, { request: null, inFlight: false, acknowledgedId: saved.id, notice: true });
       setAmountText("");
       setReason("");
@@ -65,7 +85,12 @@ function RefundEditor({ expenseId, onCancel }: { expenseId: string; onCancel: ()
     } catch (failure) {
       const message = failure instanceof Error ? failure.message : undefined;
       const definitive = message !== undefined && ["EXPENSE_REFUND_EXCEEDS_BALANCE", "EXPENSE_REFUND_ALREADY_REVERSED", "EXPENSE_REFUND_KEY_REUSED", "EXPENSE_REFUND_NOT_FOUND", "EXPENSE_NOT_FOUND"].includes(message);
-      queryClient.setQueryData<Recovery>(recoveryKey, { ...current, request: definitive ? null : request, inFlight: false });
+      let cleared = false;
+      if (definitive) {
+        try { sessionStorage.removeItem(journalKey); cleared = true; }
+        catch { /* Retain the exact request if durable cleanup failed. */ }
+      }
+      queryClient.setQueryData<Recovery>(recoveryKey, { ...current, request: cleared ? null : request, inFlight: false });
       setError(tError(message));
     } finally {
       submitting.current = false;
@@ -87,6 +112,7 @@ function RefundEditor({ expenseId, onCancel }: { expenseId: string; onCancel: ()
 
   return <div className="grid gap-3" data-testid="expense-refund-editor">
     <p className="text-sm text-muted-foreground">{t("expenseRefundHelp")}</p>
+    {journal.failed && <p role="alert">{t("expenseRefundJournalError")}</p>}
     {history.isPending && <p role="status">{t("expensesLoading")}</p>}
     {(history.isError || !confirmed) && <div role="alert"><p>{t("expenseRefundReadError")}</p><Button type="button" onClick={() => void history.refetch()} data-testid="expense-refund-reload">{t("expenseCorrectionRetry")}</Button></div>}
     {recovery.notice && <p role="status" data-testid="expense-refund-saved">{t("expenseRefundSaved")}</p>}

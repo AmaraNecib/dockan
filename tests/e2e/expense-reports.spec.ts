@@ -613,8 +613,10 @@ test("expense refunds preserve cash dates, cancellation, failure retries and com
   await history.getByTestId("expense-refund-save").click();
   await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
   await expect(history.getByTestId("expense-refund-amount")).toBeDisabled();
-  await history.getByTestId("expense-refund-cancel").click();
-  await history.getByTestId("expense-refund-open").click();
+  await page.reload();
+  const afterLossRow = page.getByTestId("expense-row").filter({ hasText: note });
+  await afterLossRow.getByTestId("expense-correction-open-history").click();
+  await afterLossRow.locator("xpath=following-sibling::tr[1]").getByTestId("expense-refund-open").click();
   await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
   await history.getByTestId("expense-refund-save").click();
   await expect(history.getByTestId("expense-refund-saved")).toBeVisible();

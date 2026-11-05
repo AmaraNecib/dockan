@@ -95,6 +95,21 @@ describe("expense refunds (#409)", () => {
     return client.expensesCreate({ categoryId: category.id, amount, occurredAt: "2018-01-15T12:00:00" });
   }
 
+  it("counts original expenses, not refund or compensation entries, including refunds-only withdrawal periods", async () => {
+    const categories = (await client.expenseCategoriesList()).items;
+    for (const withdrawal of [false, true]) {
+      const category = categories.find((row) => row.isOwnerWithdrawal === withdrawal);
+      if (category === undefined) throw new Error("missing category");
+      const original = await client.expensesCreate({ categoryId: category.id, amount: 1000, occurredAt: "2016-01-15T12:00:00" });
+      const refund = await client.expensesRefund({ expenseId: original.id, amount: 300, occurredAt: "2016-02-12T10:00:00", idempotencyKey: randomUUID() });
+      const refundPeriod = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2016-02-01T00:00:00", customTo: "2016-02-29T23:59:59" });
+      expect(refundPeriod.byCategory.find((row) => row.categoryId === category.id)).toMatchObject({ total: -300, count: 0 });
+      await client.expensesRefundUndo({ refundId: refund.id, idempotencyKey: randomUUID() });
+      const combined = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2016-01-01T00:00:00", customTo: "2016-02-29T23:59:59" });
+      expect(combined.byCategory.find((row) => row.categoryId === category.id)).toMatchObject({ total: 1000, count: 1 });
+    }
+  });
+
   it("serializes competing refunds and deduplicates identical concurrent retries", async () => {
     const original = await originalExpense();
     const input = { expenseId: original.id, amount: 700, occurredAt: "2018-02-01T09:00:00", idempotencyKey: randomUUID() };
@@ -175,5 +190,15 @@ describe("expense refunds (#409)", () => {
     const feb = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-02-01T00:00:00", customTo: "2020-02-29T23:59:59" });
     expect(feb.operatingExpenses).toBe(-300);
     expect(feb.resultAfterExpenses).toBe(300);
+    await client.expensesRefund({ ...input, amount: 600, idempotencyKey: randomUUID() });
+    const finalHistory = await client.expenseRefundHistory({ expenseId: original.id });
+    expect(finalHistory.refundableAmount).toBe(0);
+    expect(finalHistory.refunds).toHaveLength(2);
+    expect(finalHistory.expense).toEqual(history.expense);
+    const jan = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-01-01T00:00:00", customTo: "2020-01-31T23:59:59" });
+    expect(jan.operatingExpenses).toBe(900);
+    const recovered = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-02-01T00:00:00", customTo: "2020-02-29T23:59:59" });
+    expect(recovered.operatingExpenses).toBe(-900);
+    expect(recovered.byCategory.find((row) => row.categoryId === category.id)?.count).toBe(0);
   });
 });

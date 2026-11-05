@@ -111,29 +111,55 @@ describe("the verification rule is discoverable (#259)", () => {
     }
   });
 
-  test("local readiness stays distinct from CI acceptance until owner activation", () => {
-    const workflow = read("docs/engineering-workflow.md");
-    expect(workflow).toContain("required-check enforcement on the current PR head");
-    expect(workflow).toContain("Other PRs retain the existing local baseline until the parent verifies activation");
-    expect(workflow).toContain("Local readiness, a pending check and CI acceptance are distinct states");
-    const ci = read("docs/ci.md").replace(/\s+/g, " ");
-    expect(ci).toContain("exact check name `CI acceptance`");
-    expect(ci).toContain("The aggregate cannot establish branch-protection settings or bypass policy itself");
+  test("issue-only requests route through lifecycle, wisdom and authority", () => {
+    const agents = read("AGENTS.md");
+    expect(agents).toContain("When the owner says `Work on issue #N.`");
+    expect(agents).toContain("read issue #N and its linked specification");
+    expect(agents).toContain("`feature-implement`");
+    expect(agents).toContain(".agents/wisdom/README.md");
+    expect(agents).toContain("docs/agent-delegation-template.md");
+    const template = read("docs/agent-delegation-template.md");
+    for (const field of ["Goal", "Worktree", "Base and head", "Required reading", "Scope and authority", "Verification mode", "Concrete proof", "Completion report"]) {
+      expect(template).toContain(`\n${field}\n`);
+    }
+    expect(template).toContain("reviewer is read-only on the source tree");
+    expect(template).toContain("raw task input");
+    expect(template).toContain("spaces and newlines");
   });
 
-  test("pending activation retains executable local checks and requires the aggregate", () => {
+  test("activation is recorded once and the parent verifies effective protection", () => {
+    const workflow = read("docs/engineering-workflow.md");
+    for (const fact of [
+      "CI-final activation",
+      "#439",
+      "issuecomment-6667884162",
+      "issuecomment-6667906366",
+      "f4dd3bad10dcea42d81063c2c6aa32fc31891279",
+      "`app_id` 15368",
+      "enforce_admins",
+      "strict",
+      "force pushes and deletions",
+      "A real enforcement regression is an explicit blocker",
+      "explicitly passes each worker's verification mode",
+    ]) expect(workflow).toContain(fact);
     const guard = read(".agents/skills/guard/SKILL.md");
-    const pending = guard.split("#### Before activation")[1]?.split("#### Browser verification")[0] ?? "";
-    for (const command of ["bun run typecheck", "bun run lint", "bun run skills:check", "bun run test", "bun run --filter @dokan/web build", "bun audit --audit-level=high"]) {
-      expect(pending, command).toContain(command);
-    }
-    expect(pending).toContain("other PRs");
-    expect(pending).toContain("policy PR is the narrow bootstrap exception");
-    expect(pending).toContain("focused policy tests");
-    const manual = read("docs/ci.md").split("## Required checks")[1]?.split("## Desktop release")[0] ?? "";
-    expect(manual).toContain("Select the exact `CI acceptance` check");
-    expect(manual).toContain("bypass");
-    expect(manual).not.toContain("Select the `typecheck, lint, test, audit`");
+    expect(guard).not.toContain("#### Before activation");
+    expect(guard).not.toContain("Until activation");
+    expect(guard).toContain("`heavy_run` schedules work; it does not authorize broader scope.");
+    expect(guard).toContain("money, security and recovery contracts");
+    expect(guard).toContain("CI-final checks");
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    expect(feature).not.toContain("Until activation");
+    expect(feature).toContain("The parent explicitly passes the verification mode");
+  });
+
+  test("delegation template keeps task input readable and bounded", () => {
+    const template = read("docs/agent-delegation-template.md");
+    expect(template).toContain("findings verbatim");
+    expect(template).toContain("file:line");
+    expect(template).toContain("absolute worktree path");
+    expect(template).toContain("Model provenance");
+    expect(template).not.toMatch(/[A-Za-z]{24,}/);
   });
 
   test("activated CI-final policy has no unconditional local acceptance mandate", () => {
@@ -141,22 +167,16 @@ describe("the verification rule is discoverable (#259)", () => {
     const guard = read(".agents/skills/guard/SKILL.md");
     const development = read("docs/development-workflow.md");
     expect(feature).not.toContain("Do not trade this for a focused test run and a typecheck");
-    expect(guard).toContain("the selector defines CI scope, not a mandatory local full run");
+    expect(guard).toContain("The selector defines CI scope, not a mandatory local full run.");
     expect(development).toContain("The aggregate `CI acceptance` check is mandatory before merge");
     expect(guard).toContain("The worktree must be clean before handoff or publication");
   });
 
-  test("CI acceptance stays mandatory while this policy change can publish pending proof", () => {
+  test("CI acceptance remains a current-head merge gate", () => {
     const workflow = read("docs/engineering-workflow.md");
-    const guard = read(".agents/skills/guard/SKILL.md");
     const gate = read("docs/verification-and-merge-gate.md");
-    expect(workflow).toContain("The stable aggregate `CI acceptance` check is mandatory for merge");
-    expect(workflow).toContain("this policy PR may be published after focused local proof and review");
-    expect(workflow).toContain("It is not merge-ready and does not activate the new routine policy until the parent records remote enforcement");
-    expect(guard).toContain("recorded owner acceptance of the bypass policy");
-    for (const file of ["docs/engineering-workflow.md", "docs/verification-and-merge-gate.md", "docs/development-workflow.md", ".agents/skills/feature-implement/SKILL.md"]) {
-      expect(read(file), file).toContain("recorded owner acceptance of the bypass policy");
-    }
+    expect(workflow).toContain("The stable aggregate `CI acceptance` check remains mandatory for merge");
+    expect(workflow).toContain("current-head CI acceptance");
     expect(gate).toContain("CI acceptance is green on the current head");
     expect(gate).toContain("both current-head verdicts must be 5/5");
   });

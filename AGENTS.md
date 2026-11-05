@@ -18,10 +18,10 @@ Parents and workers complete this startup check before editing, delegating imple
 - **The parent coordinates; workers implement and verify.** The parent scopes work, assigns isolated writers, dispatches reviewers, checks their evidence, and handles publication and merge decisions. Workers read the required sources, implement within their assigned scope, run the applicable verification, commit and report. Read-only reviewers return findings, not edits. Parent handling of small corrections does not make it the default test runner.
 - **The parent delegates heavy execution by default.** Full test suites, E2E, builds and browser runs belong to a verification worker through the heavy-work queue. The parent uses `heavy_run` itself only when the owner explicitly requests it or delegation cannot perform a necessary check. Before an exception, record the exact check, why delegation cannot do it, and why it is needed now. Convenience, a quiet worker, or wanting a second copy of an unchanged run is not a reason. The exception does not waive queue limits or other approval requirements. Reads, diff inspection, selector dry-runs, lint and typecheck remain light parent work.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
-  lane's branch, opens the PR, runs the review round (`reviewloop`, plus Greptile
-  while the two are being compared), drives the rounds, and
-  merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
-  before/after packet is posted), and otherwise only when the owner says so (see `Merging`).
+  lane's branch, opens the PR, verifies the selected risk-sized local review and
+  configured hosted findings, then handles merge decisions. It auto-merges a clean
+  **cheap-to-reverse** PR itself (a visual one too, once its before/after packet is
+  posted), and otherwise waits for the owner (see `Merging`).
 - **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
   lane reads `.agents/wisdom/` before it starts, applies what bears on its task,
   and says which lessons it applied and which it deliberately did not **in its
@@ -145,7 +145,7 @@ you are in — do not improvise a process.**
 | Local review | Risk-sized review under `docs/engineering-workflow.md`; when multiple lenses apply: `debate` → `test-audit` → `code-review` |
 | After reviewloop's 5/5, before the merge | `improve-codebase-architecture` (parent only; the deep pass when a module, seam, adapter or interface changed) |
 | Before the push | `guard` |
-| Review round | `reviewloop` (Greptile via `cli-review` / `greploop` is the A/B reference while both run) |
+| Review | Risk-sized local review under `docs/engineering-workflow.md`; `reviewloop` owns evidence mechanics |
 | After a repeated failure | `capture-wisdom` (parent only) |
 | Every piece of writing, always | `unslop` |
 
@@ -157,27 +157,9 @@ habit happened. The parent owns push, CI, the review round and the merge decisio
 
 ## Review lenses
 
-**Every reviewable change gets local review, sized to reachable risk.** Compact eligibility, Standard/High-assurance depth, small-refinement boundaries and mandatory current-head 5/5 finding resolution are defined in `docs/engineering-workflow.md`; use `reviewloop` for evidence and payloads. Compact is one focused local code review, never no-review or hosted-only. The parent verifies exact-tree reviewer provenance and reuses valid worker reviews instead of duplicating them.
+The risk matrix, bounded-fix rule and mandatory local 5/5 with zero actionable findings live in [`docs/engineering-workflow.md`](docs/engineering-workflow.md). Routine changes get one focused code-review session; only a named reachable high-risk failure gets the three initial lenses. `reviewloop` owns the payload and report mechanics.
 
-- **OpenCode review is optional.** Use models available through the session's enabled review
-  routes. Do not automatically probe, install or switch to `opencode` or `opencode-go`, or ask
-  the owner to enable them for each PR. Neither a quota failure nor an independence requirement
-  opts the owner into another provider. Use OpenCode only when the owner requests it or explicitly
-  enables it for the current scope. Required lenses still run. Model selection and exception
-  handling live in `.agents/skills/reviewloop/SKILL.md`.
-- **The lenses use a different model family from the author unless the owner approved an exception.**
-  Read the author's model from the lane's commit trailer, never the parent's. Independence is a
-  family, not an exact ID. With more than one lens, at least two families must appear unless an
-  approved exception applies. Availability concerns enabled routes only, not optional OpenCode routes.
-- **Standing owner approval applies when OpenCode is unavailable.** Same-family review is then allowed without asking again per PR, including the multi-family lens exception. Prefer an enabled working non-author family; otherwise use separate reviewer sessions and disclose the shared family. Record `independence: { approvedBy, reason }` under `reviewloop`. This does not waive required lenses, current-head 5/5, finding resolution or merge gates. A lane records the owner's approval, not its own.
-- **One accountable set of genuine reviewer executions.** A worker claim alone is not evidence. The parent verifies exact base/head, reviewer session, actual model family, provenance and report, and reuses valid exact-tree executions rather than automatically rerunning them. Required lenses stay separate when the selected depth calls for them. The existing design or PR handoff can supply the short author account; a fresh author-review session is not required.
-- **Evidence lands in a local, untracked `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**,
-  which `guard` checks before a push. Review reports are never committed: a committed
-  report is a file the reviewer reads instead of the code, it burns the reviewer's
-  credits, and writing the next report changes a tracked file, which makes the
-  previous one stale and asks for another review. The PR carries a summary comment
-  instead — the lens names that ran, the SHA they read, the verdict and the counts.
-- **The lenses return findings; they do not author.** Reviewers do not write to the worktree or take the e2e slot. The authoring session resolves valid blockers; applicable reviews run again at the changed head. No score overrides an unresolved actionable finding.
+Use enabled review routes only. OpenCode is opt-in, not a quota fallback. Prefer an enabled non-author model family; the owner's standing exception allows separate same-family sessions when no independent family is available. Record actual model IDs and the existing `independence: { approvedBy, reason }` payload. The exception waives no review or finding gate. The parent verifies the exact base/head, reviewer session, model and report. Reuse valid exact-tree work. Reports stay untracked in `.scratch/reviews/`; reviewers return findings and never edit the worktree. A bounded fix gets one fresh review of the combined delta and affected callers, with unchanged conclusions carried forward; see `reviewloop`.
 
 ## Merging
 
@@ -192,7 +174,7 @@ never watched again.
 **cheap-to-reverse, no-decision** diff itself once the gate is clean (owner decision,
 2026-10-17, class A); an **expensive-to-reverse** or **decision** diff goes to the owner. The
 gate is written down in [`docs/verification-and-merge-gate.md`](docs/verification-and-merge-gate.md):
-the four reasons, the evidence form (visual vs measured), the owner triggers, and the queue path.
+the four reasons, evidence form, required CI acceptance, owner triggers and queue path.
 
 A **visual** diff is anything a browser can render — `apps/web/**`, i18n/copy, CSS/tokens,
 image assets. It is **not a veto**: it auto-merges too when it is cheap to reverse, but the parent
@@ -200,8 +182,7 @@ must post the before/after table plus the video at the head **first**, so the ow
 after the fact. A diff that is **visual, changes e2e behaviour, or changes wording** owes a fixed
 shape in its PR evidence comment: before/after images, **a GIF that plays inline**, and the
 video link (the mp4) — GitHub strips `<video>`, so the GIF is what plays. The full form is in the
-gate doc §1. Everything is auto-merge eligible when all four reasons hold, every check is green
-or legitimately skipped, and GitHub reports `MERGEABLE` — unless it is expensive to reverse
+gate doc §1. Everything is auto-merge eligible when all four reasons hold, required CI acceptance is green, every other check is green or legitimately skipped, and GitHub reports `MERGEABLE` — unless it is expensive to reverse
 (migrations/schema, `packages/contracts/**`, release/deploy, outside state), encodes a decision,
 or the owner asked to see it. Those go to the owner.
 A **CI change** (anything under `.github/`) always goes to the owner for the diff, whatever
@@ -220,8 +201,8 @@ watch is what reports it: a red check, a new head, a verdict. Never sit in a
 `gh pr checks` loop for a watched PR — that is the same as not watching it, only
 busier. Poll only a PR nobody here watches, and then with `sleep`: start at
 ~5 minutes, then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
-review comment each time, until the verdict appears. While the A/B runs, watch the
-Greptile comment too. Same for CI.
+review comment each time, until the requested verdict appears. Apply configured hosted-review
+policy; no standing paired-review trial applies. Same for CI.
 
 A lane reports by finishing: its completion wakes the session. Stop and let it
 finish rather than polling it.

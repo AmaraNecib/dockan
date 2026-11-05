@@ -32,7 +32,7 @@ const LANE_READERS = [
 // fragment is a single line, so Windows CRLF cannot split one in half.
 const REQUIRED_FACTS: [name: string, fragment: string][] = [
   ["the evidence marker", "<!-- crew-evidence -->"],
-  ["reason 1 (5/5)", "The review confidence is 5/5"],
+  ["reason 1 (5/5)", "The local review confidence is 5/5"],
   ["reason 2 (the field)", "Last reviewed commit"],
   ["reason 2 (the head anchor)", "equals the current head SHA"],
   ["reason 3 (nothing after the verdict)", "No comment lands after the verdict"],
@@ -99,30 +99,19 @@ describe("the verification rule is discoverable (#259)", () => {
     });
   }
 
-  test("the A/B protocol keeps paired evidence and an owner-controlled end", () => {
+  test("the former paired-review trial is explicitly historical, not a current gate", () => {
     const comparison = read("docs/review-comparison.md");
-    for (const fact of [
-      "Continue across PRs until the owner chooses",
-      "same base SHA and head SHA",
-      "before reading the other system's findings",
-      "Both current-head reviews must be 5/5",
-      "one request per head",
-      "not an automatic replacement",
-      "verified unique defects",
-      "false positives",
-      "elapsed review time",
-      "unknown rather than zero",
-    ]) expect(comparison).toContain(fact);
-    expect(read(".agents/skills/guard/SKILL.md")).toContain(
-      "Both current-head verdicts are 5/5 with no unresolved actionable findings",
-    );
+    expect(comparison).toContain("This document records the former reviewloop/Greptile comparison protocol");
+    expect(comparison).toContain("It is historical reference, not a current gate");
+    expect(comparison).toContain("no standing paired-review trial requires both systems");
+    expect(read(".agents/skills/guard/SKILL.md")).not.toContain("Both current-head verdicts are 5/5");
   });
 
   test("local readiness stays distinct from CI acceptance until owner activation", () => {
     const workflow = read("docs/engineering-workflow.md");
-    expect(workflow).toContain("the stable `CI acceptance` check on the current PR head");
-    expect(workflow).toContain("Until then, existing local Guard Phase 2 requirements remain in force");
-    expect(workflow).toContain("A local ready result is not CI acceptance or merge readiness");
+    expect(workflow).toContain("required-check enforcement on the current PR head");
+    expect(workflow).toContain("Other PRs retain the existing local baseline until the parent verifies activation");
+    expect(workflow).toContain("Local readiness, a pending check and CI acceptance are distinct states");
     const ci = read("docs/ci.md").replace(/\s+/g, " ");
     expect(ci).toContain("exact check name `CI acceptance`");
     expect(ci).toContain("The aggregate cannot establish branch-protection settings or bypass policy itself");
@@ -134,6 +123,9 @@ describe("the verification rule is discoverable (#259)", () => {
     for (const command of ["bun run typecheck", "bun run lint", "bun run skills:check", "bun run test", "bun run --filter @dokan/web build", "bun audit --audit-level=high"]) {
       expect(pending, command).toContain(command);
     }
+    expect(pending).toContain("other PRs");
+    expect(pending).toContain("policy PR is the narrow bootstrap exception");
+    expect(pending).toContain("focused policy tests");
     const manual = read("docs/ci.md").split("## Required checks")[1]?.split("## Desktop release")[0] ?? "";
     expect(manual).toContain("Select the exact `CI acceptance` check");
     expect(manual).toContain("bypass");
@@ -145,65 +137,63 @@ describe("the verification rule is discoverable (#259)", () => {
     const guard = read(".agents/skills/guard/SKILL.md");
     const development = read("docs/development-workflow.md");
     expect(feature).not.toContain("Do not trade this for a focused test run and a typecheck");
-    expect(guard).toContain("After activation, the selector defines CI scope, not a mandatory local full run");
-    expect(development).toContain("After activation, the selector defines CI scope, not a mandatory local full run");
+    expect(guard).toContain("the selector defines CI scope, not a mandatory local full run");
+    expect(development).toContain("The aggregate `CI acceptance` check is mandatory before merge");
     expect(guard).toContain("The worktree must be clean before handoff or publication");
   });
 
-  test("hosted verdicts gate merge-readiness, not the push that starts review", () => {
+  test("CI acceptance stays mandatory while this policy change can publish pending proof", () => {
+    const workflow = read("docs/engineering-workflow.md");
     const guard = read(".agents/skills/guard/SKILL.md");
-    const phase2 = guard.split("## Phase 2")[1]?.split("## Phase 3")[0] ?? "";
-    const phase3 = guard.split("## Phase 3")[1]?.split("## When a check fails")[0] ?? "";
-    expect(phase2).toContain("Hosted review is not a pre-push or worker-handoff prerequisite");
-    expect(phase2).toContain("Local reviewloop is 5/5 with no unresolved actionable findings");
-    expect(phase2).not.toContain("both local and hosted verdicts are 5/5");
-    expect(phase2).not.toContain("paired hosted verdict also 5/5");
-    expect(phase3).toContain("For merge-readiness after publication");
-    expect(phase3).toContain("Both current-head verdicts are 5/5 with no unresolved actionable findings");
+    const gate = read("docs/verification-and-merge-gate.md");
+    expect(workflow).toContain("The stable aggregate `CI acceptance` check is mandatory for merge");
+    expect(workflow).toContain("this policy PR may be published after focused local proof and review");
+    expect(workflow).toContain("It is not merge-ready and does not activate the new routine policy until the parent records remote enforcement");
+    expect(guard).toContain("including administrator enforcement and acceptable bypass rules");
+    expect(gate).toContain("CI acceptance is green on the current head");
+    expect(gate).not.toContain("both current-head verdicts must be 5/5");
   });
 
-  test("reviewloop extraction retains cross-lens agreement and ordered lens dispatch", () => {
-    const skill = read(".agents/skills/reviewloop/SKILL.md");
-    expect(skill).toContain("ordinary Standard runs `debate`, `test-audit`, then `code-review`");
-    expect(skill).toContain("one entry per verified");
-    expect(skill).toContain("defect per lens comment; never collapse agreement");
-    expect(skill).toContain("two P2");
-    expect(skill).toContain("score is 4/5");
-  });
-
-  test("the workflow requires risk-sized local review without weakening High-assurance", () => {
+  test("routine review is one focused execution; concrete risks select three lenses", () => {
     const workflow = read("docs/engineering-workflow.md").replace(/\s+/g, " ");
-    for (const fact of [
-      "Every reviewable change gets local review, sized to reachable risk",
-      "Compact is one focused local `code-review` covering Standards, Spec and affected-test adequacy",
-      "for a routine, reversible, localized change with no named high-assurance failure mode, new public interface or seam, cross-package behavior, schema/dependency/CI/security/merge-policy decision",
-      "Size and path alone never qualify; uncertainty means ordinary Standard or High-assurance",
-      "Compact skips `debate` and `test-audit` with reasons in the existing payload",
-      "It is local review, never no-review or hosted-only",
-      "Standard otherwise uses all three lenses; High-assurance uses all three plus final-head debate after fixes",
-    ]) expect(workflow).toContain(fact);
-    expect(read(".agents/skills/reviewloop/SKILL.md")).toContain(
-      "refuses an all-skipped round",
-    );
+    const reviewloop = read(".agents/skills/reviewloop/SKILL.md");
+    expect(workflow).toContain("one fresh `code-review` context");
+    expect(workflow).toContain("Standards, Spec and affected-test adequacy");
+    expect(workflow).toContain("three distinct sessions initially");
+    for (const risk of ["CI", "security", "schema", "dependency", "money", "recovery", "auth", "crypto", "release"]) {
+      expect(workflow.toLowerCase()).toContain(risk.toLowerCase());
+    }
+    expect(workflow).not.toContain("Standard otherwise uses all three lenses");
+    expect(reviewloop).toContain("A routine reversible localized change gets one fresh `code-review` session");
+    expect(reviewloop).toContain("Record only executions that actually happened");
+  });
+
+  test("a review fix gets one bounded fresh review without a full restart", () => {
+    const workflow = read("docs/engineering-workflow.md");
+    const reviewloop = read(".agents/skills/reviewloop/SKILL.md");
+    expect(workflow).toContain("one fresh reviewer to inspect the combined delta and direct affected callers");
+    expect(workflow).toContain("explicitly carries forward unchanged conclusions");
+    expect(workflow).toContain("Rerun another lens only if the fix creates a concrete risk");
+    expect(reviewloop).toContain("Do not restart every lens after a bounded fix");
+    expect(reviewloop).toContain("no unresolved actionable finding may remain");
+    expect(reviewloop).toContain("A 5/5 with zero unresolved actionable findings remains mandatory");
   });
 
   test("local payload recovery and rendering precede worker handoff", () => {
     const feature = read(".agents/skills/feature-implement/SKILL.md");
     expect(feature).toContain("| Local review payload missing or stale | Steps 7–9 before Guard Phase 2 |");
-    expect(feature).toContain("unless the standing owner-approved exception applies; disclose same-family executions");
+    expect(feature).toContain("The handoff may supply the author account; a fresh author-review session is not required.");
     const workflow = read("docs/engineering-workflow.md");
     const lifecycle = workflow.match(/## Feature lifecycle\r?\n\r?\n```\r?\n([\s\S]*?)```/)?.[1];
     expect(lifecycle).toBeDefined();
     const steps = [
       "Commit complete reviewable scope",
-      "Debate — default at Standard",
-      "Test audit — default at Standard",
-      "Code-review — Standards + Spec",
+      "Risk-sized local review",
       "Local reviewloop payload and 5/5",
       "Guard Phase 2 — verify committed HEAD",
       "Handoff verified SHA and local evidence",
       "Push + open PR",
-      "Hosted review — paired current-head 5/5",
+      "CI acceptance — required on the current head before merge",
     ];
     const positions = steps.map((step) => (lifecycle ?? "").indexOf(step));
     let previous = -1;
@@ -216,11 +206,11 @@ describe("the verification rule is discoverable (#259)", () => {
 
   test("finding dispositions and refinements cannot bypass review gates", () => {
     const workflow = read("docs/engineering-workflow.md");
-    const gate = workflow.match(/^- \*\*Both required verdicts[^\r\n]*/m)?.[0] ?? "";
+    const gate = workflow.match(/^- \*\*A bounded fix gets one bounded review\.[^\r\n]*/m)?.[0] ?? "";
     for (const fact of [
-      "split substantial work and hold dependent PRs until resolved",
-      "code evidence and reviewer resolution",
-      "A valid finding cannot be ignored, deferred, downgraded or marked addressed as a refinement",
+      "one fresh reviewer to inspect the combined delta and direct affected callers",
+      "explicitly carries forward unchanged conclusions",
+      "Never clear or defer an actionable finding",
     ]) expect(gate).toContain(fact);
     const refinement = workflow.match(/^- \*\*Small related refinements[^\r\n]*/m)?.[0] ?? "";
     for (const fact of [
@@ -231,10 +221,10 @@ describe("the verification rule is discoverable (#259)", () => {
     const skill = read(".agents/skills/reviewloop/SKILL.md");
     const resolution = skill.split("### 5. Verify and resolve findings")[1]?.split("### 6.")[0] ?? "";
     for (const fact of [
-      "hold dependent work until the blocker is resolved",
-      "obtain reviewer resolution",
+      "hold dependent work for substantial blockers",
+      "reviewer resolution",
       "no unresolved actionable finding may remain at any score",
-      "cannot be hidden in `summary.dismissed`",
+      "Do not hide one in `summary.dismissed`",
     ]) expect(resolution).toContain(fact);
   });
 
@@ -265,11 +255,7 @@ describe("the verification rule is discoverable (#259)", () => {
 
   test("review entry points link to the A/B protocol", () => {
     for (const [file, link] of [
-      ["docs/engineering-workflow.md", "review-comparison.md"],
-      ["docs/verification-and-merge-gate.md", "review-comparison.md"],
-      [".agents/skills/feature-implement/SKILL.md", "../../../docs/review-comparison.md"],
-      [".agents/skills/reviewloop/SKILL.md", "../../../docs/review-comparison.md"],
-      [".agents/skills/guard/SKILL.md", "../../../docs/review-comparison.md"],
+      ["docs/engineering-workflow.md", "verification-and-merge-gate.md"],
     ] as const) expect(read(file)).toContain(`](${link})`);
   });
 

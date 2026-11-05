@@ -1,6 +1,6 @@
-# Reviewloop and Greptile comparison
+# Review comparison (historical)
 
-Run both systems for each reviewed PR during this trial. Continue across PRs until the owner chooses which path to keep after examining several PRs. A PR count is a checkpoint for discussion, not an automatic replacement of either reviewer.
+This document records the former reviewloop/Greptile comparison protocol. It is historical reference, not a current gate. The current policy requires risk-sized local review and CI acceptance; see `engineering-workflow.md`. Hosted findings remain actionable when a hosted review is requested or otherwise configured, but no standing paired-review trial requires both systems.
 
 ## Paired runs
 
@@ -10,11 +10,9 @@ Run both systems for each reviewed PR during this trial. Continue across PRs unt
 4. Verify every finding against the pinned code. Record a shared defect once, credit both reviewers when both found it, and record which reviewer found a verified unique defect. Fix real defects before merging. A fix moves the head and requires fresh review evidence, not relabelled reports.
 5. Publish the comparison in a PR evidence comment with the head SHA and the `<!-- crew-evidence -->` marker. Keep detailed reports in ignored `.scratch/reviews/<issue>/`. Update the evidence comment when the round finishes.
 
-## Merge rule during the trial
+## Historical note
 
-Both current-head reviews must be 5/5 with no actionable findings, alongside the existing CI and merge gates. Scores are not averaged. A disagreement requires investigation even when one score is green. A missing verdict, refusal, exhausted credit or failed provider is an incomplete gate, not permission to choose the other result. Preserve completed work and record the blocked PR in `.scratch/sessions/awaiting-external-review.md`; do not repeat requests to consume more credit.
-
-This is a parent-operated review protocol, not a new GitHub Actions workflow or an automatic comparison service. The renderer still scores only reviewloop. The parent checks Greptile separately and verifies that both verdicts cover the head being merged.
+The paired 5/5 rule below applied only while the owner-operated comparison trial was active. It is retired and does not gate current work. Keep old evidence as history; do not launch or repeat paired runs under this document.
 
 ## Evidence per PR
 

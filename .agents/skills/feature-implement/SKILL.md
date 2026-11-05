@@ -1,6 +1,6 @@
 ---
 name: feature-implement
-description: "Mandatory lifecycle orchestrator for code-changing issues. Delegates to implement, debate, guard and code-review; the parent session runs capture-wisdom. Read this first when the user says 'work on issue #N' or 'implement this feature'."
+description: "Mandatory lifecycle orchestrator for code-changing issues. Coordinates implementation, risk-sized review and guard; the parent owns publication, merge and wisdom. Read this first when the user says 'work on issue #N' or 'implement this feature'."
 ---
 
 # Feature Implementation Orchestration
@@ -52,14 +52,13 @@ Do not skip or reorder these steps.
 
 ### 1. Tier and base SHA
 
-**Select review tier** from `docs/engineering-workflow.md` (Review tiers), which
-defines the five High-assurance failure modes.
+Select the review tier from `docs/engineering-workflow.md` (Review tiers), which names elevated reachable failure modes.
 
 | Tier | When |
 |------|------|
 | **Lightweight** | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/) |
 | **Standard** | Everything else: code, tests, config, UI, API, skills, docs |
-| **High-assurance** | The diff can violate one of the named failure modes in `docs/engineering-workflow.md` (Review tiers) |
+| **High-assurance** | A concrete reachable failure mode in `docs/engineering-workflow.md` (Review tiers) needs three initial lens sessions |
 
 Record the tier **and a one-line justification** in the design doc (step 2), so
 the choice is reviewable next to the verdict. Pass the tier to `guard`.
@@ -113,19 +112,19 @@ Load relevant skills from the workflow's quality check table:
 
 Commit the complete reviewable scope before step 6. Pin that committed HEAD for every local reviewer and the renderer; they do not review uncommitted changes. After any review fix, commit it before refreshing affected checks and current-head reviews. Keep source frozen while reviewers read.
 
-### 6. Local review — every reviewable change
+### 6. Risk-sized local review
 
-Select depth by reachable risk under `docs/engineering-workflow.md`. Compact Standard requires one genuine local `code-review` execution covering Standards, Spec and affected-test adequacy; record `debate` and `test-audit` skips with reasons in the renderer payload. Ordinary Standard uses all three lenses; High-assurance uses all three and a final-head debate after fixes. Use separate reviewer executions and preserve model-family independence unless the standing owner-approved exception applies; disclose same-family executions. The handoff may supply the short author account; a fresh author-model session is not a gate. The parent verifies exact base/head, reviewer session, actual model, provenance and report. A worker's unsupported claim is not evidence, while a valid execution on the exact tree is reusable and should not be duplicated automatically. Never report a skipped lens as run.
+Apply the review tiers in `docs/engineering-workflow.md`. Routine reversible localized changes get one fresh `code-review` context covering Standards, Spec and affected-test adequacy. High-assurance requires three distinct initial lens sessions for a named reachable failure mode. Do not fan out specialists without a concrete unanswered question. The handoff may supply the author account; a fresh author-review session is not required. Verify exact-tree executions and never claim a skipped lens ran.
 
-### 7–9. Review payload and resolution
+### 7–9. Findings and bounded fixes
 
-Use `.agents/skills/reviewloop/SKILL.md` for the payload format, renderer and current-head process. Every reviewable change gets local review. Before push and worker handoff, require local reviewloop 5/5 on the exact current head with no unresolved actionable finding; hosted review is pending until the parent publishes that head. During the [paired trial](../../../docs/review-comparison.md), merge-readiness after publication requires both local and hosted verdicts to be 5/5 on the exact current head, with no unresolved actionable finding. Verify every finding. Fix valid blockers or hold dependent work; disputes need code evidence and reviewer resolution. A score never overrides an unresolved finding. Any code change requires applicable current-head reviews again.
+Use `.agents/skills/reviewloop/SKILL.md` for renderer mechanics. Every reviewable change requires current-head local reviewloop 5/5 and zero unresolved actionable findings. Verify each finding against source. After a bounded fix, commit it and run affected checks; one fresh reviewer checks the combined delta and direct callers, carrying unchanged prior conclusions forward explicitly. Rerun another lens only for a new concrete risk it covers. A score never excuses an actionable finding. CI acceptance remains pending until publication and is mandatory before merge.
 
 ### 10. Guard pre-push (Phase 2)
 
 Use the committed, locally reviewed HEAD from steps 6–9 when running `guard` Phase 2 for the local checks below. If verification requires a fix, commit it and refresh the affected checks and stale reviews before handoff. Record post-commit results in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`, not an evidence-only commit. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
 
-Use `guard` Phase 2's risk-sized local checks. After owner activation, routine full-suite, full-browser, production-build and audit checks run as CI-final gates; run them locally only for a concrete uncertainty or CI coverage gap. Until the owner verifies that `CI acceptance` is required on the current head and bypass policy is acceptable, the existing local Phase 2 requirements remain in force. Record local readiness separately; it does not mean CI accepted or the change is merge-ready. Follow guard's execution reliability rules: pinned absolute cwd/tree, unique durable logs, real output inspection and truthful result states. For relevant browser verification, inspect `bun scripts/e2e-changed.ts --dry-run` before a heavy run and retain its scope decision. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. Ordinary failing-first TDD still applies.
+Use `guard` Phase 2's risk-sized local checks. After owner activation, routine full-suite, full-browser, production-build and audit checks run as CI-final gates; run them locally only for a concrete uncertainty or CI coverage gap. Until the parent verifies that `CI acceptance` is required on the current head and bypass policy is acceptable, other PRs retain the existing local Phase 2 baseline. The policy PR uses Guard's narrow focused-proof bootstrap exception. Record local readiness separately; it does not mean CI accepted or the change is merge-ready. Follow guard's execution reliability rules: pinned absolute cwd/tree, unique durable logs, real output inspection and truthful result states. For relevant browser verification, inspect `bun scripts/e2e-changed.ts --dry-run` before a heavy run and retain its scope decision. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. Ordinary failing-first TDD still applies.
 - Review evidence files exist and are not stale
 - Working tree is clean
 
@@ -162,18 +161,9 @@ The reports themselves stay local — `.scratch/reviews/` is gitignored, and a
 committed report makes the reviewer judge our notes instead of our code, burns
 credits, and makes the previous report stale.
 
-### 12. CI + review round — parent-owned
+### 12. CI and hosted review — parent-owned
 
-`.github/workflows/ci.yml` runs three jobs on every PR to
-`develop`: `checks` (typecheck, lint, test, audit, and the red-on-parent gate),
-`e2e` (Playwright) and `rust` (cargo test + clippy). The red-on-parent gate is
-CI-only and must pass before merge. A PR this thread opened is **watched**, and the watch is
-what reports the run — do not sit in a `gh pr checks` loop for it. Poll only a PR
-nobody here watches, and never poll a lane.
-A lane cannot trigger CI or the review round at all, because it cannot push
-(step 11). This wait belongs to the parent, never the lane.
-
-The parent verifies the current-head local review and, during the paired trial, the hosted Greptile verdict using the canonical `reviewloop` and merge-gate rules. Reuse a genuine valid worker execution on the exact tree; do not rerun it just because the worker produced it. Verify each finding against the cited code and resolve it without relabeling valid findings as refinements. Both required current-head verdicts must be 5/5 with no unresolved actionable findings. A new head needs applicable review at that exact head.
+The parent publishes the branch and verifies `.github/workflows/ci.yml`'s required checks on the current head. `CI acceptance` must pass before merge. This policy PR may be published with that check pending after focused local proof and review; it is not merge-ready. The parent also owns any hosted review configured for the repository, but it does not duplicate local lens requirements. Reuse valid exact-tree executions and resolve every actionable finding against source.
 
 ### 13. Architecture review — parent-owned, only after a 5/5
 
@@ -233,15 +223,14 @@ occurred more than once.
 
 ### 15. Report to the owner — parent-owned
 
-The parent reports: PR link, local and CI check status, both trial verdicts, finding dispositions and reviewer-accepted nonblocking follow-ups.
+The parent reports: PR link, local and CI check status, the configured review verdicts, finding dispositions and reviewer-accepted nonblocking follow-ups.
 
 ## Merge rules
 
 **Parent-only — a lane never merges at all.** The class decides who merges: a
 cheap-to-reverse diff with no decision in it merges itself once the gate is
 clean, and an expensive-to-reverse or decision diff waits for the owner's word.
-A current-head 5/5 with no unresolved actionable findings, plus every CI check green, is the **bar to merge at all**. Auto-merging below it is not allowed, and a REFUSED verdict never merges. While the A/B runs, a Greptile
-verdict that disagrees is investigated before the merge.
+A current-head local 5/5 with no unresolved actionable findings and green, enforced CI acceptance are mandatory for merge. An unresolved actionable finding blocks merge at any score. Hosted findings must be investigated under the repository's configured review policy; there is no standing paired-review trial.
 
 The gate is [`docs/verification-and-merge-gate.md`](../../../docs/verification-and-merge-gate.md):
 the four reasons, the evidence form (visual vs measured), the AUTO/OWNER/REFUSED

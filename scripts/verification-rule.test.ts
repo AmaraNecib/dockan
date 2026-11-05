@@ -128,6 +128,16 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(ci).toContain("The aggregate cannot establish branch-protection settings or bypass policy itself");
   });
 
+  test("activated CI-final policy has no unconditional local acceptance mandate", () => {
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    const guard = read(".agents/skills/guard/SKILL.md");
+    const development = read("docs/development-workflow.md");
+    expect(feature).not.toContain("Do not trade this for a focused test run and a typecheck");
+    expect(guard).toContain("After activation, the selector defines CI scope, not a mandatory local full run");
+    expect(development).toContain("After activation, the selector defines CI scope, not a mandatory local full run");
+    expect(guard).toContain("The worktree must be clean before handoff or publication");
+  });
+
   test("hosted verdicts gate merge-readiness, not the push that starts review", () => {
     const guard = read(".agents/skills/guard/SKILL.md");
     const phase2 = guard.split("## Phase 2")[1]?.split("## Phase 3")[0] ?? "";

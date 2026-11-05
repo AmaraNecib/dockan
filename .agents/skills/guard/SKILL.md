@@ -24,7 +24,7 @@ Use the absolute worktree path and pin base, head and tree. Check free space bef
 
 Run before every commit. Phase 1 runs typecheck, lint and tests from the canonical Phase 2 list below. The Husky hook separately runs `scripts/contracts-source-guard.ts`, `bun run lint`, `bun run skills:check` and `cd apps/api && bunx tsc --noEmit`. Keep both behaviors intact.
 
-If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
+If the change touches Rust Core (`apps/desktop/src-tauri/src/`), keep the following checks before activation. After activation, run focused Rust tests for the changed behavior and direct callers, plus applicable clippy checks. Full crate tests are CI-final unless a concrete uncertainty or coverage gap requires them locally.
 ```
 [ ] cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml — passes?
 [ ] cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warnings — clean?
@@ -57,7 +57,7 @@ Use the actual PR base ref. A normal PR uses `origin/develop`; a stacked PR uses
 
 Save post-commit evidence in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`. Record the exact `mode=`, `specs=`, `reason=`, and `source=` lines, plus the full `HEAD` SHA and base ref/SHA, run command, exit code and artifact paths, or the selector's skip decision. Record any reason for repeating a completed run there too. Do not make an evidence-only commit; hand the path and verified SHA to the parent for PR publication. Accept `affected` or `skip` only when the committed HEAD contains the complete PR scope and no reviewable tracked or untracked changes remain. The selector warns about dirty tracked files but does not include their edits; untracked files are not included. Resolve those changes into commits, then inspect the dry run again. `--files` bypasses Git and cannot prove complete PR scope, so it is never acceptance evidence.
 
-Follow the map without changing it: `affected` means run exactly the listed specs, `full` means run the full suite and retain the selector's reason, and `skip` means no browser run. An unmapped or critical path must stay `full`. Focused TDD or a reproducer remains useful, but does not replace verification of the selected scope. Route actual browser runs through `heavy_run` with the isolated `DOKAN_PORT`, `DOKAN_WEB_PORT`, `DOKAN_VAULT_PORT` and `DOKAN_VAULT_WEB_PORT`; the dry run needs no slot. Do not repeat a completed run for the same unchanged scope unless a specific need is recorded. The full suite and web build also take a heavy slot.
+Follow the map without changing it. After activation, the selector defines CI scope, not a mandatory local full run. Record its decision even when local browser proof is unnecessary. Run local browser cases for the changed behavior or a concrete CI coverage gap; record why those cases suffice and which remaining scope CI must verify. Before activation, `affected` means run exactly the listed specs, `full` means run the full suite and retain the selector's reason, and `skip` means no browser run. An unmapped or critical path must stay `full` in the selector; CI's selected-scope gate is unchanged. Route actual browser runs through `heavy_run` with the isolated `DOKAN_PORT`, `DOKAN_WEB_PORT`, `DOKAN_VAULT_PORT` and `DOKAN_VAULT_WEB_PORT`; the dry run needs no slot. Do not repeat a completed run for the same unchanged scope unless a specific need is recorded. The full suite and web build also take a heavy slot.
 
 ```
 [ ] bun run typecheck — passes?
@@ -66,6 +66,7 @@ Follow the map without changing it: `affected` means run exactly the listed spec
 [ ] Focused regression tests cover changed behavior and direct affected integrations; full repository suites are CI-final after activation
 [ ] Build and audit run locally when the change's risk or dependency scope requires them; otherwise CI-final owns these checks after activation
 [ ] Browser verification follows "Browser verification: selector first" above; preserve the selector contract and evidence for the selected scope
+[ ] The worktree must be clean before handoff or publication
 [ ] Local status is recorded separately from CI acceptance; no local result implies CI accepted or merge-ready
 [ ] Until owner activation is recorded, retain existing Phase 2 requirements and report the gate pending
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)

@@ -129,10 +129,7 @@ Use `guard` Phase 2's risk-sized local checks. After owner activation, routine f
 - Review evidence files exist and are not stale
 - Working tree is clean
 
-Do not trade this for a focused test run and a typecheck: that is how a red CI
-run becomes the first place the lane learns a script or the production bundle
-broke. A red check that cannot come from this change is still a red push — record
-it, and take it to the owner instead of calling the branch green.
+After activation, focused local checks satisfy the local gate when they cover the changed behavior and direct callers. Record a concrete uncertainty or CI coverage gap before adding a full local run. Until activation, retain the existing local requirements. Record any failed check and resolve it before claiming its gate passed; an unrelated failure is not a pass.
 
 **Evidence staleness check:**
 - Extract SHA from evidence filenames in `.scratch/reviews/<issue-id>/`

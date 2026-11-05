@@ -12,6 +12,7 @@ type InvoiceCreate = { kind: "PURCHASE"; invoiceDate: string; lines: Array<{ ite
 
 test("invoice list filters persisted ranges, sorts business dates, and clears defaults (#406)", async ({ page }) => {
   await signIn(page);
+  const existingInvoices = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
   const stamp = Date.now().toString();
   const categoryId = await seedCategoryId(page, `range-${stamp}`);
   const item = await callRpc<{ id: string }, ItemCreate>(page, "itemsCreate", {
@@ -71,7 +72,7 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
   const evidence = path.resolve(process.cwd(), ".scratch/evidence/406");
   fs.mkdirSync(evidence, { recursive: true });
   await page.getByTestId("invoices-filters-clear").click();
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(Math.min(existingInvoices.total + 3, 500));
   await expect(page.getByTestId("invoices-range-error")).toHaveCount(0);
   await chooseSelectOption(page, page.getByTestId("invoices-kind-filter"), "المشتريات");
   await chooseSelectOption(page, page.getByTestId("invoices-status-filter"), "غير مدفوعة");

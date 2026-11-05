@@ -82,7 +82,7 @@ function RefundEditor({ expenseId, onCancel }: { expenseId: string; onCancel: ()
     const occurredAt = parseDateTimeText(dateText);
     if (amount === null || amount <= 0 || amount > (history.data?.refundableAmount ?? 0)) { setError(t("EXPENSE_REFUND_EXCEEDS_BALANCE")); return; }
     if (occurredAt === null) { setError(t("expenseDateInvalid")); return; }
-    void send({ kind: "refund", input: { expenseId, amount, occurredAt, reason: reason.trim() || undefined, idempotencyKey: crypto.randomUUID() } });
+    void send({ kind: "refund", input: { expenseId, amount, occurredAt, reason: reason.trim(), idempotencyKey: crypto.randomUUID() } });
   }
 
   return <div className="grid gap-3" data-testid="expense-refund-editor">

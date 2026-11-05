@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
-import { assertSchemaVersionSupported, readSchemaVersion, UnsupportedSchemaVersionError } from "../lib/schema-version";
+import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, UnsupportedSchemaVersionError } from "../lib/schema-version";
 import { createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
 
@@ -67,7 +67,7 @@ afterAll(() => {
 
 describe("expense correction storage (#408)", () => {
   it("upgrades v7 without inventing legacy actor facts or rewriting expense dates", async () => {
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
     const original = (await store.listExpenseRecords({})).find((row) => row.id === expenseId);
     expect(original).toMatchObject({
       amount: 1_000,
@@ -82,7 +82,7 @@ describe("expense correction storage (#408)", () => {
     expect(columns.map(({ name }) => name)).toContain("actor_name");
     expect(() => assertSchemaVersionSupported(conn.raw, 7)).toThrow(UnsupportedSchemaVersionError);
     await store.setup();
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
     expect((await store.getExpenseCorrectionHistory(expenseId))?.corrections).toEqual([]);
     await expect(store.insertExpense({
       categoryId, amount: 100, occurredAt: "2020-01-01T10:00:00", actorId: "missing-name", actorName: null,
@@ -94,7 +94,7 @@ describe("expense correction storage (#408)", () => {
   });
 
   it("appends a linked signed row inside an immediate transaction and refuses stale or unlocked writes", async () => {
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
     const first = await store.withTransactionImmediate((tx) =>
       tx.insertExpenseCorrection({
         expenseId,
@@ -373,6 +373,6 @@ describe("expense correction storage (#408)", () => {
     expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, correctionKey)).toEqual(correction);
     expect(await store.findExpenseCorrectionByIdempotencyKey(attributed.id, undoKey)).toEqual(reversal);
     expect(await store.getExpenseCorrectionHistory(expenseId)).toEqual(legacyBefore);
-    expect(readSchemaVersion(conn.raw)).toBe(8);
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
   });
 });

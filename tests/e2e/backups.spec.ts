@@ -134,7 +134,7 @@ test("external backup destination persists, cancels edits, reports media failure
   await panel.getByRole("button", { name: "حفظ المجلد" }).click();
   await expect(destination).toHaveValue("D:/shop-backups");
   await expect(panel.getByRole("status")).toContainText("القرص الفعلي نفسه");
-  if (process.env.BACKUP_EVIDENCE === "before") {
+  if (process.env.BACKUP_EVIDENCE === "before" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/before.png" });
   }
 
@@ -145,7 +145,7 @@ test("external backup destination persists, cancels edits, reports media failure
   await panel.getByRole("button", { name: "نسخ الآن" }).click();
   await expect(page.getByTestId("external-backup-success")).toContainText("dokan-backup.dknvbak");
   await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/existing-backups/dokan-backup-set");
-  if (process.env.BACKUP_EVIDENCE === "after") {
+  if (process.env.BACKUP_EVIDENCE === "after" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/after.png" });
   }
   await panel.getByRole("button", { name: "إزالة الوجهة" }).click();

@@ -566,9 +566,8 @@ export class VaultManager {
    * done" marker, so a migrated history is never rescanned or read again.
    */
   private async encryptLegacyBackups(): Promise<string[]> {
-    const masterKey = this.masterKey;
     const headerText = readFileIfExists(this.headerPath);
-    if (masterKey === undefined || headerText === undefined) return [];
+    if (this.masterKey === undefined || headerText === undefined) return [];
     const backupsDir = this.backupsDir;
     let entries: string[];
     try {
@@ -609,7 +608,9 @@ export class VaultManager {
       try {
         this.assertBackupRoot();
         const { image } = readLegacyDatabaseImage(file, { noFollow: true });
-        const bundle = createVaultBackupBundle(headerText, buildEncryptedSnapshot(masterKey, vaultId, image));
+        // Unlock or close may zero an earlier key during the file reads.
+        // Acquire the live key only for synchronous sealing, with no await.
+        const bundle = createVaultBackupBundle(headerText, buildEncryptedSnapshot(this.requireMasterKey(), vaultId, image));
         this.assertBackupRoot();
         await writeFileAtomic(converted, bundle, { beforeRename: () => this.assertBackupRoot() });
         // Keep the database available for retries until its sidecars are gone.

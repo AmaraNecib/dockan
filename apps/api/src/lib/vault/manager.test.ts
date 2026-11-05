@@ -380,10 +380,12 @@ describe("VaultManager", () => {
     names.forEach((name, index) => fs.writeFileSync(name, contents[index] ?? Buffer.alloc(0)));
     const vault = manager();
     await createVault(vault);
-    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "remaining", remaining: names });
+    const cleanup = await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {});
+    expect(cleanup.status).toBe("remaining");
+    expect([...cleanup.remaining].sort()).toEqual([...names].sort());
     expect(names.map((name) => fs.readFileSync(name))).toEqual(contents);
     expect(fs.readdirSync(backupsDir).sort()).toEqual(names.map((name) => path.basename(name)).sort());
-    expect((await vault.cleanupLegacyPlaintext()).plaintextRemaining).toEqual(names);
+    expect([...(await vault.cleanupLegacyPlaintext()).plaintextRemaining].sort()).toEqual([...names].sort());
     vault.close();
   });
 
@@ -549,6 +551,72 @@ describe("VaultManager", () => {
       vault.close();
     }
   });
+
+  for (const transition of ["unlock", "close"] as const) {
+    itHeavy(`preserves partial history when cleanup crosses a concurrent ${transition}`, async () => {
+      const backupsDir = path.join(dir, "backups");
+      fs.mkdirSync(backupsDir);
+      const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+      const db = new Database(partial, { create: true });
+      db.exec("CREATE TABLE history(note TEXT); INSERT INTO history VALUES ('original history');");
+      db.close();
+      const original = fs.readFileSync(partial);
+      const vault = manager();
+      await createVault(vault);
+      let entered: () => void = () => {};
+      let release: () => void = () => {};
+      const readStarted = new Promise<void>((resolve) => { entered = resolve; });
+      const mayRead = new Promise<void>((resolve) => { release = resolve; });
+      const open = fs.promises.open.bind(fs.promises);
+      const gate = spyOn(fs.promises, "open").mockImplementation(async (file, ...args) => {
+        if (String(file) === partial) {
+          entered();
+          await mayRead;
+        }
+        return open(file, ...args);
+      });
+      let sweep: Promise<{ plaintextRemaining: string[] }> | undefined;
+      try {
+        sweep = vault.cleanupLegacyPlaintext();
+        await readStarted;
+        if (transition === "unlock") await vault.unlock(PASSPHRASE);
+        else vault.close();
+        release();
+        const cleanup = await sweep;
+        if (transition === "close") {
+          expect(cleanup).toEqual({ plaintextRemaining: [partial] });
+          expect(fs.readFileSync(partial).equals(original)).toBe(true);
+          expect(fs.existsSync(`${partial}.dknvbak`)).toBe(false);
+        } else {
+          expect(cleanup).toEqual({ plaintextRemaining: [] });
+          expect(fs.existsSync(partial)).toBe(false);
+          const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-racing-unlock-restore-"));
+          extraDirs.push(restoreDir);
+          await extractVaultBackup(fs.readFileSync(`${partial}.dknvbak`), restoreDir);
+          const restored = new VaultManager({ dataDir: restoreDir, legacyDbPath: path.join(restoreDir, "dokan.db"), logger: new AppLogger(restoreDir), kdf: FAST_KDF });
+          try {
+            await restored.unlock(PASSPHRASE);
+            let connection: ReturnType<typeof createEncryptedConnection> | undefined;
+            try {
+              expect(() => {
+                connection = createEncryptedConnection({ snapshotPath: restored.snapshotPath, masterKey: restored.requireMasterKey(), vaultId: restored.metadata().vaultId });
+              }).not.toThrow();
+              expect(connection?.raw.query("SELECT note FROM history").all()).toEqual([{ note: "original history" }]);
+            } finally {
+              await connection?.close();
+            }
+          } finally {
+            restored.close();
+          }
+        }
+      } finally {
+        release();
+        await sweep?.catch(() => {});
+        gate.mockRestore();
+        vault.close();
+      }
+    });
+  }
 
   itHeavy("converts committed crashed-writer WAL history into a restorable encrypted bundle", async () => {
     const backupsDir = path.join(dir, "backups");

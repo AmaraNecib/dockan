@@ -37,10 +37,12 @@ for (const outcome of ["success", "definitive refusal"] as const) {
     let finishA: (() => void) | undefined;
     let finishB: (() => void) | undefined;
     delayed = (input) => {
+      if (outcome === "definitive refusal") {
+        if (inputs.length === 1) return new Promise((_resolve, reject) => { finishA = () => reject(new Error("EXPENSE_REFUND_EXCEEDS_BALANCE")); });
+        if (inputs.length === 2) return Promise.reject(new Error("EXPENSE_REFUND_EXCEEDS_BALANCE"));
+      }
       const row = saved(input);
-      if (inputs.length === 1) return new Promise((resolve, reject) => {
-        finishA = () => outcome === "success" ? resolve(row) : reject(new Error("EXPENSE_REFUND_EXCEEDS_BALANCE"));
-      });
+      if (inputs.length === 1) return new Promise((resolve) => { finishA = () => resolve(row); });
       if (inputs.length === 3) return new Promise((resolve) => { finishB = () => resolve(row); });
       return Promise.resolve(row);
     };
@@ -73,6 +75,7 @@ for (const outcome of ["success", "definitive refusal"] as const) {
     await submit();
     await page.poll(() => inputs.length === 2 && page.query<HTMLButtonElement>("expense-refund-save")?.disabled === false, "retry A acknowledged");
     expect(inputs[1]).toEqual(originalA);
+    if (outcome === "definitive refusal") expect(refunds).toEqual([]);
     await fill("100");
     await submit();
     await page.poll(() => inputs.length === 3, "B pending");
@@ -87,7 +90,7 @@ for (const outcome of ["success", "definitive refusal"] as const) {
     await submit();
     await page.poll(() => inputs.length === 4 && sessionStorage.getItem(journalKey) === null, "B retry acknowledged");
     expect(inputs[3]).toEqual(newB);
-    expect(refunds.map((row) => row.difference)).toEqual([-300, -100]);
+    expect(refunds.map((row) => row.difference)).toEqual(outcome === "success" ? [-300, -100] : [-100]);
     await act(async () => { finishB?.(); await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(sessionStorage.getItem(journalKey)).toBeNull();
   });

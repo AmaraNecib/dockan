@@ -210,6 +210,7 @@ describe("e2e-selection behaviour", () => {
       "activity.spec.ts",
       "backups.spec.ts",
       "debts.spec.ts",
+      "party-navigation.spec.ts",
       "supplier-adjustment.spec.ts",
     ]);
     // pagination.spec.ts lives in several rules; a multi-rule diff must not repeat it.
@@ -265,7 +266,7 @@ describe("e2e-selection behaviour", () => {
     // exact list so a later over-widening is visible too.
     const scope = selectSpecs(["apps/web/src/pages/debts.tsx"], map);
     expect(scope.mode).toBe("affected");
-    expect(scope.specs).toEqual(["debts.spec.ts", "supplier-adjustment.spec.ts"]);
+    expect(scope.specs).toEqual(["debts.spec.ts", "party-navigation.spec.ts", "supplier-adjustment.spec.ts"]);
   });
 
   test("an activity page edit runs the backup-filename check (#231)", () => {

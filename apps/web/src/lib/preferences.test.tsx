@@ -198,16 +198,22 @@ describe("preferences client (issue 97 follow-up)", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const cancel = spyOn(handle.client, "cancelQueries").mockImplementation(() => gate);
     const fetch = spyOn(handle.client, "fetchQuery");
+    let settled = 0;
+    const unsubscribe = onPreferenceWriteSettled(() => { settled += 1; });
     try {
       await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
       expect(cancel).toHaveBeenCalledTimes(1);
       markAuthLost();
       clearAuthLost();
-      await act(async () => release());
-      await flush();
+      await act(async () => {
+        release();
+        await gate;
+      });
       expect(fetch).not.toHaveBeenCalled();
       expect(handle.client.getQueryData(["preferences"])).toBeUndefined();
+      expect(settled).toBe(0);
     } finally {
+      unsubscribe();
       release();
       cancel.mockRestore();
       fetch.mockRestore();
@@ -225,16 +231,24 @@ describe("preferences client (issue 97 follow-up)", () => {
     readGate = new Promise<void>((resolve) => { release = resolve; });
     const fetch = spyOn(handle.client, "fetchQuery");
     const invalidate = spyOn(handle.client, "invalidateQueries");
+    let settled = 0;
+    const unsubscribe = onPreferenceWriteSettled(() => { settled += 1; });
     try {
       await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
       expect(fetch).toHaveBeenCalledTimes(1);
+      const recovery = fetch.mock.results[0]?.value;
+      expect(recovery).toBeDefined();
       markAuthLost();
       clearAuthLost();
-      await act(async () => release());
-      await flush();
+      await act(async () => {
+        release();
+        await expect(recovery).rejects.toThrow("SESSION_SCOPE_RETIRED");
+      });
       expect(handle.client.getQueryData(["preferences"])).toBeUndefined();
       expect(invalidate).not.toHaveBeenCalled();
+      expect(settled).toBe(0);
     } finally {
+      unsubscribe();
       release();
       fetch.mockRestore();
       invalidate.mockRestore();

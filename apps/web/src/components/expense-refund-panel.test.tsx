@@ -42,6 +42,7 @@ it("retains a same-key in-flight retry when the old attempt's refusal arrives", 
     return Promise.resolve(row);
   };
   const page = await mountWithProviders(<SessionCacheScopeProvider scopeId="original"><ExpenseRefundPanel expenseId={expenseId} /></SessionCacheScopeProvider>);
+  expect(page.query("expense-refund-open")).not.toBeNull();
   const open = async () => {
     await act(async () => { page.query<HTMLButtonElement>("expense-refund-open")?.click(); });
     await page.poll(() => page.query<HTMLButtonElement>("expense-refund-save")?.disabled === false, "editor ready");

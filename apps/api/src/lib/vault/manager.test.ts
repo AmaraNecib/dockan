@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { createEncryptedConnection } from "../../db/encrypted-connection";
+import { SCHEMA_DDL } from "../../db/schema";
+import { createDrizzleStore } from "../../store/drizzle-store";
 import { AppLogger } from "../logger";
 import { classifyPlaintextCleanup } from "./cleanup-status";
 import { readVaultBackupBundle, extractVaultBackup } from "./backup";
@@ -336,6 +338,53 @@ describe("VaultManager", () => {
     }
     expect(await vault.cleanupLegacyPlaintext()).toEqual({ plaintextRemaining: [] });
     vault.close();
+  });
+
+  itHeavy("preserves schema-9 expense refunds through partial conversion and store restore", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    const db = new Database(partial, { create: true });
+    db.exec(SCHEMA_DDL.join(";"));
+    db.exec(`
+      INSERT INTO expense_categories VALUES ('rent', 'Historical rent', 0, '2019-01-01T00:00:00', '2019-01-01T00:00:00');
+      INSERT INTO expenses VALUES ('expense', 'rent', 1000, 'Historical expense', '2019-01-15T10:00:00', '2019-01-16T11:00:00', NULL, NULL);
+      INSERT INTO expense_refunds VALUES ('refund', 'expense', -300, '2019-02-12T10:00:00', '2026-10-28T13:34:56', 'refund-actor', 'Refund owner', 'Cash recovered', 'refund-key', NULL);
+      PRAGMA user_version = 9;
+    `);
+    db.close();
+    const vault = manager();
+    await createVault(vault);
+    try {
+      expect(await vault.cleanupLegacyPlaintext()).toEqual({ plaintextRemaining: [] });
+      expect(fs.existsSync(partial)).toBe(false);
+      const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-refund-backup-restore-"));
+      extraDirs.push(restoreDir);
+      await extractVaultBackup(fs.readFileSync(`${partial}.dknvbak`), restoreDir);
+      const restored = new VaultManager({ dataDir: restoreDir, legacyDbPath: path.join(restoreDir, "dokan.db"), logger: new AppLogger(restoreDir), kdf: FAST_KDF });
+      await restored.unlock(PASSPHRASE);
+      const connection = createEncryptedConnection({ snapshotPath: restored.snapshotPath, masterKey: restored.requireMasterKey(), vaultId: restored.metadata().vaultId });
+      try {
+        const store = createDrizzleStore(connection);
+        await store.setup();
+        const history = await store.getExpenseRefundHistory("expense");
+        expect(connection.raw.query("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+        expect(history?.expense.original.amount).toBe(1000);
+        expect(history?.refundableAmount).toBe(700);
+        expect(history?.refunds).toEqual([{
+          id: "refund", expenseId: "expense", difference: -300,
+          occurredAt: "2019-02-12T10:00:00", recordedAt: "2026-10-28T13:34:56",
+          actorId: "refund-actor", actorName: "Refund owner", reason: "Cash recovered",
+          reversesRefundId: null, reversedByRefundId: null,
+        }]);
+        expect(await store.findExpenseRefundByIdempotencyKey("expense", "refund-key")).toMatchObject({ id: "refund", difference: -300 });
+      } finally {
+        await connection.close();
+        restored.close();
+      }
+    } finally {
+      vault.close();
+    }
   });
 
   itHeavy("cleans the configured backup root when the legacy database is elsewhere", async () => {

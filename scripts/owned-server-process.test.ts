@@ -212,9 +212,20 @@ it("refuses an unowned child and preserves data when either stop fails", async (
 
 it.skipIf(process.platform === "win32")("escalates an owned POSIX group that ignores SIGTERM", async () => {
   const child = spawnOwnedServer(node, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.send('ready')"], { cwd, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  let primaryFailure: unknown;
   try {
+    expectOwnedChild(child);
     await started(child);
     await stopOwnedServer(child);
     expect(child.signalCode).toBe("SIGKILL");
-  } finally { await stopOwnedServer(child); }
+  } catch (error) {
+    primaryFailure = error;
+  } finally {
+    if (isChildProcess(child)) {
+      try { await stopOwnedServer(child); } catch (error) {
+        primaryFailure ??= error;
+      }
+    }
+  }
+  if (primaryFailure !== undefined) throw primaryFailure;
 }, 8_000);

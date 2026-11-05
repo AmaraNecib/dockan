@@ -55,7 +55,7 @@ test("supplier account: pay, return, and refund move one signed balance", async 
 
   // 3. the supplier detail shows the charge as the balance
   await page.goto("/suppliers");
-  await page.getByRole("link", { name: supplierName }).click();
+  await page.getByRole("link", { name: supplierName, exact: true }).click();
   await expect(page.getByTestId("supplier-balance")).toBeVisible();
   await expect(page.getByTestId("supplier-balance-value")).toHaveText("2,000 دج");
 

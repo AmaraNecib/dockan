@@ -1083,7 +1083,16 @@ export function InvoicePage() {
         <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceNumber")}</dt><dd data-testid="invoice-number">{invoice.invoiceNumber}</dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceKind")}</dt><dd data-testid="invoice-kind">{t(`invoiceKind_${invoice.kind}`)}</dd></div>
-          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">{invoice.counterpartyName ?? "—"}</dd></div>
+          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">
+            {invoice.counterpartyId !== null && invoice.counterpartyId !== "" ? (
+              <Link to={invoice.kind === "SALE" ? "/customers/$partyId" : "/suppliers/$partyId"} params={{ partyId: invoice.counterpartyId }} className="rounded font-medium underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+                {/* Display-only fallback: whitespace, default-ignorable, control (Cc), and format
+                    (Cf) characters alone cannot name a link. Count content without stripping
+                    stored code points from visible names, including Arabic shaping and emoji. */}
+                {/[^\s\p{Default_Ignorable_Code_Point}\p{Cc}\p{Cf}]/u.test(invoice.counterpartyName ?? "") ? invoice.counterpartyName : t("partyDetails")}
+              </Link>
+            ) : invoice.counterpartyName ?? "—"}
+          </dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceDateTime")}</dt><dd data-testid="invoice-date">{formatDateTime(combineBusinessDateTime(invoice.invoiceDate, invoice.createdAt))}</dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceTotal")}</dt><dd data-testid="invoice-total"><Amount value={invoice.totalAmount} /></dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid"><Amount value={invoice.paidAmount} /></dd></div>

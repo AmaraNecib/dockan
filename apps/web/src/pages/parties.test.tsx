@@ -213,6 +213,23 @@ afterEach(async () => {
 });
 
 describe("PartiesPage (issue 120)", () => {
+  for (const role of ["customer", "supplier"] as const) {
+    it(`offers a visible Details link beside Edit for the ${role} stable id (#407)`, async () => {
+      const party = row({ id: `${role}-407`, name: "اسم مكرر" });
+      if (role === "customer") customers = [party];
+      else suppliers = [party];
+      const host = await mount(<PartiesPage role={role} />);
+      await waitFor(() => host.querySelectorAll('[data-testid="party-row"]').length === 1);
+      const details = host.querySelector<HTMLAnchorElement>('[data-testid="party-row-details"]');
+      expect(details).not.toBeNull();
+      expect(details?.textContent).toBe("تفاصيل");
+      expect(host.querySelector("thead th:last-child")?.textContent).toBe("تفاصيل / تعديل / حذف");
+      expect(details?.getAttribute("href")).toBe(`/${role}s/$partyId?partyId=${role}-407`);
+      expect(details?.closest("td")).toBe(host.querySelector('[data-testid="party-row-edit"]')?.closest("td"));
+      expect(host.querySelector('[data-testid="party-row-link"]')).not.toBeNull();
+    });
+  }
+
   it("renders the searched list with invoice count and remaining, and filters by name or phone", async () => {
     customers = [
       row(),

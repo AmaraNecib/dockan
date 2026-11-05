@@ -205,6 +205,6 @@ Every technical error (and every info/warn entry) is appended to a daily JSONL l
 - Queue heavy commands through `heavy_run`. Selector dry-runs, focused tests, lint and typecheck are light. Use isolated browser ports when browser proof is needed.
 - CI `checks` owns actual-PR red-on-parent replay. Never run that replay locally or treat its absence as a missing local gate.
 
-The aggregate `CI acceptance` check is mandatory before merge. This policy PR may publish after focused local proof and review while that check is pending, but cannot merge or activate reduced local verification until the parent verifies current-head required-check enforcement and administrator enforcement, with recorded owner acceptance of the bypass policy. The parent cannot accept bypass on the owner's behalf. Other PRs keep the prior local baseline until that activation evidence exists. Local readiness is not CI acceptance or merge readiness.
+The aggregate `CI acceptance` check is mandatory before merge. Use the recorded activation and current protection-verification procedure in [Current activation](engineering-workflow.md#current-activation). Local readiness is not CI acceptance or merge readiness. An enforcement regression blocks merge rather than silently restoring full local execution.
 
 For test design, use the rubric in `.agents/skills/tdd/SKILL.md`: test a reachable contract with an independent expected result at the cheapest adequate seam. Counts, quotas and blanket mock bans are not quality criteria.

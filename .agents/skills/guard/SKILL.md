@@ -24,7 +24,7 @@ Use the absolute worktree path and pin base, head and tree. Check free space bef
 
 Before a commit, run the focused test for changed behavior and direct callers, plus relevant typecheck, lint and generated-file checks. Do not run full suites, full browser tests, builds or audits per commit. The Husky hook separately runs `scripts/contracts-source-guard.ts`, `bun run lint`, `bun run skills:check` and `cd apps/api && bunx tsc --noEmit`; keep those checks intact.
 
-If the change touches Rust Core (`apps/desktop/src-tauri/src/`), keep the following checks before activation. After activation, run focused Rust tests for the changed behavior and direct callers, plus applicable clippy checks. Full crate tests are CI-final unless a concrete uncertainty or coverage gap requires them locally.
+If the change touches Rust Core (`apps/desktop/src-tauri/src/`), run focused Rust tests for changed behavior and direct callers, plus applicable clippy checks. Full crate tests are CI-final unless a concrete uncertainty or coverage gap requires them locally.
 ```
 [ ] cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml — passes?
 [ ] cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warnings — clean?
@@ -39,26 +39,11 @@ pre-push hook when the hook is available.
 
 Run focused local verification for changed behavior and direct callers, plus relevant typecheck, lint and generated-file checks. Add a build when the change affects bundling, imports, configuration or packaging. Run browser tests only when UI behavior, focus, navigation, rendering or a browser-specific failure needs proof; inspect the selector first. Keep targeted integration and negative tests for money, security and recovery contracts. The full repository unit suite, full browser suite, production build and audit are CI-final checks unless a concrete uncertainty or CI coverage gap requires a local run. Do not use a test count as evidence of quality. Tests must detect a named reachable failure with an independent expected result; before weakening one, name the surviving test and prove it detects the same failure.
 
-The risk-sized local policy activates only after the parent verifies that GitHub requires the stable `CI acceptance` check on the current PR head, including administrator enforcement, with recorded owner acceptance of the bypass policy. The parent documents effective rules but cannot accept bypass on the owner's behalf. Until then, other PRs retain the existing Phase 2 baseline. The policy PR itself may publish after focused proof and review while its new check is pending; it cannot merge or activate the policy until the parent records remote enforcement evidence and the owner's bypass acceptance. Report local readiness, pending CI and CI acceptance as separate states.
+Use the verification mode explicitly passed by the parent. Current activation status, the protection checks the parent must perform, and the response to an enforcement regression are defined once in [`docs/engineering-workflow.md`](../../../docs/engineering-workflow.md#current-activation). A real regression blocks; it does not silently restore full local execution. `heavy_run` schedules work; it does not authorize broader scope.
 
 The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance. Ordinary failing-first TDD, focused regression tests and applicable current-head mutation checks remain required; follow [What counts as failing-first](../../../docs/verification-and-merge-gate.md#what-counts-as-failing-first). Only the actual-PR parent replay is CI-only.
 
 Distinguish the **PR red-on-parent gate** from **replay-tool self-tests**. The CI-only rule applies to replaying the actual branch against its parent for acceptance. The regular unit suite includes tests such as `scripts/red-on-parent.test.ts` that exercise the replay engine in small temporary fixture repositories with separate caches and cleanup. Those self-tests may run locally through the normal test queue; their output is not PR parent-replay acceptance evidence.
-
-#### Before activation
-
-For other PRs, retain this local baseline until required-check enforcement and bypass verification are recorded:
-
-```bash
-bun run typecheck
-bun run lint
-bun run skills:check
-bun run test
-bun run --filter @dokan/web build
-bun audit --audit-level=high
-```
-
-Queue the full suite and build. Browser checks follow the selector procedure below; Rust changes retain their required checks. This policy PR is the narrow bootstrap exception: run focused policy tests, relevant typecheck/lint/generated checks and the one local review; publish with CI acceptance pending so the parent can establish the required check. Never treat that pending state as merge-ready or activation evidence. The actual-PR parent replay stays CI-only. After the parent records enforcement and owner bypass acceptance, use the risk-sized local checks above rather than duplicating CI.
 
 #### Browser verification: selector first
 
@@ -72,18 +57,18 @@ Use the actual PR base ref. A normal PR uses `origin/develop`; a stacked PR uses
 
 Save post-commit evidence in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`. Record the exact `mode=`, `specs=`, `reason=`, and `source=` lines, plus the full `HEAD` SHA and base ref/SHA, run command, exit code and artifact paths, or the selector's skip decision. Record any reason for repeating a completed run there too. Do not make an evidence-only commit; hand the path and verified SHA to the parent for PR publication. Accept `affected` or `skip` only when the committed HEAD contains the complete PR scope and no reviewable tracked or untracked changes remain. The selector warns about dirty tracked files but does not include their edits; untracked files are not included. Resolve those changes into commits, then inspect the dry run again. `--files` bypasses Git and cannot prove complete PR scope, so it is never acceptance evidence.
 
-Follow the map without changing it. After activation, the selector defines CI scope, not a mandatory local full run. Record its decision even when local browser proof is unnecessary. Run local browser cases for the changed behavior or a concrete CI coverage gap; record why those cases suffice and which remaining scope CI must verify. Before activation, `affected` means run exactly the listed specs, `full` means run the full suite and retain the selector's reason, and `skip` means no browser run. An unmapped or critical path must stay `full` in the selector; CI's selected-scope gate is unchanged. Route actual browser runs through `heavy_run` with the isolated `DOKAN_PORT`, `DOKAN_WEB_PORT`, `DOKAN_VAULT_PORT` and `DOKAN_VAULT_WEB_PORT`; the dry run needs no slot. Do not repeat a completed run for the same unchanged scope unless a specific need is recorded. The full suite and web build also take a heavy slot.
+Follow the map without changing it. The selector defines CI scope, not a mandatory local full run. Record its decision even when local browser proof is unnecessary. Run local browser cases for changed behavior or a concrete CI coverage gap; record why those cases suffice and which remaining scope CI must verify. An unmapped or critical path must stay `full` in the selector; CI's selected-scope gate is unchanged. Route actual browser runs through `heavy_run` with the isolated `DOKAN_PORT`, `DOKAN_WEB_PORT`, `DOKAN_VAULT_PORT` and `DOKAN_VAULT_WEB_PORT`; the dry run needs no slot. Do not repeat a completed run for the same unchanged scope unless a specific need is recorded. The full suite and web build also take a heavy slot.
 
 ```
 [ ] bun run typecheck — passes?
 [ ] bun run lint — 0 errors?
 [ ] bun run skills:check — the .claude/skills mirror matches .agents/skills?
-[ ] Focused regression tests cover changed behavior and direct affected integrations; full repository suites are CI-final after activation
-[ ] Build and audit run locally when the change's risk or dependency scope requires them; otherwise CI-final owns these checks after activation
+[ ] Focused regression tests cover changed behavior and direct affected integrations; full repository suites are CI-final
+[ ] Build and audit run locally only for a concrete uncertainty or CI coverage gap; otherwise CI-final owns these checks
 [ ] Browser verification follows "Browser verification: selector first" above; preserve the selector contract and evidence for the selected scope
 [ ] The worktree must be clean before handoff or publication
 [ ] Local status is recorded separately from CI acceptance; no local result implies CI accepted or merge-ready
-[ ] Until owner activation is recorded, retain existing Phase 2 requirements and report the gate pending
+[ ] Verification mode is inherited from the parent; current-head CI acceptance remains a separate merge gate
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```
 

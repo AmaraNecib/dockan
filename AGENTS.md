@@ -1,5 +1,9 @@
 # Agent notes
 
+## Issue request entry route
+
+When the owner says `Work on issue #N.`, read issue #N and its linked specification, this lifecycle, and `.agents/wisdom/README.md` plus lessons relevant to the change. Identify whether you are the parent or a worker, establish the absolute worktree, branch, base/head and permitted writes, then follow `feature-implement` for a code change. The parent creates or assigns a fresh isolated worktree through the supported T3 mechanism; a worker never creates one. Preserve existing edits and the one-writer rule. The parent gives workers the readable template in [`docs/agent-delegation-template.md`](docs/agent-delegation-template.md). The owner does not need to repeat this checklist.
+
 ## Before starting work
 
 Parents and workers complete this startup check before editing, delegating implementation, or running verification:
@@ -132,6 +136,8 @@ count and re-apply checklist are in `docs/skills-vendoring.md`.
 The PR `checks` job runs `scripts/red-on-parent.ts` for pull requests and must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay. For browser verification, use the selector-first procedure in `.agents/skills/guard/SKILL.md`; inspect `bun scripts/e2e-changed.ts --dry-run` before any heavy browser run.
 
 ## Pick the skill before you write code
+
+For issue-only requests, use the entry route above and the [delegation template](docs/agent-delegation-template.md); the workflow and template are the canonical routing, not a checklist the owner must paste.
 
 The workflow in `docs/engineering-workflow.md` and the skills in `.agents/skills/` are the
 same process in two shapes: the doc is the map, the skills are the per-phase instructions a

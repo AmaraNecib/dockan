@@ -353,16 +353,18 @@ warm path cheap when the gate does open.
 ## Required checks — manual step
 
 Branch protection is a GitHub repository setting, not something a workflow can
-enforce. To make these checks required on `develop` an admin must:
+enforce. Activation is complete; [Current activation](engineering-workflow.md#current-activation)
+records the owner acceptance and the parent's live verification procedure. The following
+steps are an owner-authorized configuration reference, not a pending startup task:
 
 1. GitHub → Settings → Branches → **Add branch protection rule** (or edit the
    existing `develop` rule).
 2. Branch name pattern: `develop`.
 3. Enable **Require status checks to pass before merging**.
 4. Select the exact `CI acceptance` check from the GitHub Actions app. Require the branch to be up to date before merging. Do not use the component checks alone as the activation set; they do not report a failed selector through the aggregate.
-5. Verify the rule is active on `develop`, including administrators, and inspect every bypass allowance. The owner must accept the bypass policy and record the effective rule, required check, current PR head and check run before activating reduced local verification. A workflow file or a green unrequired check is not proof of enforcement.
+5. Verify the rule is active on `develop`, including administrators, and inspect every bypass allowance. Record the effective rule and check identity. Changes to protection or acceptance of bypass require the owner. A workflow file or a green unrequired check is not proof of enforcement.
 
-Until enforcement is verified, the workflow reports results but does not establish a blocking merge gate. Keep the pre-activation local baseline in Guard. The workflow cannot apply or prove repository protection settings.
+If effective enforcement no longer matches the accepted configuration, report the regression and block merge. A full local suite cannot substitute for protection. The workflow cannot apply or prove repository protection settings.
 
 Since #226, `rust` and `e2e` can skip for unreachable diffs. `CI acceptance` validates those skips against a successful selector and its explicit outputs; failed, cancelled or unexplained skipped jobs do not pass the aggregate. Keep the workflow trigger unfiltered so every PR produces the required check.
 

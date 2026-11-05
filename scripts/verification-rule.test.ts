@@ -154,6 +154,21 @@ describe("the verification rule is discoverable (#259)", () => {
     );
   });
 
+  test("local payload recovery and rendering precede worker handoff", () => {
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    expect(feature).toContain("| Local review payload missing or stale | Steps 7–9 before Guard Phase 2 |");
+    expect(feature).toContain("unless the standing owner-approved exception applies; disclose same-family executions");
+    const workflow = read("docs/engineering-workflow.md");
+    const rendering = workflow.indexOf("Local reviewloop payload and 5/5");
+    const phase2 = workflow.indexOf("Guard Phase 2 — verify committed HEAD");
+    const push = workflow.indexOf("Push + open PR");
+    const hosted = workflow.indexOf("Hosted review — paired current-head 5/5");
+    expect(rendering).toBeGreaterThan(-1);
+    expect(phase2).toBeGreaterThan(rendering);
+    expect(push).toBeGreaterThan(phase2);
+    expect(hosted).toBeGreaterThan(push);
+  });
+
   test("same-family fallback records standing approval without waiving gates", () => {
     const skill = read(".agents/skills/reviewloop/SKILL.md").replace(/\s+/g, " ");
     for (const fact of [

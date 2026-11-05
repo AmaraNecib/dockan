@@ -65,6 +65,8 @@ Test audit — default at Standard, required at High-assurance
     ↓
 Code-review — Standards + Spec axes against pinned base SHA
     ↓
+Local reviewloop payload and 5/5 — selected lenses, no unresolved actionable findings
+    ↓
 Commit complete reviewable scope
     ↓
 Guard Phase 2 — verify committed HEAD; commit fixes and refresh checks if needed
@@ -75,7 +77,7 @@ Handoff verified SHA and local evidence — the lane stops here
     ↓
 Push + open PR
     ↓
-Review round (reviewloop) — to a 5/5; Greptile runs beside it while the two are compared
+Hosted review — paired current-head 5/5 during the trial; refresh local review if the head changes
     ↓
 Architecture review — improve-codebase-architecture (only once the code is accepted)
     ↓
@@ -236,7 +238,7 @@ that can bypass a session check is High-assurance.
 | Tier | Decision: what the change can break | Required review |
 | --- | --- | --- |
 | Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
-| Standard | Everything else: code, tests, config, UI, API, skills, docs | Default: guard 1 → quality check → risk-sized local review → guard 2 → reviewloop → guard 3. Compact routine changes use one focused code-review execution; ordinary Standard uses all three lenses. |
+| Standard | Everything else: code, tests, config, UI, API, skills, docs | Default: guard 1 → quality check → risk-sized local review and local reviewloop 5/5 → guard 2 → publication and hosted review → guard 3. Compact routine changes use one focused code-review execution; ordinary Standard uses all three lenses. |
 | High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | All three lenses required, plus a debate re-run on the final head once the fixes are in; all other Standard gates still apply |
 
 Auth/RBAC, backup/restore, invoice & debt money calculations, security and a

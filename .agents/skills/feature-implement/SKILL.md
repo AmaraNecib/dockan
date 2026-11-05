@@ -113,7 +113,7 @@ Load relevant skills from the workflow's quality check table:
 
 ### 6. Local review — every reviewable change
 
-Select depth by reachable risk under `docs/engineering-workflow.md`. Compact Standard requires one genuine local `code-review` execution covering Standards, Spec and affected-test adequacy; record `debate` and `test-audit` skips with reasons in the renderer payload. Ordinary Standard uses all three lenses; High-assurance uses all three and a final-head debate after fixes. Use separate reviewer executions and preserve model-family independence. The handoff may supply the short author account; a fresh author-model session is not a gate. The parent verifies exact base/head, reviewer session, actual model, provenance and report. A worker's unsupported claim is not evidence, while a valid execution on the exact tree is reusable and should not be duplicated automatically. Never report a skipped lens as run.
+Select depth by reachable risk under `docs/engineering-workflow.md`. Compact Standard requires one genuine local `code-review` execution covering Standards, Spec and affected-test adequacy; record `debate` and `test-audit` skips with reasons in the renderer payload. Ordinary Standard uses all three lenses; High-assurance uses all three and a final-head debate after fixes. Use separate reviewer executions and preserve model-family independence unless the standing owner-approved exception applies; disclose same-family executions. The handoff may supply the short author account; a fresh author-model session is not a gate. The parent verifies exact base/head, reviewer session, actual model, provenance and report. A worker's unsupported claim is not evidence, while a valid execution on the exact tree is reusable and should not be duplicated automatically. Never report a skipped lens as run.
 
 ### 7–9. Review payload and resolution
 
@@ -269,7 +269,7 @@ it merges, whatever the review says.
 | Guard Phase 1 not run | Step 4 — guard pre-review |
 | No quality check | Step 5 — quality check |
 | Local review missing | Risk-sized local review under the workflow policy |
-| Review payload missing or stale | Parent only — Step 12 (current-head review) |
+| Local review payload missing or stale | Steps 7–9 before Guard Phase 2 |
 | Guard Phase 2 not run | Step 10 — guard pre-push |
 | Lane done, not pushed | Parent only — Step 11 (push + PR) |
 | Review round not clean | Parent only — Step 12 (CI + review round) |

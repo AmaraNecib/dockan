@@ -10,6 +10,7 @@ local Guard checks in `engineering-workflow.md`.
 | `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun run --filter @dokan/web build`, `bun audit` |
 | `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` (with the mapped spec list when the diff is affected) on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
 | `rust` | gated on the `changes` job's `rust` output; `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
+| `acceptance` (`CI acceptance`) | stable required-check candidate; succeeds only when `changes` and `checks` succeed, and each `e2e`/`rust` skip matches a successful explicit selector decision |
 
 `checks` always runs. `e2e` and `rust` read the `changes` outputs, so an e2e
 `skip` or a diff that cannot reach the crate skips those jobs; the scope
@@ -19,7 +20,12 @@ fails, its
 outputs are empty and both consumers read that as "run": the gates use
 `!cancelled()` with an empty-tolerant comparison, so an infra failure widens
 the run instead of silently narrowing it. A typecheck/lint/test failure and a
-Playwright flake are visible without one hiding the other.
+Playwright flake are visible without one hiding the other. Configure branch
+protection to require the exact check name `CI acceptance` only after the owner
+verifies it is enforced on the current PR head and reviews bypass policy. Until
+that remote check is confirmed, existing required checks and local Guard Phase 2
+gates remain active. The aggregate cannot establish branch-protection settings
+or bypass policy itself.
 
 ## PR scope decision (issue 226)
 

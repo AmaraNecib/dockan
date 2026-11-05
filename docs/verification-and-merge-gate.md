@@ -22,7 +22,11 @@ An **inert** diff (§3) cannot reach the product, so its measurement is the CI r
 The non-visual bar is the owner's own phrasing: *"You want evidence that it was right for you
 as the agent."* The parent has to be able to judge the change from the comment alone, without
 re-running it. A green check is not evidence that the right thing was built; it is evidence
-that something ran.
+that something ran. The stable CI job `CI acceptance` fails when a required job
+fails, is cancelled or skips without a successful selector proof. It does not
+prove that branch protection requires it. Local readiness is not CI acceptance
+or merge readiness; the owner must verify required-check enforcement and bypass
+policy before routine full local runs stop being required.
 
 ### Visual evidence, in its exact form
 

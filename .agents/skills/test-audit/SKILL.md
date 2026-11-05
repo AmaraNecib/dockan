@@ -32,35 +32,37 @@ git diff <base-sha>...HEAD --name-only -- ':!*.test.ts' ':!__tests__/**'
 
 ### 2. Launch all 3 agents in parallel
 
-Each agent reads the test files and corresponding source files.
+Each agent reads the test files, corresponding source and relevant callers, plus [TDD's test-value rubric](../tdd/SKILL.md#test-value-rubric). Apply that rubric to every candidate; test count and line coverage alone establish neither a gap nor a duplicate.
 
 **Agent 1: Edge Case Hunter**
 ```
-You are an EDGE CASE HUNTER. Read the test files and source code.
-Find missing edge cases: empty inputs, boundary values, invalid input,
-error states, overflow, zero values, race conditions.
-
-For each missing edge case:
-- Name it, show where it could break, write a test snippet
-- Rate risk: 🔴 would break, 🟠 subtle bug, 🟡 cosmetic
+You are an EDGE CASE HUNTER. Read tests, source and relevant callers.
+For each candidate edge case:
+- Trace a realistic caller input to the observable contract.
+- Show the contract violation and why existing tests miss it.
+- Propose an independent expected result at the cheapest adequate layer.
+- Rate impact, including rare security, money, backup and race failures.
+Treat unproven reachability or missing detection as a hypothesis, not an automatic demand for another test.
 ```
 
 **Agent 2: Coverage Analyst**
 ```
-You are a COVERAGE ANALYST. Read the test files and source code.
+You are a COVERAGE ANALYST. Read tests, source and relevant callers.
 Evaluate:
-1. Does each acceptance criterion have a test?
-2. Are tests diverse or all same pattern?
-3. Any duplicate coverage?
-4. What's missing?
+1. Map acceptance criteria to named tests and assertions; identify gaps.
+2. For a proposed gap, establish reachability, contract impact and missing detection.
+3. For a proposed duplicate, name the surviving test, input, setup and assertion that detect the same failure. Similar syntax or a shared code path is not proof.
+4. Report before/after coverage for proposed consolidation and the targeted discrimination check needed before weakening an assertion.
 ```
 
 **Agent 3: Quality Reviewer**
 ```
-You are a TEST QUALITY REVIEWER. Read the test files.
-Evaluate test names, async handling, setup duplication, assertion quality,
-test isolation, readability.
-Grade: A / B / C / D.
+You are a TEST QUALITY REVIEWER. Read tests, source and relevant callers.
+Check independent expected results, non-vacuous setup, awaited assertions,
+isolation and deterministic clocks/scheduling. Distinguish application contracts
+from implementation mirrors or framework-only checks. Mocks and timers are not
+deletion evidence. Report each defect with its location, consequence and fix;
+keep unsupported concerns separate as hypotheses.
 ```
 
 ### 3. Wait for all 3 to finish
@@ -71,11 +73,11 @@ Collect all outputs.
 
 | Finding type | Action |
 |-------------|--------|
-| Missing edge case that would break | Fix it |
-| Missing edge case, subtle bug | Fix it |
-| Repetitive tests (duplicate coverage) | Remove duplicates |
-| Poor test names or structure | Fix it |
-| Missing await on async assertions | Fix it |
+| Reachable contract violation missing detection | Fix it with a discriminating test |
+| Unproven reachability, impact or missing detection | Investigate the hypothesis; retain existing coverage |
+| Proven duplicate coverage | Consolidate only with named surviving coverage and discrimination evidence |
+| Misleading name, vacuous setup or coupled oracle | Fix it without losing the contract assertion |
+| Missing await, isolation or scheduling defect | Fix the harness; preserve the behavior check |
 
 ### 5. Save evidence; the authoring session applies the fixes
 

@@ -118,6 +118,16 @@ describe("the verification rule is discoverable (#259)", () => {
     );
   });
 
+  test("local readiness stays distinct from CI acceptance until owner activation", () => {
+    const workflow = read("docs/engineering-workflow.md");
+    expect(workflow).toContain("the stable `CI acceptance` check on the current PR head");
+    expect(workflow).toContain("Until then, existing local Guard Phase 2 requirements remain in force");
+    expect(workflow).toContain("A local ready result is not CI acceptance or merge readiness");
+    const ci = read("docs/ci.md").replace(/\s+/g, " ");
+    expect(ci).toContain("exact check name `CI acceptance`");
+    expect(ci).toContain("The aggregate cannot establish branch-protection settings or bypass policy itself");
+  });
+
   test("hosted verdicts gate merge-readiness, not the push that starts review", () => {
     const guard = read(".agents/skills/guard/SKILL.md");
     const phase2 = guard.split("## Phase 2")[1]?.split("## Phase 3")[0] ?? "";

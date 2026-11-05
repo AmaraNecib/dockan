@@ -37,7 +37,11 @@ Hosted review is not a pre-push or worker-handoff prerequisite; it starts after
 publication. Phase 2 never pushes by itself. The parent's push runs the Husky
 pre-push hook when the hook is available.
 
-Run the local checks below for Phase 2. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance. Ordinary failing-first TDD, focused regression tests and applicable current-head mutation checks remain required; follow [What counts as failing-first](../../../docs/verification-and-merge-gate.md#what-counts-as-failing-first). Only the actual-PR parent replay is CI-only.
+Run focused local verification for changed behavior and direct callers, plus relevant typecheck, lint and generated-file checks. Add a build when the change affects bundling, imports, configuration or packaging. Run browser tests only when UI behavior, focus, navigation, rendering or a browser-specific failure needs proof; inspect the selector first. Keep targeted integration and negative tests for money, security and recovery contracts. The full repository unit suite, full browser suite, production build and audit are CI-final checks unless a concrete uncertainty or CI coverage gap requires a local run. Do not use a test count as evidence of quality. Tests must detect a named reachable failure with an independent expected result; before weakening one, name the surviving test and prove it detects the same failure.
+
+This local policy does not activate until the owner verifies that GitHub requires the stable `CI acceptance` check for the current head and that bypass rules are acceptable. Until that verification, existing local Phase 2 requirements remain in force; report the activation gate as pending rather than waiving them. Local readiness is not CI acceptance or merge readiness.
+
+The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance. Ordinary failing-first TDD, focused regression tests and applicable current-head mutation checks remain required; follow [What counts as failing-first](../../../docs/verification-and-merge-gate.md#what-counts-as-failing-first). Only the actual-PR parent replay is CI-only.
 
 Distinguish the **PR red-on-parent gate** from **replay-tool self-tests**. The CI-only rule applies to replaying the actual branch against its parent for acceptance. The regular unit suite includes tests such as `scripts/red-on-parent.test.ts` that exercise the replay engine in small temporary fixture repositories with separate caches and cleanup. Those self-tests may run locally through the normal test queue; their output is not PR parent-replay acceptance evidence.
 
@@ -59,11 +63,11 @@ Follow the map without changing it: `affected` means run exactly the listed spec
 [ ] bun run typecheck — passes?
 [ ] bun run lint — 0 errors?
 [ ] bun run skills:check — the .claude/skills mirror matches .agents/skills?
-[ ] bun run test — the full suite passes (turbo + scripts/ + tools/)
-[ ] bun run --filter @dokan/web build — the production bundle builds?
-[ ] bun audit --audit-level=high — no high/critical advisory?
+[ ] Focused regression tests cover changed behavior and direct affected integrations; full repository suites are CI-final after activation
+[ ] Build and audit run locally when the change's risk or dependency scope requires them; otherwise CI-final owns these checks after activation
 [ ] Browser verification follows "Browser verification: selector first" above; preserve the selector contract and evidence for the selected scope
-[ ] git status — working tree clean?
+[ ] Local status is recorded separately from CI acceptance; no local result implies CI accepted or merge-ready
+[ ] Until owner activation is recorded, retain existing Phase 2 requirements and report the gate pending
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```
 

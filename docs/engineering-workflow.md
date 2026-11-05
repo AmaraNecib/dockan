@@ -103,6 +103,12 @@ map remains fail-closed; CI keeps its own event-range and override behavior.
 
 Do not run a later phase without recording the earlier gate, its commands, and its result.
 
+## Local verification and CI acceptance
+
+Local verification targets changed behavior and direct callers. Run relevant typecheck, lint and generated-file checks. Build locally when bundling, imports, configuration or packaging changed. Run browser tests when the change affects rendering, focus, navigation, interaction or a browser-specific failure. Keep local integration and negative tests for money, security and recovery contracts. Do not run full suites to satisfy a count. Each test should detect a named, reachable failure with an independent expected result; before weakening one, identify the surviving test and prove it detects the same failure.
+
+Routine full-repository tests, the full browser suite, production build and dependency audit are CI-final checks. This replacement for routine full local runs is conditional: the owner must verify that GitHub requires the stable `CI acceptance` check on the current PR head and that bypass policy is acceptable. Until then, existing local Guard Phase 2 requirements remain in force. A local ready result is not CI acceptance or merge readiness. CI acceptance is not a review verdict; the review and merge gates remain unchanged.
+
 ## Review invariants
 
 - **Evidence is always required; only its form changes.** A visual change needs

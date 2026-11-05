@@ -197,8 +197,12 @@ Every technical error (and every info/warn entry) is appended to a daily JSONL l
 
 ## 7. Local verification tiers
 
-Five **verification tiers**, cheapest first. The full suite is the last one, not
-the first.
+Run focused checks that prove changed behavior and direct callers. Use the full
+suite, full browser run, production build and dependency audit as CI-final checks
+once the owner confirms that GitHub requires `CI acceptance` on the current PR
+head and that bypass policy is acceptable. Until then, existing Guard Phase 2
+requirements remain active. Local readiness is not CI acceptance or merge
+readiness.
 
 "Tier" is overloaded in this repo: `engineering-workflow.md` owns the *review*
 tiers (Standard, High-assurance), which decide how much scrutiny a change gets,
@@ -213,16 +217,16 @@ before any of these. Otherwise the first failure reads as a broken script.
 | 0 | `bun run typecheck`, `bun run lint` | after every edit | seconds, no queue |
 | 1 | `bun run test:affected` | per iteration, not per edit | ~2-4 minutes cold, queued |
 | 2 | Selector dry-run, then the scope required by `guard`'s selector-first procedure | before push, after committing complete scope | dry-run takes seconds without a slot; selected browser runs are queued |
-| 3 | the local checks: `bun run typecheck`, `bun run lint`, `bun run skills:check`, `bun run test`, `bun run --filter @dokan/web build`, and `bun audit --audit-level=high` | before the push; the PR's `checks` run after it is confirmation, not discovery | the suite and build take a slot, ~4-6 minutes |
-| 4 | `bun run test:e2e` only for a selector `full` decision | before handoff when required by the selected scope | full browser suite, queued |
+| 3 | focused regression tests, applicable typecheck/lint/generated checks, and builds or integration checks required by the changed risk | before handoff; full-repository checks remain CI-final after activation | seconds to minutes; heavy runs use the queue |
+| 4 | full unit, browser, production-build and audit checks | CI-final after activation; locally only for a concrete uncertainty or CI coverage gap | CI owns routine full runs |
 
-Tier 3 covers the local checks before a push. The PR's `checks` job remains the
-CI authority for the branch; its red-on-parent step runs only there. Parents,
-workers (including nested subagents) and reviewers must not run or delegate
-the replay locally, or require its local output for review, push or report
-acceptance. Ordinary TDD and focused regression tests still apply. Keep the
-listed local checks intact rather than replacing them with a subset such as
-`typecheck` plus one test file.
+The PR `checks` job remains the CI authority for the branch; its red-on-parent
+step runs only there. Parents, workers (including nested subagents) and
+reviewers must not run or delegate the replay locally, or require its local
+output for review, push or report acceptance. Ordinary TDD and focused
+regression tests still apply. A targeted suite must name its contract and
+independent expected result; do not weaken tests based on count, syntax or
+assumed equivalence.
 
 Tier 0 and selector dry-runs need no heavy slot. Actual test runs use the queue. The queue's rule is a **string match on the command**, not
 on what the command runs. `bun run test:affected`, `bun run test:e2e:changed` and

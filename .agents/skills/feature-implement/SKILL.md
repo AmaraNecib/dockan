@@ -83,7 +83,7 @@ Use this existing design note or PR handoff for the acceptance goal and a concis
 
 ### 3. Implement (TDD + Playwright)
 
-Load `implement` skill. It handles TDD at pre-agreed seams. Write tests for changed behavior and use Playwright for changed user-facing flows. Run the applicable checks from `guard` Phase 1; that skill owns the canonical command list and the Phase 2 full-suite/build requirements. Preserve Rust checks when Rust Core changes.
+Load `implement` skill. It handles TDD at pre-agreed seams. Write tests for changed behavior and use Playwright when changed UI behavior needs browser proof. Run applicable focused checks from `guard`; the guard defines when CI-final checks can replace routine full local runs. Preserve Rust checks when Rust Core changes.
 
 ### 4. Guard pre-review (Phase 1)
 
@@ -125,7 +125,7 @@ Use `.agents/skills/reviewloop/SKILL.md` for the payload format, renderer and cu
 
 Use the committed, locally reviewed HEAD from steps 6–9 when running `guard` Phase 2 for the local checks below. If verification requires a fix, commit it and refresh the affected checks and stale reviews before handoff. Record post-commit results in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`, not an evidence-only commit. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
 
-Use `guard` Phase 2's canonical check list, including the full suite and production web build through the heavy-work queue. Do not replace either with focused checks. Follow its execution reliability rules: pinned absolute cwd/tree, unique durable streamed logs, real progress/output inspection and truthful result states. Apply `guard`'s **Browser verification: selector first** procedure when browser verification is relevant. Inspect `bun scripts/e2e-changed.ts --dry-run` before taking a heavy slot; preserve its full/affected/skip decision and evidence. The selector procedure governs final selected-scope verification; focused TDD does not replace it.
+Use `guard` Phase 2's risk-sized local checks. After owner activation, routine full-suite, full-browser, production-build and audit checks run as CI-final gates; run them locally only for a concrete uncertainty or CI coverage gap. Until the owner verifies that `CI acceptance` is required on the current head and bypass policy is acceptable, the existing local Phase 2 requirements remain in force. Record local readiness separately; it does not mean CI accepted or the change is merge-ready. Follow guard's execution reliability rules: pinned absolute cwd/tree, unique durable logs, real output inspection and truthful result states. For relevant browser verification, inspect `bun scripts/e2e-changed.ts --dry-run` before a heavy run and retain its scope decision. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. Ordinary failing-first TDD still applies.
 - Review evidence files exist and are not stale
 - Working tree is clean
 

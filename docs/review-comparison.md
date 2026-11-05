@@ -1,6 +1,6 @@
-# Review comparison (historical)
+# Review comparison
 
-This document records the former reviewloop/Greptile comparison protocol. It is historical reference, not a current gate. The current policy requires risk-sized local review and CI acceptance; see `engineering-workflow.md`. Hosted findings remain actionable when a hosted review is requested or otherwise configured, but no standing paired-review trial requires both systems.
+Until the owner explicitly ends the trial, both current-head verdicts must be 5/5 with no unresolved actionable findings: risk-sized local reviewloop and hosted Greptile. Lean local review changes the number of local executions, not this hosted gate. A missing verdict blocks merge; keep the PR unmerged when credit is unavailable. Request once per head, preserve existing evidence and do not request repeated reviews of the same head.
 
 ## Paired runs
 
@@ -10,9 +10,9 @@ This document records the former reviewloop/Greptile comparison protocol. It is 
 4. Verify every finding against the pinned code. Record a shared defect once, credit both reviewers when both found it, and record which reviewer found a verified unique defect. Fix real defects before merging. A fix moves the head and requires fresh review evidence, not relabelled reports.
 5. Publish the comparison in a PR evidence comment with the head SHA and the `<!-- crew-evidence -->` marker. Keep detailed reports in ignored `.scratch/reviews/<issue>/`. Update the evidence comment when the round finishes.
 
-## Historical note
+## Owner-controlled gate
 
-The paired 5/5 rule below applied only while the owner-operated comparison trial was active. It is retired and does not gate current work. Keep old evidence as history; do not launch or repeat paired runs under this document.
+The parent cannot retire the paired requirement. Only an explicit owner decision ends the trial. Bounded local fix reviews may carry unchanged conclusions forward as described in `engineering-workflow.md`; never relabel an unrun review as a fresh execution.
 
 ## Evidence per PR
 

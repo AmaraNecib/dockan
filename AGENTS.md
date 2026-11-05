@@ -202,7 +202,7 @@ watch is what reports it: a red check, a new head, a verdict. Never sit in a
 busier. Poll only a PR nobody here watches, and then with `sleep`: start at
 ~5 minutes, then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
 review comment each time, until the requested verdict appears. Apply configured hosted-review
-policy; no standing paired-review trial applies. Same for CI.
+policy under [the active paired trial](docs/review-comparison.md). Until the owner explicitly ends it, both current-head verdicts must be 5/5 with no unresolved actionable findings. Request Greptile once per pushed head; missing credit or a missing verdict blocks merge, not local work. Same for CI.
 
 A lane reports by finishing: its completion wakes the session. Stop and let it
 finish rather than polling it.

@@ -39,7 +39,7 @@ pre-push hook when the hook is available.
 
 Run focused local verification for changed behavior and direct callers, plus relevant typecheck, lint and generated-file checks. Add a build when the change affects bundling, imports, configuration or packaging. Run browser tests only when UI behavior, focus, navigation, rendering or a browser-specific failure needs proof; inspect the selector first. Keep targeted integration and negative tests for money, security and recovery contracts. The full repository unit suite, full browser suite, production build and audit are CI-final checks unless a concrete uncertainty or CI coverage gap requires a local run. Do not use a test count as evidence of quality. Tests must detect a named reachable failure with an independent expected result; before weakening one, name the surviving test and prove it detects the same failure.
 
-The risk-sized local policy activates only after the parent verifies that GitHub requires the stable `CI acceptance` check on the current PR head, including administrator enforcement and acceptable bypass rules. Until then, other PRs retain the existing Phase 2 baseline. The policy PR itself may publish after focused proof and review while its new check is pending; it cannot merge or activate the policy until the parent records remote enforcement evidence. Report local readiness, pending CI and CI acceptance as separate states.
+The risk-sized local policy activates only after the parent verifies that GitHub requires the stable `CI acceptance` check on the current PR head, including administrator enforcement, with recorded owner acceptance of the bypass policy. The parent documents effective rules but cannot accept bypass on the owner's behalf. Until then, other PRs retain the existing Phase 2 baseline. The policy PR itself may publish after focused proof and review while its new check is pending; it cannot merge or activate the policy until the parent records remote enforcement evidence and the owner's bypass acceptance. Report local readiness, pending CI and CI acceptance as separate states.
 
 The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance. Ordinary failing-first TDD, focused regression tests and applicable current-head mutation checks remain required; follow [What counts as failing-first](../../../docs/verification-and-merge-gate.md#what-counts-as-failing-first). Only the actual-PR parent replay is CI-only.
 
@@ -58,7 +58,7 @@ bun run --filter @dokan/web build
 bun audit --audit-level=high
 ```
 
-Queue the full suite and build. Browser checks follow the selector procedure below; Rust changes retain their required checks. This policy PR is the narrow bootstrap exception: run focused policy tests, relevant typecheck/lint/generated checks and the one local review; publish with CI acceptance pending so the parent can establish the required check. Never treat that pending state as merge-ready or activation evidence. The actual-PR parent replay stays CI-only. After the parent records enforcement, use the risk-sized local checks above rather than duplicating CI.
+Queue the full suite and build. Browser checks follow the selector procedure below; Rust changes retain their required checks. This policy PR is the narrow bootstrap exception: run focused policy tests, relevant typecheck/lint/generated checks and the one local review; publish with CI acceptance pending so the parent can establish the required check. Never treat that pending state as merge-ready or activation evidence. The actual-PR parent replay stays CI-only. After the parent records enforcement and owner bypass acceptance, use the risk-sized local checks above rather than duplicating CI.
 
 #### Browser verification: selector first
 
@@ -123,12 +123,12 @@ Routine changes need one focused code-review execution covering Standards, Spec 
 
 ## Phase 3 — Pre-report
 
-Run before the parent reports a local handoff or remote merge-readiness. Phase 3 validates existing Phase 1/2 results and current-head review evidence; it does not rerun unchanged checks. Reuse only results whose input tree and command match the committed head. For a local worker handoff, report hosted review and CI as pending, not failed or passed. A local-only report is not merge-readiness; CI acceptance and the configured hosted review policy remain parent-owned.
+Run before the parent reports a local handoff or remote merge-readiness. Phase 3 validates existing Phase 1/2 results and current-head review evidence; it does not rerun unchanged checks. Reuse only results whose input tree and command match the committed head. For a local worker handoff, report hosted review and CI as pending, not failed or passed. A local-only report is not merge-readiness; CI acceptance and the [paired hosted-review gate](../../../docs/review-comparison.md) remain parent-owned. Until the owner explicitly ends that trial, both current-head verdicts must be 5/5 with no unresolved actionable findings; a missing hosted verdict blocks merge. Request Greptile once per pushed head, never repeatedly for the same head.
 
 ```
 [ ] Guard Phase 1/2 evidence matches the committed input tree and required commands; no automatic duplicate run
 [ ] Local review evidence is current for the selected risk depth; exact-head provenance is verified
-[ ] For merge-readiness after publication: CI acceptance is green on the current head, required-check enforcement and bypass policy are verified, local reviewloop is 5/5, and no actionable finding remains
+[ ] For merge-readiness after publication: CI acceptance is green on the current head, required-check enforcement and owner bypass acceptance are recorded, both trial verdicts are 5/5, and no actionable finding remains
 [ ] CI — required checks green on GitHub (when the branch is pushed)
 [ ] The push and the PR came from the parent, and the merge followed the gate's classes — a cheap-to-reverse, no-decision diff merges itself once green, an expensive-to-reverse or decision diff waits for the owner
 [ ] PR description — accurate and complete

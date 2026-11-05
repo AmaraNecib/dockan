@@ -99,12 +99,16 @@ describe("the verification rule is discoverable (#259)", () => {
     });
   }
 
-  test("the former paired-review trial is explicitly historical, not a current gate", () => {
+  test("lean local review cannot retire the owner-controlled hosted verdict gate", () => {
     const comparison = read("docs/review-comparison.md");
-    expect(comparison).toContain("This document records the former reviewloop/Greptile comparison protocol");
-    expect(comparison).toContain("It is historical reference, not a current gate");
-    expect(comparison).toContain("no standing paired-review trial requires both systems");
-    expect(read(".agents/skills/guard/SKILL.md")).not.toContain("Both current-head verdicts are 5/5");
+    expect(comparison).toContain("Until the owner explicitly ends the trial");
+    expect(comparison).toContain("both current-head verdicts must be 5/5");
+    expect(comparison).toContain("Request Greptile once after pushing a new head");
+    for (const file of ["docs/engineering-workflow.md", "docs/verification-and-merge-gate.md", ".agents/skills/guard/SKILL.md", ".agents/skills/feature-implement/SKILL.md", "AGENTS.md"]) {
+      expect(read(file), file).toContain("docs/review-comparison.md".replace("docs/", ""));
+      expect(read(file), file).not.toContain("no standing paired-review trial");
+      expect(read(file), file).not.toContain("there is no paired-review requirement");
+    }
   });
 
   test("local readiness stays distinct from CI acceptance until owner activation", () => {
@@ -149,9 +153,12 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(workflow).toContain("The stable aggregate `CI acceptance` check is mandatory for merge");
     expect(workflow).toContain("this policy PR may be published after focused local proof and review");
     expect(workflow).toContain("It is not merge-ready and does not activate the new routine policy until the parent records remote enforcement");
-    expect(guard).toContain("including administrator enforcement and acceptable bypass rules");
+    expect(guard).toContain("recorded owner acceptance of the bypass policy");
+    for (const file of ["docs/engineering-workflow.md", "docs/verification-and-merge-gate.md", "docs/development-workflow.md", ".agents/skills/feature-implement/SKILL.md"]) {
+      expect(read(file), file).toContain("recorded owner acceptance of the bypass policy");
+    }
     expect(gate).toContain("CI acceptance is green on the current head");
-    expect(gate).not.toContain("both current-head verdicts must be 5/5");
+    expect(gate).toContain("both current-head verdicts must be 5/5");
   });
 
   test("routine review is one focused execution; concrete risks select three lenses", () => {

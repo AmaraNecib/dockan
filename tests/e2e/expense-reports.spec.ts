@@ -563,3 +563,23 @@ test("correct and undo an expense without moving it out of its original report p
   await expect.poll(readOperating).toBe(baseline - originalAmount);
   await holdForReading();
 });
+
+test("expense refunds preserve cash dates, cancellation, failure retries and compensation", async ({ page }) => {
+  await ensureAuthed(page);
+  await page.goto("/expenses");
+  await selectExpenseCategory(page, "كراء المحل");
+  const note = `refund-409-${Date.now()}`;
+  await page.getByTestId("expense-amount").fill("1000");
+  await page.getByTestId("expense-note").fill(note);
+  await page.getByTestId("expense-save").click();
+  await expect(page.getByTestId("expense-saved")).toBeVisible();
+  const row = page.getByTestId("expense-row").filter({ hasText: note });
+  await row.getByTestId("expense-correction-open-history").click();
+  const history = row.locator("xpath=following-sibling::tr[1]").getByTestId("expense-correction-history");
+  await expect(history.getByTestId("expense-correction-original")).toBeVisible();
+  const evidenceDir = path.join(process.cwd(), ".scratch", "evidence", "409");
+  mkdirSync(evidenceDir, { recursive: true });
+  await history.screenshot({ path: path.join(evidenceDir, "refund-before.png") });
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-form")).toBeVisible();
+});

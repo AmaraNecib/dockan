@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { replaceLocalStorage } from "../tests/local-storage-control";
+import { authLossReason, clearAuthLost, markSignedOut } from "./auth-refusal";
 import { sessionRefreshGeneration, subscribeSessionRefresh, publishSessionRefresh } from "./session-refresh";
 
 function storage(value: string | null, key = "better-auth.message") {
@@ -24,6 +25,61 @@ describe("session refresh protocol", () => {
     storage('{"event":"session","data":{"trigger":"signout"},"clientId":"sibling","timestamp":2}');
     expect(calls).toBe(1);
     expect(sessionRefreshGeneration()).toBe(start + 1);
+  });
+
+  it("does not re-read its own published message as a missed session refresh", () => {
+    const start = sessionRefreshGeneration();
+    let calls = 0;
+    const stop = subscribeSessionRefresh(() => { calls += 1; });
+    window.localStorage.removeItem("better-auth.message");
+
+    publishSessionRefresh();
+    const ownMessage = window.localStorage.getItem("better-auth.message");
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(calls).toBe(0);
+    expect(sessionRefreshGeneration()).toBe(start);
+    expect(ownMessage).not.toBeNull();
+    stop();
+  });
+
+  it("leaves a concurrent sibling overwrite eligible for focus verification", () => {
+    const start = sessionRefreshGeneration();
+    let calls = 0;
+    const stop = subscribeSessionRefresh(() => { calls += 1; });
+    const original = window.localStorage;
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    const restore = replaceLocalStorage({
+      setItem: (key, _value) => {
+        original.setItem(key, JSON.stringify({ event: "session", data: { trigger: "signout" }, clientId: "sibling", timestamp: 1 }));
+      },
+    });
+    const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    try {
+      publishSessionRefresh();
+      window.dispatchEvent(new Event("focus"));
+      expect(calls).toBe(1);
+      expect(sessionRefreshGeneration()).toBe(start + 1);
+    } finally {
+      restore();
+      if (visibilityDescriptor !== undefined) Object.defineProperty(document, "visibilityState", visibilityDescriptor);
+      else Reflect.deleteProperty(document, "visibilityState");
+      if (descriptor !== undefined) Object.defineProperty(window, "localStorage", descriptor);
+      stop();
+    }
+    expect(window.localStorage).toBe(original);
+  });
+
+  it("keeps an unconfirmed sign-out hold until the auth flow explicitly establishes a credential", () => {
+    markSignedOut();
+    try {
+      publishSessionRefresh();
+      expect(authLossReason()).toBe("signed-out");
+    } finally {
+      clearAuthLost();
+    }
   });
 
   it("publishes credential-free unique messages without telling the sender to recover", () => {
@@ -77,6 +133,7 @@ describe("session refresh protocol", () => {
     const original = window.localStorage;
     const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
     expect(descriptor).toBeDefined();
+    original.removeItem("better-auth.message");
     const restore = replaceLocalStorage({ setItem: () => { throw new Error("blocked write"); } });
     const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });

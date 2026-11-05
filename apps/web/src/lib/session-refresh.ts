@@ -9,6 +9,7 @@ const STORAGE_KEY = "better-auth.message";
 const sessionMessage = z.object({
   event: z.literal("session"),
   data: z.object({ trigger: z.enum(["signout", "getSession", "updateUser"]) }),
+  clientId: z.string().optional(),
 });
 let generation = 0;
 let lastMessage: string | null = null;
@@ -73,7 +74,17 @@ export function useSessionRefreshGeneration(): number {
 
 /** An attempted sign-out settled, not proof that any credential was revoked. */
 export function publishSessionRefresh(): void {
-  getGlobalBroadcastChannel().post({ event: "session", data: { trigger: "signout" }, clientId: crypto.randomUUID() });
+  const clientId = crypto.randomUUID();
+  getGlobalBroadcastChannel().post({ event: "session", data: { trigger: "signout" }, clientId });
   // Storage events do not fire in the sender. Its own logout owns reload/hold.
-  // If storage is blocked, visible focus checks remain a best-effort fallback.
+  // Remember the write only when storage still contains our valid message: a
+  // racing tab may have replaced it, and that sibling message must stay readable.
+  try {
+    const value = window.localStorage.getItem(STORAGE_KEY);
+    if (value === null) return;
+    const parsed = sessionMessage.safeParse(JSON.parse(value));
+    if (parsed.success && parsed.data.clientId === clientId) lastMessage = value;
+  } catch {
+    // An unavailable or invalid read does not change the prior seen marker.
+  }
 }

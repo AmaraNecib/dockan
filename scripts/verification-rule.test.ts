@@ -144,6 +144,7 @@ describe("the verification rule is discoverable (#259)", () => {
     for (const fact of [
       "Every reviewable change gets local review, sized to reachable risk",
       "Compact is one focused local `code-review` covering Standards, Spec and affected-test adequacy",
+      "for a routine, reversible, localized change with no named high-assurance failure mode, new public interface or seam, cross-package behavior, schema/dependency/CI/security/merge-policy decision",
       "Size and path alone never qualify; uncertainty means ordinary Standard or High-assurance",
       "Compact skips `debate` and `test-audit` with reasons in the existing payload",
       "It is local review, never no-review or hosted-only",
@@ -159,20 +160,26 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(feature).toContain("| Local review payload missing or stale | Steps 7–9 before Guard Phase 2 |");
     expect(feature).toContain("unless the standing owner-approved exception applies; disclose same-family executions");
     const workflow = read("docs/engineering-workflow.md");
-    const commit = workflow.indexOf("Commit complete reviewable scope");
-    const debate = workflow.indexOf("Debate — default at Standard");
-    const rendering = workflow.indexOf("Local reviewloop payload and 5/5");
-    expect(commit).toBeGreaterThan(-1);
-    expect(debate).toBeGreaterThan(commit);
-    expect(rendering).toBeGreaterThan(debate);
+    const lifecycle = workflow.match(/## Feature lifecycle\r?\n\r?\n```\r?\n([\s\S]*?)```/)?.[1];
+    expect(lifecycle).toBeDefined();
+    const steps = [
+      "Commit complete reviewable scope",
+      "Debate — default at Standard",
+      "Test audit — default at Standard",
+      "Code-review — Standards + Spec",
+      "Local reviewloop payload and 5/5",
+      "Guard Phase 2 — verify committed HEAD",
+      "Handoff verified SHA and local evidence",
+      "Push + open PR",
+      "Hosted review — paired current-head 5/5",
+    ];
+    const positions = steps.map((step) => (lifecycle ?? "").indexOf(step));
+    let previous = -1;
+    for (const position of positions) {
+      expect(position).toBeGreaterThan(previous);
+      previous = position;
+    }
     expect(feature).toContain("Commit the complete reviewable scope before step 6");
-    const phase2 = workflow.indexOf("Guard Phase 2 — verify committed HEAD");
-    const push = workflow.indexOf("Push + open PR");
-    const hosted = workflow.indexOf("Hosted review — paired current-head 5/5");
-    expect(rendering).toBeGreaterThan(-1);
-    expect(phase2).toBeGreaterThan(rendering);
-    expect(push).toBeGreaterThan(phase2);
-    expect(hosted).toBeGreaterThan(push);
   });
 
   test("same-family fallback records standing approval without waiving gates", () => {

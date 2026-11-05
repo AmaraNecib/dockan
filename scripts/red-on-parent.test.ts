@@ -2536,8 +2536,15 @@ test("rejects zero", () => {
       expect(status).toBe(2);
     } finally {
       if (parentRelaxed) chmodSync(fixture.cache, 0o755);
-      holder?.kill();
-      fixture.cleanup();
+      try {
+        if (holder && holder.exitCode === null && holder.signalCode === null) {
+          const closed = new Promise<void>((resolve) => holder?.once("close", () => resolve()));
+          if (holder.exitCode === null && holder.signalCode === null) holder.kill();
+          await closed;
+        }
+      } finally {
+        fixture.cleanup();
+      }
     }
   }, 60_000);
 

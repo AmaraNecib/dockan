@@ -5239,6 +5239,23 @@ describe("UI preferences (issue 97 follow-up)", () => {
     });
   });
 
+  it("remembers only supported sale price modes and refuses draft values (#397)", async () => {
+    await client.preferencesSet({ key: "ui.sale.priceMode", value: "PERCENTAGE" });
+    expect((await client.preferencesGet()).values["ui.sale.priceMode"]).toBe("PERCENTAGE");
+    for (const value of ["", "DISCOUNT", "900", "percentage", "AMOUNT:900"]) {
+      await expect(client.preferencesSet({ key: "ui.sale.priceMode", value })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    }
+    await expect(client.preferencesSet({ key: "ui.sale.priceMode.other-user", value: "AMOUNT" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+    if (session === null) throw new Error("expected the authenticated owner");
+    const ownKey = `ui.sale.priceMode.${session.user.id}`;
+    expect((await store.getPreferences())[ownKey]).toBe("PERCENTAGE");
+    await store.setPreference("ui.sale.priceMode.some-other-operator", "AMOUNT");
+    const visible = (await client.preferencesGet()).values;
+    expect(visible["ui.sale.priceMode"]).toBe("PERCENTAGE");
+    expect(Object.keys(visible).some((key) => key.startsWith("ui.sale.priceMode."))).toBe(false);
+  });
+
   it("round-trips a client-owned preference over the wire", async () => {
     // the endpoint is for shell state the owner owns, not for arbitrary keys:
     // see "refuses a key the server owns" below

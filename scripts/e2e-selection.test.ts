@@ -296,6 +296,7 @@ describe("e2e-selection behaviour", () => {
       "no-write-window.spec.ts",
       "pagination.spec.ts",
       "sale-checkout.spec.ts",
+      "sale-price-editor.spec.ts",
     ]);
   });
 

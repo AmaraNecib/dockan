@@ -3,6 +3,7 @@ import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
 import { captureEvidence } from "./money-display-helpers";
+import { actAndAck } from "./rpc-helpers";
 
 // #254 evidence (#259): the money display is a VISUAL change, so this spec can
 // record a video at real user pace when a lane asks for one. CI never sets
@@ -46,7 +47,9 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   await expect(preview.getByTestId("money-currency")).toHaveText("دج");
   await page.getByLabel("سعر البيع (دج)").fill("350");
 
-  await page.getByRole("button", { name: "حفظ" }).click();
+  // Acknowledge the item write before switching tabs; the response helper checks
+  // HTTP success and the oRPC success envelope.
+  await actAndAck(page, "itemsCreate", () => page.getByRole("button", { name: "حفظ" }).click());
 
   // 3. The item appears in the list with a low badge (stock 0 <= threshold 5)
   await openItemsTab(page, "products");

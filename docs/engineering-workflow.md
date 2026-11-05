@@ -59,6 +59,8 @@ Guard Phase 1 — pre-commit checks
     ↓
 Quality check — relevant skills
     ↓
+Commit complete reviewable scope
+    ↓
 Debate — default at Standard, required at High-assurance
     ↓
 Test audit — default at Standard, required at High-assurance
@@ -66,8 +68,6 @@ Test audit — default at Standard, required at High-assurance
 Code-review — Standards + Spec axes against pinned base SHA
     ↓
 Local reviewloop payload and 5/5 — selected lenses, no unresolved actionable findings
-    ↓
-Commit complete reviewable scope
     ↓
 Guard Phase 2 — verify committed HEAD; commit fixes and refresh checks if needed
     ↓
@@ -88,7 +88,7 @@ Capture wisdom (repeated pattern only) + report to the owner
 Merge — cheap-to-reverse merges itself; expensive or decision diffs wait for the owner
 ```
 
-A **worker lane commits before Guard Phase 2**, verifies that HEAD, and stops with a handoff. Post-commit results go in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`; do not create an evidence-only commit. A fix requires a new commit and refreshed checks and stale reviews. Its completion wakes the
+A **worker lane commits before local review and rendering**, verifies that same HEAD through Guard Phase 2, and stops with a handoff. Commit review fixes before refreshing affected checks and current-head reviews. Post-commit results go in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`; do not create an evidence-only commit. A fix requires a new commit and refreshed checks and stale reviews. Its completion wakes the
 parent session, which pushes, opens the PR, drives the review rounds and merges.
 A lane that pushes is breaking its authority boundary, not helping.
 

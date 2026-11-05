@@ -111,6 +111,8 @@ Load relevant skills from the workflow's quality check table:
 | React Query / TanStack Query data fetching, cache keys, invalidation | `tanstack-query` |
 | TanStack Router routes, search params, loaders | `tanstack-router`, `tanstack-router-best-practices` |
 
+Commit the complete reviewable scope before step 6. Pin that committed HEAD for every local reviewer and the renderer; they do not review uncommitted changes. After any review fix, commit it before refreshing affected checks and current-head reviews. Keep source frozen while reviewers read.
+
 ### 6. Local review — every reviewable change
 
 Select depth by reachable risk under `docs/engineering-workflow.md`. Compact Standard requires one genuine local `code-review` execution covering Standards, Spec and affected-test adequacy; record `debate` and `test-audit` skips with reasons in the renderer payload. Ordinary Standard uses all three lenses; High-assurance uses all three and a final-head debate after fixes. Use separate reviewer executions and preserve model-family independence unless the standing owner-approved exception applies; disclose same-family executions. The handoff may supply the short author account; a fresh author-model session is not a gate. The parent verifies exact base/head, reviewer session, actual model, provenance and report. A worker's unsupported claim is not evidence, while a valid execution on the exact tree is reusable and should not be duplicated automatically. Never report a skipped lens as run.
@@ -121,7 +123,7 @@ Use `.agents/skills/reviewloop/SKILL.md` for the payload format, renderer and cu
 
 ### 10. Guard pre-push (Phase 2)
 
-Commit the complete reviewable scope before running `guard` Phase 2 for the local checks below. If verification requires a fix, commit it and refresh the affected checks and stale reviews before handoff. Record post-commit results in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`, not an evidence-only commit. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
+Use the committed, locally reviewed HEAD from steps 6–9 when running `guard` Phase 2 for the local checks below. If verification requires a fix, commit it and refresh the affected checks and stale reviews before handoff. Record post-commit results in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`, not an evidence-only commit. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
 
 Use `guard` Phase 2's canonical check list, including the full suite and production web build through the heavy-work queue. Do not replace either with focused checks. Follow its execution reliability rules: pinned absolute cwd/tree, unique durable streamed logs, real progress/output inspection and truthful result states. Apply `guard`'s **Browser verification: selector first** procedure when browser verification is relevant. Inspect `bun scripts/e2e-changed.ts --dry-run` before taking a heavy slot; preserve its full/affected/skip decision and evidence. The selector procedure governs final selected-scope verification; focused TDD does not replace it.
 - Review evidence files exist and are not stale

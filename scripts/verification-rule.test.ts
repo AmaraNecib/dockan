@@ -159,7 +159,13 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(feature).toContain("| Local review payload missing or stale | Steps 7–9 before Guard Phase 2 |");
     expect(feature).toContain("unless the standing owner-approved exception applies; disclose same-family executions");
     const workflow = read("docs/engineering-workflow.md");
+    const commit = workflow.indexOf("Commit complete reviewable scope");
+    const debate = workflow.indexOf("Debate — default at Standard");
     const rendering = workflow.indexOf("Local reviewloop payload and 5/5");
+    expect(commit).toBeGreaterThan(-1);
+    expect(debate).toBeGreaterThan(commit);
+    expect(rendering).toBeGreaterThan(debate);
+    expect(feature).toContain("Commit the complete reviewable scope before step 6");
     const phase2 = workflow.indexOf("Guard Phase 2 — verify committed HEAD");
     const push = workflow.indexOf("Push + open PR");
     const hosted = workflow.indexOf("Hosted review — paired current-head 5/5");

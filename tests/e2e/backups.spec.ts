@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { externalBackupDestinationInputSchema, type ExternalBackupStatus } from "../../packages/contracts/src/core";
+import { z } from "zod";
 import { callRpc, seedCategoryId } from "./rpc-helpers";
 import fs from "node:fs";
 import path from "node:path";
@@ -86,6 +88,69 @@ async function installRevealBridge(page: Page): Promise<void> {
     };
   });
 }
+
+test("external backup destination persists, cancels edits, reports media failure, and retries", async ({ page }) => {
+  await signIn(page);
+  let externalStatus: ExternalBackupStatus = {
+    destination: "D:/existing-backups",
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastError: null,
+    lastPath: null,
+  };
+  let failNextCopy = true;
+  await page.route("**/api/rpc/externalBackupStatus", (route) => route.fulfill({ json: externalStatus }));
+  await page.route("**/api/rpc/externalBackupDevice", (route) => route.fulfill({ json: "same" }));
+  await page.route("**/api/rpc/externalBackupDestinationSet", async (route) => {
+    const parsed = z.object({ json: externalBackupDestinationInputSchema }).safeParse(route.request().postDataJSON());
+    if (!parsed.success) throw new Error("external destination route received invalid input");
+    const destination = parsed.data.json.destination;
+    externalStatus = {
+      destination,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+      lastPath: null,
+    };
+    await route.fulfill({ json: externalStatus });
+  });
+  await page.route("**/api/rpc/externalBackupRun", async (route) => {
+    externalStatus = failNextCopy
+      ? { ...externalStatus, lastAttemptAt: "2026-11-05T10:00:00", lastError: "disconnected" }
+      : { ...externalStatus, lastAttemptAt: "2026-11-05T10:01:00", lastSuccessAt: "2026-11-05T10:01:00", lastError: null, lastPath: "D:/existing-backups/dokan-backup-set/dokan-backup.dknvbak" };
+    failNextCopy = false;
+    await route.fulfill({ json: externalStatus });
+  });
+
+  await page.goto("/backups");
+  const panel = page.getByTestId("external-backup-panel");
+  const destination = page.getByTestId("external-backup-destination");
+  await expect(destination).toHaveValue("D:/existing-backups");
+  await destination.fill("E:/unsaved");
+  await panel.getByRole("button", { name: "إلغاء التعديل" }).click();
+  await expect(destination).toHaveValue("D:/existing-backups");
+
+  await destination.fill("D:/shop-backups");
+  await panel.getByRole("button", { name: "حفظ المجلد" }).click();
+  await expect(destination).toHaveValue("D:/shop-backups");
+  await expect(panel.getByRole("status")).toContainText("القرص الفعلي نفسه");
+  if (process.env.BACKUP_EVIDENCE === "before") {
+    await panel.screenshot({ path: ".scratch/evidence/403/before.png" });
+  }
+
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(panel.getByRole("alert")).toContainText("القرص غير متصل");
+  await expect(panel.getByRole("alert")).toBeVisible();
+
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(page.getByTestId("external-backup-success")).toContainText("dokan-backup.dknvbak");
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/existing-backups/dokan-backup-set");
+  if (process.env.BACKUP_EVIDENCE === "after") {
+    await panel.screenshot({ path: ".scratch/evidence/403/after.png" });
+  }
+  await panel.getByRole("button", { name: "إزالة الوجهة" }).click();
+  await expect(destination).toHaveValue("");
+});
 
 test.describe("completed backup reveal", () => {
 

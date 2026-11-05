@@ -136,32 +136,33 @@ describe("manual export copy", () => {
 });
 
 describe("additional external backup", () => {
-  itHeavy("retains destination and last success across a failed retry without replacing the known-good artifact", async () => {
+  it("records a full-destination failure without ever publishing plaintext bytes", async () => {
     const dataDir = freshDataDir();
     const external = freshDataDir();
     await setExternalBackupDestination(dataDir, external);
-    const first = await createExternalBackup({ store, dataDir, validate: (file) => fs.readFileSync(file).length > 0 });
-    expect(first.lastError).toBeNull();
-    const knownGoodPath = first.lastPath;
-    expect(knownGoodPath).not.toBeNull();
-    if (knownGoodPath === null) throw new Error("expected an external backup artifact");
-    const savedBytes = fs.readFileSync(knownGoodPath);
-    const failingStore: StorePort = { ...store, copyDatabaseTo: async (partial) => { fs.writeFileSync(partial, "broken"); throw Object.assign(new Error("disk full"), { code: "ENOSPC" }); } };
-    await expect(createExternalBackup({ store: failingStore, dataDir, validate: () => false })).resolves.toMatchObject({
-      lastError: "full",
-      lastPath: knownGoodPath,
-    });
-    const failed = readExternalBackupStatus(dataDir);
+    const failingStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async (staging) => {
+        fs.writeFileSync(staging, "plaintext database content");
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      },
+    };
+    const failed = await createExternalBackup({ store: failingStore, dataDir, validate: () => true });
     expect(failed.lastError).toBe("full");
-    expect(failed.lastPath).toBe(knownGoodPath);
-    expect(fs.readFileSync(knownGoodPath).equals(savedBytes)).toBe(true);
+    expect(failed.lastPath).toBeNull();
+    expect(fs.readdirSync(external)).toEqual([]);
+    expect(fs.readdirSync(dataDir).some((entry) => entry.endsWith(".partial"))).toBe(false);
     expect(readExternalBackupStatus(dataDir)).toEqual(failed);
   });
 
-  it("cancellation leaves the saved destination unchanged", async () => {
+  it("resetting a destination clears its attributed outcome without deleting old backup sets", async () => {
     const dataDir = freshDataDir();
-    const saved = await setExternalBackupDestination(dataDir, freshDataDir());
-    expect(await setExternalBackupDestination(dataDir, null)).toEqual(saved);
+    const destination = freshDataDir();
+    const saved = await setExternalBackupDestination(dataDir, destination);
+    const cleared = await setExternalBackupDestination(dataDir, null);
+    expect(cleared).toMatchObject({ destination: null, lastSuccessAt: null, lastPath: null });
+    expect(saved.destination).toBe(destination);
+    expect(fs.existsSync(destination)).toBe(true);
   });
 });
 

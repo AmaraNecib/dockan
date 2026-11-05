@@ -6,6 +6,7 @@ import {
   activityListOutputSchema,
   backupManualOutputSchema,
   externalBackupDestinationInputSchema,
+  externalBackupDeviceOutputSchema,
   externalBackupStatusSchema,
   catalogSearchInputSchema,
   catalogSearchOutputSchema,
@@ -262,6 +263,7 @@ export const dokanContract = {
   // --- backup --------------------------------------------------------------
   backupManual: oc.output(backupManualOutputSchema),
   externalBackupStatus: oc.output(externalBackupStatusSchema),
+  externalBackupDevice: oc.output(externalBackupDeviceOutputSchema),
   externalBackupDestinationSet: oc.input(externalBackupDestinationInputSchema).output(externalBackupStatusSchema),
   externalBackupRun: oc.output(externalBackupStatusSchema),
 };

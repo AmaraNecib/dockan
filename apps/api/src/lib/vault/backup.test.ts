@@ -1,19 +1,21 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
 import { buildEncryptedSnapshot, createEncryptedConnection } from "../../db/encrypted-connection";
 import type { KdfParams } from "./crypto";
 import { createVaultBackupBundle, extractVaultBackup, type ExtractVaultBackupOptions, readVaultBackupBundle } from "./backup";
-import { createExternalBackup, setExternalBackupDestination } from "../backups";
+import { createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../backups";
 import { VaultCore } from "./core";
 import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, parseVaultHeader, readSnapshotFence } from "./format";
 import { acquireVaultLock, VaultAlreadyLockedError, VaultLockLostError } from "./lock";
 import { VaultManager } from "./manager";
 import { AppLogger } from "../logger";
 import { createDrizzleStore } from "../../store/drizzle-store";
+import type { StorePort } from "../../store/port";
 
 const FAST_KDF: KdfParams = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 };
 const PASSPHRASE = "correct horse battery";
@@ -134,18 +136,97 @@ describe("vault backup bundle", () => {
     // The actual external-copy seam writes a unique, validated encrypted bundle.
     const externalDir = tempDir("dokan-backup-external-");
     await setExternalBackupDestination(source, externalDir);
-    const outcome = await createExternalBackup({
-      store,
-      dataDir: source,
-      validate: conn.validateSnapshotFile.bind(conn),
+    const reservationTime = Date.now();
+    const collisionDirectory = path.join(externalDir, `dokan-backup-${reservationTime}-${process.pid}-${"11".repeat(8)}`);
+    fs.mkdirSync(collisionDirectory);
+    let randomCall = 0;
+    const randomSpy = spyOn(crypto, "randomBytes").mockImplementation((size) => {
+      randomCall++;
+      return Buffer.alloc(size, randomCall === 2 ? 0x11 : randomCall === 3 ? 0x22 : 0x33);
     });
+    const timeSpy = spyOn(Date, "now").mockReturnValue(reservationTime);
+    let outcome: Awaited<ReturnType<typeof createExternalBackup>>;
+    try {
+      outcome = await createExternalBackup({
+        store,
+        dataDir: source,
+        validate: conn.validateSnapshotFile.bind(conn),
+      });
+    } finally {
+      randomSpy.mockRestore();
+      timeSpy.mockRestore();
+    }
+    expect(randomCall).toBeGreaterThanOrEqual(4);
+    expect(fs.existsSync(collisionDirectory)).toBe(true);
+    expect(fs.readdirSync(collisionDirectory)).toEqual([]);
     expect(outcome.lastError).toBeNull();
+    expect(outcome.lastSuccessAt).not.toBeNull();
     const bundlePath = outcome.lastPath;
     expect(bundlePath).not.toBeNull();
     if (bundlePath === null) throw new Error("external backup did not produce an artifact");
     expect(conn.validateSnapshotFile(bundlePath)).toBe(true);
+    expect(path.basename(bundlePath)).toBe("dokan-backup.dknvbak");
+    expect(path.basename(path.dirname(bundlePath))).toMatch(/^dokan-backup-/);
     const bundle = fs.readFileSync(bundlePath);
     expect(readVaultBackupBundle(bundle)).toBeDefined();
+
+    const unpluggedStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async () => { throw Object.assign(new Error("device disappeared"), { code: "ENOENT" }); },
+    };
+    const disconnected = await createExternalBackup({
+      store: unpluggedStore,
+      dataDir: source,
+      validate: conn.validateSnapshotFile.bind(conn),
+    });
+    expect(disconnected.lastError).toBe("disconnected");
+    expect(disconnected.lastPath).toBe(bundlePath);
+    expect(fs.readFileSync(bundlePath).equals(bundle)).toBe(true);
+
+    // Invalid/truncated staged bytes never reach the published filename or replace the prior artifact.
+    const corruptStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async (target) => { fs.writeFileSync(target, bundle.subarray(0, 24)); },
+    };
+    const invalid = await createExternalBackup({
+      store: corruptStore,
+      dataDir: source,
+      validate: conn.validateSnapshotFile.bind(conn),
+    });
+    expect(invalid.lastError).toBe("invalid");
+    expect(invalid.lastPath).toBe(bundlePath);
+    expect(fs.readFileSync(bundlePath).equals(bundle)).toBe(true);
+    expect(fs.readdirSync(externalDir).sort()).toEqual([path.basename(collisionDirectory), path.basename(path.dirname(bundlePath))].sort());
+
+    // A stale outcome cannot overwrite a later destination change: the per-data-dir queue serializes both operations.
+    const nextExternalDir = tempDir("dokan-backup-external-next-");
+    let signalCopyStarted!: () => void;
+    let releaseCopy!: () => void;
+    const copyStarted = new Promise<void>((resolve) => { signalCopyStarted = resolve; });
+    const copyGate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+    const copyStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async (target) => {
+        signalCopyStarted();
+        await copyGate;
+        await store.copyDatabaseTo(target);
+      },
+    };
+    const copyPromise = createExternalBackup({ store: copyStore, dataDir: source, validate: conn.validateSnapshotFile.bind(conn) });
+    await copyStarted;
+    let destinationChangeFinished = false;
+    const destinationChange = setExternalBackupDestination(source, nextExternalDir).then((value) => {
+      destinationChangeFinished = true;
+      return value;
+    });
+    await Bun.sleep(10);
+    expect(destinationChangeFinished).toBe(false);
+    releaseCopy();
+    await copyPromise;
+    const changed = await destinationChange;
+    expect(changed).toMatchObject({ destination: nextExternalDir, lastSuccessAt: null, lastPath: null });
+    expect(readExternalBackupStatus(source)).toEqual(changed);
+
     conn.close();
 
     // restore on a "fresh machine" and unlock with the PASSPHRASE

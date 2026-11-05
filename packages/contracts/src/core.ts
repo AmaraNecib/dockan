@@ -1776,6 +1776,8 @@ export const externalBackupStatusSchema = z.object({
   lastPath: z.string().nullable(),
 });
 export const externalBackupDestinationInputSchema = z.object({ destination: z.string().trim().min(1).nullable() });
+export const externalBackupDeviceOutputSchema = z.enum(["same", "different", "unknown"]);
+export type ExternalBackupStatus = z.infer<typeof externalBackupStatusSchema>;
 
 // ---------------------------------------------------------------------------
 // Types (z.infer) — the API and web import these, never z directly.

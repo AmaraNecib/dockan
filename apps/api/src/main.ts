@@ -391,6 +391,27 @@ async function startPlaintext(): Promise<void> {
 let vaultStoreForBackup: StorePort | undefined;
 
 /** The first daily backup needs the committed header, so it runs post-commit. */
+function startExternalBackup(store: StorePort, conn: Connection): void {
+  const validate = conn.validateSnapshotFile?.bind(conn);
+  if (validate === undefined || readyHandlerFor(lockLost) !== "live") return;
+  void createExternalBackup({
+    store,
+    dataDir: config.dataDir,
+    validate,
+    writeGuard: requireHeldLock(vaultLock),
+  }).then((result) => {
+    if (result.lastError !== null) logger.warn("SERVER_ERROR", `external backup failed: ${result.lastError}`);
+  }).catch((error) => {
+    if (error instanceof SnapshotPersistenceError) {
+      conn.onFatalError?.(error);
+      return;
+    }
+    if (!(error instanceof VaultLockLostError)) {
+      logger.error("SERVER_ERROR", "external encrypted backup failed", error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
 async function runVaultDailyBackup(): Promise<void> {
   const store = vaultStoreForBackup;
   const conn = activeConnection;
@@ -402,17 +423,8 @@ async function runVaultDailyBackup(): Promise<void> {
     (error) => logger.error("SERVER_ERROR", "VAULT_PLAINTEXT_CLEANUP_UNKNOWN: daily backup deferred; manual verification required", error),
   );
   if (cleanup.status !== "clean") return;
-  const validate = conn.validateSnapshotFile?.bind(conn);
-  await runDailyBackup(store, validate);
-  if (validate !== undefined && readyHandlerFor(lockLost) === "live") {
-    try {
-      const result = await createExternalBackup({ store, dataDir: config.dataDir, validate });
-      if (result.lastError !== null) logger.warn("SERVER_ERROR", `external backup failed: ${result.lastError}`);
-    } catch (error) {
-      // External media is optional. Failure must never prevent the app from serving sales.
-      logger.error("SERVER_ERROR", "external encrypted backup outcome could not be saved", error instanceof Error ? error : new Error(String(error)));
-    }
-  }
+  await runDailyBackup(store, conn.validateSnapshotFile?.bind(conn));
+  startExternalBackup(store, conn);
 }
 
 async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
@@ -523,6 +535,8 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
       store,
       auth,
       externalBackupValidator: conn.validateSnapshotFile?.bind(conn),
+      externalBackupWriteGuard: requireHeldLock(vaultLock),
+      afterManualBackup: () => startExternalBackup(store, conn),
       vault: {
         sessionMatches: (token) => vault.sessionMatches(token),
         ownerId: () => vault.ownerId(),

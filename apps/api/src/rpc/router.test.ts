@@ -908,8 +908,18 @@ describe("stock ledger — backdated inflows (greptile P1)", () => {
 });
 
 describe("backups (ticket 13)", () => {
-  it("rejects backupManual without a session", async () => {
+  it("rejects every external-backup RPC without a session", async () => {
+    await expect(unauthed.externalBackupStatus()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.externalBackupDevice()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.externalBackupDestinationSet({ destination: dir })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.externalBackupRun()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     await expect(unauthed.backupManual()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("refuses external backup setup and export when the live store is not encrypted", async () => {
+    await expect(client.externalBackupDestinationSet({ destination: dir })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(client.externalBackupRun()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(fs.existsSync(path.join(dir, "external-backup.json"))).toBe(false);
   });
 
   it("exports a copy under dataDir/backups and logs BACKUP_CREATED", async () => {

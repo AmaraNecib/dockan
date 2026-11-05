@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
 import assert from "node:assert/strict";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ExternalBackupStatus } from "@dokan/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -25,6 +26,19 @@ let host: HTMLDivElement;
 function bridge(invoke: TestBridge["invoke"]): void {
   // SAFETY: tests substitute the same IPC global the desktop webview injects.
   (window as { __TAURI_INTERNALS__?: TestBridge }).__TAURI_INTERNALS__ = { invoke };
+}
+
+function externalDestinationInput(): HTMLInputElement {
+  const input = host.querySelector<HTMLInputElement>("#external-backup-destination");
+  assert.ok(input, "Missing external backup destination input");
+  return input;
+}
+
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function button(label: string): HTMLButtonElement {
@@ -80,6 +94,49 @@ afterEach(() => {
   clearVaultSessionToken();
   // SAFETY: remove only the bridge installed by this test.
   delete (window as { __TAURI_INTERNALS__?: TestBridge }).__TAURI_INTERNALS__;
+});
+
+it("cancels an edited destination without saving it", async () => {
+  let setCalls = 0;
+  globalThis.fetch = Object.assign(async () => {
+    setCalls++;
+    return Response.json({ json: {} });
+  }, { preconnect: originalFetch.preconnect });
+  await act(async () => setInputValue(externalDestinationInput(), "E:/draft"));
+  expect(externalDestinationInput().value).toBe("E:/draft");
+  await act(async () => button("إلغاء التعديل").click());
+  expect(externalDestinationInput().value).toBe("");
+  expect(setCalls).toBe(0);
+});
+
+it("saves a destination, shows the successful copy path, and resets without deleting backup files", async () => {
+  let status: ExternalBackupStatus = { destination: null, lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+  let setCalls = 0;
+  globalThis.fetch = Object.assign(async (request: RequestInfo | URL) => {
+    const url = request instanceof Request ? request.url : String(request);
+    if (url.includes("externalBackupStatus")) return Response.json({ json: status });
+    if (url.includes("externalBackupDevice")) return Response.json({ json: "same" });
+    if (url.includes("externalBackupDestinationSet")) {
+      setCalls++;
+      status = setCalls === 1
+        ? { ...status, destination: "D:/backup", lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null }
+        : { ...status, destination: null, lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+      return Response.json({ json: status });
+    }
+    if (url.includes("externalBackupRun")) {
+      status = { ...status, lastAttemptAt: "2026-11-05T10:00:00", lastSuccessAt: "2026-11-05T10:00:00", lastPath: "D:/backup/dokan-backup-1/dokan-backup.dknvbak" };
+      return Response.json({ json: status });
+    }
+    return Response.json({ json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } });
+  }, { preconnect: originalFetch.preconnect });
+  await act(async () => setInputValue(externalDestinationInput(), "D:/backup"));
+  await click("حفظ المجلد", () => expect(externalDestinationInput().value).toBe("D:/backup"), "destination saved");
+  expect(setCalls).toBe(1);
+  await settle(() => expect(host.textContent).toContain("القرص الفعلي نفسه"), "same-drive warning");
+  await click("نسخ الآن", () => expect(host.querySelector('[data-testid="external-backup-success"]')?.textContent).toContain("dokan-backup.dknvbak"), "external copy outcome");
+  await click("إزالة الوجهة", () => expect(externalDestinationInput().value).toBe(""), "destination reset");
+  expect(setCalls).toBe(2);
+  expect(status.destination).toBeNull();
 });
 
 it("reveals only the actual successfully completed backup", async () => {

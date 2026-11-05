@@ -21,6 +21,7 @@ import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCap
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createBackup, createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../lib/backups";
+import { comparePhysicalDevice, type PhysicalDeviceRelation } from "../lib/backup-device";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { resolveVaultCredential } from "../lib/vault/session";
 import { tokenMatches } from "../lib/boot-token";
@@ -76,6 +77,8 @@ type RpcDeps = {
    * changing the vault.
    */
   externalBackupValidator?: (path: string) => boolean;
+  externalBackupWriteGuard?: () => void;
+  afterManualBackup?: () => void;
   vault?: {
     sessionMatches(token: string | null | undefined): boolean;
     ownerId(): string | undefined;
@@ -2582,13 +2585,34 @@ export function createRpcRouter(deps: RpcDeps) {
     externalBackupStatus: os.externalBackupStatus.handler(
       guarded(async () => readExternalBackupStatus(deps.config.dataDir)),
     ),
+    externalBackupDevice: os.externalBackupDevice.handler(
+      guarded(async (): Promise<PhysicalDeviceRelation> => {
+        const destination = readExternalBackupStatus(deps.config.dataDir).destination;
+        return destination === null ? "unknown" : comparePhysicalDevice(deps.config.dataDir, destination);
+      }),
+    ),
     externalBackupDestinationSet: os.externalBackupDestinationSet.handler(
-      guardedInput(async ({ destination }) => setExternalBackupDestination(deps.config.dataDir, destination)),
+      guardedInput(async ({ destination }) => {
+        if (deps.externalBackupWriteGuard === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
+        return setExternalBackupDestination(deps.config.dataDir, destination, deps.externalBackupWriteGuard);
+      }),
     ),
     externalBackupRun: os.externalBackupRun.handler(
       guarded(async () => {
         if (deps.externalBackupValidator === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
-        return createExternalBackup({ store: deps.store, dataDir: deps.config.dataDir, validate: deps.externalBackupValidator });
+        if (deps.externalBackupWriteGuard === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
+        const local = await createBackup({ store: deps.store, dataDir: deps.config.dataDir });
+        await deps.store.insertActivity({
+          type: "BACKUP_CREATED",
+          summary: `BACKUP_CREATED ${local.path.split(/[\\/]/).pop()}`,
+          ref: local.path,
+        });
+        return createExternalBackup({
+          store: deps.store,
+          dataDir: deps.config.dataDir,
+          validate: deps.externalBackupValidator,
+          writeGuard: deps.externalBackupWriteGuard,
+        });
       }),
     ),
     backupManual: os.backupManual.handler(
@@ -2601,6 +2625,7 @@ export function createRpcRouter(deps: RpcDeps) {
           summary: `BACKUP_CREATED ${result.path.split(/[\\/]/).pop()}`,
           ref: result.path,
         });
+        deps.afterManualBackup?.();
         return result;
       }),
     ),

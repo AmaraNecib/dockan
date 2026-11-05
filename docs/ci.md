@@ -10,6 +10,7 @@ local Guard checks in `engineering-workflow.md`.
 | `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun run --filter @dokan/web build`, `bun audit` |
 | `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` (with the mapped spec list when the diff is affected) on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
 | `rust` | gated on the `changes` job's `rust` output; `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
+| `acceptance` (`CI acceptance`) | stable required-check candidate; succeeds only when `changes` and `checks` succeed, and each `e2e`/`rust` skip matches a successful explicit selector decision |
 
 `checks` always runs. `e2e` and `rust` read the `changes` outputs, so an e2e
 `skip` or a diff that cannot reach the crate skips those jobs; the scope
@@ -19,7 +20,12 @@ fails, its
 outputs are empty and both consumers read that as "run": the gates use
 `!cancelled()` with an empty-tolerant comparison, so an infra failure widens
 the run instead of silently narrowing it. A typecheck/lint/test failure and a
-Playwright flake are visible without one hiding the other.
+Playwright flake are visible without one hiding the other. Configure branch
+protection to require the exact check name `CI acceptance` only after the owner
+verifies it is enforced on the current PR head and reviews bypass policy. Until
+that remote check is confirmed, existing required checks and local Guard Phase 2
+gates remain active. The aggregate cannot establish branch-protection settings
+or bypass policy itself.
 
 ## PR scope decision (issue 226)
 
@@ -353,20 +359,12 @@ enforce. To make these checks required on `develop` an admin must:
    existing `develop` rule).
 2. Branch name pattern: `develop`.
 3. Enable **Require status checks to pass before merging**.
-4. Select the `typecheck, lint, test, audit`, `playwright e2e` and
-   `rust test, clippy` checks.
+4. Select the exact `CI acceptance` check from the GitHub Actions app. Require the branch to be up to date before merging. Do not use the component checks alone as the activation set; they do not report a failed selector through the aggregate.
+5. Verify the rule is active on `develop`, including administrators, and inspect every bypass allowance. The owner must accept the bypass policy and record the effective rule, required check, current PR head and check run before activating reduced local verification. A workflow file or a green unrequired check is not proof of enforcement.
 
-Until that is done the workflow still runs and reports, but a red run does not
-block a merge. Making the `rust` job (or any check) required is a repository
-setting the workflow itself cannot apply — it must be done by a repo admin in
-branch protection. Until the owner selects it, `rust` still runs and reports on
-every PR, but a red run does not block a merge.
+Until enforcement is verified, the workflow reports results but does not establish a blocking merge gate. Keep the pre-activation local baseline in Guard. The workflow cannot apply or prove repository protection settings.
 
-Since #226, `rust` and `e2e` are skipped for diffs that cannot reach them. A
-job-level skip reports a `skipped` check, which GitHub treats as a successful
-required status, so both can be selected above without a reporting shim. What
-would break is a trigger-level `paths:` filter (it deletes the workflow's check
-runs entirely), which is why the trigger itself is kept unfiltered.
+Since #226, `rust` and `e2e` can skip for unreachable diffs. `CI acceptance` validates those skips against a successful selector and its explicit outputs; failed, cancelled or unexplained skipped jobs do not pass the aggregate. Keep the workflow trigger unfiltered so every PR produces the required check.
 
 ## Desktop release (manual + version tags)
 

@@ -5,7 +5,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { createEncryptedConnection } from "../../db/encrypted-connection";
 import { AppLogger } from "../logger";
+import { classifyPlaintextCleanup } from "./cleanup-status";
 import { readVaultBackupBundle, extractVaultBackup } from "./backup";
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
 import { VaultAlreadyConfiguredError, VaultLockedError, VaultManager, VaultSetupInProgressError, unlockBackoffMs, type VaultSession } from "./manager";
@@ -282,6 +284,191 @@ describe("VaultManager", () => {
     await restored.unlockRecovery(recoveryKey);
     expect(restored.unlocked).toBe(true);
     restored.close();
+  });
+
+  itHeavy("converts a completed partial without replacing the same day's historical backup", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const completed = path.join(backupsDir, "dokan-2020-01-01.db");
+    const partial = `${completed}.partial.123.abcdef012345`;
+    for (const [file, value] of [[completed, "completed"], [partial, "interrupted"]] as const) {
+      const db = new Database(file, { create: true });
+      db.exec(`CREATE TABLE items(id TEXT); INSERT INTO items VALUES ('${value}'); PRAGMA user_version = 1`);
+      db.close();
+    }
+    const vault = manager();
+    await createVault(vault);
+    const outcome = await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {});
+    expect(outcome).toEqual({ status: "clean", remaining: [] });
+    expect(fs.existsSync(completed)).toBe(false);
+    expect(fs.existsSync(partial)).toBe(false);
+    const completedBundle = fs.readFileSync(path.join(backupsDir, "dokan-2020-01-01.dknvbak"));
+    const partialBundle = fs.readFileSync(`${partial}.dknvbak`);
+    expect(readVaultBackupBundle(completedBundle)).toBeDefined();
+    expect(readVaultBackupBundle(partialBundle)).toBeDefined();
+    expect(completedBundle.equals(partialBundle)).toBe(false);
+    for (const [bundle, value] of [[completedBundle, "completed"], [partialBundle, "interrupted"]] as const) {
+      const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-partial-restore-"));
+      extraDirs.push(restoreDir);
+      await extractVaultBackup(bundle, restoreDir);
+      const restored = new VaultManager({ dataDir: restoreDir, legacyDbPath: path.join(restoreDir, "dokan.db"), logger: new AppLogger(restoreDir), kdf: FAST_KDF });
+      await restored.unlock(PASSPHRASE);
+      const connection = createEncryptedConnection({ snapshotPath: restored.snapshotPath, masterKey: restored.requireMasterKey(), vaultId: restored.metadata().vaultId });
+      try {
+        expect(connection.raw.query("SELECT id FROM items").all()).toEqual([{ id: value }]);
+      } finally {
+        await connection.close();
+        restored.close();
+      }
+    }
+    expect(await vault.cleanupLegacyPlaintext()).toEqual({ plaintextRemaining: [] });
+    vault.close();
+  });
+
+  itHeavy("cleans the configured backup root when the legacy database is elsewhere", async () => {
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-custom-db-"));
+    extraDirs.push(legacyRoot);
+    const backupsDir = path.join(dir, "backups");
+    const unrelatedDir = path.join(legacyRoot, "backups");
+    fs.mkdirSync(backupsDir);
+    fs.mkdirSync(unrelatedDir);
+    const files = ["dokan-2020-01-01.db", "dokan-2020-01-02.db.partial.456.012345abcdef"];
+    for (const name of files) {
+      const db = new Database(path.join(backupsDir, name), { create: true });
+      db.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('shop history'); PRAGMA user_version = 1");
+      db.close();
+      fs.copyFileSync(path.join(backupsDir, name), path.join(unrelatedDir, name));
+    }
+    const unrelatedBytes = files.map((name) => fs.readFileSync(path.join(unrelatedDir, name)));
+    const vault = new VaultManager({
+      dataDir: dir,
+      legacyDbPath: path.join(legacyRoot, "custom.db"),
+      logger: new AppLogger(dir),
+      kdf: FAST_KDF,
+    });
+    await createVault(vault);
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "clean", remaining: [] });
+    expect(files.map((name) => fs.existsSync(path.join(backupsDir, name)))).toEqual([false, false]);
+    expect(files.map((name) => fs.readFileSync(path.join(unrelatedDir, name)))).toEqual(unrelatedBytes);
+    expect(fs.readdirSync(backupsDir).sort()).toEqual([
+      "dokan-2020-01-01.dknvbak",
+      "dokan-2020-01-02.db.partial.456.012345abcdef.dknvbak",
+    ]);
+    vault.close();
+  });
+
+  itHeavy("preserves incomplete and unknown writer artifacts as remaining", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const contents = [Buffer.alloc(0), Buffer.from("SQLite format"), Buffer.from("SQLite format 3\u0000shop data"), Buffer.from("unrecognized shop data")];
+    const names = contents.map((_, index) => path.join(backupsDir, `dokan-2020-01-0${index + 1}.db.partial.123.abcdef012345`));
+    names.push(path.join(backupsDir, "dokan-2020-01-05.db"));
+    contents.push(Buffer.from("incomplete completed backup"));
+    names.forEach((name, index) => fs.writeFileSync(name, contents[index] ?? Buffer.alloc(0)));
+    const vault = manager();
+    await createVault(vault);
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "remaining", remaining: names });
+    expect(names.map((name) => fs.readFileSync(name))).toEqual(contents);
+    expect(fs.readdirSync(backupsDir).sort()).toEqual(names.map((name) => path.basename(name)).sort());
+    expect((await vault.cleanupLegacyPlaintext()).plaintextRemaining).toEqual(names);
+    vault.close();
+  });
+
+  itHeavy("reports an unreadable backup inventory as unknown and retries after repair", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.writeFileSync(backupsDir, "not a directory");
+    const vault = manager();
+    await createVault(vault);
+    const errors: Error[] = [];
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), (error) => errors.push(error))).toEqual({ status: "unknown", remaining: [] });
+    expect(errors).toHaveLength(1);
+    expect(fs.readFileSync(backupsDir, "utf8")).toBe("not a directory");
+    fs.unlinkSync(backupsDir);
+    fs.mkdirSync(backupsDir);
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "clean", remaining: [] });
+    vault.close();
+  });
+
+  itHeavy("preserves partial backups through read, write and unlink failures and retries after restart", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    const db = new Database(partial, { create: true });
+    db.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('recoverable'); PRAGMA user_version = 1");
+    db.close();
+    const original = fs.readFileSync(partial);
+    let vault = manager();
+    await createVault(vault);
+    for (const failure of ["read", "write", "unlink"] as const) {
+      fs.writeFileSync(partial, original);
+      const error = Object.assign(new Error(`injected ${failure} failure`), { code: "EACCES" });
+      const open = fs.promises.open.bind(fs.promises);
+      const rename = fs.promises.rename.bind(fs.promises);
+      const unlink = fs.promises.unlink.bind(fs.promises);
+      const fault = failure === "read"
+        ? spyOn(fs.promises, "open").mockImplementation((file, ...args) => String(file) === partial ? Promise.reject(error) : open(file, ...args))
+        : failure === "write"
+          ? spyOn(fs.promises, "rename").mockImplementation((source, dest) => String(dest) === `${partial}.dknvbak` ? Promise.reject(error) : rename(source, dest))
+          : spyOn(fs.promises, "unlink").mockImplementation((file) => String(file) === partial ? Promise.reject(error) : unlink(file));
+      try {
+        expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "remaining", remaining: [partial] });
+        expect(fs.readFileSync(partial)).toEqual(original);
+      } finally {
+        fault.mockRestore();
+      }
+      vault.close();
+      vault = manager();
+      await vault.unlock(PASSPHRASE);
+      expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "clean", remaining: [] });
+      expect(fs.existsSync(partial)).toBe(false);
+      expect(readVaultBackupBundle(fs.readFileSync(`${partial}.dknvbak`))).toBeDefined();
+    }
+    vault.close();
+  });
+
+  itHeavy("refuses a locked sweep without deleting legacy recovery files", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const partial = path.join(backupsDir, "dokan-2020-01-01.db.partial.123.abcdef012345");
+    fs.writeFileSync(partial, "incomplete shop history");
+    const vault = manager();
+    await createVault(vault);
+    vault.close();
+    fs.writeFileSync(path.join(dir, "dokan.db"), "legacy recovery copy");
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "unknown", remaining: [] });
+    expect(fs.readFileSync(partial, "utf8")).toBe("incomplete shop history");
+    expect(fs.readFileSync(path.join(dir, "dokan.db"), "utf8")).toBe("legacy recovery copy");
+    await vault.unlock(PASSPHRASE);
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "remaining", remaining: [partial] });
+    expect(fs.existsSync(path.join(dir, "dokan.db"))).toBe(false);
+    vault.close();
+  });
+
+  itHeavy("keeps encrypted backups and unrelated names unchanged while reporting non-file candidates", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir);
+    const vault = manager();
+    await createVault(vault);
+    const completed = path.join(backupsDir, "dokan-2020-01-01.db");
+    const db = new Database(completed, { create: true });
+    db.exec("CREATE TABLE t(a TEXT); PRAGMA user_version = 1");
+    db.close();
+    await vault.cleanupLegacyPlaintext();
+    const encrypted = fs.readFileSync(path.join(backupsDir, "dokan-2020-01-01.dknvbak"));
+    fs.writeFileSync(completed, encrypted);
+    const unrelated = ["notes.db", "notes.db.partial.123.abcdef012345", "dokan-2020-01-01.db.partial.notes", "dokan-2020-01-01.dknvbak"];
+    const originals = unrelated.map((name) => {
+      const file = path.join(backupsDir, name);
+      if (!fs.existsSync(file)) fs.writeFileSync(file, "unrelated contents");
+      return fs.readFileSync(file);
+    });
+    const candidateDirectory = path.join(backupsDir, "dokan-2020-01-02.db.partial.123.abcdef012345");
+    fs.mkdirSync(candidateDirectory);
+    expect(await classifyPlaintextCleanup(() => vault.cleanupLegacyPlaintext(), () => {})).toEqual({ status: "remaining", remaining: [candidateDirectory] });
+    expect(fs.readFileSync(completed)).toEqual(encrypted);
+    expect(unrelated.map((name) => fs.readFileSync(path.join(backupsDir, name)))).toEqual(originals);
+    expect(fs.statSync(candidateDirectory).isDirectory()).toBe(true);
+    vault.close();
   });
 
   itHeavy("reports a plaintext backup it could not encrypt (never silently succeeds)", async () => {

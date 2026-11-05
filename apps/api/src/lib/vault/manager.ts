@@ -7,11 +7,12 @@ import { z } from "zod";
 
 import { readFileIfExists, writeFileAtomic, writeFileAtomicSync } from "../atomic-file";
 import { localDateTime, type AppLogger } from "../logger";
+import { backupDirFor } from "../backups";
 import { buildEncryptedSnapshot, readLegacyDatabaseImage } from "../../db/encrypted-connection";
-import { createVaultBackupBundle } from "./backup";
+import { createVaultBackupBundle, VAULT_BACKUP_MAGIC } from "./backup";
 import { VaultAuthenticationError, normalizePassphrase, tokensMatch, type KdfParams } from "./crypto";
 import { VaultCore, type VaultHeaderStore, type VaultMetadata } from "./core";
-import { VaultFormatError } from "./format";
+import { VaultFormatError, VAULT_SNAPSHOT_MAGIC } from "./format";
 
 /**
  * VaultManager — the install-side vault: files, the in-memory unlock state,
@@ -116,6 +117,7 @@ export class VaultManager {
   readonly statePath: string;
   readonly snapshotPath: string;
   private readonly legacyDbPath: string;
+  private readonly backupsDir: string;
   private readonly logger: AppLogger;
   private readonly now: () => Date;
   private readonly kdf: KdfParams | undefined;
@@ -146,6 +148,7 @@ export class VaultManager {
     this.statePath = path.join(this.vaultDir, "state.json");
     this.snapshotPath = path.join(options.dataDir, "dokan.db.enc");
     this.legacyDbPath = options.legacyDbPath;
+    this.backupsDir = backupDirFor(options.dataDir);
     this.logger = options.logger;
     this.now = options.now ?? (() => new Date());
     this.kdf = options.kdf;
@@ -506,6 +509,7 @@ export class VaultManager {
   async cleanupLegacyPlaintext(): Promise<{ plaintextRemaining: string[] }> {
     const remaining: string[] = [];
     if (!this.headerExists()) return { plaintextRemaining: remaining };
+    this.requireMasterKey();
     // 1. the live legacy database and its sidecars
     for (const suffix of ["", "-wal", "-shm"] as const) {
       const candidate = `${this.legacyDbPath}${suffix}`;
@@ -544,8 +548,9 @@ export class VaultManager {
   }
 
   /**
-   * Convert every plaintext `backups/*.db` into `*.dknvbak` bundles. The
-   * plaintext file is deleted only after the bundle is on disk; the next
+   * Convert completed and partial legacy backups in the writer's configured
+   * root. Partials keep their unique suffix in the encrypted replacement name.
+   * The plaintext file is deleted only after the bundle is on disk; the next
    * unlock retries anything left. Converted names are the durable "already
    * done" marker, so a migrated history is never rescanned or read again.
    */
@@ -553,29 +558,40 @@ export class VaultManager {
     const masterKey = this.masterKey;
     const headerText = readFileIfExists(this.headerPath);
     if (masterKey === undefined || headerText === undefined) return [];
-    const backupsDir = path.join(path.dirname(this.legacyDbPath), "backups");
+    const backupsDir = this.backupsDir;
     let entries: string[];
     try {
       entries = await fs.promises.readdir(backupsDir);
-    } catch {
-      return [];
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
     }
     const vaultId = this.core?.metadata().vaultId ?? "";
     if (vaultId === "") return [];
     const remaining: string[] = [];
     for (const entry of entries) {
-      if (!entry.startsWith("dokan-") || !entry.endsWith(".db")) continue;
+      if (!/^dokan-.*\.db(?:\.partial\.\d+\.[a-f0-9]{12})?$/.test(entry)) continue;
       const file = path.join(backupsDir, entry);
       let head: Buffer;
       try {
+        const stat = await fs.promises.lstat(file);
+        if (!stat.isFile()) {
+          remaining.push(file);
+          continue;
+        }
         head = await this.readHead(file);
       } catch {
         remaining.push(file);
         continue;
       }
-      // already converted (or not a plaintext database): nothing to do
-      if (head.toString("utf8") !== "SQLite format 3\u0000") continue;
-      const converted = file.replace(/\.db$/i, ".dknvbak");
+      if (head.toString("utf8") !== "SQLite format 3\u0000") {
+        // Completed encrypted backups also use .db. Unknown or interrupted
+        // copies stay visible for recovery, even without a full SQLite header.
+        const encrypted = head.subarray(0, 8).equals(VAULT_BACKUP_MAGIC) || head.subarray(0, 8).equals(VAULT_SNAPSHOT_MAGIC);
+        if (!entry.endsWith(".db") || !encrypted) remaining.push(file);
+        continue;
+      }
+      const converted = entry.endsWith(".db") ? file.replace(/\.db$/, ".dknvbak") : `${file}.dknvbak`;
       try {
         const { image } = readLegacyDatabaseImage(file);
         const bundle = createVaultBackupBundle(headerText, buildEncryptedSnapshot(masterKey, vaultId, image));

@@ -243,6 +243,12 @@ export const dokanContract = {
   debtsByParty: oc.input(debtsByPartyInputSchema).output(invoiceListOutputSchema),
 
   // --- settings ------------------------------------------------------------
+  currentOwner: oc.output(z.object({
+    id: z.string(),
+    name: z.string(),
+    phone: z.string().nullable(),
+    role: z.literal("owner"),
+  })),
   settingsGet: oc.output(settingsSchema),
   settingsUpdate: oc.input(settingsUpdateInputSchema).output(settingsSchema),
 

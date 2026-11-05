@@ -1,5 +1,6 @@
 import { clearVaultSessionToken, observedVaultModeNow, revokeVaultSession, vaultBuildMode } from "./vault-client";
 import { markSignedOut } from "./auth-refusal";
+import { publishSessionRefresh } from "./session-refresh";
 import { brokerAvailable, brokerCommands, invokeBrokerVoid } from "./vault-broker";
 
 /** What a sign-out call resolves to; better-auth returns a data envelope. */
@@ -106,6 +107,8 @@ export async function logoutAndReload(
     // the server session may already be gone; the revoke above is what gates
     // the reload, not this call
   }
+  // Notify only after both attempts settled. This is not a revocation claim.
+  publishSessionRefresh();
   if (revoked === "unconfirmed") {
     // The credential the reload would present may still be live. Show the
     // unlock screen in place: `markSignedOut` outranks the "a live cookie is

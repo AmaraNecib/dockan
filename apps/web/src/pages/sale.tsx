@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -44,7 +45,7 @@ import { shortcutKeys } from "@/lib/keyboard-actions";
 
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { CheckoutBar } from "../components/app/checkout-bar";
-import { orpc, rpcClient } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 import { resolveOpeningStock } from "../lib/numeric-input";
 
@@ -98,6 +99,7 @@ const SALE_QUICK = {
 } satisfies QuickAddSpec<SaleQuickFields>;
 
 export function SalePage() {
+  const { orpc, rpcClient } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const {

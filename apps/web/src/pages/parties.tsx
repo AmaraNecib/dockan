@@ -14,7 +14,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 
 /** Name cell links to the role's full detail page (Q7: a page, not a modal). */
@@ -59,6 +59,7 @@ function RoleTabs({ role }: { role: PartyRole }) {
  * otherwise). Clicking a name opens the role's full detail page.
  */
 export function PartiesPage({ role }: { role: PartyRole }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   // both queries declared unconditionally; the role enables exactly one
   const customerList = useQuery({ ...orpc.customersList.queryOptions(), enabled: role === "customer" });

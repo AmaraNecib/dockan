@@ -7,7 +7,7 @@ import { ReceiptView } from "@/components/receipt-view";
 
 import { buildReceipt } from "../lib/receipt";
 import { tError } from "../lib/i18n";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 
 /**
  * Receipt printing — print-only receipt screen (/invoices/$invoiceId/print). Renders
@@ -22,6 +22,7 @@ import { orpc } from "../lib/rpc";
  * hatch, and the document stays on screen behind the dialog for review.
  */
 export function ReceiptPrintPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const { invoiceId } = useParams({ from: "/invoices/$invoiceId/print" });
 

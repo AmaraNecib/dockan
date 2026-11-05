@@ -60,6 +60,22 @@ afterEach(() => {
 });
 
 describe("logoutAndReload", () => {
+  it("publishes an advisory refresh only after an unconfirmed attempt settles", async () => {
+    window.localStorage.removeItem("better-auth.message");
+    globalThis.fetch = Object.assign(async () => { throw new Error("offline"); }, { preconnect: originalFetch.preconnect });
+    let settle!: () => void;
+    const pending = logoutAndReload(() => new Promise((resolve) => { settle = () => resolve(null); }));
+    // Let the bounded revoke/build attempts reach signOut.
+    for (let i = 0; i < 20 && !settle; i += 1) await Promise.resolve();
+    expect(settle).toBeDefined();
+    expect(window.localStorage.getItem("better-auth.message")).toBeNull();
+    settle();
+    await pending;
+    expect(JSON.parse(window.localStorage.getItem("better-auth.message") ?? "null")).toMatchObject({ event: "session", data: { trigger: "signout" } });
+    expect(authLossReason()).toBe("signed-out");
+    expect(reloads).toBe(0);
+  });
+
   it("revokes the server session, clears the local token, and reloads", async () => {
     storeVaultSessionToken("vault-session-token");
     expect(readVaultSessionToken()).toBe("vault-session-token");

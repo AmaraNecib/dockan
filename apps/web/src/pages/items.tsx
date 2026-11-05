@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -14,7 +15,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
 import { Pager } from "@/components/ui/pager";
-import { orpc, rpcClient } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 import { usePagination } from "../hooks/use-pagination";
 import { normalizeBarcode } from "@dokan/contracts";
@@ -79,6 +80,7 @@ function invalidateItems(queryClient: QueryClient) {
 }
 
 export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
+  const { rpcClient } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
@@ -256,6 +258,7 @@ export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
 }
 
 function CatalogSearch() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -343,6 +346,7 @@ function ItemForm({
   onSeedConsumed: () => void;
   onSaved: () => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [name, setName] = useState("");
@@ -644,6 +648,7 @@ function ItemForm({
 }
 
 function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAddItem: () => void; refreshMs?: number }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const pager = usePagination();

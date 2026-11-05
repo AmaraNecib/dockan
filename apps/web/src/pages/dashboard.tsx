@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -13,7 +14,7 @@ import { isOnboardingComplete } from "@/components/app/onboarding-steps";
 import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
 import { HOT_COUNTER_REFETCH_MS, SLOW_REFETCH_MS, hotCounterRefresh } from "@/lib/freshness";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { usePendingReturnsCount } from "../lib/pending-returns";
 import { formatDate } from "../lib/dates";
 
@@ -58,6 +59,7 @@ export function DashboardPage({
   refreshMs = REFRESH_MS,
   slowRefreshMs = SLOW_REFETCH_MS,
 }: { refreshMs?: number; slowRefreshMs?: number } = {}) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), ...hotCounterRefresh(refreshMs) });
   // issue #118 — a pending return does not move any balance until accepted, so

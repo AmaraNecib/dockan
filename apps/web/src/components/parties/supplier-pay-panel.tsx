@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@/lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
 
 import type { Invoice, PaymentMethod } from "@dokan/contracts";
@@ -13,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { formatDate } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
 import { invalidatePartyMoney } from "@/lib/party-cache-key";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import { distributePayment, unpaidInvoices } from "./party-settle";
 
 type PayTarget = "OLDEST" | "INVOICE" | "CREDIT";
@@ -44,6 +45,7 @@ export function SupplierPayPanel({
   onWriteFailed?: () => void;
   onCancel: () => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const owed = Math.max(0, -balance);

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation } from "@/lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
 
 import type { Party, PartyRole, PartyUpdateInput } from "@dokan/contracts";
 import { displayAlgerianPhone, isPartyPhoneText, normalizePartyPhone } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import { tError } from "@/lib/i18n";
 import { useModalDialog } from "@/lib/use-modal-dialog";
 
@@ -33,6 +34,7 @@ interface PartyFormProps {
  * the phone rule can never drift between the two surfaces.
  */
 export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [name, setName] = useState(party?.name ?? "");
@@ -206,6 +208,7 @@ export function PartyFormDialog({ role, party, title, testId, onClose, onSaved }
  * is still authoritative: PARTY_HAS_INVOICES renders here if a race won.
  */
 export function DeletePartyDialog({ role, party, onClose, onDeleted }: DeletePartyDialogProps) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);

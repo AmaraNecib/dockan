@@ -131,6 +131,11 @@ pub struct SidecarSlot {
     sidecar: Option<Sidecar>,
     restore_selection: Option<RestoreSelection>,
     restore_outcome: Option<serde_json::Value>,
+    restore_session_reset_pending: bool,
+}
+
+fn take_restore_session_reset(slot: &mut SidecarSlot) -> bool {
+    std::mem::take(&mut slot.restore_session_reset_pending)
 }
 
 /// Set once shutdown begins (window close / app exit). The launch path checks
@@ -356,6 +361,7 @@ fn setup_navigation_url(port: u16, boot_token: &str) -> String {
     format!("http://127.0.0.1:{port}/#setup_token={boot_token}")
 }
 
+
 /* ------------------------------------------------------------------ */
 /*  Stdin broker IPC (issue #141)                                       */
 /* ------------------------------------------------------------------ */
@@ -370,6 +376,7 @@ pub struct BrokerReply {
     pub retry_after_ms: Option<u64>,
     pub session_token: Option<String>,
     pub session_generation: Option<u64>,
+    pub session_reset: Option<bool>,
     pub recovery_key: Option<String>,
     pub plaintext_remaining: Option<Vec<String>>,
     /// "clean" | "remaining" | "unknown" on the setup follow-up
@@ -530,7 +537,15 @@ async fn run_broker_task<T: Send + 'static>(
 /// Gate status over the pipe. Carries no secret.
 #[tauri::command]
 pub async fn vault_status(app: AppHandle) -> Result<BrokerReply, String> {
-    run_broker_task(move || broker_exchange(&app, "status", serde_json::json!({}))).await
+    run_broker_task(move || {
+        let mut reply = broker_exchange(&app, "status", serde_json::json!({}))?;
+        let state = app.state::<SidecarState>();
+        let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+        if take_restore_session_reset(&mut slot) {
+            reply.session_reset = Some(true);
+        }
+        Ok(reply)
+    }).await
 }
 
 /// Unlock with the passphrase. The secret exists only in this call and on the
@@ -872,7 +887,13 @@ pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, ses
                 Ok(())
             },
         )?;
-        state.0.lock().map_err(|_| FAILED)?.restore_outcome = Some(outcome);
+        {
+            let mut slot = state.0.lock().map_err(|_| FAILED)?;
+            slot.restore_outcome = Some(outcome);
+            // Only a successful native-confirmed restore resets the renderer's
+            // generation epoch. No renderer parameter can request this reset.
+            slot.restore_session_reset_pending = true;
+        }
         if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
         window.navigate(setup_navigation_url(config.port, &config.boot_token).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
         // The fresh gate reads the native-owned outcome, including rollback.
@@ -1359,6 +1380,13 @@ mod tests {
     }
 
     #[test]
+    fn restore_session_reset_is_native_owned_and_one_shot() {
+        let mut slot = SidecarSlot { restore_session_reset_pending: true, ..SidecarSlot::default() };
+        assert!(take_restore_session_reset(&mut slot));
+        assert!(!take_restore_session_reset(&mut slot));
+    }
+
+    #[test]
     fn broker_reply_serialises_the_stable_code_without_a_passphrase_field() {
         let reply = BrokerReply {
             ok: false,
@@ -1366,6 +1394,7 @@ mod tests {
             retry_after_ms: Some(30_000),
             session_token: None,
             session_generation: None,
+            session_reset: None,
             recovery_key: None,
             plaintext_remaining: None,
             plaintext_status: None,
@@ -1592,6 +1621,7 @@ mod tests {
         // the token never reaches the server: only the path is requested
         assert_eq!(parsed.path(), "/");
         assert_eq!(parsed.fragment(), Some("setup_token=abc123"));
+        assert_eq!(restore_navigation_url(4321, "abc123", "reset"), "http://127.0.0.1:4321/#setup_token=abc123&session_reset=reset");
     }
 
     /// A real child with broker pipes, for tests that only need a sidecar

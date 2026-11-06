@@ -3,6 +3,7 @@ import { VaultWriterDrain } from "./writer-drain";
 
 it("refuses new requests while waiting for admitted writes and background jobs before closing", async () => {
   const drain = new VaultWriterDrain();
+  expect(drain.run).toBeDefined();
   const events: string[] = [];
   let releaseRequest = () => {};
   let releaseBackup = () => {};

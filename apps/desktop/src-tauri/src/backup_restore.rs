@@ -401,7 +401,7 @@ mod tests {
         std::fs::create_dir_all(&root.0).unwrap();
         fixture_command(&root.0, "create", None);
         let data = root.0.join("current");
-        let chosen = root.0.join("selected.dknvbak");
+        let chosen = crate::backup_picker::checked_selection(root.0.join("dokan-2026-11-06.db")).unwrap();
         let external_db = root.0.join("external-legacy.db");
         let external_wal = root.0.join("external-legacy.db-wal");
         let external_shm = root.0.join("external-legacy.db-shm");

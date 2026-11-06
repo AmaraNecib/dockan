@@ -63,6 +63,7 @@ async function names(dir: string, passphrase: string) {
   }
 }
 
+// red-on-parent-waive: "installs and migrates an encrypted backup, preserving an independently unlockable safety copy" — the parent has neither restore.ts nor the native restore worker entry point
 it("installs and migrates an encrypted backup, preserving an independently unlockable safety copy", async () => {
   const current = temp();
   await fixture(current, "Current shop record", CURRENT.passphrase);
@@ -289,6 +290,7 @@ async function nativeWorker(dir: string, request: NativeWorkerRequest) {
   return { exit, body: JSON.parse(stdout), stderr };
 }
 
+// red-on-parent-waive: "authenticates the current safety credential before native shutdown without changing current data" — the parent has no --vault-restore-worker entry point to execute this test
 it("authenticates the current safety credential before native shutdown without changing current data", async () => {
   const current = temp();
   await fixture(current, "Original record", CURRENT.passphrase);
@@ -300,6 +302,7 @@ it("authenticates the current safety credential before native shutdown without c
   expect(readBundle(current).equals(before)).toBe(true);
 });
 
+// red-on-parent-waive: "pins native confirmation to authenticated preview bytes and installs through the one-shot process" — the parent has no --vault-restore-worker entry point to execute this test
 it("pins native confirmation to authenticated preview bytes and installs through the one-shot process", async () => {
   const current = temp();
   await fixture(current, "Original record", CURRENT.passphrase);

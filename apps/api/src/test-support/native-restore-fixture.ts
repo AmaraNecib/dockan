@@ -5,6 +5,7 @@ import { createEncryptedConnection } from "../db/encrypted-connection";
 import { createDrizzleStore } from "../store/drizzle-store";
 import { AppLogger } from "../lib/logger";
 import { createVaultBackupBundle, extractVaultBackup } from "../lib/vault/backup";
+import { backupFileNameFor } from "../lib/backups";
 import { VaultManager } from "../lib/vault/manager";
 
 const root = process.argv[2];
@@ -42,7 +43,11 @@ if (action === "create" || action === "create-webview") {
       }
       await vault.commitSetup();
     } finally { await conn.close(); vault.close(); }
-    if (folder !== "current") fs.writeFileSync(path.join(root, folder === "incoming" ? "selected.dknvbak" : `${folder}.dknvbak`), createVaultBackupBundle(fs.readFileSync(vault.headerPath, "utf8"), fs.readFileSync(vault.snapshotPath)));
+    if (folder !== "current") {
+      const bundle = createVaultBackupBundle(fs.readFileSync(vault.headerPath, "utf8"), fs.readFileSync(vault.snapshotPath));
+      fs.writeFileSync(path.join(root, folder === "incoming" ? "selected.dknvbak" : `${folder}.dknvbak`), bundle);
+      if (folder === "incoming") fs.writeFileSync(path.join(root, backupFileNameFor("2026-11-06")), bundle);
+    }
   }
   console.log(JSON.stringify({ ok: true }));
 } else {

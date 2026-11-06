@@ -19,14 +19,40 @@ pub(crate) fn fixture_selections(paths: Vec<Option<PathBuf>>) {
     *TEST_SELECTIONS.lock().unwrap() = paths.into();
 }
 
-fn checked_selection(path: PathBuf) -> Result<PathBuf, String> {
+pub(crate) fn checked_selection(path: PathBuf) -> Result<PathBuf, String> {
     if !path.is_absolute()
-        || !path.extension().is_some_and(|s| s.eq_ignore_ascii_case("dknvbak"))
+        || !path.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("dknvbak") || extension.eq_ignore_ascii_case("db")
+        })
         || !path.is_file()
     {
         return Err(super::backup_restore::FAILED.to_string());
     }
     std::fs::canonicalize(path).map_err(|_| super::backup_restore::FAILED.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_selection;
+    use std::path::PathBuf;
+
+    #[test]
+    fn accepts_encrypted_export_extensions_and_rejects_other_files() {
+        let root = std::env::temp_dir().join(format!("dokan-picker-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["dokan-2026-11-06.db", "backup.DKNVBAK", "backup.DB"] {
+            let path = root.join(name);
+            std::fs::write(&path, b"fixture bundle bytes").unwrap();
+            assert_eq!(checked_selection(path.clone()).unwrap(), path.canonicalize().unwrap());
+        }
+        for name in ["plaintext.sqlite", "backup.txt"] {
+            let path = root.join(name);
+            std::fs::write(&path, b"fixture bytes").unwrap();
+            assert!(checked_selection(path).is_err(), "unsupported extension must fail closed");
+        }
+        let _ = std::fs::remove_dir_all(root);
+        assert!(checked_selection(PathBuf::from("relative.db")).is_err());
+    }
 }
 
 #[cfg(not(windows))]
@@ -69,7 +95,7 @@ fn choose_native(owner: isize) -> Result<Option<PathBuf>, String> {
         fn GetOpenFileNameW(params: *mut OpenFileName) -> i32;
         fn CommDlgExtendedError() -> u32;
     }
-    let filter: Vec<u16> = "Dokan encrypted backup (*.dknvbak)\0*.dknvbak\0\0".encode_utf16().collect();
+    let filter: Vec<u16> = "Dokan encrypted backup (*.dknvbak;*.db)\0*.dknvbak;*.db\0\0".encode_utf16().collect();
     let title: Vec<u16> = "اختيار نسخة دكان المشفّرة\0".encode_utf16().collect();
     let mut file = vec![0u16; 32768];
     // SAFETY: OPENFILENAMEW is a C structure whose zero values mean unused

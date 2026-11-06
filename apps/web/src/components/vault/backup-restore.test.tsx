@@ -58,12 +58,14 @@ it("explains native-only restore without offering a browser file upload", async 
   expect(button("اختيار نسخة للاستعادة").disabled).toBe(true);
   expect(host.querySelector('input[type="file"]')).toBeNull();
 });
+// red-on-parent-waive: "allows picker cancellation without preview or replacement" — BackupRestore is a new module absent from the merge-base
 it("allows picker cancellation without preview or replacement", async () => {
   bridge(async (command, args) => { calls.push({ command, args }); return null; });
   await click("اختيار نسخة للاستعادة");
   expect(calls.map(c => c.command)).toEqual(["backup_restore_outcome", "backup_restore_choose"]);
   expect(host.querySelector("#restore-backup-secret")).toBeNull();
 });
+// red-on-parent-waive: "shows honest file time and schema, then cancels confirmation without replacement" — BackupRestore is a new module absent from the merge-base
 it("shows honest file time and schema, then cancels confirmation without replacement", async () => {
   await click("اختيار نسخة للاستعادة");
   await input("restore-backup-secret", "incoming fixture");
@@ -92,6 +94,7 @@ it("hides the previous rollback notice during a new selected-file attempt", asyn
   expect(host.querySelector('[data-testid="restore-outcome"]') === null).toBe(true);
   expect(host.querySelector('[role="alert"]')).not.toBeNull();
 });
+// red-on-parent-waive: "requires explicit confirmation and current credentials, submits only once while waiting" — BackupRestore is a new module absent from the merge-base
 it("requires explicit confirmation and current credentials, submits only once while waiting", async () => {
   let finish: (() => void) | undefined;
   bridge(async (command, args) => {
@@ -115,6 +118,7 @@ it("requires explicit confirmation and current credentials, submits only once wh
   expect(host.textContent).toContain("لا تغلق التطبيق");
   await act(async () => finish?.());
 });
+// red-on-parent-waive: "associates a current-credential refusal and clears it when corrected" — BackupRestore is a new module absent from the merge-base
 it("associates a current-credential refusal and clears it when corrected", async () => {
   bridge(async (command) => {
     if (command === "backup_restore_choose") return selected;
@@ -137,12 +141,14 @@ it("associates a current-credential refusal and clears it when corrected", async
   expect(host.querySelector("#restore-error") === null).toBe(true);
 });
 for (const [status, message] of [["restored", "اكتملت الاستعادة"], ["rolled-back", "أُعيدت بيانات المتجر السابقة"], ["refused", "لم يبدأ الاستبدال"]] as const) {
+  // red-on-parent-waive: "distinguishes the native" — BackupRestore is a new module absent from the merge-base
   it(`distinguishes the native ${status} outcome`, async () => {
     bridge(async () => ({ status, safetyDirectory: "C:/fixture/vault", selectedUnchanged: true }));
     await act(async () => root.render(<BackupRestoreOutcome />));
     expect(host.querySelector('[role="status"]')?.textContent).toContain(message);
   });
 }
+// red-on-parent-waive: "retains the selection after a refused credential and lets the owner retry" — BackupRestore is a new module absent from the merge-base
 it("retains the selection after a refused credential and lets the owner retry", async () => {
   let attempts = 0;
   bridge(async (command, args) => {

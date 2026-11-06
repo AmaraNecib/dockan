@@ -452,11 +452,15 @@ async function loadVaultStatus(verifySession: boolean): Promise<VaultBootStatus>
   // Inside the desktop shell the broker is the authoritative gate transport:
   // try it first (no secret involved) and fall back to HTTP when the shell has
   // no sidecar (dev window) or the bridge is absent (browser)
-  if (!verifySession && brokerAvailable()) {
+  if (brokerAvailable()) {
     try {
       const reply = await invokeBroker(brokerCommands.status);
+      if (reply.sessionReset === true) {
+        clearVaultSessionToken();
+        stripVaultFragment();
+      }
       const decoded = statusSchema.safeParse(reply.status);
-      if (reply.ok && decoded.success) return decoded.data;
+      if (!verifySession && reply.ok && decoded.success) return decoded.data;
     } catch {
       /* no broker child yet: the HTTP gate below is the fallback */
     }

@@ -16,6 +16,7 @@ import {
   vaultSetup,
   vaultUnlock,
   vaultUnlockWithRecovery,
+  verifyVaultSession,
 } from "./vault-client";
 
 /** The reply an unlock crosses the broker bridge with, as this test fakes it. */
@@ -321,6 +322,34 @@ describe("the broker path keeps its token across a webview reload (#319 review P
       invoke: async () => null,
     };
   }
+
+  it("adopts generation one after the native restore restart and authenticates protected reads", async () => {
+    let resetPending = true;
+    const seenHeaders: Array<string | null> = [];
+    // SAFETY: this test supplies the exact native status and unlock reply shapes consumed below.
+    (window as { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<{ ok: boolean; sessionReset?: boolean; status?: typeof vaultStatusBody; sessionToken?: string; sessionGeneration?: number }> } }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "vault_status") {
+          const sessionReset = resetPending;
+          resetPending = false;
+          return { ok: true, sessionReset, status: vaultStatusBody };
+        }
+        if (command === "vault_unlock") return { ok: true, sessionToken: "fresh-generation-one", sessionGeneration: 1 };
+        throw new Error(`unexpected broker command ${command}`);
+      },
+    };
+    routes.set("/api/vault/status", (init) => {
+      seenHeaders.push(new Headers(init?.headers).get("x-vault-session"));
+      return Response.json(vaultStatusBody);
+    });
+    storeVaultSessionToken("stale-generation-seven", 7);
+    await verifyVaultSession();
+    expect(seenHeaders).toEqual([null]);
+    await vaultUnlock("current passphrase", true);
+    expect(readVaultSessionToken()).toBe("fresh-generation-one");
+    await verifyVaultSession();
+    expect(seenHeaders).toEqual([null, "fresh-generation-one"]);
+  });
 
   it("persists the token and its generation, so a reload does not demand the passphrase again", () => {
     installBroker();

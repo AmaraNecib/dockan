@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,19 +28,15 @@ function supportedConfig(root: string): { ok: true } | { ok: false; reason: stri
       reason: `cannot read Playwright discovery config ${path}: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  if (source.includes("testIgnore") || source.includes("projects:")) {
-    return { ok: false, reason: `unsupported Playwright discovery config: testIgnore and project overrides are not modeled` };
-  }
-  const required = [
-    'import { E2E_TEST_MATCH } from "./scripts/e2e-discovery";',
-    `testDir: "${E2E_TEST_DIR}"`,
-    "testMatch: E2E_TEST_MATCH",
-    "respectGitIgnore: false",
-  ];
-  const missing = required.find((line) => !source.includes(line));
-  return missing === undefined
+  // This dependency-free selector does not evaluate arbitrary TypeScript config.
+  // Trust only the reviewed config whose effective collection matches --list.
+  // Any edit widens to full until its new fingerprint is reviewed with parity
+  // proof. Normalize CRLF so checkout line endings cannot change that decision.
+  const fingerprint = createHash("sha256").update(source.replace(/\r\n/gu, "\n")).digest("hex");
+  const reviewedConfig = "fd4e86fc6c2bd97909235361633c31487975158705a426aa1d731e33f5a32652";
+  return fingerprint === reviewedConfig
     ? { ok: true }
-    : { ok: false, reason: `unsupported Playwright discovery config: missing ${missing}` };
+    : { ok: false, reason: "unsupported Playwright discovery config: unreviewed config fingerprint" };
 }
 
 /**

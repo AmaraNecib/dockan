@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +13,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "e2e-discovery-"));
   writeFileSync(
     join(root, "playwright.config.ts"),
-    'import { E2E_TEST_MATCH } from "./scripts/e2e-discovery";\nexport default defineConfig({ testDir: "./tests/e2e", testMatch: E2E_TEST_MATCH, respectGitIgnore: false });\n',
+    readFileSync(join(ROOT, "playwright.config.ts"), "utf8"),
   );
   const tests = join(root, "tests", "e2e");
   mkdirSync(join(tests, "nested", "ignored"), { recursive: true });
@@ -107,6 +107,26 @@ describe("e2e test discovery", () => {
     }
     for (const name of ["a.ts", "a.spec.json", "a.spec.jsx.map", "a.test.d.ts"]) {
       expect(isRunnableE2eSpec(name)).toBe(false);
+    }
+  });
+
+  test("dead settings, spreads, and differently formatted projects cannot prove discovery", () => {
+    const { root, tests } = fixture();
+    const current = readFileSync(join(ROOT, "playwright.config.ts"), "utf8");
+    try {
+      writeFileSync(join(tests, "one.spec.ts"), "export {};\n");
+      const variants = [
+        `${current.replace("export default defineConfig(", "const unused = defineConfig(")}\nexport default { testDir: "./other-tests" };\n`,
+        current.replace('testDir: "./tests/e2e",', 'testDir: "./tests/e2e", projects : [{ testDir: "./other-tests" }],'),
+        current.replace('testDir: "./tests/e2e",', 'testDir: "./tests/e2e", ...{ testDir: "./other-tests" },'),
+      ];
+      for (const source of variants) {
+        writeFileSync(join(root, "playwright.config.ts"), source);
+        expect(discoverE2eSpecs(root).ok).toBe(false);
+        expect(selectSpecs(["docs/readme.md"], undefined, discoverE2eSpecs(root)).mode).toBe("full");
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

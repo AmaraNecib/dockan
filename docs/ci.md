@@ -92,6 +92,14 @@ changes job's dependency-free file walk. The scripts tests compare discovery
 with `playwright test --list`; that check runs after dependency installation and
 never starts the browser servers.
 
+Discovery accepts only the reviewed SHA256 fingerprint of `playwright.config.ts`,
+with CRLF normalized to LF. It does not infer effective settings from text snippets.
+Any config edit makes selection fall back to `full`, even for an otherwise inert
+diff, until the fingerprint in `scripts/e2e-discovery.ts` is refreshed after config
+review and runner-list parity. This deliberately trades extra execution after a
+config edit for avoiding unsupported project, spread or alternate-directory settings.
+Adding an ordinary test file does not require a fingerprint or map update.
+
 Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
 
 - `apps/web/src/lib/**`, `components/app/**`, `components/ui/**` and `hooks/**`

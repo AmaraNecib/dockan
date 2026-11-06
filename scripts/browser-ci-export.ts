@@ -8,11 +8,13 @@ import { z } from "zod";
 const SHA = /^[a-f0-9]{40}$/u;
 const DIGEST = /^[a-f0-9]{64}$/u;
 const MAX_BYTES = 256 * 1024;
+const TestStatus = z.enum(["passed", "failed", "timedOut", "skipped", "interrupted"]);
 const ManifestSchema = z.object({
   schemaVersion: z.literal(1), phase: z.string().max(40), complete: z.boolean(), noSafeReuseCertified: z.literal(true),
   provenance: z.object({ runId: z.union([z.number(), z.string()]), attempt: z.union([z.number(), z.string()]), event: z.string().max(40), repository: z.string().max(200), checkoutSha: z.string().max(80), checkoutTree: z.string().max(80), workflowSha256: z.string().max(80), playwrightConfigSha256: z.string().max(80), lockSha256: z.string().max(80), browserIdentity: z.record(z.string(), z.unknown()).optional() }).passthrough(),
   inventory: z.array(z.object({ id: z.string().max(256), file: z.string().max(300), project: z.string().max(200), titlePath: z.array(z.string().max(300)).max(40), repeatEachIndex: z.number().int().nonnegative() }).passthrough()).max(20000),
-  outcomes: z.array(z.object({ id: z.string().max(256), repeatEachIndex: z.number().int().nonnegative(), attempts: z.array(z.object({ retry: z.number().int().nonnegative(), status: z.string().max(30) }).passthrough()).max(100) }).passthrough()).max(20000),
+  diagnostics: z.array(z.string().max(1000)).max(20000),
+  outcomes: z.array(z.object({ id: z.string().max(256), repeatEachIndex: z.number().int().nonnegative(), finalStatus: z.union([TestStatus, z.literal("unknown")]), expectedStatus: z.union([TestStatus, z.literal("unknown")]), unexpected: z.union([z.boolean(), z.literal("unknown")]), attempts: z.array(z.object({ retry: z.number().int().nonnegative(), status: TestStatus, expectedStatus: TestStatus }).passthrough()).max(100) }).passthrough()).max(20000),
 }).passthrough();
 export type ExportRecord = {
   schemaVersion: 1; repository: string; runId: number; attempt: number; browserJobId: number; event: string;
@@ -51,7 +53,11 @@ export function createExportRecord(input: CreateInput): ExportRecord {
   const inventory = manifest.inventory;
   if (inventory.some((item) => !safeFile(item.file))) throw new Error("manifest contains unsafe or invalid file path");
   if (input.scope === "selected" && (input.selectedFiles.length === 0 || input.selectedFiles.some((file) => !safeFile(file)))) throw new Error("selected scope requires a safe file set");
-  const complete = manifest.complete && manifest.phase === "finalized" && inventory.length === manifest.outcomes.length && manifest.outcomes.every((item) => item.attempts.length > 0);
+  const identities = inventory.map((item) => JSON.stringify([item.id, item.repeatEachIndex]));
+  const complete = manifest.complete && manifest.phase === "finalized" && manifest.diagnostics.length === 0 && new Set(identities).size === inventory.length && inventory.length === manifest.outcomes.length && manifest.outcomes.every((item) => {
+    const last = item.attempts.at(-1);
+    return last !== undefined && item.attempts.every((attempt, index) => attempt.retry === index && attempt.status !== "interrupted") && item.finalStatus === last.status && item.expectedStatus === last.expectedStatus && item.unexpected === (last.status !== last.expectedStatus);
+  });
   const counts = complete ? { passed: 0, failed: 0, skipped: 0, unexpected: 0, retries: 0 } : null;
   const outcomeTests = manifest.outcomes.map((item, index) => {
     const inv = inventory[index];
@@ -65,7 +71,7 @@ export function createExportRecord(input: CreateInput): ExportRecord {
       if (last === "passed") counts.passed++;
       else if (last === "failed" || last === "timedOut") counts.failed++;
       else if (last === "skipped") counts.skipped++;
-      if (statuses.length && ["failed", "timedOut"].includes(statuses.at(-1) ?? "")) counts.unexpected++;
+      if (item.unexpected === true) counts.unexpected++;
       counts.retries += Math.max(0, statuses.length - 1);
     }
     return { identity, status: statuses };

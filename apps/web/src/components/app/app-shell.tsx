@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
 import { authClient } from "@/lib/auth-client";
-import { AccountMenu, useCurrentOwner } from "./account-menu";
+import { useCurrentOwner } from "./account-menu";
 import type { MessageKey } from "@/lib/i18n";
 import { logoutAndReload } from "@/lib/logout";
 import { usePendingReturnsCount } from "@/lib/pending-returns";
@@ -183,6 +183,9 @@ export function AppShell() {
         user={user}
         pendingReturnsCount={pendingReturns.data?.count ?? null}
         pendingReturnsError={pendingReturns.isError}
+        accountFailed={owner.failed}
+        accountBlocked={owner.blocked}
+        retryAccount={owner.retry}
         onExpand={() => updateCollapsed(() => false)}
       />
 
@@ -205,8 +208,6 @@ export function AppShell() {
           </div>
 
           <NewSaleAction activeKey={activeKey} />
-
-          <AccountMenu {...owner} onLogout={() => setLogoutOpen(true)} />
 
           <div className="flex shrink-0 items-center gap-1">
             <ThemeToggle />

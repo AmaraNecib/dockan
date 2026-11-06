@@ -71,9 +71,10 @@ mock.module("@/lib/rpc", () => ({
   },
 }));
 
+let signOutCalls = 0;
 mock.module("@/lib/auth-client", () => ({
   useSession: () => ({ data: { user: { name: "مالك", phoneNumber: "0550123123" } }, isPending: false }),
-  authClient: { signOut: async () => undefined },
+  authClient: { signOut: async () => { signOutCalls += 1; return undefined; } },
 }));
 
 const { AppShell } = await import("./app-shell");
@@ -104,22 +105,37 @@ describe("AppShell verified identity", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     try {
       await act(async () => root.render(<QueryClientProvider client={queryClient}><ThemeProvider><SaleDraftProvider><AppShell /></SaleDraftProvider></ThemeProvider></QueryClientProvider>));
-      expect(await waitFor(() => host.querySelector('[data-testid="account-menu-trigger"]') !== null)).toBe(true);
+      expect(await waitFor(() => host.querySelector("aside")?.textContent?.includes("عبد الرحمن Amara بن محمد") === true)).toBe(true);
       const header = host.querySelector("header");
       if (!header) throw new Error("shell header missing");
-      expect(header.textContent).toContain("عبد الرحمن Amara بن محمد");
-      expect(header.textContent).toContain("المالك");
-      expect(header.textContent).not.toContain("+213550123123");
-      await act(async () => markAuthLost());
+      const sidebar = host.querySelector("aside");
+      if (!sidebar) throw new Error("shell sidebar missing");
+      expect(sidebar.textContent).toContain("عبد الرحمن Amara بن محمد");
+      expect(sidebar.textContent).toContain("المالك");
       expect(header.textContent).not.toContain("عبد الرحمن");
+      expect(header.textContent).not.toContain("المالك");
       expect(host.querySelector('[data-testid="account-menu-trigger"]')).toBeNull();
-      expect(header.textContent).not.toContain("جارٍ تحميل الحساب");
-      expect(header.textContent).toContain("الحساب غير متاح.");
-      expect(header.textContent).not.toContain("أعد المحاولة");
+      const logoutButtons = host.querySelectorAll<HTMLButtonElement>('button[aria-label="خروج"]');
+      expect(logoutButtons).toHaveLength(1);
+      const signOutBeforeCancel = signOutCalls;
+      await act(async () => logoutButtons[0]?.click());
+      expect(document.body.textContent).toContain("هل أنت متأكد من أنك تريد تسجيل الخروج");
+      const cancel = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent === "إغلاق");
+      expect(cancel).toBeDefined();
+      await act(async () => cancel?.click());
+      expect(document.body.textContent).not.toContain("هل أنت متأكد من أنك تريد تسجيل الخروج");
+      expect(signOutCalls).toBe(signOutBeforeCancel);
+      expect(sidebar.textContent).toContain("عبد الرحمن Amara بن محمد");
+      await act(async () => markAuthLost());
+      expect(sidebar.textContent).not.toContain("عبد الرحمن");
+      expect(host.querySelector('[data-testid="account-menu-trigger"]')).toBeNull();
+      expect(sidebar.textContent).not.toContain("جارٍ تحميل الحساب");
+      expect(sidebar.textContent).toContain("الحساب غير متاح.");
+      expect(sidebar.textContent).not.toContain("أعد المحاولة");
       profileRead = async () => { throw new Error("network unavailable"); };
       await act(async () => clearAuthLost());
-      expect(await waitFor(() => header.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
-      expect(header.textContent).not.toContain("المالك");
+      expect(await waitFor(() => sidebar.textContent?.includes("تعذّر تحميل الحساب") === true)).toBe(true);
+      expect(sidebar.textContent).not.toContain("المالك");
 
       let resolveOld = (_owner: Awaited<ReturnType<typeof defaultProfileRead>>) => {};
       let resolveNew = (_owner: Awaited<ReturnType<typeof defaultProfileRead>>) => {};
@@ -127,7 +143,7 @@ describe("AppShell verified identity", () => {
       const newRead = new Promise<Awaited<ReturnType<typeof defaultProfileRead>>>((resolve) => { resolveNew = resolve; });
       let reads = 0;
       profileRead = () => { reads += 1; return reads === 1 ? oldRead : newRead; };
-      const retry = header.querySelector("button[title='تعذّر تحميل الحساب. أعد المحاولة.']");
+      const retry = sidebar.querySelector("button[title='تعذّر تحميل الحساب. أعد المحاولة.']");
       if (!(retry instanceof HTMLButtonElement)) throw new Error("account retry missing");
       await act(async () => retry.click());
       expect(reads).toBe(1);
@@ -136,10 +152,10 @@ describe("AppShell verified identity", () => {
       expect(reads).toBe(2);
       const owner = await defaultProfileRead();
       await act(async () => resolveNew({ ...owner, name: "المالك الجديد" }));
-      expect(header.textContent).toContain("المالك الجديد");
+      expect(sidebar.textContent).toContain("المالك الجديد");
       await act(async () => resolveOld({ ...owner, name: "المالك السابق" }));
-      expect(header.textContent).toContain("المالك الجديد");
-      expect(header.textContent).not.toContain("المالك السابق");
+      expect(sidebar.textContent).toContain("المالك الجديد");
+      expect(sidebar.textContent).not.toContain("المالك السابق");
     } finally {
       await act(async () => root.unmount());
       queryClient.clear();

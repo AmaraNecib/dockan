@@ -1077,8 +1077,16 @@ export const firstTimeSetupOutputSchema = z.object({
 });
 
 export const categoryCreateInputSchema = z.object({
-  name: z.string().trim().min(1),
+  name: z.string().trim().min(1, "CATEGORY_NAME_REQUIRED"),
 });
+
+export const categoryRenameInputSchema = z.object({
+  id: idSchema,
+  name: z.string().trim().min(1, "CATEGORY_NAME_REQUIRED"),
+});
+
+export const categoryDeleteInputSchema = z.object({ id: idSchema });
+export const categoryDeleteOutputSchema = z.object({ deleted: z.boolean(), itemCount: z.number().int().nonnegative() });
 
 export const itemCreateInputSchema = z.object({
   name: z.string().trim().min(1),

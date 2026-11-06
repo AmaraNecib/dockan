@@ -609,7 +609,7 @@ export function createRpcRouter(deps: RpcDeps) {
         try {
           return await deps.store.withTransaction(async (tx) => {
             const existing = await tx.listCategories();
-            if (existing.some((c) => c.name === input.name)) {
+            if (existing.some((c) => normalizeTextKey(c.name) === normalizeTextKey(input.name))) {
               throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
             }
             const category = await tx.createCategory({ name: input.name });
@@ -623,6 +623,36 @@ export function createRpcRouter(deps: RpcDeps) {
           throw err;
         }
       }),
+    ),
+    categoriesRename: os.categoriesRename.handler(
+      guardedInput(async (input) => {
+        try {
+          return await deps.store.withTransaction(async (tx) => {
+            const existing = await tx.listCategories();
+            if (!existing.some((category) => category.id === input.id)) {
+              throw new ORPCError("NOT_FOUND", { message: "CATEGORY_NOT_FOUND" });
+            }
+            if (existing.some((category) => category.id !== input.id && normalizeTextKey(category.name) === normalizeTextKey(input.name))) {
+              throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
+            }
+            const category = await tx.renameCategory(input.id, { name: input.name });
+            if (category === undefined) throw new ORPCError("NOT_FOUND", { message: "CATEGORY_NOT_FOUND" });
+            return category;
+          });
+        } catch (err) {
+          if (err instanceof Error && isUniqueViolation(err)) {
+            throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
+          }
+          throw err;
+        }
+      }),
+    ),
+    categoriesDelete: os.categoriesDelete.handler(
+      guardedInput(async ({ id: categoryId }) => deps.store.withTransaction(async (tx) => {
+        const exists = (await tx.listCategories()).some((category) => category.id === categoryId);
+        if (!exists) throw new ORPCError("NOT_FOUND", { message: "CATEGORY_NOT_FOUND" });
+        return tx.deleteCategory(categoryId);
+      })),
     ),
 
     // --- items (ticket 03) ---------------------------------------------------

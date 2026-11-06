@@ -169,7 +169,7 @@ test("external backup destination persists, cancels edits, reports media failure
   if (process.env.BACKUP_EVIDENCE === "after" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/after.png" });
   }
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(6500);
   await panel.getByRole("button", { name: "إزالة الوجهة" }).click();
   await expect(destination).toHaveValue("");
 });

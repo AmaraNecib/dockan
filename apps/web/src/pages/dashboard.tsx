@@ -368,14 +368,58 @@ export function DashboardPage({
             <p className="mt-2 text-muted-foreground">{t("dashboardLowStockEmpty")}</p>
           ) : (
             <ul className="mt-2 divide-y rounded border bg-card" data-testid="dashboard-low-stock-list">
-              {summary.data.lowStockItems.map((item) => (
-                <li key={item.id} className="flex justify-between p-3">
-                  <span>{item.name}</span>
-                  <span className="font-semibold">
-                    {item.stockOnHand} / {item.lowStockThreshold}
-                  </span>
-                </li>
-              ))}
+              {summary.data.lowStockItems.map((item) => {
+                const stockStatus =
+                  item.stockOnHand === 0
+                    ? {
+                        label: t("dashboardStockOutOfStock"),
+                        className: "border-destructive/30 bg-destructive/10 text-destructive",
+                        testId: "out-of-stock",
+                      }
+                    : item.stockOnHand > 0
+                      ? {
+                          label: t("dashboardStockLow"),
+                          className: "border-warning/30 bg-warning/10 text-warning",
+                          testId: "low-stock",
+                        }
+                      : null;
+
+                return (
+                  <li
+                    key={item.id}
+                    className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between"
+                    data-testid={`dashboard-low-stock-row-${item.id}`}
+                  >
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="font-medium">{item.name}</span>
+                      {stockStatus !== null && (
+                        <span
+                          className={`rounded border px-2 py-0.5 text-sm font-semibold ${stockStatus.className}`}
+                          data-stock-status={stockStatus.testId}
+                        >
+                          {stockStatus.label}
+                        </span>
+                      )}
+                    </div>
+                    <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                      <div className="flex gap-1">
+                        <dt>{t("dashboardStockOnHand")}:</dt>
+                        {" "}
+                        <dd className="font-semibold text-foreground">
+                          <bdi dir="ltr">{item.stockOnHand}</bdi>
+                        </dd>
+                      </div>
+                      <div className="flex gap-1">
+                        <dt>{t("dashboardStockThreshold")}:</dt>
+                        {" "}
+                        <dd className="font-semibold text-foreground">
+                          <bdi dir="ltr">{item.lowStockThreshold}</bdi>
+                        </dd>
+                      </div>
+                    </dl>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </>

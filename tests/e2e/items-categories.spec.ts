@@ -60,7 +60,12 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
 
   // 4. The dashboard lists it under low stock
   await page.goto("/");
-  const dashItem = page.getByText(`بطارية-${stamp}`);
-  await expect(dashItem).toBeVisible();
-  await expect(dashItem.locator("..")).toContainText("0 / 5");
+  const dashboardRow = page
+    .getByTestId("dashboard-low-stock-list")
+    .getByRole("listitem")
+    .filter({ hasText: `بطارية-${stamp}` });
+  await expect(dashboardRow).toBeVisible();
+  await expect(dashboardRow).toContainText("نفد المخزون");
+  await expect(dashboardRow).toContainText("المخزون الحالي: 0");
+  await expect(dashboardRow).toContainText("حد التنبيه: 5");
 });

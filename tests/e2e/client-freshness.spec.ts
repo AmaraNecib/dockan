@@ -224,7 +224,9 @@ test("a sale in one window moves the hot counters in the other, with no reload",
   // the stock on hand moved too: the item is on the low-stock list with the
   // stock the sale left behind
   const lowStockRow = reader.getByTestId("dashboard-low-stock-list").getByRole("listitem").filter({ hasText: itemName });
-  await expect(lowStockRow).toContainText("5 / 5");
+  await expect(lowStockRow).toContainText("مخزون منخفض");
+  await expect(lowStockRow).toContainText("المخزون الحالي: 5");
+  await expect(lowStockRow).toContainText("حد التنبيه: 5");
 
   const events = await readCounters(reader);
   const native = await nativeVisibility(reader);
@@ -274,7 +276,9 @@ test("a hidden reader converges too, which is what refetchIntervalInBackground b
   const elapsedMs = Math.round(performance.now() - startedAt);
 
   const lowStockRow = reader.getByTestId("dashboard-low-stock-list").getByRole("listitem").filter({ hasText: itemName });
-  await expect(lowStockRow).toContainText("5 / 5");
+  await expect(lowStockRow).toContainText("مخزون منخفض");
+  await expect(lowStockRow).toContainText("المخزون الحالي: 5");
+  await expect(lowStockRow).toContainText("حد التنبيه: 5");
 
   const events = await readCounters(reader);
   const native = await nativeVisibility(reader);

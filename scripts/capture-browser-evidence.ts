@@ -216,7 +216,7 @@ export async function capture(options: Options): Promise<void> {
     for (const file of [mp4, gif, ...screenshots]) artifacts[path.basename(file)] = { sha256: await sha256(file), bytes: (await fs.promises.stat(file)).size };
     status = "passed"; failure = "";
   } catch (error) { primaryError = error; failure = error instanceof Error ? error.stack ?? error.message : String(error); }
-  finally {
+  {
     try { await browser?.close(); } catch (error) { cleanupErrors.push(error); }
     try { await stopServersAndCleanData(children, dataDir); } catch (error) { cleanupErrors.push(error); preserveData = true; }
     if (cleanupErrors.length) { status = "failed"; failure += `\nCleanup failed: ${cleanupErrors.map(String).join("; ")}`; }

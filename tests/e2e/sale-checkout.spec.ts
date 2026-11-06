@@ -3,6 +3,58 @@ import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { saveQuickAdd } from "./rpc-helpers";
 
+test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 520 });
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `مجموع-تصنيف-${stamp}`;
+  const itemName = `مجموع-منتج-${stamp}`;
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  await page.goto("/sale");
+  await page.getByTestId("sale-quick-add").click();
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await page.getByLabel("سعر البيع (دج)").fill("1000");
+  await page.getByTestId("sale-quick-stock").fill("2");
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
+
+  await expect(page.getByRole("button", { name: "إضافة خصم" })).toBeVisible();
+  await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
+  const quantity = page.getByLabel(`${itemName}: الكمية`);
+  await quantity.focus();
+  await expect(quantity).toBeFocused();
+  const [lineBox, checkoutBox] = await Promise.all([quantity.boundingBox(), page.getByTestId("sale-checkout-bar").boundingBox()]);
+  if (lineBox === null || checkoutBox === null) throw new Error("The final sale line or checkout bar is outside the viewport");
+  expect(lineBox.y + lineBox.height).toBeLessThanOrEqual(checkoutBox.y);
+
+  await page.getByRole("button", { name: "إضافة خصم" }).click();
+  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
+  await page.getByTestId("sale-discount-value").fill("10");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("1,000");
+  await expect(page.getByTestId("sale-discount")).toContainText("100");
+  await expect(page.getByTestId("sale-total")).toContainText("900");
+  await expect(page.getByTestId("sale-save")).toContainText("900 دج");
+
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+  await page.getByTestId("sale-open-invoice").click();
+  await expect(page.getByTestId("invoice-total")).toHaveText("900 دج");
+});
+
 /**
  * Sale checkout through the existing catalog seams. The flow uses
  * an unknown scan's explicit create-with-stock choice, the picker, an exact

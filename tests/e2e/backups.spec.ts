@@ -115,9 +115,11 @@ test("external backup destination persists, cancels edits, reports media failure
     await route.fulfill({ json: { json: externalStatus } });
   });
   await page.route("**/api/rpc/externalBackupRun", async (route) => {
+    const destinationAtRun = externalStatus.destination;
+    if (destinationAtRun === null) throw new Error("external backup ran without a saved destination");
     externalStatus = failNextCopy
       ? { ...externalStatus, lastAttemptAt: "2026-11-05T10:00:00", lastError: "disconnected" }
-      : { ...externalStatus, lastAttemptAt: "2026-11-05T10:01:00", lastSuccessAt: "2026-11-05T10:01:00", lastError: null, lastPath: "D:/existing-backups/dokan-backup-set/dokan-backup.dknvbak" };
+      : { ...externalStatus, lastAttemptAt: "2026-11-05T10:01:00", lastSuccessAt: "2026-11-05T10:01:00", lastError: null, lastPath: `${destinationAtRun}/dokan-backup-set/dokan-backup.dknvbak` };
     failNextCopy = false;
     await route.fulfill({ json: { json: externalStatus } });
   });
@@ -144,7 +146,7 @@ test("external backup destination persists, cancels edits, reports media failure
 
   await panel.getByRole("button", { name: "نسخ الآن" }).click();
   await expect(page.getByTestId("external-backup-success")).toContainText("dokan-backup.dknvbak");
-  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/existing-backups/dokan-backup-set");
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
   if (process.env.BACKUP_EVIDENCE === "after" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/after.png" });
   }

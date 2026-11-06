@@ -183,7 +183,12 @@ export async function createExternalBackup({ store, dataDir, writeGuard = () => 
     const current = readExternalBackupStatus(dataDir);
     if (!current.destination) return current;
     let at = localDateTime();
-    if (at === current.lastAttemptAt) at = `${at}.001`;
+    const previousAttemptMs = Date.parse(`${current.lastAttemptAt ?? ""}Z`);
+    const clockMs = Date.parse(`${at}Z`);
+    if (Number.isFinite(previousAttemptMs) && previousAttemptMs >= clockMs) {
+      // Treat the local timestamp as a sortable wall-clock label, not UTC time.
+      at = new Date(previousAttemptMs + 1).toISOString().replace(/Z$/, "");
+    }
     let ownedDirectory: string | undefined;
     let externalPartial: string | undefined;
     const staging = path.join(dataDir, `.external-backup-${process.pid}-${crypto.randomBytes(8).toString("hex")}.partial`);

@@ -358,14 +358,22 @@ async function closeLockedExternalBackupHarness(harness: LockedExternalBackupHar
 }
 
 describe("vault external backup lock fencing", () => {
-  it("assigns a distinct attempt marker when two attempts share a local second", async () => {
+  it("assigns monotonic attempt markers for repeated identical failures in one local second", async () => {
     const harness = await lockedExternalBackupHarness();
     const fixedClock = spyOn(Date.prototype, "toLocaleString").mockReturnValue("2026-11-05, 10:00:01");
     try {
+      await setExternalBackupDestination(harness.source, path.join(harness.external, "missing"), () => harness.lock.assertHeld());
       const first = await createExternalBackup({ store: harness.store, dataDir: harness.source });
       const second = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      const third = await createExternalBackup({ store: harness.store, dataDir: harness.source });
       expect(first.lastAttemptAt).toBe("2026-11-05T10:00:01");
       expect(second.lastAttemptAt).toBe("2026-11-05T10:00:01.001");
+      expect(third.lastAttemptAt).toBe("2026-11-05T10:00:01.002");
+      for (const status of [first, second, third]) {
+        expect(status.lastError).toBe("disconnected");
+        expect(status.lastSuccessAt).toBeNull();
+        expect(status.lastPath).toBeNull();
+      }
     } finally {
       fixedClock.mockRestore();
       await closeLockedExternalBackupHarness(harness);

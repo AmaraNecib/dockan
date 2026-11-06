@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertPortFree, capture, convertAndValidateMedia, preflightExecutables, resolveServerCwd, runnerEnvironment, runFile, stopServersAndCleanData, validateComparisonManifest, validatePorts, validateReadinessUrl, validateServerContract, validateSource, runtimeUrls, verifySourceSnapshot, verifyComparisonUnchanged } from "./capture-browser-evidence";
+import { assertPortFree, capture, convertAndValidateMedia, preflightExecutables, resolveServerCwd, runnerEnvironment, runFile, stopServersAndCleanData, validateComparisonManifest, validatePorts, validateReadinessUrl, validateServerContract, validateSource, runtimeUrls, verifySourceSnapshot, verifyComparisonUnchanged, writeComparisonPair } from "./capture-browser-evidence";
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", shell: false });
@@ -181,10 +181,19 @@ it("requires the exact other revision in a distinct clean capture root", async (
     fs.writeFileSync(video, "tampered video");
     await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact changed during capture: journey.mp4");
     fs.writeFileSync(video, originalVideo);
+    await verifyComparisonUnchanged(snapshot);
+    // Simulate an input replacement while logs and the after manifest are finalized.
+    fs.writeFileSync(video, "replacement after finalization check");
+    const pairFile = path.join(evidence, "comparison-pair.json");
+    await expect(writeComparisonPair(snapshot, { manifest, sha256: "after-digest", root: after.root, revision: after.head, tree: "after-tree" }, comparisonId, pairFile)).rejects.toThrow("Comparison artifact changed during capture");
+    expect(fs.existsSync(pairFile)).toBe(false);
+    fs.writeFileSync(video, originalVideo);
     const gif = path.join(evidence, "journey.gif"), originalGif = fs.readFileSync(gif);
     fs.writeFileSync(gif, "tampered GIF");
     await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact changed during capture: journey.gif");
     fs.writeFileSync(gif, originalGif);
+    await writeComparisonPair(snapshot, { manifest, sha256: "after-digest", root: after.root, revision: after.head, tree: "after-tree" }, comparisonId, pairFile);
+    expect(JSON.parse(fs.readFileSync(pairFile, "utf8"))).toMatchObject({ status: "pair-verified", before: { sha256: snapshot.sha256, revision: before.head } });
     await expect(validateComparisonManifest(manifest, "f".repeat(40), comparisonId, after.root)).rejects.toThrow("exact --against revision");
     await expect(validateComparisonManifest(manifest, before.head, comparisonId, before.root)).rejects.toThrow("distinct source root");
   } finally { fs.rmSync(evidence, { recursive: true, force: true }); fs.rmSync(before.root, { recursive: true, force: true }); fs.rmSync(after.root, { recursive: true, force: true }); }

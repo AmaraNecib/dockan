@@ -134,6 +134,12 @@ export async function verifyComparisonUnchanged(snapshot: ComparisonSnapshot): P
     if (await sha256(file) !== record.sha256 || (await fs.promises.stat(file)).size !== record.bytes) throw new Error(`Comparison artifact changed during capture: ${name}`);
   }
 }
+type PairMember = { manifest: string; sha256: string; root: string; revision: string; tree: string };
+export async function writeComparisonPair(snapshot: ComparisonSnapshot, after: PairMember, comparisonId: string, file: string): Promise<void> {
+  const bytes = `${JSON.stringify({ status: "pair-verified", id: comparisonId, before: { manifest: snapshot.path, sha256: snapshot.sha256, ...snapshot.source }, after }, null, 2)}\n`;
+  await verifyComparisonUnchanged(snapshot);
+  await fs.promises.writeFile(file, bytes, { flag: "wx" });
+}
 export async function validateComparisonManifest(file: string, against: string, comparisonId: string, currentRoot: string): Promise<ComparisonSnapshot> {
   const canonicalFile = await fs.promises.realpath(file);
   const bytes = await fs.promises.readFile(canonicalFile);
@@ -256,8 +262,17 @@ export async function capture(options: Options): Promise<void> {
       const manifestPath = path.join(options.output, "manifest.json");
       await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
       if (comparisonSnapshot && status === "passed") {
-        // Use only the snapshot whose manifest and media digests were checked again during finalization.
-        await fs.promises.writeFile(path.join(options.output, "comparison-pair.json"), `${JSON.stringify({ status: "pair-verified", id: comparisonId, before: { manifest: comparisonSnapshot.path, sha256: comparisonSnapshot.sha256, ...comparisonSnapshot.source }, after: { manifest: manifestPath, sha256: await sha256(manifestPath), root: source, revision: head, tree: finalTree } }, null, 2)}\n`, { flag: "wx" });
+        try {
+          await writeComparisonPair(comparisonSnapshot, { manifest: manifestPath, sha256: await sha256(manifestPath), root: source, revision: head, tree: finalTree }, comparisonId, path.join(options.output, "comparison-pair.json"));
+        } catch (error) {
+          status = "failed";
+          failure += `\nPair certification failed: ${String(error)}`;
+          manifest.status = status;
+          manifest.failure = failure;
+          await fs.promises.writeFile(logs.runner, `${failure}\n`);
+          artifacts["runner.log"] = { sha256: await sha256(logs.runner), bytes: (await fs.promises.stat(logs.runner)).size };
+          await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        }
       }
     } catch (manifestError) { failure += `\nManifest write failed: ${String(manifestError)}`; status = "failed"; }
     if (logOut !== undefined) fs.closeSync(logOut);

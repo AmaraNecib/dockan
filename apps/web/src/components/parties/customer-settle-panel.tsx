@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@/lib/scoped-mutation";
 import { Trans, useTranslation } from "react-i18next";
 
 import type { Invoice, PaymentMethod } from "@dokan/contracts";
@@ -13,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { formatDate } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
 import { invalidatePartyMoney } from "@/lib/party-cache-key";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 import { distributePayment, settleAmountError } from "./party-settle";
 
 /**
@@ -49,6 +50,7 @@ export function CustomerSettlePanel({
   onWriteFailed: () => void;
   onCancel: () => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [value, setValue] = useState<AmountPercentageValue>(() => (unpaid > 0 ? { amount: String(unpaid), percentage: "100" } : { amount: "", percentage: "" }));

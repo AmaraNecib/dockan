@@ -51,7 +51,14 @@ export async function signIn(page: Page, options: SignInOptions = {}): Promise<v
 
   await page.getByLabel("رقم الهاتف").fill(PHONE);
   await page.getByLabel("كلمة السر").fill(PASSWORD);
-  await page.getByTestId("login-submit").click();
+  // Login reloads the same URL. Observe the new document, not the old load state.
+  await Promise.all([
+    page.waitForNavigation({ url: page.url(), waitUntil: "load" }),
+    (async () => {
+      await page.getByTestId("login-submit").click();
+      await expect(page.locator("#login-error")).toBeHidden();
+    })(),
+  ]);
   await expect(page.getByTestId(options.landingTestId ?? "dashboard-page")).toBeVisible();
   await openListsWide(page);
 }

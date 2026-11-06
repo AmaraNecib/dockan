@@ -7,7 +7,7 @@ import { Amount } from "@/components/ui/amount";
 
 import { formatDate } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
-import { orpc } from "@/lib/rpc";
+import { useRpc } from "@/lib/rpc-context";
 
 /**
  * #161 — the purchase-return voucher (/suppliers/$partyId/returns/$returnId/print).
@@ -15,6 +15,7 @@ import { orpc } from "@/lib/rpc";
  * the recorded fact. Rendered on demand, never stored; auto-print fires once.
  */
 export function SupplierReturnPrintPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const { returnId } = useParams({ from: "/suppliers/$partyId/returns/$returnId/print" });
 

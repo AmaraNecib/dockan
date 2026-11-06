@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { Link } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -28,7 +29,7 @@ import { CheckoutBar } from "../components/app/checkout-bar";
 import { DiscardDraftDialog } from "../components/app/discard-draft-dialog";
 
 import { tError } from "../lib/i18n";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 
 /**
  * Ticket 29 — purchase intake (/purchase): multi-line PURCHASE invoices with
@@ -116,6 +117,7 @@ function lineCreateFormId(itemId: string): string {
 const LINES_FROZEN_ID = "purchase-lines-frozen-status";
 
 export function PurchasePage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const categories = useQuery(orpc.categoriesList.queryOptions());
@@ -1031,6 +1033,7 @@ export function PurchasePage() {
 
 /** Post-save proposal: one-click attribution of earlier uninvoiced stock */
 export function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const proposal = useQuery(orpc.purchasesProposal.queryOptions({ input: { invoiceId } }));

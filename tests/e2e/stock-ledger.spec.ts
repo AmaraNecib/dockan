@@ -35,6 +35,23 @@ async function rpc<T>(page: Page, request: SeedRequest): Promise<T> {
   return result as T;
 }
 
+/** Find this scenario's item through the real pager, not the shared first page. */
+async function manualStockRow(page: Page) {
+  const panel = page.locator("#items-panel-products");
+  const body = panel.locator("table tbody");
+  const row = panel.getByRole("row", { name: /مكواة 27/ });
+  const next = panel.getByTestId("items-pager-next");
+  while (true) {
+    await expect.poll(async () => await row.isVisible() || await next.isVisible() && await next.isEnabled()).toBe(true);
+    if (await row.isVisible()) break;
+    const previous = await body.textContent();
+    await next.click();
+    await expect(body).not.toHaveText(previous ?? "");
+    await expect(body.locator("tr").first()).toBeVisible();
+  }
+  return row;
+}
+
 /**
  * E2E flow: create an item, add stock manually through the ledger,
  * verify the raised stock in the items list, open the item history and check
@@ -63,7 +80,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
   await page.getByRole("button", { name: "حفظ" }).click();
   await expect(page.getByTestId("item-name")).toHaveValue("");
   await openItemsTab(page, "products");
-  await expect(page.getByRole("row", { name: /مكواة 27/ })).toBeVisible();
+  await expect(await manualStockRow(page)).toBeVisible();
 
   // 2. record a manual stock-in of 6 units at 2000 DZD
   await openItemsTab(page, "add");
@@ -76,13 +93,13 @@ test("add stock manually, item history shows movements with derived stock", asyn
 
   // 3. the items list reflects the new stock (exact cell match, not substring)
   await openItemsTab(page, "products");
-  await expect(page.getByRole("row", { name: /مكواة 27/ }).getByTestId("stock-after-cell")).toHaveText("6");
+  const stockedRow = await manualStockRow(page);
+  await expect(stockedRow.getByTestId("stock-after-cell")).toHaveText("6");
 
   // 4. history: the manual movement with derived stock-after. A fresh item
   // has no ledger history before this, so exactly one row exists (the
   // synthetic "opening" backfill applies only to pre-ledger items).
-  await page
-    .getByRole("row", { name: /مكواة 27/ })
+  await stockedRow
     .getByRole("link", { name: "السجل" })
     .click();
   await expect(page.getByTestId("history-table")).toBeVisible();
@@ -100,7 +117,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
   await expect(page.getByTestId("stock-error")).toContainText("الكمية غير متوفرة في المخزون");
   // …and the rejected delta changed nothing
   await openItemsTab(page, "products");
-  await expect(page.getByRole("row", { name: /مكواة 27/ }).getByTestId("stock-after-cell")).toHaveText("6");
+  await expect((await manualStockRow(page)).getByTestId("stock-after-cell")).toHaveText("6");
 });
 
 /**

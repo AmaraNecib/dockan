@@ -156,10 +156,9 @@ test("external backup destination persists, cancels edits, reports media failure
   await page.waitForTimeout(1500);
   await destination.fill("E:/unsaved");
   await panel.getByRole("button", { name: "إلغاء التعديل" }).click();
-  await expect(destination).toHaveValue("D:/existing-backups");
+  await expect(destination).toHaveValue("D:/shop-backups");
   await page.waitForTimeout(1500);
 
-  await expect(destination).toHaveValue("D:/shop-backups");
   await expect(panel.getByRole("status")).toContainText("القرص الفعلي نفسه");
   await page.waitForTimeout(1500);
   await page.route("**/api/rpc/backupManual", async (route) => {

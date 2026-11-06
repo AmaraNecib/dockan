@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { actAndAck, readRpc } from "./rpc-helpers";
 
+test.use({ video: "on" });
+
 // These journeys share the operator's persisted preference with later specs.
 test.afterEach(async ({ page }) => {
   const sidebar = page.locator("aside");

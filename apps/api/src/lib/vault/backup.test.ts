@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { Database } from "bun:sqlite";
 import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
 import crypto from "node:crypto";
@@ -7,7 +8,7 @@ import path from "node:path";
 
 import { buildEncryptedSnapshot, createEncryptedConnection } from "../../db/encrypted-connection";
 import type { KdfParams } from "./crypto";
-import { createVaultBackupBundle, extractVaultBackup, type ExtractVaultBackupOptions, readVaultBackupBundle } from "./backup";
+import { createVaultBackupBundle, extractVaultBackup, preflightVaultBackup, type ExtractVaultBackupOptions, readVaultBackupBundle } from "./backup";
 import { createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../backups";
 import { VaultCore } from "./core";
 import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, parseVaultHeader, readSnapshotFence } from "./format";
@@ -88,6 +89,42 @@ describe("vault backup bundle", () => {
     expect(decoded).toBeDefined();
     expect(decoded?.headerText).toBe(header);
     expect(decoded?.snapshot.equals(snapshot)).toBe(true);
+  });
+
+  it("preflights credentials, encrypted integrity, and schema compatibility", async () => {
+    const header = await headerText();
+    const core = VaultCore.open({ read: () => header, write: async () => {} });
+    if (core === undefined) throw new Error("test header did not open");
+    const key = core.unlockPassphrase(PASSPHRASE);
+    const imageDb = new Database(":memory:");
+    imageDb.exec("PRAGMA user_version = 1");
+    const encrypted = buildEncryptedSnapshot(key, parseVaultHeader(header).vaultId, imageDb.serialize());
+    key.fill(0);
+    imageDb.close();
+    const bundle = createVaultBackupBundle(header, encrypted);
+
+    await expect(preflightVaultBackup(bundle, { passphrase: "wrong passphrase" })).rejects.toThrow();
+    const damaged = Buffer.from(bundle);
+    const finalByte = damaged.length - 1;
+    damaged[finalByte] = (damaged[finalByte] ?? 0) ^ 0xff;
+    await expect(preflightVaultBackup(damaged, { passphrase: PASSPHRASE })).rejects.toThrow();
+
+    const preview = await preflightVaultBackup(bundle, { passphrase: PASSPHRASE });
+    expect(preview).toMatchObject({ vaultId: parseVaultHeader(header).vaultId, schemaVersion: 1, compatible: true });
+    expect("image" in preview).toBe(false);
+
+    const newerDb = new Database(":memory:");
+    newerDb.exec("PRAGMA user_version = 999");
+    const newerImage = newerDb.serialize();
+    newerDb.close();
+    const newerCore = VaultCore.open({ read: () => header, write: async () => {} });
+    if (newerCore === undefined) throw new Error("test header did not open");
+    const newerKey = newerCore.unlockPassphrase(PASSPHRASE);
+    const newerBundle = createVaultBackupBundle(header, buildEncryptedSnapshot(newerKey, parseVaultHeader(header).vaultId, newerImage));
+    newerKey.fill(0);
+    const original = Buffer.from(newerBundle);
+    await expect(preflightVaultBackup(newerBundle, { passphrase: PASSPHRASE })).rejects.toThrow("نسخة قاعدة البيانات 999");
+    expect(newerBundle.equals(original)).toBe(true);
   });
 
   it("returns undefined for raw snapshots, truncated bundles, and garbage", async () => {

@@ -59,7 +59,12 @@ try {
   async function pick(file?: string) {
     const helper = command(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "apps/desktop/tests/restore-picker.ps1", "-AppProcessId", String(fixture.pid), ...(file ? ["-SelectedPath", path.join(fixture.root, file)] : ["-Cancel"])]);
     await panel.getByRole("button", { name: "اختيار نسخة للاستعادة", exact: true }).click();
-    await helper;
+    try { await helper; }
+    catch (error) {
+      await panel.screenshot({ path: path.join(evidence, "restore-picker-failure.png") });
+      console.error("Picker renderer state:", await panel.innerText());
+      throw error;
+    }
   }
   async function inspect(secret = incomingCredential) {
     await panel.locator("#restore-backup-secret").fill(secret);

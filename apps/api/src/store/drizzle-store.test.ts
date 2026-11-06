@@ -88,6 +88,75 @@ describe("category management (#389)", () => {
     expect((await store.listCategories()).some((row) => row.id === used.id)).toBe(true);
     expect((await store.listItems()).items.some((row) => row.categoryId === used.id)).toBe(true);
   });
+
+  it("serializes category deletion before a competing item creation", async () => {
+    const category = await store.createCategory({ name: `delete-first-${Date.now()}` });
+    let release!: () => void;
+    let entered!: () => void;
+    let inspect!: () => void;
+    let inspected!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const transactionStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const inspectRequested = new Promise<void>((resolve) => { inspect = resolve; });
+    const inspectionDone = new Promise<void>((resolve) => { inspected = resolve; });
+    const holdQueue = store.withTransaction(async (tx) => {
+      entered();
+      await inspectRequested;
+      expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
+      expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+      inspected();
+      await gate;
+    });
+
+    await transactionStarted;
+    const deletion = store.deleteCategory(category.id);
+    const creation = store.createItem({ name: `after-delete-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
+    const outcomes = Promise.allSettled([deletion, creation]);
+    inspect();
+    await inspectionDone;
+    release();
+    await holdQueue;
+
+    const [deleted, created] = await outcomes;
+    expect(deleted).toEqual({ status: "fulfilled", value: { deleted: true, itemCount: 0 } });
+    expect(created.status).toBe("rejected");
+    expect((await store.listCategories()).some((row) => row.id === category.id)).toBe(false);
+    expect((await store.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+  });
+
+  it("preserves an item created before a competing category deletion", async () => {
+    const category = await store.createCategory({ name: `create-first-${Date.now()}` });
+    let release!: () => void;
+    let entered!: () => void;
+    let inspect!: () => void;
+    let inspected!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const transactionStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const inspectRequested = new Promise<void>((resolve) => { inspect = resolve; });
+    const inspectionDone = new Promise<void>((resolve) => { inspected = resolve; });
+    const holdQueue = store.withTransaction(async (tx) => {
+      entered();
+      await inspectRequested;
+      expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
+      expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+      inspected();
+      await gate;
+    });
+
+    await transactionStarted;
+    const creation = store.createItem({ name: `before-delete-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
+    const deletion = store.deleteCategory(category.id);
+    inspect();
+    await inspectionDone;
+    release();
+    await holdQueue;
+
+    const [created, deleted] = await Promise.all([creation, deletion]);
+    expect(created.categoryId).toBe(category.id);
+    expect(deleted).toEqual({ deleted: false, itemCount: 1 });
+    expect((await store.listCategories()).some((row) => row.id === category.id)).toBe(true);
+    expect((await store.listItems()).items.some((row) => row.id === created.id && row.categoryId === category.id)).toBe(true);
+  });
 });
 
 describe("setup + seed", () => {

@@ -56,7 +56,7 @@ async function names(dir: string, passphrase: string) {
   const conn = createEncryptedConnection({ vaultId: manager.metadata().vaultId, masterKey: manager.requireMasterKey(), snapshotPath: manager.snapshotPath });
   try {
     const store = createDrizzleStore(conn);
-    return { names: (await store.listCategories()).map((c) => c.name), version: conn.raw.query("PRAGMA user_version").get(), sessions: conn.raw.query('SELECT token FROM "session"').all(), session }; 
+    return { names: (await store.listCategories()).map((c) => c.name), version: conn.raw.query("PRAGMA user_version").get(), sessions: conn.raw.query('SELECT token FROM "session"').all(), session };
   } finally {
     await conn.close();
     manager.close();
@@ -372,4 +372,3 @@ it("refuses a live writer and refuses bad credentials or ciphertext without muta
   expect(readBundle(current).equals(before)).toBe(true);
   expect((await names(current, CURRENT.passphrase)).names).toContain("Original record");
 });
-

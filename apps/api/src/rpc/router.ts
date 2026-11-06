@@ -20,7 +20,7 @@ import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
-import { createBackup, createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../lib/backups";
+import { createBackup, createExternalBackup, readExternalBackupStatus, setExternalBackupDestination, type BackupFileValidator } from "../lib/backups";
 import { comparePhysicalDevice, type PhysicalDeviceRelation } from "../lib/backup-device";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { resolveVaultCredential } from "../lib/vault/session";
@@ -76,7 +76,7 @@ type RpcDeps = {
    * itself is untouched, so employee logins can be added later without
    * changing the vault.
    */
-  externalBackupValidator?: (path: string) => boolean;
+  externalBackupValidator?: BackupFileValidator;
   externalBackupWriteGuard?: () => void;
   afterManualBackup?: () => void;
   vault?: {

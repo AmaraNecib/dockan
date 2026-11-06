@@ -82,6 +82,8 @@ export type EncryptedConnection = {
   close(): Promise<void>;
   /** verify one encrypted snapshot OR self-contained backup bundle */
   validateSnapshotFile(filePath: string): boolean;
+  /** verify already-read bytes without blocking on external-media reads */
+  validateSnapshotBytes(bytes: Uint8Array): boolean;
   /** write a self-contained backup (header wraps + snapshot) to destPath */
   writeBackupTo(destPath: string): Promise<void>;
   /**
@@ -680,18 +682,21 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       }
     },
     validateSnapshotFile(filePath: string): boolean {
+      try {
+        return connection.validateSnapshotBytes?.(fs.readFileSync(filePath)) ?? false;
+      } catch {
+        return false;
+      }
+    },
+    validateSnapshotBytes(bytes: Uint8Array): boolean {
       let candidate: Database | null = null;
       try {
-        const bytes = fs.readFileSync(filePath);
         const bundle = readVaultBackupBundle(bytes);
         if (bundle !== undefined) {
-          // a self-contained backup must belong to this vault's header AND
-          // carry the LIVE credential wraps: after a passphrase change or a
-          // recovery-key change the old bundle is refused here, so the daily
-          // pass rebuilds it instead of trusting an unopenable copy
+          // A self-contained backup must belong to this vault and carry the
+          // live credential wraps. Changed credentials invalidate old bundles.
           const bundleHeader = parseVaultHeader(bundle.headerText);
-          if (bundleHeader.vaultId !== vaultId) return false;
-          if (headerPath === undefined) return false;
+          if (bundleHeader.vaultId !== vaultId || headerPath === undefined) return false;
           const liveHeader = parseVaultHeader(fs.readFileSync(headerPath, "utf8"));
           if (!wrapsMatch(bundleHeader.wraps, liveHeader.wraps)) return false;
           candidate = Database.deserialize(openSnapshot(connectionKey, vaultId, bundle.snapshot).image);

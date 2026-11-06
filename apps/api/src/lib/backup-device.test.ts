@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { comparePhysicalDevice, compareWindowsDiskNumbers } from "./backup-device";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { comparePhysicalDevice, compareWindowsDiskNumbers, resolvePhysicalDevicePaths, windowsDiskQueryForPaths } from "./backup-device";
 
 describe("physical-device comparison", () => {
   for (const platform of ["linux", "darwin", "freebsd"] as const) {
@@ -7,6 +10,30 @@ describe("physical-device comparison", () => {
       expect(await comparePhysicalDevice(process.cwd(), process.cwd(), platform)).toBe("unknown");
     });
   }
+
+  it("resolves a redirected destination before comparing physical devices", () => {
+    const paths = resolvePhysicalDevicePaths("D:/vault", "E:/backup", (value) => value === "E:/backup" ? "C:/backup-target" : value);
+    expect(paths).toEqual(["D:/vault", "C:/backup-target"]);
+  });
+
+  it("resolves a junction to its target path before device lookup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "backup-device-junction-"));
+    try {
+      const target = path.join(root, "target");
+      const junction = path.join(root, "junction");
+      fs.mkdirSync(target);
+      fs.symlinkSync(target, junction, process.platform === "win32" ? "junction" : "dir");
+      expect(resolvePhysicalDevicePaths(root, junction)[1]).toBe(fs.realpathSync.native(target));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("inserts path text literally into the PowerShell source", () => {
+    const script = windowsDiskQueryForPaths("C:/vault/$'__DESTINATION_PATH__", "D:/backup/$'__SOURCE_PATH__");
+    expect(script).toContain("'C:/vault/$''__DESTINATION_PATH__'");
+    expect(script).toContain("'D:/backup/$''__SOURCE_PATH__'");
+  });
 
   it("queries the running host without guessing physical disk identity", async () => {
     const expected = process.platform === "win32" ? "same" : "unknown";

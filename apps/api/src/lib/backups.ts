@@ -194,8 +194,9 @@ export async function createExternalBackup({ store, dataDir, validate, writeGuar
       writeGuard();
       await store.copyDatabaseTo(staging);
       writeGuard();
-      const encryptedBundle = readVaultBackupBundle(fs.readFileSync(staging));
-      if (encryptedBundle === undefined || !validate(staging)) throw new Error("BACKUP_INVALID");
+      const stagedBytes = await fs.promises.readFile(staging);
+      const encryptedBundle = readVaultBackupBundle(stagedBytes);
+      if (encryptedBundle === undefined || !validate(stagedBytes)) throw new Error("BACKUP_INVALID");
       ownedDirectory = await reserveExternalBackupDirectory(targetDir);
       writeGuard();
       const partial = path.join(ownedDirectory, "dokan-backup.dknvbak.partial");
@@ -206,7 +207,8 @@ export async function createExternalBackup({ store, dataDir, validate, writeGuar
       const partialFile = await fs.promises.open(partial, "r+");
       try { await partialFile.sync(); } finally { await partialFile.close(); }
       writeGuard();
-      if (readVaultBackupBundle(fs.readFileSync(partial)) === undefined || !validate(partial)) {
+      const externalBytes = await fs.promises.readFile(partial);
+      if (readVaultBackupBundle(externalBytes) === undefined || !validate(externalBytes)) {
         throw new Error("BACKUP_INVALID");
       }
       writeGuard();
@@ -249,7 +251,8 @@ export async function createExternalBackup({ store, dataDir, validate, writeGuar
  * snapshot is an AEAD container and is validated by the vault connection.
  * main.ts injects the vault validator in vault mode.
  */
-export type BackupFileValidator = (path: string) => boolean;
+export type BackupFileValidator = (bytes: Uint8Array) => boolean;
+export type BackupPathValidator = (path: string) => boolean;
 
 /**
  * A file only counts as today's backup when it opens as a real SQLite db AND
@@ -338,7 +341,7 @@ export async function ensureDailyBackup({
   /** injectable for tests */
   today?: string;
   /** backup-file check; defaults to the legacy SQLite quick_check probe */
-  validate?: BackupFileValidator;
+  validate?: BackupPathValidator;
 }): Promise<{ path: string; created: boolean }> {
   const dest = backupFilePath(dataDir, today);
   if (fs.existsSync(dest) && validate(dest)) return { path: dest, created: false };

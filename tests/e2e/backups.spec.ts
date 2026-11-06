@@ -101,12 +101,22 @@ test("external backup destination persists, cancels edits, reports media failure
     lastPath: null,
   };
   let failNextCopy = true;
+  let unchangedSaveSeen = false;
+  let releaseDestinationSave!: () => void;
+  let signalDestinationSave!: () => void;
+  const destinationSaveStarted = new Promise<void>((resolve) => { signalDestinationSave = resolve; });
+  const destinationSaveGate = new Promise<void>((resolve) => { releaseDestinationSave = resolve; });
   await page.route("**/api/rpc/externalBackupStatus", (route) => route.fulfill({ json: { json: externalStatus } }));
   await page.route("**/api/rpc/externalBackupDevice", (route) => route.fulfill({ json: { json: "same" } }));
   await page.route("**/api/rpc/externalBackupDestinationSet", async (route) => {
     const parsed = z.object({ json: externalBackupDestinationInputSchema }).safeParse(route.request().postDataJSON());
     if (!parsed.success) throw new Error("external destination route received invalid input");
     const destination = parsed.data.json.destination;
+    if (destination === "D:/existing-backups") unchangedSaveSeen = true;
+    if (destination === "D:/shop-backups") {
+      signalDestinationSave();
+      await destinationSaveGate;
+    }
     externalStatus = {
       destination,
       lastAttemptAt: null,
@@ -131,19 +141,37 @@ test("external backup destination persists, cancels edits, reports media failure
   await page.waitForTimeout(1500);
   const destination = page.getByTestId("external-backup-destination");
   await expect(destination).toHaveValue("D:/existing-backups");
+  if (process.env.BACKUP_EVIDENCE === "before" || process.env.BACKUP_EVIDENCE === "both") {
+    await panel.screenshot({ path: ".scratch/evidence/403/before.png" });
+  }
+  await panel.getByRole("button", { name: "حفظ المجلد" }).click();
+  await expect.poll(() => unchangedSaveSeen).toBe(true);
+  await destination.fill("D:/shop-backups");
+  await panel.getByRole("button", { name: "حفظ المجلد" }).click();
+  await destinationSaveStarted;
+  await expect(destination).toBeDisabled();
+  await page.waitForTimeout(600);
+  releaseDestinationSave();
+  await expect(destination).toHaveValue("D:/shop-backups");
+  await page.waitForTimeout(1500);
   await destination.fill("E:/unsaved");
   await panel.getByRole("button", { name: "إلغاء التعديل" }).click();
   await expect(destination).toHaveValue("D:/existing-backups");
   await page.waitForTimeout(1500);
 
-  await destination.fill("D:/shop-backups");
-  await panel.getByRole("button", { name: "حفظ المجلد" }).click();
   await expect(destination).toHaveValue("D:/shop-backups");
   await expect(panel.getByRole("status")).toContainText("القرص الفعلي نفسه");
   await page.waitForTimeout(1500);
-  if (process.env.BACKUP_EVIDENCE === "before" || process.env.BACKUP_EVIDENCE === "both") {
-    await panel.screenshot({ path: ".scratch/evidence/403/before.png" });
-  }
+  await page.route("**/api/rpc/backupManual", async (route) => {
+    await route.fulfill({ json: { json: { path: "C:/safe/local-backup.db", createdAt: "2026-11-05T10:00:00" } } });
+    setTimeout(() => {
+      externalStatus = { ...externalStatus, lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/shop-backups/background-set/dokan-backup.dknvbak" };
+    }, 1_300);
+  });
+  await page.getByTestId("backup-export").click();
+  await expect(page.getByTestId("backup-done")).toBeVisible();
+  await expect(page.getByTestId("external-backup-success")).toContainText("10:00:01", { timeout: 5_000 });
+  await page.waitForTimeout(1500);
 
   await panel.getByRole("button", { name: "نسخ الآن" }).click();
   await expect(panel.getByRole("alert")).toContainText("القرص غير متصل");

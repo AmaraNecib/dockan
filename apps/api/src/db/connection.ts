@@ -50,6 +50,8 @@ export type Connection = {
    * Absent on the legacy file-backed connection.
    */
   validateSnapshotFile?: (filePath: string) => boolean;
+  /** Validate already-read encrypted snapshot bytes without synchronously reading a removable drive. */
+  validateSnapshotBytes?: (bytes: Uint8Array) => boolean;
   /**
    * Vault seam: fail-stop hook invoked when a committed unit cannot be written
    * to its durable snapshot. main.ts exits the process here (never report a

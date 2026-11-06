@@ -18,8 +18,32 @@ import { backupRevealAvailable, BackupRevealError, revealBackup } from "../lib/b
 export function BackupsPage() {
   const { orpc } = useRpc();
   const { t } = useTranslation();
-  const backup = useMutation(orpc.backupManual.mutationOptions());
-  const externalStatus = useQuery(orpc.externalBackupStatus.queryOptions());
+  const [awaitingExternalOutcome, setAwaitingExternalOutcome] = useState(false);
+  const externalAttemptBaseline = useRef<string | null>(null);
+  const externalPollStartedAt = useRef(0);
+  const externalStatus = useQuery({
+    ...orpc.externalBackupStatus.queryOptions(),
+    refetchInterval: (query) => awaitingExternalOutcome
+      && query.state.data?.lastAttemptAt === externalAttemptBaseline.current
+      && Date.now() - externalPollStartedAt.current < 30_000
+      ? 1_000
+      : false,
+  });
+  useEffect(() => {
+    if (awaitingExternalOutcome && externalStatus.data?.lastAttemptAt !== externalAttemptBaseline.current) {
+      setAwaitingExternalOutcome(false);
+    }
+  }, [awaitingExternalOutcome, externalStatus.data?.lastAttemptAt]);
+  const backup = useMutation(orpc.backupManual.mutationOptions({
+    onSuccess: () => {
+      if (externalStatus.data?.destination) {
+        externalAttemptBaseline.current = externalStatus.data.lastAttemptAt;
+        externalPollStartedAt.current = Date.now();
+        setAwaitingExternalOutcome(true);
+        void externalStatus.refetch();
+      }
+    },
+  }));
   const externalDevice = useQuery(orpc.externalBackupDevice.queryOptions());
   const [destination, setDestination] = useState("");
   const [destinationEdited, setDestinationEdited] = useState(false);
@@ -53,7 +77,7 @@ export function BackupsPage() {
       <div className="mt-4 grid gap-3 rounded border bg-card p-4">
         <form data-testid="external-backup-panel" className="grid gap-2 border-b pb-4" onSubmit={(event) => {
           event.preventDefault();
-          saveDestination.mutate({ destination });
+          saveDestination.mutate({ destination: destinationEdited ? destination : externalStatus.data?.destination ?? destination });
         }}>
           <label htmlFor="external-backup-destination" className="text-sm font-medium">{t("backupsExternalDestination")}</label>
           <input
@@ -62,11 +86,12 @@ export function BackupsPage() {
             dir="ltr"
             className="rounded border bg-background px-3 py-2 font-mono text-sm"
             value={destinationEdited ? destination : externalStatus.data?.destination ?? destination}
+            disabled={saveDestination.isPending}
             onChange={(event) => { setDestination(event.currentTarget.value); setDestinationEdited(true); }}
             placeholder={t("backupsExternalDestinationHint")}
           />
           <div className="flex flex-wrap gap-2">
-            <Button type="submit" disabled={saveDestination.isPending}>{t("backupsExternalSave")}</Button>
+            <Button type="submit" disabled={saveDestination.isPending || externalStatus.isPending || (!destinationEdited && !externalStatus.data?.destination)}>{t("backupsExternalSave")}</Button>
             <Button type="button" variant="outline" disabled={!destinationEdited || saveDestination.isPending} onClick={() => { setDestination(externalStatus.data?.destination ?? ""); setDestinationEdited(false); }}>
               {t("backupsExternalCancel")}
             </Button>

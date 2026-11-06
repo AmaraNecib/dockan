@@ -150,7 +150,7 @@ describe("vault backup bundle", () => {
       outcome = await createExternalBackup({
         store,
         dataDir: source,
-        validate: conn.validateSnapshotFile.bind(conn),
+        validate: conn.validateSnapshotBytes.bind(conn),
       });
     } finally {
       randomSpy.mockRestore();
@@ -177,7 +177,7 @@ describe("vault backup bundle", () => {
     const disconnected = await createExternalBackup({
       store: unpluggedStore,
       dataDir: source,
-      validate: conn.validateSnapshotFile.bind(conn),
+      validate: conn.validateSnapshotBytes.bind(conn),
     });
     expect(disconnected.lastError).toBe("disconnected");
     expect(disconnected.lastPath).toBe(bundlePath);
@@ -191,12 +191,37 @@ describe("vault backup bundle", () => {
     const invalid = await createExternalBackup({
       store: corruptStore,
       dataDir: source,
-      validate: conn.validateSnapshotFile.bind(conn),
+      validate: conn.validateSnapshotBytes.bind(conn),
     });
     expect(invalid.lastError).toBe("invalid");
     expect(invalid.lastPath).toBe(bundlePath);
     expect(fs.readFileSync(bundlePath).equals(bundle)).toBe(true);
     expect(fs.readdirSync(externalDir).sort()).toEqual([path.basename(collisionDirectory), path.basename(path.dirname(bundlePath))].sort());
+
+    let externalReadStarted!: () => void;
+    let releaseExternalRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { externalReadStarted = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseExternalRead = resolve; });
+    // SAFETY: this test calls readFile without an encoding, so it always receives bytes.
+    const readFile = fs.promises.readFile.bind(fs.promises) as (file: Parameters<typeof fs.promises.readFile>[0]) => Promise<Buffer>;
+    // SAFETY: the replacement preserves the byte-returning overload used by this test.
+    const delayedRead = spyOn(fs.promises, "readFile").mockImplementation((async (file: Parameters<typeof fs.promises.readFile>[0]) => {
+      if (String(file).startsWith(externalDir) && String(file).endsWith(".partial")) {
+        externalReadStarted();
+        await readGate;
+      }
+      return readFile(file);
+    }) as typeof fs.promises.readFile);
+    try {
+      const pendingCopy = createExternalBackup({ store, dataDir: source, validate: conn.validateSnapshotBytes.bind(conn) });
+      await Promise.race([readStarted, Bun.sleep(3_000).then(() => { throw new Error("external async read did not start"); })]);
+      expect((await store.listCategories()).some((category) => category.name === "رحلة")).toBe(true);
+      releaseExternalRead();
+      expect((await pendingCopy).lastError).toBeNull();
+    } finally {
+      releaseExternalRead();
+      delayedRead.mockRestore();
+    }
 
     // A stale outcome cannot overwrite a later destination change: the per-data-dir queue serializes both operations.
     const nextExternalDir = tempDir("dokan-backup-external-next-");
@@ -212,7 +237,7 @@ describe("vault backup bundle", () => {
         await store.copyDatabaseTo(target);
       },
     };
-    const copyPromise = createExternalBackup({ store: copyStore, dataDir: source, validate: conn.validateSnapshotFile.bind(conn) });
+    const copyPromise = createExternalBackup({ store: copyStore, dataDir: source, validate: conn.validateSnapshotBytes.bind(conn) });
     await copyStarted;
     let destinationChangeFinished = false;
     const destinationChange = setExternalBackupDestination(source, nextExternalDir).then((value) => {
@@ -329,7 +354,7 @@ describe("vault external backup lock fencing", () => {
     const harness = await lockedExternalBackupHarness();
     try {
       const writeGuard = () => harness.lock.assertHeld();
-      const validate = harness.conn.validateSnapshotFile.bind(harness.conn);
+      const validate = harness.conn.validateSnapshotBytes.bind(harness.conn);
       const knownGood = await createExternalBackup({
         store: harness.store,
         dataDir: harness.source,
@@ -343,8 +368,8 @@ describe("vault external backup lock fencing", () => {
       const savedSettings = fs.readFileSync(path.join(harness.source, "external-backup.json"));
 
       let validations = 0;
-      const stealAfterPartialValidation = (filePath: string): boolean => {
-        const valid = validate(filePath);
+      const stealAfterPartialValidation = (bytes: Uint8Array): boolean => {
+        const valid = validate(bytes);
         validations += 1;
         if (validations === 2) writeLockRecord(harness.source, { token: "publication-thief" });
         return valid;
@@ -376,7 +401,7 @@ describe("vault external backup lock fencing", () => {
   it("keeps the prior saved outcome when lock loss follows publication but precedes status persistence", async () => {
     const harness = await lockedExternalBackupHarness();
     try {
-      const validate = harness.conn.validateSnapshotFile.bind(harness.conn);
+      const validate = harness.conn.validateSnapshotBytes.bind(harness.conn);
       const writeGuard = () => harness.lock.assertHeld();
       const knownGood = await createExternalBackup({
         store: harness.store,
@@ -417,7 +442,7 @@ describe("vault external backup lock fencing", () => {
       expect(publishedButUnattributed).toHaveLength(1);
       const unreportedPath = publishedButUnattributed[0];
       if (unreportedPath === undefined) throw new Error("the new bundle was not published before loss detection");
-      expect(validate(unreportedPath)).toBe(true);
+      expect(validate(fs.readFileSync(unreportedPath))).toBe(true);
       expect(fs.readFileSync(knownGoodPath).equals(knownGoodBytes)).toBe(true);
       expect(readExternalBackupStatus(harness.source)).toEqual(knownGood);
       expect(readExternalBackupStatus(harness.source).lastPath).toBe(knownGood.lastPath);

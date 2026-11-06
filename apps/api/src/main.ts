@@ -13,7 +13,7 @@ import { openConnection, type Connection } from "./db/connection";
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
 import { snapshotFailurePolicy } from "./db/snapshot-failure-policy";
 import { openVaultStore } from "./db/vault-store";
-import { createExternalBackup, ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
+import { createExternalBackup, ensureDailyBackup, type BackupPathValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
 import { classifyPlaintextCleanup } from "./lib/vault/cleanup-status";
 import { createOverlay, type RequestHandler } from "./lib/overlay";
@@ -325,7 +325,7 @@ async function reclaimUntilOwned(): Promise<void> {
 }
 
 /** Startup daily backup: one copy per Algeria-local day, validated by format. */
-async function runDailyBackup(store: StorePort, validate?: BackupFileValidator): Promise<void> {
+async function runDailyBackup(store: StorePort, validate?: BackupPathValidator): Promise<void> {
   try {
     const options: Parameters<typeof ensureDailyBackup>[0] = { store, dataDir: config.dataDir };
     if (validate !== undefined) options.validate = validate;
@@ -392,7 +392,7 @@ let vaultStoreForBackup: StorePort | undefined;
 
 /** The first daily backup needs the committed header, so it runs post-commit. */
 function startExternalBackup(store: StorePort, conn: Connection): void {
-  const validate = conn.validateSnapshotFile?.bind(conn);
+  const validate = conn.validateSnapshotBytes?.bind(conn);
   if (validate === undefined || readyHandlerFor(lockLost) !== "live") return;
   void createExternalBackup({
     store,
@@ -534,7 +534,7 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
       logger,
       store,
       auth,
-      externalBackupValidator: conn.validateSnapshotFile?.bind(conn),
+      externalBackupValidator: conn.validateSnapshotBytes?.bind(conn),
       externalBackupWriteGuard: requireHeldLock(vaultLock),
       afterManualBackup: () => startExternalBackup(store, conn),
       vault: {

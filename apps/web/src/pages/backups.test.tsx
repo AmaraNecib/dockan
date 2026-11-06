@@ -41,15 +41,29 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function renderPage(): void {
+  root = createRoot(host);
+  act(() => root.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
+      <BackupsPage />
+    </QueryClientProvider>,
+  ));
+}
+
+async function rerenderPage(): Promise<void> {
+  await act(async () => root.unmount());
+  renderPage();
+}
+
 function button(label: string): HTMLButtonElement {
   const found = Array.from(host.querySelectorAll("button")).find((entry) => entry.textContent === label);
   assert.ok(found, `Missing button: ${label}`);
   return found;
 }
 
-async function settle(assertSettled: () => void, description: string): Promise<void> {
+async function settle(assertSettled: () => void, description: string, timeoutMs = 1000): Promise<void> {
   await act(async () => {
-    const deadline = Date.now() + 1000;
+    const deadline = Date.now() + timeoutMs;
     let consecutiveMatches = 0;
     while (Date.now() < deadline) {
       try {
@@ -79,12 +93,7 @@ beforeEach(async () => {
   } }), { preconnect: originalFetch.preconnect });
   host = document.createElement("div");
   document.body.appendChild(host);
-  root = createRoot(host);
-  await act(async () => root.render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
-      <BackupsPage />
-    </QueryClientProvider>,
-  ));
+  renderPage();
 });
 
 afterEach(() => {
@@ -94,6 +103,24 @@ afterEach(() => {
   clearVaultSessionToken();
   // SAFETY: remove only the bridge installed by this test.
   delete (window as { __TAURI_INTERNALS__?: TestBridge }).__TAURI_INTERNALS__;
+});
+
+it("saves the displayed destination when Save is clicked without editing", async () => {
+  const status: ExternalBackupStatus = { destination: "D:/saved-backups", lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+  let submitted: unknown;
+  globalThis.fetch = Object.assign(async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = request instanceof Request ? request.url : String(request);
+    if (url.includes("externalBackupStatus")) return Response.json({ json: status });
+    if (url.includes("externalBackupDestinationSet")) {
+      submitted = request instanceof Request ? await request.json() : JSON.parse(String(init?.body));
+      return Response.json({ json: status });
+    }
+    return Response.json({ json: "unknown" });
+  }, { preconnect: originalFetch.preconnect });
+  await rerenderPage();
+  await settle(() => expect(externalDestinationInput().value).toBe("D:/saved-backups"), "saved destination load");
+  await act(async () => button("حفظ المجلد").click());
+  await settle(() => expect(submitted).toEqual({ json: { destination: "D:/saved-backups" } }), "unchanged destination save");
 });
 
 it("cancels an edited destination without saving it", async () => {
@@ -107,6 +134,51 @@ it("cancels an edited destination without saving it", async () => {
   await act(async () => button("إلغاء التعديل").click());
   expect(externalDestinationInput().value).toBe("");
   expect(setCalls).toBe(0);
+});
+
+it("keeps destination edits locked until the save response arrives", async () => {
+  let finishSave: ((response: Response) => void) | undefined;
+  let savedStatus: ExternalBackupStatus = { destination: "D:/old", lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+  globalThis.fetch = Object.assign(async (request: RequestInfo | URL) => {
+    const url = request instanceof Request ? request.url : String(request);
+    if (url.includes("externalBackupStatus")) return Response.json({ json: savedStatus });
+    if (url.includes("externalBackupDestinationSet")) return new Promise<Response>((resolve) => { finishSave = resolve; });
+    return Response.json({ json: "unknown" });
+  }, { preconnect: originalFetch.preconnect });
+  await rerenderPage();
+  await settle(() => expect(externalDestinationInput().value).toBe("D:/old"), "initial destination");
+  await act(async () => setInputValue(externalDestinationInput(), "E:/new"));
+  await act(async () => button("حفظ المجلد").click());
+  await settle(() => expect(externalDestinationInput().disabled).toBe(true), "destination save pending");
+  savedStatus = { ...savedStatus, destination: "E:/new" };
+  await act(async () => finishSave?.(Response.json({ json: savedStatus })));
+  await settle(() => expect(externalDestinationInput().value).toBe("E:/new"), "destination save completed");
+});
+
+it("refreshes external outcome after a background copy finishes", async () => {
+  let statusRequests = 0;
+  let localBackupFinished = false;
+  globalThis.fetch = Object.assign(async (request: RequestInfo | URL) => {
+    const url = request instanceof Request ? request.url : String(request);
+    if (url.includes("externalBackupStatus")) {
+      statusRequests++;
+      const status: ExternalBackupStatus = localBackupFinished && statusRequests >= 3
+        ? { destination: "D:/backup", lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/backup/set/dokan-backup.dknvbak" }
+        : { destination: "D:/backup", lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+      return Response.json({ json: status });
+    }
+    if (url.includes("backupManual")) {
+      localBackupFinished = true;
+      return Response.json({ json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } });
+    }
+    return Response.json({ json: "unknown" });
+  }, { preconnect: originalFetch.preconnect });
+  await rerenderPage();
+  await settle(() => expect(externalDestinationInput().value).toBe("D:/backup"), "external destination load");
+  await click("إنشاء نسخة احتياطية الآن", () => {
+    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+  }, "manual backup and background external attempt");
+  await settle(() => expect(host.querySelector('[data-testid="external-backup-success"]')?.textContent).toContain("10:00:01"), "background external copy outcome refresh", 5_000);
 });
 
 it("saves a destination, shows the successful copy path, and resets without deleting backup files", async () => {

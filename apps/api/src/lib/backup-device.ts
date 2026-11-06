@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -22,6 +23,22 @@ foreach ($target in $paths) {
 }
 ConvertTo-Json -InputObject $numbers -Compress
 `;
+export function resolvePhysicalDevicePaths(
+  dataDir: string,
+  destination: string,
+  resolvePath: (value: string) => string = (value) => fs.realpathSync.native(value),
+): [string, string] {
+  return [resolvePath(dataDir), resolvePath(destination)];
+}
+
+export function windowsDiskQueryForPaths(dataDir: string, destination: string): string {
+  const powershellLiteral = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  return windowsDiskQuery.replace(
+    /__SOURCE_PATH__|__DESTINATION_PATH__/g,
+    (placeholder) => powershellLiteral(placeholder === "__SOURCE_PATH__" ? dataDir : destination),
+  );
+}
+
 const diskNumbersSchema = z.array(z.string().nullable()).length(2);
 
 export function compareWindowsDiskNumbers(numbers: readonly (string | null)[]): PhysicalDeviceRelation {
@@ -39,10 +56,10 @@ export async function comparePhysicalDevice(
 ): Promise<PhysicalDeviceRelation> {
   if (platform === "win32") {
     try {
-      const powershellLiteral = (value: string) => `'${value.replaceAll("'", "''")}'`;
-      const script = windowsDiskQuery
-        .replace("__SOURCE_PATH__", powershellLiteral(dataDir))
-        .replace("__DESTINATION_PATH__", powershellLiteral(destination));
+      // Junctions and symlinks must be compared by their target volumes, not
+      // by the path text the owner entered.
+      const [resolvedDataDir, resolvedDestination] = resolvePhysicalDevicePaths(dataDir, destination);
+      const script = windowsDiskQueryForPaths(resolvedDataDir, resolvedDestination);
       const encodedScript = Buffer.from(script, "utf16le").toString("base64");
       const result = await execFileAsync(
         "powershell.exe",

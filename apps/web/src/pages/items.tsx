@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -14,7 +15,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
 import { Pager } from "@/components/ui/pager";
-import { orpc, rpcClient } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 import { usePagination } from "../hooks/use-pagination";
 import { normalizeBarcode } from "@dokan/contracts";
@@ -79,6 +80,7 @@ function invalidateItems(queryClient: QueryClient) {
 }
 
 export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
+  const { rpcClient } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
@@ -256,6 +258,7 @@ export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
 }
 
 function CatalogSearch() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -343,6 +346,7 @@ function ItemForm({
   onSeedConsumed: () => void;
   onSaved: () => void;
 }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [name, setName] = useState("");
@@ -356,6 +360,9 @@ function ItemForm({
   /** the session that started the in-flight save, so a late result can tell
    * whether it still owns this form */
   const saveSessionRef = useRef<number | null>(null);
+  const submittingRef = useRef(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const [savedName, setSavedName] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const initialStockRef = useRef<HTMLInputElement>(null);
 
@@ -398,56 +405,81 @@ function ItemForm({
     onSaved();
   }
 
+  function focusField(field: string) {
+    if (formRef.current?.closest("[hidden]")) return;
+    formRef.current?.querySelector<HTMLElement>(`[name="${field}"]`)?.focus();
+  }
+
+  function saveFailed(err: { message?: string }) {
+    if (saveSessionRef.current !== sessionRef.current) return;
+    setError(tError(err.message));
+    if (err.message === "BARCODE_EXISTS" || err.message === "INVALID_BARCODE") focusField("itemBarcode");
+  }
+
   const create = useMutation(
     orpc.itemsCreate.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (_data, variables) => {
         // the write exists either way, so refresh the lists; only the session
         // that started the save may have its draft reset by the result
         invalidate();
         if (saveSessionRef.current !== sessionRef.current) return;
-        resetFields();
+        resetFields(variables.name);
       },
-      onError: (err) => {
-        // a stale failure belongs to a draft that is no longer on screen
-        if (saveSessionRef.current !== sessionRef.current) return;
-        setError(tError(err.message));
-      },
+      onError: saveFailed,
+      onSettled: () => { submittingRef.current = false; },
     }),
   );
 
   const createWithStock = useMutation(
     orpc.itemsCreateWithStock.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (_data, variables) => {
         invalidate();
         if (saveSessionRef.current !== sessionRef.current) return;
-        resetFields();
+        resetFields(variables.name);
       },
-      onError: (err) => {
-        if (saveSessionRef.current !== sessionRef.current) return;
-        setError(tError(err.message));
-      },
+      onError: saveFailed,
+      onSettled: () => { submittingRef.current = false; },
     }),
   );
 
-  function resetFields() {
+  function resetFields(saved: string) {
     clearDraft();
+    setSavedName(saved);
+    setCategoryId(selectedCategoryId);
     onSeedConsumed();
+    focusField("itemName");
   }
 
   const profit = profitPreview(cost, sell);
   const busy = create.isPending || createWithStock.isPending;
 
+  useEffect(() => {
+    // The category control is disabled until the failed mutation settles.
+    if (!busy && error === t("CATEGORY_NOT_FOUND") && !formRef.current?.closest("[hidden]")) {
+      formRef.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
+    }
+  }, [busy, error, t]);
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (submittingRef.current) return;
     setError(null);
+    setSavedName(null);
+    if (draftBlank(name)) {
+      setError(t("itemsNameRequired"));
+      focusField("itemName");
+      return;
+    }
     const sellText = sell.trim();
     const selling = parseWholeNumber(sellText);
-    if (selling === null || selling <= 0) {
-      setError(t("itemsSellAboveCost"));
+    if (selling === null) {
+      setError(t("itemsSellInvalid"));
+      focusField("itemSell");
       return;
     }
     if (!selectedCategoryId) {
       setError(t("itemsChooseCategory"));
+      formRef.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
       return;
     }
     // a typo must not silently save a money value as zero
@@ -455,11 +487,13 @@ function ItemForm({
     const parsedCost = parseWholeNumber(costText);
     if (parsedCost === null) {
       setError(t("itemsCostInvalid"));
+      focusField("itemCost");
       return;
     }
     const parsedThreshold = draftBlank(threshold) ? 5 : parseWholeNumber(threshold);
     if (parsedThreshold === null) {
       setError(t("itemsThresholdInvalid"));
+      focusField("itemThreshold");
       return;
     }
     // blank stays uncoded; typed codes get the same normalization as scans
@@ -468,6 +502,7 @@ function ItemForm({
       const normalized = normalizeBarcode(barcode);
       if (normalized === null) {
         setError(t("INVALID_BARCODE"));
+        focusField("itemBarcode");
         return;
       }
       normalizedBarcode = normalized;
@@ -478,6 +513,7 @@ function ItemForm({
     const stock = resolveOpeningStock(initialStock, stockRequired);
     if (!stock.ok) {
       setError(t(stock.reason === "required" ? "scanStockRequired" : "itemsStockInvalid"));
+      focusField("itemInitialStock");
       return;
     }
     const base: ItemCreate = {
@@ -491,21 +527,24 @@ function ItemForm({
     // this save belongs to the session submitting it: a later scan seed makes
     // its settlement stale (see the mutation callbacks)
     saveSessionRef.current = sessionRef.current;
+    submittingRef.current = true;
+    setCategoryId(selectedCategoryId);
     if (stock.value > 0) void createWithStock.mutate({ ...base, stockOnHand: stock.value });
     else void create.mutate(base);
   }
 
   return (
-    <form className="mt-4 grid gap-3 rounded border bg-card p-4" onSubmit={submit} data-testid="item-form">
+    <form ref={formRef} className="mt-4 grid gap-3 rounded border bg-card p-4" onSubmit={submit} data-testid="item-form">
       <h2 className="font-semibold">{t("itemsNewTitle")}</h2>
       <label className="grid gap-1">
         {t("itemsName")}
-        <input ref={nameRef} className={inputClass} name="itemName" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
+        <input ref={nameRef} readOnly={busy} className={inputClass} name="itemName" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
       </label>
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
           {t("itemsCategory")}
           <Select
+            disabled={busy}
             value={selectedCategoryId}
             onValueChange={(value) => setCategoryId(value ?? "")}
             items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
@@ -529,6 +568,10 @@ function ItemForm({
             dir="ltr"
             className={cn(inputClass, "font-mono")}
             name="itemBarcode"
+            readOnly={busy}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.preventDefault();
+            }}
             autoComplete="off"
             spellCheck={false}
             value={barcode}
@@ -540,15 +583,15 @@ function ItemForm({
       <div className="grid grid-cols-3 gap-3">
         <label className="grid gap-1">
           {t("itemsCost")}
-          <input className={inputClass} name="itemCost" autoComplete="off" value={cost} onChange={(e) => setCost(e.target.value)} inputMode="numeric" required data-testid="item-cost" />
+          <input readOnly={busy} className={inputClass} name="itemCost" autoComplete="off" value={cost} onChange={(e) => setCost(e.target.value)} inputMode="numeric" required data-testid="item-cost" />
         </label>
         <label className="grid gap-1">
           {t("itemsSell")}
-          <input className={inputClass} name="itemSell" autoComplete="off" value={sell} onChange={(e) => setSell(e.target.value)} inputMode="numeric" required data-testid="item-sell" />
+          <input readOnly={busy} className={inputClass} name="itemSell" autoComplete="off" value={sell} onChange={(e) => setSell(e.target.value)} inputMode="numeric" required data-testid="item-sell" />
         </label>
         <label className="grid gap-1">
           {t("itemsThreshold")}
-          <input className={inputClass} name="itemThreshold" autoComplete="off" value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric" data-testid="item-threshold" />
+          <input readOnly={busy} className={inputClass} name="itemThreshold" autoComplete="off" value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric" data-testid="item-threshold" />
         </label>
       </div>
       <label className="grid gap-1">
@@ -565,6 +608,7 @@ function ItemForm({
           ref={initialStockRef}
           className={inputClass}
           name="itemInitialStock"
+          readOnly={busy}
           autoComplete="off"
           value={initialStock}
           onChange={(e) => setInitialStock(e.target.value)}
@@ -582,6 +626,9 @@ function ItemForm({
         ) : (
           "…"
         )}
+      </p>
+      <p className="text-sm text-success" role="status" aria-live="polite" data-testid="item-saved">
+        {savedName !== null ? t("itemsSavedName", { name: savedName }) : ""}
       </p>
       {error && (
         <p className="text-sm text-destructive" role="alert" data-testid="form-error">
@@ -601,6 +648,7 @@ function ItemForm({
 }
 
 function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAddItem: () => void; refreshMs?: number }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const pager = usePagination();

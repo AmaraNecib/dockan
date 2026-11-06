@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createAppConfig } from "../config";
+import type { InvoiceListFilters } from "@dokan/contracts";
 import { openConnection, type Connection } from "../db/connection";
 import { localDate, localDateTime } from "../lib/logger";
 import { createDrizzleStore } from "./drizzle-store";
@@ -124,6 +125,197 @@ describe("store pagination (issue 163)", () => {
     // a full read (no page keys) still returns everything
     const all = await store.listInvoices({ kind: "SALE" });
     expect(all.items.length).toBe(all.total);
+  });
+
+  it("searches recorded invoice contents before paging and preserves identity after rename (#405)", async () => {
+    const item = await store.createItem({ name: "الْإِطَار القديم", barcode: "BC-405", categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0 });
+    const target = await makeInvoice(405);
+    for (let i = 0; i < 2; i++) await store.insertInvoiceLine({ invoiceId: target, itemId: item.id, description: "الْإِطَار القديم", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });
+    await store.updateItem(item.id, { id: item.id, name: "اسم جديد" });
+    expect((await store.listInvoices({ search: "اسم جديد" })).items.map(row => row.id)).not.toContain(target);
+    // Place the target beyond page one using persisted dates, not insertion timing.
+    const newer = await store.insertInvoice({ invoiceNumber: "INV-405-NEW", kind: "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: "2099-01-01", totalAmount: 150, paidAmount: 150, remainingAmount: 0, notes: null });
+    const first = await store.listInvoices({ kind: "SALE", limit: 1, offset: 0 });
+    expect(first.items[0]?.id).toBe(newer.id);
+    const result = await store.listInvoices({ search: "اطار", kind: "SALE", status: "UNPAID", limit: 1, offset: 0 });
+    expect(result.items.map(row => row.id)).toEqual([target]);
+    expect(result.total).toBe(1);
+    expect((await store.listInvoices({ search: "bc-405" })).items.map(row => row.id)).toEqual([target]);
+    expect((await store.listInvoices({ search: "INV-PAGE-0405" })).items.map(row => row.id)).toEqual([target]);
+    expect((await store.listInvoices({ search: "اطار", status: "PAID" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "اطار", kind: "PURCHASE" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "اطار", limit: 1, offset: 1 })).items).toEqual([]);
+    expect((await store.getInvoiceDetail(target))?.id).toBe(target);
+  });
+
+  it("counts every searched match across pages and orders persisted timestamp ties by descending ID (#405)", async () => {
+    const day = "2088-06-15";
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const invoice = await store.insertInvoice({ invoiceNumber: `INV-TIE-405-${i}`, kind: "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: day, totalAmount: 300, paidAmount: 300, remainingAmount: 0, notes: null });
+      // InvoiceInsert assigns creation time itself. Pin persisted fixture time,
+      // then observe ordering only through the public list interface.
+      conn.raw.prepare("UPDATE invoices SET created_at = ? WHERE id = ?").run("2088-06-15T12:00:00", invoice.id);
+      await store.insertInvoiceLine({ invoiceId: invoice.id, itemId: null, description: "زمني ترقيم 405", quantity: 1, unitPrice: 300, costAtSale: 0, total: 300 });
+      ids.push(invoice.id);
+    }
+    const expected = [...ids].sort((a, b) => a < b ? 1 : a > b ? -1 : 0);
+    for (const filters of [{ search: "زمني" }, { fromDate: day, toDate: day }]) {
+      const seen: string[] = [];
+      for (let offset = 0; offset < 3; offset++) {
+        const page = await store.listInvoices({ ...filters, limit: 1, offset });
+        expect(page.total).toBe(3);
+        expect(page.items.map(row => row.id)).toEqual([expected[offset]!]);
+        seen.push(...page.items.map(row => row.id));
+      }
+      expect(seen).toEqual(expected);
+      expect(new Set(seen).size).toBe(3);
+      expect(await store.listInvoices({ ...filters, limit: 1, offset: 3 })).toEqual({ items: [], total: 3 });
+    }
+  });
+
+  it("composes an inclusive date range with invoice-number and recorded-description search (#405)", async () => {
+    const day = "2087-03-10";
+    const fixtures = [
+      { invoiceNumber: "INV-BOUND-405-NUMBER", invoiceDate: day, description: "صنف بلا نص البحث" },
+      { invoiceNumber: "INV-PLAIN-405-DESC", invoiceDate: day, description: "BOUND-405 في الوصف" },
+      { invoiceNumber: "INV-BOUND-405-BEFORE", invoiceDate: "2087-03-09", description: "BOUND-405 قبل" },
+      { invoiceNumber: "INV-BOUND-405-AFTER", invoiceDate: "2087-03-11", description: "BOUND-405 بعد" },
+    ];
+    const ids: string[] = [];
+    for (const fixture of fixtures) {
+      const invoice = await store.insertInvoice({ invoiceNumber: fixture.invoiceNumber, invoiceDate: fixture.invoiceDate, kind: "SALE", counterpartyId: null, counterpartyName: null, totalAmount: 100, paidAmount: 100, remainingAmount: 0, notes: null });
+      await store.insertInvoiceLine({ invoiceId: invoice.id, itemId: null, description: fixture.description, quantity: 1, unitPrice: 100, costAtSale: 0, total: 100 });
+      ids.push(invoice.id);
+    }
+    const expected = ids.slice(0, 2).sort();
+    const range = { fromDate: day, toDate: day };
+    const result = await store.listInvoices({ ...range, search: "BOUND-405" });
+    expect(result.total).toBe(2);
+    expect(result.items.map(row => row.id).sort()).toEqual(expected);
+    const first = await store.listInvoices({ ...range, search: "BOUND-405", limit: 1, offset: 0 });
+    const second = await store.listInvoices({ ...range, search: "BOUND-405", limit: 1, offset: 1 });
+    expect([first.total, second.total]).toEqual([2, 2]);
+    expect([...first.items, ...second.items].map(row => row.id).sort()).toEqual(expected);
+    expect(await store.listInvoices({ ...range, search: "BOUND-405", limit: 1, offset: 2 })).toEqual({ items: [], total: 2 });
+    const blank = await store.listInvoices(range);
+    expect(blank.total).toBe(2);
+    expect(blank.items.map(row => row.id).sort()).toEqual(expected);
+  });
+
+  it("uses the current item only for legacy blank names and unsnapshotted barcodes (#405)", async () => {
+    const item = await store.createItem({ name: "اسم تراثي", barcode: "LEGACY-405", categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 0 });
+    const legacy = await makeInvoice(407);
+    await store.insertInvoiceLine({ invoiceId: legacy, itemId: item.id, description: "", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });
+    expect((await store.listInvoices({ search: "تراثي" })).items.map(row => row.id)).toEqual([legacy]);
+    await store.updateItem(item.id, { id: item.id, name: "اسم حالي", barcode: "CURRENT-405" });
+    expect((await store.listInvoices({ search: "تراثي" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "حالي" })).items.map(row => row.id)).toEqual([legacy]);
+    expect((await store.listInvoices({ search: "LEGACY-405" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "CURRENT-405" })).items.map(row => row.id)).toEqual([legacy]);
+  });
+
+  it("filters inclusive business dates and sequence-based INV/SUP number ranges before paging, with stable oldest/newest order (#406)", async () => {
+    const fixtures = [
+      { invoiceNumber: "INV-00111", invoiceDate: "2086-01-01", description: "range match" },
+      { invoiceNumber: "SUP-00112", invoiceDate: "2086-01-02", description: "range match" },
+      { invoiceNumber: "INV-00113", invoiceDate: "2086-01-03", description: "range match" },
+      { invoiceNumber: "SUP-00114", invoiceDate: "2086-01-02", description: "range match" },
+      { invoiceNumber: "INV-LEGACY-406", invoiceDate: "2086-01-02", description: "range match" },
+    ];
+    const ids: string[] = [];
+    for (const fixture of fixtures) {
+      const invoice = await store.insertInvoice({ invoiceNumber: fixture.invoiceNumber, invoiceDate: fixture.invoiceDate, kind: fixture.invoiceNumber.startsWith("SUP") ? "PURCHASE" : "SALE", counterpartyId: null, counterpartyName: null, totalAmount: 100, paidAmount: 0, remainingAmount: 100, notes: null });
+      await store.insertInvoiceLine({ invoiceId: invoice.id, itemId: null, description: fixture.description, quantity: 1, unitPrice: 100, costAtSale: 0, total: 100 });
+      ids.push(invoice.id);
+    }
+    const bounds = { fromDate: "2086-01-01", toDate: "2086-01-03", fromNumber: "111", toNumber: "113", search: "range match" };
+    const list406 = (filters: InvoiceListFilters) => store.listInvoices(filters);
+    const oldest = await list406({ ...bounds, order: "OLDEST", limit: 1, offset: 0 });
+    const middle = await list406({ ...bounds, order: "OLDEST", limit: 1, offset: 1 });
+    const newest = await list406({ ...bounds, order: "NEWEST", limit: 10, offset: 0 });
+    expect(oldest.total).toBe(3);
+    expect((await list406({ ...bounds, kind: "SALE", status: "UNPAID" })).total).toBe(2);
+    expect(oldest.items.map(row => row.id)).toEqual([ids[0]!]);
+    expect(middle.items.map(row => row.id)).toEqual([ids[1]!]);
+    expect(newest.items.map(row => row.id)).toEqual([ids[2]!, ids[1]!, ids[0]!]);
+    expect((await list406({ fromNumber: "111" })).items.map(row => row.invoiceNumber)).toContain("SUP-00112");
+    expect((await list406({ fromNumber: "111", toNumber: "113" })).items.map(row => row.invoiceNumber)).not.toContain("INV-LEGACY-406");
+    expect((await list406({ ...bounds, fromDate: "2086-01-02", toDate: "2086-01-02" })).total).toBe(1);
+    const sameDate = await list406({ fromDate: "2086-01-02", toDate: "2086-01-02", fromNumber: "1", order: "OLDEST" });
+    expect(sameDate.items.map(row => row.invoiceNumber)).toEqual(["SUP-00112", "SUP-00114"]);
+    const sameDateNewest = await list406({ fromDate: "2086-01-02", toDate: "2086-01-02", fromNumber: "1", order: "NEWEST" });
+    expect(sameDateNewest.items.map(row => row.invoiceNumber)).toEqual(["SUP-00114", "SUP-00112"]);
+  });
+
+  it("keeps explicit mixed legacy/numbered order transitive across pages (#406 review)", async () => {
+    const day = "2085-10-03";
+    const fixtures = [
+      { invoiceNumber: "INV-1", createdAt: `${day}T12:00:00` },
+      { invoiceNumber: "CUSTOM", createdAt: `${day}T11:00:00` },
+      { invoiceNumber: "SUP-10", createdAt: `${day}T10:00:00` },
+      { invoiceNumber: "INV-0002", createdAt: `${day}T08:00:00` },
+      { invoiceNumber: "SUP-0002", createdAt: `${day}T08:00:00` },
+    ];
+    const ids = new Map<string, string>();
+    for (const fixture of fixtures) {
+      const invoice = await store.insertInvoice({ invoiceNumber: fixture.invoiceNumber, kind: fixture.invoiceNumber.startsWith("SUP") ? "PURCHASE" : "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: day, totalAmount: 100, paidAmount: 100, remainingAmount: 0, notes: null });
+      conn.raw.prepare("UPDATE invoices SET created_at = ? WHERE id = ?").run(fixture.createdAt, invoice.id);
+      ids.set(fixture.invoiceNumber, invoice.id);
+    }
+    const equalSequenceIds = [ids.get("INV-0002")!, ids.get("SUP-0002")!].sort();
+    const expected = {
+      OLDEST: [ids.get("INV-1")!, ...equalSequenceIds, ids.get("SUP-10")!, ids.get("CUSTOM")!],
+      NEWEST: [ids.get("CUSTOM")!, ids.get("SUP-10")!, ...[...equalSequenceIds].reverse(), ids.get("INV-1")!],
+    };
+    const readAllPages = async (order: "OLDEST" | "NEWEST") => {
+      const seen: string[] = [];
+      for (let offset = 0; offset < fixtures.length; offset += 2) {
+        const page = await store.listInvoices({ fromDate: day, toDate: day, order, limit: 2, offset });
+        expect(page.total).toBe(fixtures.length);
+        seen.push(...page.items.map(row => row.id));
+      }
+      return seen;
+    };
+
+    for (const order of ["OLDEST", "NEWEST"] as const) {
+      const firstRead = await readAllPages(order);
+      expect(firstRead).toEqual(expected[order]);
+      expect(await readAllPages(order)).toEqual(firstRead);
+    }
+    // The unqualified UI default stays on the historical timestamp-first SQL order.
+    expect((await store.listInvoices({ fromDate: day, toDate: day })).items.slice(0, 3).map(row => row.invoiceNumber)).toEqual(["INV-1", "CUSTOM", "SUP-10"]);
+  });
+
+  it("normalizes the literal-search mode once per request (#405)", async () => {
+    const invoice = await makeInvoice(420);
+    await store.insertInvoiceLine({ invoiceId: invoice, itemId: null, description: "ordinary line text", quantity: 1, unitPrice: 100, costAtSale: 0, total: 100 });
+    const search = "%%%";
+    const originalNormalize = String.prototype.normalize;
+    let queryNormalizations = 0;
+    String.prototype.normalize = function (this: string, form?: "NFC" | "NFD" | "NFKC" | "NFKD") {
+      if (String(this) === search) queryNormalizations++;
+      return originalNormalize.call(this, form);
+    };
+    try {
+      const result = await store.listInvoices({ search });
+      expect(result.total).toBe(0);
+      expect(queryNormalizations).toBe(1);
+    } finally {
+      String.prototype.normalize = originalNormalize;
+    }
+  });
+
+  it("treats wildcard and injection-like search as literal text (#405)", async () => {
+    const target = await makeInvoice(406);
+    await store.insertInvoiceLine({ invoiceId: target, itemId: null, description: "100%_ ' OR 1=1 --", quantity: 1, unitPrice: 150, costAtSale: 100, total: 150 });
+    for (const search of ["%_", "' OR 1=1 --"]) {
+      const result = await store.listInvoices({ search });
+      expect(result.items.map(row => row.id)).toEqual([target]);
+      expect(result.total).toBe(1);
+    }
+    expect((await store.listInvoices({ search: "no-such-405-item" })).total).toBe(0);
+    expect((await store.listInvoices({ search: "   " })).total).toBe((await store.listInvoices({})).total);
   });
 
   it("pages activities newest-first and counts the whole log", async () => {

@@ -66,6 +66,22 @@ export function numberedDocumentSequence(documentNumber: string): number | undef
   return Number.isSafeInteger(sequence) ? sequence : undefined;
 }
 
+/** Parse an operator-entered invoice bound without treating an identifier as an integer. */
+export function invoiceNumberBoundSequence(value: string): number | undefined {
+  const match = /^(?:(?:INV|SUP)-)?(\d+)$/iu.exec(value.trim());
+  if (match === null) return undefined;
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) ? sequence : undefined;
+}
+
+/** Numbered invoice values only; legacy labels have no invented sort position. */
+export function invoiceSequenceForRange(invoiceNumber: string): number | undefined {
+  const match = /^(?:INV|SUP)-(\d+)$/u.exec(invoiceNumber);
+  if (match === null) return undefined;
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) ? sequence : undefined;
+}
+
 /** The SQL GLOB matching this prefix's numbered rows, so a counter can never
  * reissue a number that already exists (manually inserted rows included). */
 export function documentNumberGlob(prefix: string): string {

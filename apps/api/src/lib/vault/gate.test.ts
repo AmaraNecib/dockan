@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { serve } from "@hono/node-server";
+import { eq } from "drizzle-orm";
+import { users } from "../../db/schema";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
@@ -115,6 +117,8 @@ function harness(
     bootstrap?: (input: { masterKey: Buffer; vaultId: string; fresh: boolean }) => Promise<void>;
     /** run the gate as the desktop shell's stdin-broker mode (issue #141) */
     broker?: boolean;
+    /** expose encrypted external-backup RPCs through this real vault harness */
+    externalBackup?: boolean;
   } = {},
 ): GateHarness {
   const config = createAppConfig({
@@ -156,6 +160,8 @@ function harness(
       logger,
       store,
       auth,
+      externalBackupEnabled: options.externalBackup,
+      externalBackupWriteGuard: options.externalBackup ? () => undefined : undefined,
       vault: {
         sessionMatches: (token) => manager.sessionMatches(token),
         ownerId: () => manager.ownerId(),
@@ -305,6 +311,19 @@ describe("vault HTTP gate", () => {
       phoneNumber: "0550123123",
       storeName: "متجر الاختبار",
     });
+    const expectedOwner = { id: h.manager.ownerId()!, name: "مالك الاختبار", phone: "+213550123123", role: "owner" as const };
+    expect(await provisioned.currentOwner()).toEqual(expectedOwner);
+    expect(await h.linkWith({ cookie: `dokan.vault.session=${setupToken}` }).currentOwner()).toEqual(expectedOwner);
+    await expect(unauthed.currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
+    await expect(h.linkWith({ "x-vault-session": "invalid" }).currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
+    const ownerId = h.manager.ownerId()!;
+    await h.store().setSetting("adminUserId", "foreign-owner");
+    await expect(provisioned.currentOwner()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await h.store().setSetting("adminUserId", ownerId);
+    const [ownerRow] = await h.connection().db.select().from(users).where(eq(users.id, ownerId));
+    await h.connection().db.delete(users).where(eq(users.id, ownerId));
+    await expect(provisioned.currentOwner()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await h.connection().db.insert(users).values(ownerRow!);
     const categories = await provisioned.categoriesList();
     expect(categories.items.some((category) => category.name === "عام")).toBe(true);
 
@@ -313,12 +332,65 @@ describe("vault HTTP gate", () => {
 
     // the recovery key unlocks again after a close
     h.manager.close();
+    await expect(provisioned.currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
     const recoveryUnlock = await h.gate.request("/api/vault/unlock-recovery", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ recoveryKey: setupBody.recoveryKey }),
     });
     expect(recoveryUnlock.status).toBe(200);
+  });
+
+  itHeavy("keeps the local backup and sales working when the configured external drive is missing", async () => {
+    const h = harness(tempDir("dokan-vault-external-offline-"), { externalBackup: true });
+    const setup = await h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    const owner = h.linkWith({ "x-vault-session": sessionTokenFrom(setup) });
+    await owner.firstTimeSetup({ ownerName: "مالك الاختبار", phoneNumber: "0550123123", storeName: "متجر الاختبار" });
+
+    const missingDrive = path.join(h.dir, "unavailable-removable-drive");
+    await owner.externalBackupDestinationSet({ destination: missingDrive });
+    const categories = await owner.categoriesList();
+    const category = categories.items.find((entry) => entry.name === "عام");
+    expect(category).toBeDefined();
+    if (category === undefined) throw new Error("setup did not create the default category");
+    const item = await owner.itemsCreate({
+      name: "external-failure-sale-probe",
+      categoryId: category.id,
+      costPrice: 100,
+      sellingPrice: 200,
+      lowStockThreshold: 0,
+    });
+    await owner.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    fs.mkdirSync(path.join(h.dir, "backups"), { recursive: true });
+
+    const firstOutcome = await owner.externalBackupRun();
+    expect(firstOutcome).toEqual({
+      destination: missingDrive,
+      lastAttemptAt: expect.any(String),
+      lastSuccessAt: null,
+      lastError: "disconnected",
+      lastPath: null,
+    });
+    const secondOutcome = await owner.externalBackupRun();
+    const thirdOutcome = await owner.externalBackupRun();
+    for (const outcome of [firstOutcome, secondOutcome, thirdOutcome, await owner.externalBackupStatus()]) {
+      expect(outcome).toEqual({
+        destination: missingDrive,
+        lastAttemptAt: expect.any(String),
+        lastSuccessAt: null,
+        lastError: "disconnected",
+        lastPath: null,
+      });
+    }
+    expect(new Set([firstOutcome.lastAttemptAt, secondOutcome.lastAttemptAt, thirdOutcome.lastAttemptAt]).size).toBe(3);
+    expect(fs.readdirSync(path.join(h.dir, "backups")).some((name) => /^dokan-.*\.db$/u.test(name))).toBe(true);
+    const sale = await owner.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.kind).toBe("SALE");
+    expect((await owner.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
   });
 
   itHeavy("refuses a non-JSON pre-auth request (cross-site POST) without consuming an attempt", async () => {
@@ -932,6 +1004,20 @@ describe("vault gate hardening (review supplement)", () => {
     // loopback through the same overlay still reaches first-run setup
     const local = await overlay(setupRequest(), { incoming: { socket: { remoteAddress: "127.0.0.1" } } });
     expect(local.status).toBe(200);
+  });
+
+  itHeavy("reads the current owner using the native broker credential and refuses it after revocation", async () => {
+    const h = harness(tempDir("dokan-owner-broker-"), { broker: true });
+    await h.manager.prepareSetup("correct horse battery");
+    h.manager.finishSetupBootstrap();
+    const session = await h.manager.commitSetup();
+    await h.bootstrapApp({ masterKey: h.manager.requireMasterKey(), vaultId: h.manager.metadata().vaultId, fresh: true });
+    const client = h.linkWith({ "x-vault-session": session.token });
+    await client.firstTimeSetup({ ownerName: "Amara أمارة", phoneNumber: "0550123123", storeName: "متجر" });
+    expect(await client.currentOwner()).toEqual({ id: h.manager.ownerId()!, name: "Amara أمارة", phone: "+213550123123", role: "owner" });
+    await h.gate.request("/api/vault/logout", { method: "POST", headers: { "x-vault-session": session.token } });
+    await expect(client.currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
+    h.manager.close();
   });
 
   itHeavy("refuses HTTP pre-boot credential routes in broker mode; post-unlock routes stay HTTP (issue #141)", async () => {
@@ -1808,6 +1894,8 @@ describe("the server arbitrates the one live session (#319 round 2)", () => {
 
     // the header is the broker transport and works
     expect((await h.linkWith({ "x-vault-session": session.token }).categoriesList()).items.length).toBeGreaterThan(0);
+    expect((await h.linkWith({ "x-vault-session": session.token }).currentOwner()).role).toBe("owner");
+    await expect(h.linkWith({ cookie: `dokan.vault.session=${session.token}` }).currentOwner()).rejects.toMatchObject({ code: AUTH_REFUSAL.code });
     // the same live token in a COOKIE is not a credential on this server: the
     // packaged desktop's promise is that the secret never crosses the network,
     // so a page holding a cookie of the same name cannot act as the shell

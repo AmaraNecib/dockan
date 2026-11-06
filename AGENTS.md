@@ -1,17 +1,31 @@
 # Agent notes
 
+## Issue request entry route
+
+When the owner says `Work on issue #N.`, read issue #N and its linked specification, this lifecycle, and `.agents/wisdom/README.md` plus lessons relevant to the change. Identify whether you are the parent or a worker, establish the absolute worktree, branch, base/head and permitted writes, then follow `feature-implement` for a code change. The parent creates or assigns a fresh isolated worktree through the supported T3 mechanism; a worker never creates one. Preserve existing edits and the one-writer rule. The parent gives workers the readable template in [`docs/agent-delegation-template.md`](docs/agent-delegation-template.md). The owner does not need to repeat this checklist.
+
+## Before starting work
+
+Parents and workers complete this startup check before editing, delegating implementation, or running verification:
+
+1. Read this checkout's `AGENTS.md`, `docs/engineering-workflow.md`, and the originating issue or approved task. Identify your role, absolute worktree, branch, base and permitted writes. Preserve unrelated changes.
+2. Read `feature-implement` for a code-changing task, `guard` for verification, and the skills whose descriptions match the task. Load their `SKILL.md` files, not just their names. For design and code, include `codebase-design` and `domain-modeling`; for writing, include `unslop` and, when editing agent instructions, `writing-for-agents`.
+3. Read `.agents/wisdom/README.md` and the lessons relevant to the affected area. Before planning or triage, also read `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, and `docs/agents/domain.md`.
+4. Record the role, scope, applicable skills and lessons in the task's local design or handoff notes. Before writing or revising a worker brief, the parent reads `writing-for-agents` and applies it to the delegation instructions. The brief names the acceptance goal, required reading, file ownership, verification, authority limits and completion criteria. A worker loads its required sources in its own session; the parent's reading does not substitute for it. If a required source is unavailable, report the gap rather than claim it was read.
+
 ## Authority
 
 - **A lane commits and reports; it does not land.** A lane (`fix-*`, `feat-*`,
-  `test-*`, `chore-*`, `docs-*`, …) works in its own worktree and commits its diff. Its
-  completion wakes the parent; there is no report tool to call. It **never** runs
+  `test-*`, `chore-*`, `docs-*`, …) owns its assigned PR worktree exclusively under the one-writer rule and commits its diff. Its completion wakes the parent; there is no report tool to call. It **never** runs
   `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
   `feature-implement` step 11 is parent-only.
+- **The parent coordinates; workers implement and verify.** The parent scopes work, assigns isolated writers, dispatches reviewers, checks their evidence, and handles publication and merge decisions. Workers read the required sources, implement within their assigned scope, run the applicable verification, commit and report. Read-only reviewers return findings, not edits. Parent handling of small corrections does not make it the default test runner.
+- **The parent delegates heavy execution by default.** Full test suites, E2E, builds and browser runs belong to a verification worker through the heavy-work queue. The parent uses `heavy_run` itself only when the owner explicitly requests it or delegation cannot perform a necessary check. Before an exception, record the exact check, why delegation cannot do it, and why it is needed now. Convenience, a quiet worker, or wanting a second copy of an unchanged run is not a reason. The exception does not waive queue limits or other approval requirements. Reads, diff inspection, selector dry-runs, lint and typecheck remain light parent work.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
-  lane's branch, opens the PR, runs the review round (`reviewloop`, plus Greptile
-  while the two are being compared), drives the rounds, and
-  merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
-  before/after packet is posted), and otherwise only when the owner says so (see `Merging`).
+  lane's branch, opens the PR, verifies the selected risk-sized local review and
+  configured hosted findings, then handles merge decisions. It auto-merges a clean
+  **cheap-to-reverse** PR itself (a visual one too, once its before/after packet is
+  posted), and otherwise waits for the owner (see `Merging`).
 - **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
   lane reads `.agents/wisdom/` before it starts, applies what bears on its task,
   and says which lessons it applied and which it deliberately did not **in its
@@ -49,10 +63,7 @@ they no longer have to be serialized across lanes (#202).
 
 **Heavy work goes through the queue.** A full test suite, `test:e2e`, a build or a browser agent takes a slot: `bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`. Light work — one test file, lint, typecheck — runs directly and does not take a slot.
 
-**Mechanism: a child agent with its own worktree, by default.** `delegate_task` with
-`isolation: "worktree"` checks out the work from the parent's local commit, runs project setup,
-and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,
-none to close afterwards, and the completion arrives by itself instead of being polled.
+**One writer owns the PR worktree at a time.** If the parent has an isolated worktree for this PR, it may assign that tree to one implementation worker with `delegate_task` and `isolation: "shared"`; the parent gives up edits while the worker owns it. Reviewers may share the same tree read-only at the pinned head. Freeze source during final verification and review. Before replacing a writer, cancel it and confirm it stopped. If no isolated PR worktree exists, create one through the supported T3 worktree mechanism; never use the shared project root for concurrent writes. Create another worktree only for a genuinely independent concurrent writing scope or PR. A verification runner creates no checkouts.
 
 **Never pi's native `subagent` tool for a lane.** It runs the child inside the pi process, and T3
 Code's lineage panel lists only app-owned child threads — so the owner sees no lane, concludes
@@ -86,10 +97,13 @@ worktree needs one. The lane roots are saved in `~/.pi/agent/trust.json`
 every worktree under it. When T3 runs Pi in RPC mode it cannot show that prompt itself, which is
 why an untrusted lane surfaces as an approval card in T3 instead of a question in the terminal.
 
+**Read-only reviewers share the checkout being reviewed.** Use `delegate_task` with `isolation: "shared"`, the absolute PR worktree path and a pinned head SHA. They read files and return findings; they do not install dependencies, build, run tests that write artifacts, or edit the checkout. Finish or cancel stale reviews before the writer changes their reviewed files.
+
+**Retire finished helpers after handoff.** The parent transfers needed commits and evidence to the main PR checkout, checks for live processes and dependency links, then removes the helper worktree. Keep shared dependency or build targets until their consumers have moved. A review or CI wait does not need a helper checkout.
+
 Either way, one writer per worktree, and a lane never pushes or merges.
 
-Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
-reuse a lane's session for the next PR.
+Every PR gets a fresh isolated PR worktree and session; do not reuse another PR's worktree or lane session.
 
 **Run as many lanes as the box can carry, and an idle lane is a wasted one.** No
 fixed count: measure it. A lane waiting on review, on CI or on a rebase is doing
@@ -99,17 +113,7 @@ disjoint files; when two lanes share a store/router, nominate which one lands
 first and rebase the other onto it. Poll CI and the review round in-session, never
 the lane.
 
-**A lane ALWAYS gets its own workspace** — never a pane split inside the parent's
-workspace (owner complaint, 2026-10-13: *"why u open the crew here in this panel;
-I can't see anything"*). `delegate_task` with `isolation: "worktree"` gives it
-one: it checks the work out from the parent's local commit, runs project setup,
-and wakes the parent when it finishes. The `herdr worktree create` /
-`herdr agent start` pair this paragraph used to prescribe went with the crew
-apparatus. Two things the mechanism does not do for you: a fresh worktree has no
-`node_modules`, so the lane's first command is `bun install --frozen-lockfile`,
-and it starts from the parent's **commit**, so commit before delegating or the
-lane cannot see the work. `t3_thread_launch` is the fallback and only for
-resuming work that exists uncommitted — see Lanes above.
+When a separate isolated worktree is needed, use `delegate_task` with `isolation: "worktree"`; it starts from the parent's commit and has no `node_modules`, so install with `bun install --frozen-lockfile` only after checking free space. Use `t3_thread_launch` only to resume uncommitted work in an existing worktree.
 
 Two costs, and only one of them still binds. An idle lane holds RAM and CPU for
 nothing, which is why a finished lane is closed the moment its branch is pushed.
@@ -127,7 +131,13 @@ generated from it with `bun run skills:sync` and checked with
 upstream sync must not clobber them: their pinned upstream commits, divergence
 count and re-apply checklist are in `docs/skills-vendoring.md`.
 
+## Red-on-parent runs in CI only
+
+The PR `checks` job runs `scripts/red-on-parent.ts` for pull requests and must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay. For browser verification, use the selector-first procedure in `.agents/skills/guard/SKILL.md`; inspect `bun scripts/e2e-changed.ts --dry-run` before any heavy browser run.
+
 ## Pick the skill before you write code
+
+For issue-only requests, use the entry route above and the [delegation template](docs/agent-delegation-template.md); the workflow and template are the canonical routing, not a checklist the owner must paste.
 
 The workflow in `docs/engineering-workflow.md` and the skills in `.agents/skills/` are the
 same process in two shapes: the doc is the map, the skills are the per-phase instructions a
@@ -138,10 +148,10 @@ you are in — do not improvise a process.**
 |---|---|
 | Any code-changing issue, start to finish | `feature-implement` (the lifecycle orchestrator — read it first) |
 | Design conversation before code | `grill-with-docs` |
-| Review round, in order | `debate` → `test-audit` → `code-review` |
+| Local review | Risk-sized review under `docs/engineering-workflow.md`; when multiple lenses apply: `debate` → `test-audit` → `code-review` |
 | After reviewloop's 5/5, before the merge | `improve-codebase-architecture` (parent only; the deep pass when a module, seam, adapter or interface changed) |
 | Before the push | `guard` |
-| Review round | `reviewloop` (Greptile via `cli-review` / `greploop` is the A/B reference while both run) |
+| Review | Risk-sized local review under `docs/engineering-workflow.md`; `reviewloop` owns evidence mechanics |
 | After a repeated failure | `capture-wisdom` (parent only) |
 | Every piece of writing, always | `unslop` |
 
@@ -153,53 +163,9 @@ habit happened. The parent owns push, CI, the review round and the merge decisio
 
 ## Review lenses
 
-**Every reviewed change runs the lens round — `debate`, `test-audit`,
-`code-review` — and the default at Standard and above is all three** (owner
-decision, 2026-10-18). The parent may scope a single-axis change to one or two;
-the payload records exactly what ran, and all three skipped is not a review. The
-tier still decides how much scrutiny a failure mode deserves; it no longer
-decides whether the debate happens. Run them in that order, each as its own
-sub-agent, before the lane reports.
+The risk matrix, bounded-fix rule and mandatory local 5/5 with zero actionable findings live in [`docs/engineering-workflow.md`](docs/engineering-workflow.md). Routine changes get one focused code-review session; only a named reachable high-risk failure gets the three initial lenses. `reviewloop` owns the payload and report mechanics.
 
-- **The lenses run on a different model family than the author. That is the only fixed part.**
-  The author is the lane's model, read from its commit trailer, never the parent's.
-  Independence is a family, not an exact ID: free and paid DeepSeek are one opinion, so a
-  DeepSeek author needs GLM, MiMo or Beam. The ladder is free first —
-  `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
-  `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
-  `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
-  routes are exhausted. With more than one lens, at least two families must appear, so three
-  lenses are not one opinion counted three times. A route unused this session gets a one-line
-  probe first; an advertised model is not a working one. Free lenses have no parallelism cap,
-  so a round can go as wide as the work needs.
-- **The owner's exception is recorded, not assumed.** When every non-author family is
-  exhausted, the owner may approve a round on the author's family; the payload carries
-  `independence: { approvedBy, reason }`, the review states it, and a lane cannot approve its
-  own. `reviewloop` refuses the round without it.
-- **Every reviewed change gets two reviews: the author's own, and an
-  independent one** (owner decision, 2026-10-20). The **author review** is a short
-  account written by the author's model in a fresh session that reads the diff: what
-  the change is for, which part is load-bearing, what the author knows is weak, what
-  was deliberately left out, and where the reviewer should look hardest. It is a brief
-  to the reviewer, not a verdict — it approves nothing, and it lives in the PR body so
-  the reviewer and the owner both read it.
-  The **independent review** is the lens round below, on a different family. The
-  lenses read the author review FIRST, so the known-weak list becomes their checklist
-  and the author's claims arrive as claims to test rather than facts to agree with.
-  Order is author review → lenses → fix → both again at the new head.
-- **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
-  has not run it. The parent re-runs the lens where the tool exists and records
-  the disclosure.
-- **Evidence lands in a local, untracked `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**,
-  which `guard` checks before a push. Review reports are never committed: a committed
-  report is a file the reviewer reads instead of the code, it burns the reviewer's
-  credits, and writing the next report changes a tracked file, which makes the
-  previous one stale and asks for another review. The PR carries a summary comment
-  instead — the lens names that ran, the SHA they read, the verdict and the counts.
-- **The lenses return findings; they do not author.** Neither reviewer writes to
-  the worktree or takes the e2e slot (one full `test:e2e` run at a time). The
-  authoring session applies the fixes and re-runs the lens where the tier
-  requires a fresh look, so no lens ever signs off on its own edit.
+Use enabled review routes only. OpenCode is opt-in, not a quota fallback. Prefer an enabled non-author model family; the owner's standing exception allows separate same-family sessions when no independent family is available. Record actual model IDs and the existing `independence: { approvedBy, reason }` payload. The exception waives no review or finding gate. The parent verifies the exact base/head, reviewer session, model and report. Reuse valid exact-tree work. Reports stay untracked in `.scratch/reviews/`; reviewers return findings and never edit the worktree. A bounded fix gets one fresh review of the combined delta and affected callers, with unchanged conclusions carried forward; see `reviewloop`.
 
 ## Merging
 
@@ -214,7 +180,7 @@ never watched again.
 **cheap-to-reverse, no-decision** diff itself once the gate is clean (owner decision,
 2026-10-17, class A); an **expensive-to-reverse** or **decision** diff goes to the owner. The
 gate is written down in [`docs/verification-and-merge-gate.md`](docs/verification-and-merge-gate.md):
-the four reasons, the evidence form (visual vs measured), the owner triggers, and the queue path.
+the four reasons, evidence form, required CI acceptance, owner triggers and queue path.
 
 A **visual** diff is anything a browser can render — `apps/web/**`, i18n/copy, CSS/tokens,
 image assets. It is **not a veto**: it auto-merges too when it is cheap to reverse, but the parent
@@ -222,8 +188,7 @@ must post the before/after table plus the video at the head **first**, so the ow
 after the fact. A diff that is **visual, changes e2e behaviour, or changes wording** owes a fixed
 shape in its PR evidence comment: before/after images, **a GIF that plays inline**, and the
 video link (the mp4) — GitHub strips `<video>`, so the GIF is what plays. The full form is in the
-gate doc §1. Everything is auto-merge eligible when all four reasons hold, every check is green
-or legitimately skipped, and GitHub reports `MERGEABLE` — unless it is expensive to reverse
+gate doc §1. Everything is auto-merge eligible when all four reasons hold, required CI acceptance is green, every other check is green or legitimately skipped, and GitHub reports `MERGEABLE` — unless it is expensive to reverse
 (migrations/schema, `packages/contracts/**`, release/deploy, outside state), encodes a decision,
 or the owner asked to see it. Those go to the owner.
 A **CI change** (anything under `.github/`) always goes to the owner for the diff, whatever
@@ -242,8 +207,8 @@ watch is what reports it: a red check, a new head, a verdict. Never sit in a
 `gh pr checks` loop for a watched PR — that is the same as not watching it, only
 busier. Poll only a PR nobody here watches, and then with `sleep`: start at
 ~5 minutes, then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
-review comment each time, until the verdict appears. While the A/B runs, watch the
-Greptile comment too. Same for CI.
+review comment each time, until the requested verdict appears. Apply configured hosted-review
+policy under [the active paired trial](docs/review-comparison.md). Until the owner explicitly ends it, both current-head verdicts must be 5/5 with no unresolved actionable findings. Request Greptile once per pushed head; missing credit or a missing verdict blocks merge, not local work. Same for CI.
 
 A lane reports by finishing: its completion wakes the session. Stop and let it
 finish rather than polling it.

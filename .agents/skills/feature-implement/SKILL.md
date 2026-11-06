@@ -1,6 +1,6 @@
 ---
 name: feature-implement
-description: "Mandatory lifecycle orchestrator for code-changing issues. Delegates to implement, debate, guard and code-review; the parent session runs capture-wisdom. Read this first when the user says 'work on issue #N' or 'implement this feature'."
+description: "Mandatory lifecycle orchestrator for code-changing issues. Coordinates implementation, risk-sized review and guard; the parent owns publication, merge and wisdom. Read this first when the user says 'work on issue #N' or 'implement this feature'."
 ---
 
 # Feature Implementation Orchestration
@@ -9,9 +9,10 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 Read `docs/engineering-workflow.md` first.
 
 **A lane stops at step 10 (Guard Phase 2).** Steps 11-15 are parent-owned: push, PR,
-CI/review round, the architecture review, the merge decision and wisdom. The lane's
-last act is its **commit**; its completion wakes the parent. It never pushes,
-never opens a PR and never merges.
+CI/review round, architecture review, merge decision and wisdom. The lane hands off
+its verified commit and evidence path; it never pushes, opens a PR or merges.
+Workspace ownership, one-writer handoff, source freeze and reviewer sharing follow
+`AGENTS.md`'s Lanes policy.
 
 **A quiet child is not a stuck child.** A child that is thinking, waiting on a
 long command, or finished touches no files, so file mtimes prove nothing about
@@ -51,14 +52,13 @@ Do not skip or reorder these steps.
 
 ### 1. Tier and base SHA
 
-**Select review tier** from `docs/engineering-workflow.md` (Review tiers), which
-defines the five High-assurance failure modes.
+Select the review tier from `docs/engineering-workflow.md` (Review tiers), which names elevated reachable failure modes.
 
 | Tier | When |
 |------|------|
 | **Lightweight** | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/) |
 | **Standard** | Everything else: code, tests, config, UI, API, skills, docs |
-| **High-assurance** | The diff can violate one of the named failure modes in `docs/engineering-workflow.md` (Review tiers) |
+| **High-assurance** | A concrete reachable failure mode in `docs/engineering-workflow.md` (Review tiers) needs three initial lens sessions |
 
 Record the tier **and a one-line justification** in the design doc (step 2), so
 the choice is reviewable next to the verdict. Pass the tier to `guard`.
@@ -78,41 +78,21 @@ Before writing production code, create a design document:
 .scratch/implementation/<issue-id>-design.md
 ```
 
-The design must specify:
-- The chosen review tier and a one-line justification (step 1)
-- Public API / component interfaces
-- Dependencies
-- Planned tests (unit + Playwright E2E)
-- Implementation risks
+Use this existing design note or PR handoff for the acceptance goal and a concise risk/review rationale; do not add a separate scope-note artifact. Include public interfaces, dependencies, planned tests and risks only when relevant. Compare prototypes early for uncertain visual behavior, not as a default for documents.
 
 ### 3. Implement (TDD + Playwright)
 
-Load `implement` skill. It handles TDD at pre-agreed seams.
+For an issue that changes UI, load `impeccable` and critique the incumbent surface before the first UI edit. Treat Dokan app surfaces as Operate mode. A narrow refinement preserves the incumbent visual identity, behavior, and content; ask the owner before a broader redesign or unrelated copy or claim changes.
 
-**Every feature MUST include:**
+Use the critique to define one bounded improvement pass, then inspect the result once in a batch and confirm at most once after fixes. Before editing UI, read `impeccable/reference/craft-floor.md`. Keep keyboard, RTL, relevant states, and any required before/after element evidence and video/GIF in scope. Impeccable guides design work; it does not replace behavior tests, accessibility checks, code review, or the existing merge gate.
 
-- **Unit tests** for business logic (via `bun run test`; `bun test` in apps/api)
-- **Playwright E2E tests** for the user-facing flow, added to `tests/e2e/`
-- Run `bun run typecheck && bun run test` during implementation
+Follow the skill's setup and supply-chain guards: if its launcher is unavailable or would download code, use its documented direct-context fallback without installing or fetching anything. Do not create PRODUCT.md or DESIGN.md, or run init/doctor, as a prerequisite for a narrow refinement.
 
-If the feature touches the Rust Core (`apps/desktop/src-tauri/src/`), also run:
-```bash
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warnings
-```
+Load `implement` skill. It handles TDD at pre-agreed seams. Write tests for changed behavior and use Playwright when changed UI behavior needs browser proof. Run applicable focused checks from `guard`; the guard defines when CI-final checks can replace routine full local runs. Preserve Rust checks when Rust Core changes.
 
 ### 4. Guard pre-review (Phase 1)
 
-Run `guard` Phase 1 (pre-commit) to confirm everything compiles:
-- `bun run typecheck`
-- `bun run lint`
-- `bun run test`
-
-If the feature touches Rust Core, also run:
-- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`
-- `cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warnings`
-
-Do NOT proceed to reviews until this passes.
+Run `guard` Phase 1. Its check list is canonical; do not copy or narrow it here. Do not begin review until Phase 1 passes.
 
 ### 5. Quality check
 
@@ -124,8 +104,7 @@ Load relevant skills from the workflow's quality check table:
 | Complex logic, state, or edge cases | `diagnosing-bugs` |
 | Domain entities, terms, or data models | `domain-modeling` |
 | Any production code | `code-review` |
-| UI components, pages, or visual design | `frontend-design`, `web-design-guidelines` |
-| Existing UI that needs polish | `redesign-existing-projects` |
+| UI components, pages, or visual design | `impeccable` |
 | Adding/managing shadcn/ui components | `shadcn` |
 | Component API design, prop proliferation | `vercel-composition-patterns` |
 | React rendering performance | `vercel-react-best-practices` |
@@ -136,68 +115,25 @@ Load relevant skills from the workflow's quality check table:
 | React Query / TanStack Query data fetching, cache keys, invalidation | `tanstack-query` |
 | TanStack Router routes, search params, loaders | `tanstack-router`, `tanstack-router-best-practices` |
 
-### 6. Author review — every reviewed change
+Commit the complete reviewable scope before step 6. Pin that committed HEAD for every local reviewer and the renderer; they do not review uncommitted changes. After any review fix, commit it before refreshing affected checks and current-head reviews. Keep source frozen while reviewers read.
 
-Before the lenses: a fresh session on the **author's** model reads the diff and writes the
-author review — the intent, the load-bearing part, what the author knows is weak, what was
-deliberately left out, and where a reviewer should look hardest. It is a brief to the
-reviewer, not a verdict, and it goes in the PR body. The independent lenses read it first.
+### 6. Risk-sized local review
 
-### 7. Debate — every reviewed change (Standard and High-assurance)
+Apply the review tiers in `docs/engineering-workflow.md`. Routine reversible localized changes get one fresh `code-review` context covering Standards, Spec and affected-test adequacy. High-assurance requires three distinct initial lens sessions for a named reachable failure mode. Do not fan out specialists without a concrete unanswered question. The handoff may supply the author account; a fresh author-review session is not required. Verify exact-tree executions and never claim a skipped lens ran.
 
-Load `debate` with resolved base SHA. Saves evidence to
-`.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
+### 7–9. Findings and bounded fixes
 
-Run this lens, `test-audit` and `code-review` on a **different model family** from the
-author, which is the lane's `Model:` trailer, not the parent's. Independence is a family,
-not an ID: free and paid DeepSeek are one opinion. Free first —
-`opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`,
-`opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the cheap paid fallback
-`opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only when the free
-routes are exhausted. With more than one lens, at least two families must appear. Probe a
-route that has not been used this session; an advertised model is not a working one. The
-reviewer is never the author. A lane that reports "I ran the debate" has not run
-it; the parent re-runs the lens and records the disclosure.
-
-### 8. Test audit — Standard and High-assurance
-
-Load `test-audit` with resolved base SHA. Saves evidence to
-`.scratch/reviews/<issue-id>/<head-sha>-test-audit.md`.
-
-**Checks performed:**
-- Edge case coverage (empty states, error states, boundary values)
-- Test quality (meaningful assertions, not just "doesn't crash")
-- E2E coverage (critical user path is tested via Playwright)
-- No shallow/missing tests
-
-### 9. Pre-push self-review (code-review)
-
-Run `code-review` skill against `git diff <base-sha>...HEAD`. Save output to
-`.scratch/reviews/<issue-id>/<head-sha>-code-review.md`.
+Use `.agents/skills/reviewloop/SKILL.md` for renderer mechanics. Every reviewable change requires current-head local reviewloop 5/5 and zero unresolved actionable findings. Verify each finding against source. After a bounded fix, commit it and run affected checks; one fresh reviewer checks the combined delta and direct callers, carrying unchanged prior conclusions forward explicitly. Rerun another lens only for a new concrete risk it covers. A score never excuses an actionable finding. CI acceptance remains pending until publication and is mandatory before merge.
 
 ### 10. Guard pre-push (Phase 2)
 
-Run `guard` Phase 2. That is the CI `checks` job **locally**, not a subset:
+Use the committed, locally reviewed HEAD from steps 6–9 when running `guard` Phase 2 for the local checks below. If verification requires a fix, commit it and refresh the affected checks and stale reviews before handoff. Record post-commit results in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`, not an evidence-only commit. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. A review, push or report does not require local replay output; ordinary TDD still applies.
 
-```bash
-bun run typecheck && bun run lint && bun run skills:check
-bun run test                      # full suite — heavy slot
-bun run --filter @dokan/web build # heavy slot
-bun audit --audit-level=high
-bun scripts/red-on-parent.ts --base <base>
-```
-
-- All of the above pass, plus `bun run test:e2e` when the selector says the diff
-  reaches a spec or the change touches a UI flow
-- `bun scripts/red-on-parent.ts` — every test file the change **adds** is red on
-  the parent, or carries a `red-on-parent-waive` line. New files only.
+Use `guard` Phase 2's risk-sized local checks. The parent explicitly passes the verification mode after checking current activation requirements in `docs/engineering-workflow.md`; inherit that mode without rediscovering activation. Routine full-suite, full-browser, production-build and audit checks are CI-final; run them locally only for a concrete uncertainty or CI coverage gap. A real enforcement regression blocks and goes to the owner; it does not silently restore full local execution. Follow guard's execution reliability rules: pinned absolute cwd/tree, unique durable logs, real output inspection and truthful result states. For relevant browser verification, inspect `bun scripts/e2e-changed.ts --dry-run` before a heavy run and retain its scope decision. The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents and workers, including nested subagents, must not run or delegate it locally. Ordinary failing-first TDD still applies.
 - Review evidence files exist and are not stale
 - Working tree is clean
 
-Do not trade this for a focused test run and a typecheck: that is how a red CI
-run becomes the first place the lane learns a script or the production bundle
-broke. A red check that cannot come from this change is still a red push — record
-it, and take it to the owner instead of calling the branch green.
+Focused local checks satisfy the local gate when they cover changed behavior and direct callers. Record a concrete uncertainty or CI coverage gap before adding a full local run. Record any failed check and resolve it before claiming its gate passed; an unrelated failure is not a pass.
 
 **Evidence staleness check:**
 - Extract SHA from evidence filenames in `.scratch/reviews/<issue-id>/`
@@ -208,7 +144,7 @@ it, and take it to the owner instead of calling the branch green.
 
 ### 11. Report to the parent — the parent owns push and PR
 
-**A lane stops at step 10.** Its last act is its **commit**. It does not push, does
+**A lane stops after step 10 verifies its committed HEAD.** It reports that SHA and the local verification evidence path to the parent. It does not push, does
 not open a PR and does not merge — running any command below is a breach of its
 authority boundary, not help. The parent session pushes the lane's branch, opens
 the PR and drives the review rounds.
@@ -225,44 +161,14 @@ gh pr create --base develop \
   --body "<what changed, how it was verified, and the SHA>"
 ```
 
-After opening the PR, the parent publishes a concise review-evidence summary as a
-PR comment: the three lens names, the SHA they read, the verdict and the counts.
+After opening the PR, the parent publishes selected local review executions, exact SHA, verdict, finding dispositions and counts in the evidence summary.
 The reports themselves stay local — `.scratch/reviews/` is gitignored, and a
 committed report makes the reviewer judge our notes instead of our code, burns
 credits, and makes the previous report stale.
 
-### 12. CI + review round — parent-owned
+### 12. CI and hosted review — parent-owned
 
-`.github/workflows/ci.yml` runs three jobs on every PR to
-`develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
-(cargo test + clippy). A PR this thread opened is **watched**, and the watch is
-what reports the run — do not sit in a `gh pr checks` loop for it. Poll only a PR
-nobody here watches, and never poll a lane.
-A lane cannot trigger CI or the review round at all, because it cannot push
-(step 11). This wait belongs to the parent, never the lane.
-
-Then the parent runs the review round with `reviewloop`:
-
-- Load `.agents/skills/reviewloop/SKILL.md`, pin the head, write the findings
-  payload, and render. The renderer refuses a lens on the author's family and
-  computes the score as a ceiling.
-- Verify each finding against the code, then fix or dismiss it with a reason.
-- Re-run on the new head until the renderer exits 0 at 5/5.
-
-**Run both reviewloop and Greptile until the owner ends the trial.** Follow the
-[comparison protocol](../../../docs/review-comparison.md): pin the same boundary,
-start both when their prerequisites allow, preserve unexposed first-pass findings,
-and publish verified findings, time and observed cost per head. Request hosted
-Greptile once per head after pushing, unless an automatic run already covers it.
-Both current-head reviews must be 5/5 with no actionable findings. Investigate
-any disagreement; neither score replaces or averages the other.
-
-**Verify every finding against the code before fixing it.** A review comment can
-re-list findings a later commit already fixed. Read the cited lines, and when a
-finding is stale, close it on the PR with the line evidence instead of
-re-implementing the fix.
-
-Repeat until reviewloop is 5/5 with no actionable findings.
+The parent publishes the branch and verifies `.github/workflows/ci.yml`'s required checks on the current head. `CI acceptance` must pass before merge. This policy PR may be published with that check pending after focused local proof and review; it is not merge-ready. The parent also owns the [paired hosted-review gate](../../../docs/review-comparison.md). Until the owner explicitly ends the trial, both current-head verdicts must be 5/5 with no unresolved actionable findings. Request Greptile once per pushed head; a missing verdict blocks merge, including when credit is unavailable. This does not restart or duplicate local lens executions. Reuse valid exact-tree executions and resolve every actionable finding against source.
 
 ### 13. Architecture review — parent-owned, only after a 5/5
 
@@ -286,33 +192,7 @@ candidate list, no token spend beyond the conversation.
 interface, run the full pass and write the report to the OS temp dir — never into the repo. If it
 does none of those, record the one-line form instead: `architecture: no seam moved`.
 
-**What it finds is a loop, not a one-shot.** A finding has exactly three ways out:
-
-```
-reviewloop 5/5?  ── no ──→ fix ──→ ask once more at the new head
-      ↓ yes
-architecture review (this diff only)
-      ↓
-finding about this diff?
-      ├─ nothing ────→ merge
-      ├─ fixable here ──→ fix → push → reviewloop 5/5 → review again (two rounds max)
-      └─ too big for this PR ──→ its own issue + its own PR/lane → merge this one on its 5/5
-```
-
-**Small fix here, big fix elsewhere.** A finding the diff can absorb is fixed on this branch; the
-head moves, so reviewloop is asked once more. A finding that needs its own PR — a seam move, a
-deepening across several modules — does not hold this PR hostage: it gets an issue and a lane, and
-this PR merges on the 5/5 it already has. What it does not do is vanish: read the evidence comment
-before merging and confirm the follow-up issue number is in it.
-
-**Stop rule: two rounds, then the owner.** A second review that still finds something is a
-disagreement about the design, not a detail — the owner decides. Round three spends review budget
-and never converges.
-
-**Scope is always the diff under review.** A finding about older code becomes an issue, never a loop
-iteration, or the loop never terminates. A review that finds nothing about this diff costs nothing.
-The report ends by asking the owner which candidate to explore, so carry its path and the candidate
-list into the PR evidence comment.
+Resolve architecture findings under the same current-head 5/5 and blocker rules in `docs/engineering-workflow.md`. A substantial independent finding may move to a separate issue only when this PR does not depend on it.
 
 **The vocabulary is always on, like TDD.** `codebase-design` supplies the words for the design
 conversation and `domain-modeling` keeps `CONTEXT.md` current while the code is written — not at the
@@ -339,7 +219,7 @@ is worth folding, a candidate that only consolidates is an issue and never a fix
 The parent runs `guard` Phase 3. Verifies:
 - Checks — local gates green, plus CI when the branch has it
 - PR description — accurate and complete
-- Any deferred items — documented with follow-up issues
+- Only reviewer-accepted nonblocking follow-ups, with issue links; no valid blocker is deferred
 
 There is **no lane wisdom step.** A lane states in its commit message body which lessons it
 applied and carries any candidate lesson there; the parent writes
@@ -348,26 +228,21 @@ occurred more than once.
 
 ### 15. Report to the owner — parent-owned
 
-The parent reports: PR link, check status (local + CI), reviewloop score (and the
-Greptile score while the A/B runs), any deferred items.
+The parent reports: PR link, local and CI check status, the configured review verdicts, finding dispositions and reviewer-accepted nonblocking follow-ups.
 
 ## Merge rules
 
 **Parent-only — a lane never merges at all.** The class decides who merges: a
 cheap-to-reverse diff with no decision in it merges itself once the gate is
 clean, and an expensive-to-reverse or decision diff waits for the owner's word.
-A 5/5 reviewloop verdict with no findings, anchored to the current head SHA, and
-every CI check green is the **bar to merge at all** — auto-merging below it is
-not allowed, and a REFUSED verdict never merges. While the A/B runs, a Greptile
-verdict that disagrees is investigated before the merge.
+A current-head local 5/5 with no unresolved actionable findings and green, enforced CI acceptance are mandatory for merge. An unresolved actionable finding blocks merge at any score. The [paired hosted-review gate](../../../docs/review-comparison.md) remains active until the owner explicitly ends it; a missing hosted verdict blocks merge.
 
 The gate is [`docs/verification-and-merge-gate.md`](../../../docs/verification-and-merge-gate.md):
 the four reasons, the evidence form (visual vs measured), the AUTO/OWNER/REFUSED
 decision, and the queue path when it cannot merge now. `crew-mergeable.ts --selftest`
 proves the scripted half.
 
-Ask, and wait. Do not treat a clean review as consent, and do not merge "since it
-is green anyway".
+Apply the four-part merge gate in `docs/verification-and-merge-gate.md`. A clean review is not a substitute for its CI, mergeability, evidence or owner-trigger checks.
 
 **Parent-only command:**
 ```bash
@@ -386,10 +261,8 @@ it merges, whatever the review says.
 | Code not written | Step 3 — implement |
 | Guard Phase 1 not run | Step 4 — guard pre-review |
 | No quality check | Step 5 — quality check |
-| No author review | Step 6 — author review |
-| No debate | Step 7 — debate |
-| No test audit | Step 8 — test audit |
-| No code-review | Step 9 — code-review |
+| Local review missing | Risk-sized local review under the workflow policy |
+| Local review payload missing or stale | Steps 7–9 before Guard Phase 2 |
 | Guard Phase 2 not run | Step 10 — guard pre-push |
 | Lane done, not pushed | Parent only — Step 11 (push + PR) |
 | Review round not clean | Parent only — Step 12 (CI + review round) |

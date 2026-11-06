@@ -10,6 +10,7 @@ import readline from "node:readline";
 import { Database } from "bun:sqlite";
 
 import { readVaultBackupBundle } from "./backup";
+import { backupFilePath } from "../backups";
 
 /**
  * The desktop shell's pre-boot broker (DOKAN_VAULT_STDIN=1) over its real
@@ -218,6 +219,103 @@ describe("desktop shell vault broker", () => {
     // brand-new shop has a valid self-contained backup without another unlock
     const backupFile = await waitForBackupFile();
     expect(readVaultBackupBundle(fs.readFileSync(backupFile))).toBeDefined();
+  }, HEAVY_TEST_TIMEOUT_MS);
+
+  it("preserves today's unsupported plaintext history through first-run setup and its daily backup", async () => {
+    const backup = backupFilePath(dir);
+    fs.mkdirSync(path.dirname(backup), { recursive: true });
+    const historical = new Database(backup);
+    historical.exec("CREATE TABLE recovery_history (note TEXT); INSERT INTO recovery_history VALUES ('history before first setup'); PRAGMA user_version = 2147483647;");
+    historical.close();
+    const original = fs.readFileSync(backup);
+    // The real HTTP setup response waits for afterSetup, unlike the broker's
+    // early recovery-key reply, so it proves the daily-backup attempt finished.
+    child = spawn("bun", ["src/main.ts"], {
+      cwd: path.join(import.meta.dir, "..", "..", ".."),
+      env: { ...brokerEnvironment(dir, port), DOKAN_VAULT_STDIN: "0" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    await waitForHealth(port);
+    const response = await fetch(`http://127.0.0.1:${port}/api/vault/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(response.ok).toBe(true);
+    expect(await response.json()).toMatchObject({ ok: true, plaintextStatus: "remaining", plaintextRemaining: [backup] });
+    expect(fs.readFileSync(backup).equals(original)).toBe(true);
+    const preserved = new Database(backup, { readonly: true });
+    try {
+      expect(preserved.query("SELECT note FROM recovery_history").all()).toEqual([{ note: "history before first setup" }]);
+    } finally {
+      preserved.close();
+    }
+  }, HEAVY_TEST_TIMEOUT_MS);
+
+  it("preserves today's unsupported plaintext history after unlock and a credential change", async () => {
+    child = spawnBroker(dir, port);
+    const setupLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    await setupLine();
+    send(child, "ack");
+    await waitForBackupFile();
+    await stopAndWait();
+
+    const backup = backupFilePath(dir);
+    fs.unlinkSync(backup);
+    const historical = new Database(backup);
+    historical.exec("CREATE TABLE recovery_history (note TEXT); INSERT INTO recovery_history VALUES ('history absent from live shop'); PRAGMA user_version = 2147483647;");
+    historical.close();
+    const original = fs.readFileSync(backup);
+
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    send(child, JSON.stringify({ action: "unlock", passphrase: "correct horse battery" }));
+    // SAFETY: the real broker's successful unlock reply carries its session token.
+    const reply = JSON.parse(await nextLine()) as { ok: boolean; sessionToken: string };
+    expect(reply.ok).toBe(true);
+    expect(reply.sessionToken).toBeString();
+    expect(fs.readFileSync(backup).equals(original)).toBe(true);
+
+    const changed = await fetch(`http://127.0.0.1:${port}/api/vault/change-passphrase`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-vault-session": reply.sessionToken },
+      body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "a different strong passphrase" }),
+    });
+    expect(changed.ok).toBe(true);
+    expect(fs.readFileSync(backup).equals(original)).toBe(true);
+    const restored = new Database(backup, { readonly: true });
+    try {
+      expect(restored.query("SELECT note FROM recovery_history").all()).toEqual([{ note: "history absent from live shop" }]);
+    } finally {
+      restored.close();
+    }
+  }, HEAVY_TEST_TIMEOUT_MS);
+
+  it("keeps unlock available and logs unknown cleanup when backup inventory becomes unreadable", async () => {
+    child = spawnBroker(dir, port);
+    const setupLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    await setupLine();
+    send(child, "ack");
+    await waitForBackupFile();
+    await stopAndWait();
+
+    child = spawnBroker(dir, port);
+    let errors = "";
+    child.stderr.on("data", (chunk) => { errors += String(chunk); });
+    const nextLine = lineReader(child);
+    await waitForHealth(port);
+    const backupsDir = path.join(dir, "backups");
+    fs.renameSync(backupsDir, path.join(dir, "preserved-backups"));
+    fs.writeFileSync(backupsDir, "temporarily unreadable backup inventory");
+    send(child, JSON.stringify({ action: "unlock", passphrase: "correct horse battery" }));
+    const reply: unknown = JSON.parse(await nextLine());
+    expect(reply).toMatchObject({ ok: true });
+    expect(errors).toContain("VAULT_PLAINTEXT_CLEANUP_UNKNOWN");
+    expect(fs.readFileSync(backupsDir, "utf8")).toBe("temporarily unreadable backup inventory");
+    const response = await fetch(`http://127.0.0.1:${port}/api/vault/status`);
+    expect(await response.json()).toMatchObject({ state: "unlocked" });
   }, HEAVY_TEST_TIMEOUT_MS);
 
   it("refuses a wrong passphrase with the Arabic code and exits without serving", async () => {

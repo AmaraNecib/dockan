@@ -34,6 +34,9 @@ const APP_HOST = resolveAppHost(process.env);
 const e2eData = process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data");
 
 export default defineConfig({
+  reporter: process.env.BROWSER_CI_MANIFEST_DIR
+    ? [["line"], ["./scripts/browser-ci-manifest-reporter.ts"]]
+    : undefined,
   testDir: "./tests/e2e",
   timeout: 30_000,
   retries: 0,

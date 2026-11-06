@@ -2,6 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { actAndAck } from "./rpc-helpers";
+import type { Invoice, Party } from "../../packages/contracts/src/core";
 
 /**
  * Customers & suppliers (issue 120). One flow proves the whole chain:
@@ -78,6 +80,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await page.getByTestId("sale-customer-create").click();
   await page.getByTestId("sale-customer-create-phone").fill(customerPhone);
   await page.getByTestId("sale-customer-create-save").click();
+  await expect(page.getByTestId("sale-customer-create-save")).not.toBeVisible();
   await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
   await page.getByTestId("sale-open-picker").click();
   await page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
@@ -234,14 +237,16 @@ test("customer settle in place: a percentage payment spread over unpaid invoices
   await expect(page.getByTestId("sale-form")).toBeVisible();
   await page.getByTestId("sale-customer").fill(customerName);
   await page.getByTestId("sale-customer-create").click();
-  await page.getByTestId("sale-customer-create-save").click();
+  const createdCustomer = await actAndAck<Party>(page, "customersCreate", () => page.getByTestId("sale-customer-create-save").click());
+  await expect(page.getByTestId("sale-customer-create-save")).not.toBeVisible();
   await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
   await page.getByTestId("sale-open-picker").click();
   await page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
   await page.getByTestId("picker-dialog").getByRole("button", { name: new RegExp(itemName) }).first().click();
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`).fill("2");
   await page.getByTestId("sale-paid").fill("0");
-  await page.getByTestId("sale-save").click();
+  const firstSale = await actAndAck<Invoice>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
+  expect(firstSale.counterpartyId).toBe(createdCustomer.id);
   const firstText = (await page.getByTestId("sale-saved-number").textContent()) ?? "";
   const olderInvoice = /INV-\d+/.exec(firstText)?.[0] ?? "";
   expect(olderInvoice).not.toBe("");

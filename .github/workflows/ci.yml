@@ -365,11 +365,24 @@ jobs:
           # specs). Word-split below is intended: each mapped path is one
           # Playwright positional filter.
           E2E_SPECS: ${{ needs.changes.outputs.e2e_specs }}
+          # Unique per execution attempt; the reporter writes only beneath this path.
+          BROWSER_CI_MANIFEST_DIR: e2e-manifest-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -o pipefail
           mkdir -p e2e-logs
           # shellcheck disable=SC2086 -- the spec list must word-split.
           bun run test:e2e $E2E_SPECS 2>&1 | tee e2e-logs/playwright.log
+
+      - name: Upload e2e success manifest
+        if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-e2e-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e-manifest-${{ github.run_id }}-${{ github.run_attempt }}/manifest.json
+          if-no-files-found: warn
+          retention-days: 5
+          compression-level: 9
 
       # Evidence, not a report: a green suite leaves nothing worth 5 days of
       # storage, so success is the one outcome that skips this. #197.
@@ -478,3 +491,43 @@ jobs:
       - name: Rust clippy
         working-directory: apps/desktop/src-tauri
         run: cargo clippy -- -D warnings
+
+  # Stable branch-protection target. This reports success only after every
+  # applicable job succeeds; a skip is accepted only when the changes job
+  # completed and explicitly selected that job's documented skip condition.
+  acceptance:
+    name: CI acceptance
+    needs: [changes, checks, e2e, rust]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require successful applicable checks
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          E2E_MODE: ${{ needs.changes.outputs.e2e_mode }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          RUST_REQUIRED: ${{ needs.changes.outputs.rust }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CHANGES_RESULT" = success || { echo "changes job: $CHANGES_RESULT" >&2; exit 1; }
+          test "$CHECKS_RESULT" = success || { echo "checks job: $CHECKS_RESULT" >&2; exit 1; }
+          if [ "$E2E_RESULT" = success ]; then
+            :
+          elif [ "$E2E_RESULT" = skipped ] && [ "$CHANGES_RESULT" = success ] && [ "$E2E_MODE" = skip ]; then
+            echo "e2e skipped by successful selector: $E2E_MODE"
+          else
+            echo "e2e job: $E2E_RESULT (selector: ${E2E_MODE:-unknown})" >&2
+            exit 1
+          fi
+          if [ "$RUST_RESULT" = success ]; then
+            :
+          elif [ "$RUST_RESULT" = skipped ] && [ "$CHANGES_RESULT" = success ] && [ "$RUST_REQUIRED" = false ]; then
+            echo "rust skipped by successful path decision: $RUST_REQUIRED"
+          else
+            echo "rust job: $RUST_RESULT (selector: ${RUST_REQUIRED:-unknown})" >&2
+            exit 1
+          fi

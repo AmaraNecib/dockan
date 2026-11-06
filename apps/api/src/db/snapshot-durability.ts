@@ -388,3 +388,27 @@ export function readVerifiedSnapshot(
   if (verdict.outcome !== "mine") throw snapshotRefusal(verdict, clause);
   return bytes;
 }
+
+/**
+ * Preflight before the first backup flush. A missing snapshot is valid only at
+ * this point; the flush creates it and the caller still verifies the resulting
+ * file with `readVerifiedSnapshot` before bundling. Every present file uses the
+ * same ownership table as the strict reader. Only ENOENT means absent; EACCES,
+ * EISDIR and other I/O failures remain errors.
+ */
+export function readVerifiedSnapshotIfPresent(
+  snapshotPath: string,
+  stamp: string | undefined,
+  clause: string,
+): Buffer | undefined {
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(snapshotPath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const verdict = fromEnvelope(bytes, stamp);
+  if (verdict.outcome !== "mine") throw snapshotRefusal(verdict, clause);
+  return bytes;
+}

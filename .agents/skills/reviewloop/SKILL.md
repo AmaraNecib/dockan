@@ -1,10 +1,9 @@
 ---
 name: reviewloop
 description: >
-  Reviews a branch or PR without Greptile: runs the debate, test-audit and
-  code-review lenses on model families other than the author's, extracts their
-  findings, and renders the Greptile-shaped summary, inline comments and
-  confidence score the rest of the workflow already reads. Use for a lane's
+  Reviews a branch or PR without Greptile: runs the risk-sized local review selected
+  for the change, extracts findings from required lenses, and renders the
+  Greptile-shaped summary, inline comments and confidence score. Use for a lane's
   review round, to replace a Greptile review, when a new head invalidates the
   evidence, or when the user asks for a review comment or confidence score.
 ---
@@ -25,9 +24,7 @@ enforces both:
 - **The score is a ceiling.** It is computed from the findings; an override can
   lower it with a reason and cannot raise it.
 
-Use this for the review round in `feature-implement` step 12. The lens steps before
-it stay where they are, unless the tier skipped them and this run is the only
-review.
+Use this for the current-head review in `feature-implement`. It executes the risk-sized local review selected in `docs/engineering-workflow.md`; it never replaces local review with hosted-only review.
 
 ## Modes
 
@@ -36,11 +33,8 @@ review.
 | local (default) | any lane | `.scratch/reviews/<issue>/` only; no push, no PR, no GitHub write |
 | PR | parent only | the rendered body as a PR comment, inline payloads as review comments, a check run on the head |
 
-A lane never pushes and never posts. It stops at the local half of step 7 and
-hands the head SHA and the renderer's exit code to the parent. Local artifacts
-from a lane are drafts. Before pushing, the parent reruns the required lenses,
-verifies their findings and renders current evidence. Step 12 publishes that
-review and handles hosted findings; it is not the first local render.
+A lane never pushes and never posts. It hands the head SHA and renderer result to the parent. Local artifacts
+from a lane are unverified until the parent checks the exact base/head, reviewer session, actual model family, provenance and report for each required lens. A valid worker execution on the exact tree is reused, not automatically duplicated. The parent verifies findings and renders current evidence. Step 12 publishes the local review and handles hosted findings.
 
 ## Steps
 
@@ -64,57 +58,48 @@ git log -1 --format=%B      # the Model: trailer, e.g. "Model: pi/opencode-go/de
 A hand-written commit carries no trailer; then the author is human and every
 model is independent. Record `"authorModel": "human"`.
 
-Pick one model per lens from the ladder, free first:
+Pick one model per lens from the session's enabled review routes. Use the provider/model
+catalogue, not a hard-coded provider ladder.
 
-| Rung | Models |
-|---|---|
-| Free | `opencode/deepseek-v4.1-flash-free`, `opencode/glm-5.3-flash-free`, `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` |
-| Paid, only when the free routes are exhausted | `opencode-go/deepseek-v4.1-flash` ($0.15/M), `opencode-go/mimo-v2.6-flash` ($0.14/M) |
+**OpenCode review is optional.** `opencode` and `opencode-go` are opt-in routes, even when their
+models appear in the catalogue. Run them only when the owner requests or explicitly enables
+them for the current scope. Do not automatically probe them, install a CLI, switch after a
+quota failure, or ask the owner to opt in for each PR. Their absence does not make the review
+incomplete. An existing owner decision remains in force for its stated scope.
 
-Independence is a family, not an ID: `deepseek-v4.1-flash-free` and
-`deepseek-v4.1-flash` are the same opinion. The author's family never reviews,
-and with two or more lenses at least two families must appear. With a DeepSeek
-author, GLM, MiMo and Beam are the free choices.
+Independence is a family, not an ID: free and paid DeepSeek are the same family. Use a family
+other than the author's, and at least two families across multiple lenses, unless the owner
+approved an exception below. Evaluate availability among enabled routes only. A catalogue
+entry is neither permission to use a provider nor proof that it works.
 
-An advertised route is not always a working one: a model this session has not
-answered with recently gets a one-line probe before the round.
+For an enabled route that has not answered recently, run a one-line probe before the round.
+A failed probe stops that route, not the other enabled routes.
 
-Run the lenses the parent scoped; the default at Standard and above is all three
-(`debate`, `test-audit`, `code-review`). One or two are enough when the change
-touches a single axis, and the payload records exactly what ran, so the artifact
-never claims a lens that did not. A lens that genuinely has nothing to read is
-`skipped` with the reason, never silently dropped; all three skipped is not a
-round, and the renderer refuses it.
+Select depth from `docs/engineering-workflow.md`. A routine reversible localized change gets one fresh `code-review` session covering Standards, Spec and affected-test adequacy; mark unused lenses skipped with a reason in the existing payload. High-assurance gets separate initial `debate`, `test-audit` and `code-review` sessions for a named reachable risk. Do not launch specialist reviewers without a concrete question. Record only executions that actually happened. The renderer accepts explicit skips but refuses an all-skipped round.
 
-When every non-author family is exhausted, a round on the author's family is
-possible only with the owner's explicit approval, recorded in the payload:
+**Standing owner approval:** when OpenCode is unavailable, same-family review is allowed
+without asking again per PR. Unavailable includes disabled, not opted in, quota-limited
+or failed routes. Optional probes are not required. Prefer an enabled working non-author
+family; otherwise use separate reviewer sessions. This approval also covers using one
+family across multiple lenses. Disclose that these are separate executions, not
+model-family-independent reviews, and record the actual availability reason:
 
 ```json
-"independence": { "approvedBy": "owner", "reason": "only DeepSeek is available this week" }
+"independence": { "approvedBy": "owner", "reason": "Standing owner approval: OpenCode unavailable; same-family separate-session review" }
 ```
 
-Try every other family before asking. A lane cannot grant this approval to itself.
-The renderer prints the exception in the review and writes
+A lane records this owner approval, not its own. It waives neither required lenses nor
+current-head 5/5, finding resolution, verification or merge gates. For a condition outside
+this standing scope, obtain explicit owner approval. The renderer prints the exception in the review and writes
 `<!-- reviewloop_independence_exception -->` into the body.
 
 **Done when** the chosen pairs pass the guard in step 4.
 
-### 3. Run the lenses
+### 3. Run the selected lenses
 
-Run `debate`, then `test-audit`, then `code-review`, each as its own sub-agent.
-Only the critic and defender inside `debate`, and the specialists inside each
-other lens, may run in parallel. Each lens uses its chosen model, loads its skill,
-and saves its report to `.scratch/reviews/<issue>/<head>-<lens>.md` with the full
-head SHA in the name. The lens skill spawns its own sub-agents; the
-model you name is the one they run on. The lenses:
+Run the sessions selected by the risk tier. Each is a distinct reviewer execution with its actual model and report at `.scratch/reviews/<issue>/<head>-<lens>.md`. `code-review` covers Standards and Spec; routine reviews also assess affected-test adequacy. Debate's critic and defender are internal debate roles, not extra lens claims. Specialist fanout requires a named unanswered question.
 
-- `debate` — critic and defender, for design and failure modes.
-- `test-audit` — edge cases, coverage, test quality.
-- `code-review` — standards and spec, two axes reported separately.
-
-Each lens reads the author review first, if one exists, and treats its "what the
-author knows is weak" list as a checklist rather than a verdict. Every report
-opens with two lines, nothing between them:
+Each lens reads the existing author account first, if present. Every report opens with two lines, nothing between them:
 
 ```
 Reviewer model: <provider/model that actually ran>
@@ -201,8 +186,8 @@ an independence exception, add
 `"independence": { "approvedBy": "owner", "reason": "..." }` at the top level.
 
 Before rendering, account for every report finding in `findings` or
-`summary.dismissed`. A lane may extract a local draft; the parent repeats that
-verification before pushing. The
+`summary.dismissed`. A lane may extract a local draft; the parent verifies each
+execution and finding before pushing. A worker claim alone is not evidence. The
 renderer does not reconcile report prose with the payload or authenticate an
 `approvedBy` string. It records the owner's decision, not proof of approval.
 
@@ -236,40 +221,23 @@ as reviewed even when it has no added line. Exit 2 also covers invalid JSON, wro
 an input failure cannot look like "findings remain". A raising score override,
 invalid flag or unsupported filename also exits 2, as does a failed artifact write.
 
-### 5. Verify, then fix or dismiss
+### 5. Verify and resolve findings
 
-Every finding is a claim, not a fact. Open the file at the line and confirm the
-code still says what the lens says it says. Then either fix it, or dismiss it
-with a reason in `summary.dismissed` naming what you read that made it safe.
+Every finding is a claim. Verify it against the cited code. Fix valid blockers when bounded; hold dependent work for substantial blockers. Dispute stale or false findings with code evidence and reviewer resolution. A finding from one lens remains actionable even when others missed it.
 
-A finding one lens raised and the others missed is still a finding. Verify it
-against the code; silence is not a second opinion.
+The score is not enough: no unresolved actionable finding may remain at any score. Do not hide one in `summary.dismissed` or override it numerically. A P2 still blocks the mandated clean-result gate until resolved or the reviewer confirms it is non-actionable.
 
-A successful test run is not a clean verdict while an unverified finding remains.
+**Done when** every finding has a verified resolution and any dispute has reviewer resolution.
 
-**Done when** every finding has a verdict, and every dismissal has a reason.
+### 6. Review a new head
 
-### 6. Loop on the new head
+A code change makes prior reports stale. Commit the fix, rerun checks it affects, then use one fresh reviewer session to inspect the combined delta and direct affected callers. The reviewer reads prior findings and explicitly carries forward unchanged conclusions. Run another lens only if the fix creates a concrete risk that lens covers. Do not restart every lens after a bounded fix. After three fix rounds, reassess the design; do not continue an unchanged cycle. Render against the exact new head. A 5/5 with zero unresolved actionable findings remains mandatory.
 
-Any fix moves the head, and evidence for the old head is stale. Re-run steps 2-5
-on the new head: the lenses, not just the renderer.
-
-Stop at **5/5 with no P0 or P1**, or after five iterations. A fifth round that
-still finds something is a finding for the user, not for a sixth round.
-
-**Done when** the renderer exits 0, or you report the remaining findings and the
-iteration count.
+**Done when** current-head evidence records the fresh fix review, all unchanged conclusions are accounted for, and the renderer reports 5/5 with no actionable finding.
 
 ### 7. Report
 
-During the trial, run this review beside Greptile using the
-[comparison protocol](../../../docs/review-comparison.md). Preserve each system's
-unexposed findings and record verified defects, false positives, time and cost.
-The parent checks both current-head verdicts before merging. Continue across PRs
-until the owner decides which path to keep; this renderer does not score Greptile.
-
-Local mode: the head SHA, the score, the finding counts, and the paths the
-renderer wrote. Nothing is committed.
+Local mode returns the head SHA, score, finding counts and artifact paths. Reports stay untracked.
 
 PR mode, parent only: follow the [native finding-thread protocol](../../../docs/review-findings.md).
 Post `<head>-review.json` as one native GitHub review pinned by `commit_id`, with
@@ -320,7 +288,7 @@ P1 with five P2s scored 4/5 — not Greptile's judgement, which scored the same 
   `independence`; the review states it and the body carries a marker. A lane
   cannot approve its own exception.
 - A lens reports; it does not edit the worktree and does not take the e2e slot.
-- A lane cannot certify its own lens. The parent re-runs it and records that.
+- A worker's claim alone does not certify a lens. The parent verifies the exact-tree execution, actual reviewer session/model and report. Reuse a valid execution; rerun only when evidence is absent, invalid or stale.
 - `.agents/wisdom/` is read before the round and never written by a lane.
 
 ### What is committed

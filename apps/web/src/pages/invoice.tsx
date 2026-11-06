@@ -1,5 +1,6 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -18,7 +19,7 @@ import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { invalidatePartyMoney, partyBalanceInput, partyBalanceQueryOptions } from "../lib/party-cache-key";
 import { LEDGER_REFETCH_MS } from "../lib/freshness";
 import { combineBusinessDateTime, formatDateTime } from "../lib/dates";
@@ -67,6 +68,7 @@ function firstEnabledField(form: HTMLFormElement | null): HTMLInputElement | nul
  * full history + record-payment form, unit-testable without a router.
  */
 export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   // #162 — the instalment is a share of this invoice's remaining, so both the
@@ -376,6 +378,7 @@ export function customCashError(draft: string, valueTotal: number): "INVALID" | 
 }
 
 export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoice: InvoiceDetail; refreshMs?: number }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   // complete per-invoice history: the form's remaining quantity and refund
@@ -404,7 +407,7 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
   const partyDebtQuery = useQuery(
     partyBalanceQueryOptions(
       { kind: "SALE", counterpartyId: invoice.counterpartyId, counterpartyName: invoice.counterpartyName },
-      { enabled: invoice.kind === "SALE", refreshMs },
+      { enabled: invoice.kind === "SALE", refreshMs, rpc: orpc },
     ),
   );
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -1039,6 +1042,7 @@ export function InvoiceNotes({ notes }: { notes: string | null }) {
 }
 
 export function InvoicePage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const { invoiceId } = useParams({ from: "/invoices/$invoiceId" });
 
@@ -1083,7 +1087,16 @@ export function InvoicePage() {
         <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceNumber")}</dt><dd data-testid="invoice-number">{invoice.invoiceNumber}</dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceKind")}</dt><dd data-testid="invoice-kind">{t(`invoiceKind_${invoice.kind}`)}</dd></div>
-          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">{invoice.counterpartyName ?? "—"}</dd></div>
+          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">
+            {invoice.counterpartyId !== null && invoice.counterpartyId !== "" ? (
+              <Link to={invoice.kind === "SALE" ? "/customers/$partyId" : "/suppliers/$partyId"} params={{ partyId: invoice.counterpartyId }} className="rounded font-medium underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+                {/* Display-only fallback: whitespace, default-ignorable, control (Cc), and format
+                    (Cf) characters alone cannot name a link. Count content without stripping
+                    stored code points from visible names, including Arabic shaping and emoji. */}
+                {/[^\s\p{Default_Ignorable_Code_Point}\p{Cc}\p{Cf}]/u.test(invoice.counterpartyName ?? "") ? invoice.counterpartyName : t("partyDetails")}
+              </Link>
+            ) : invoice.counterpartyName ?? "—"}
+          </dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceDateTime")}</dt><dd data-testid="invoice-date">{formatDateTime(combineBusinessDateTime(invoice.invoiceDate, invoice.createdAt))}</dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceTotal")}</dt><dd data-testid="invoice-total"><Amount value={invoice.totalAmount} /></dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid"><Amount value={invoice.paidAmount} /></dd></div>

@@ -13,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { DateField } from "@/components/ui/date-field";
 
 import { tError } from "../lib/i18n";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { editDateBound, formatDate, OPEN_BOUND, type DateBound } from "../lib/dates";
 
 /**
@@ -43,6 +43,7 @@ function toPreset(value: string): ReportRangePreset {
  */
 
 export function ReportsPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
   const [customFrom, setCustomFrom] = useState<DateBound>(OPEN_BOUND);

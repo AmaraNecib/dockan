@@ -3,12 +3,15 @@ import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
-import { useSession, authClient } from "@/lib/auth-client";
+import { authClient } from "@/lib/auth-client";
+import { useCurrentOwner } from "./account-menu";
 import type { MessageKey } from "@/lib/i18n";
 import { logoutAndReload } from "@/lib/logout";
 import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { SLOW_REFETCH_MS } from "@/lib/freshness";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { focusInvoiceEntry } from "@/hooks/use-invoice-entry-shortcut";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 import { Button } from "@/components/ui/button";
 import { AppSidebar, type ShellUser } from "./app-sidebar";
 import { DiscardDraftDialog } from "./discard-draft-dialog";
@@ -41,7 +44,7 @@ interface NewSaleActionProps {
 function NewSaleAction({ activeKey }: NewSaleActionProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { draftDirty, savePending } = useSaleDraft();
+  const { draftDirtyRef, savePending, savePendingRef } = useSaleDraft();
   const [discardOpen, setDiscardOpen] = useState(false);
 
   function goToNewSale() {
@@ -53,8 +56,8 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
   }
 
   function handleNewSale() {
-    if (savePending) return;
-    if (draftDirty) {
+    if (savePendingRef.current) return;
+    if (draftDirtyRef.current) {
       setDiscardOpen(true);
       return;
     }
@@ -77,6 +80,7 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
         open={discardOpen}
         onOpenChange={setDiscardOpen}
         onConfirm={() => {
+          if (savePendingRef.current) return;
           setDiscardOpen(false);
           goToNewSale();
         }}
@@ -111,11 +115,14 @@ function DiscardSaleDialog({ open, onOpenChange, onConfirm }: DiscardSaleDialogP
 
 export function AppShell() {
   const { t } = useTranslation();
-  const session = useSession();
-  const user: ShellUser | null = session.data?.user
-    ? { name: session.data.user.name ?? null, phone: session.data.user.phoneNumber ?? null }
+  const owner = useCurrentOwner();
+  const user: ShellUser | null = owner.profile
+    ? { name: owner.profile.name, phone: null }
     : null;
 
+  const navigate = useNavigate();
+  const { draftDirtyRef, savePendingRef } = useSaleDraft();
+  const [purchaseDiscardOpen, setPurchaseDiscardOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
@@ -141,7 +148,28 @@ export function AppShell() {
     else if (helpOpen) setHelpOpen(false);
   }
 
+  function startSale() {
+    if (savePendingRef.current) return;
+    if (activeKey === "sale") focusInvoiceEntry("sale");
+    else void navigate({ to: "/sale" });
+  }
+
+  function startPurchase() {
+    if (savePendingRef.current) return;
+    if (activeKey === "purchase") {
+      focusInvoiceEntry("purchase");
+      return;
+    }
+    if (activeKey === "sale" && draftDirtyRef.current) {
+      setPurchaseDiscardOpen(true);
+      return;
+    }
+    void navigate({ to: "/purchase" });
+  }
+
   useKeyboardShortcuts({
+    onSale: startSale,
+    onPurchase: startPurchase,
     onToggleSidebar: toggleSidebar,
     onHelp: () => setHelpOpen(true),
     onClose: closeTopmost,
@@ -155,17 +183,20 @@ export function AppShell() {
         user={user}
         pendingReturnsCount={pendingReturns.data?.count ?? null}
         pendingReturnsError={pendingReturns.isError}
+        accountFailed={owner.failed}
+        accountBlocked={owner.blocked}
+        retryAccount={owner.retry}
         onExpand={() => updateCollapsed(() => false)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar */}
-        <header className="print-hidden flex h-14 shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3">
+        <header className="print-hidden flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-border bg-sidebar px-3 py-1">
           <Button
             variant="ghost"
             size="icon"
             aria-label={t("sidebarToggle")}
-            title={t("sidebarToggle")}
+            title={`${t("sidebarToggle")} (${shortcutKeys("onToggleSidebar")})`}
             onClick={toggleSidebar}
             disabled={collapsedPending || collapsedWriting}
           >
@@ -178,14 +209,14 @@ export function AppShell() {
 
           <NewSaleAction activeKey={activeKey} />
 
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <ThemeToggle />
 
             <Button
               variant="ghost"
               size="icon"
               aria-label={t("shortcutsTitle")}
-              title={t("shortcutsTitle")}
+              title={`${t("shortcutsTitle")} (${shortcutKeys("onHelp")})`}
               onClick={() => setHelpOpen(true)}
             >
               <CircleHelp size={18} />
@@ -212,6 +243,23 @@ export function AppShell() {
         </main>
       </div>
 
+      <DiscardDraftDialog
+        title={t("saleToPurchaseDiscardTitle")}
+        description={t("saleToPurchaseDiscardDesc")}
+        confirmLabel={t("saleToPurchaseDiscardConfirm")}
+        cancelLabel={t("dialogClose")}
+        confirmTestId="new-sale-discard-confirm"
+        // Boolean return-focus restores the original field only as a fallback.
+        // An explicit callback would override Base UI's newer-focus protection.
+        finalFocus={true}
+        open={purchaseDiscardOpen}
+        onOpenChange={setPurchaseDiscardOpen}
+        onConfirm={() => {
+          if (savePendingRef.current) return;
+          setPurchaseDiscardOpen(false);
+          void navigate({ to: "/purchase" });
+        }}
+      />
       <ShortcutsHelp open={helpOpen} onOpenChange={setHelpOpen} />
       <LogoutDialog open={logoutOpen} onOpenChange={setLogoutOpen} onConfirm={() => { void logoutAndReload(() => authClient.signOut()); }} />
     </div>

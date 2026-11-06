@@ -5,6 +5,7 @@ import { writeFileAtomic } from "../atomic-file";
 import { GCM_TAG_BYTES, NONCE_BYTES } from "./crypto";
 import { VAULT_SNAPSHOT_MAGIC, parseVaultHeader } from "./format";
 import { acquireVaultLock, type VaultLockOwner } from "./lock";
+export { preflightVaultBackup, type RestoreCredential, type VaultBackupPreview } from "./restore-preflight";
 
 /**
  * Self-contained vault backup (finding: a snapshot copy alone cannot be

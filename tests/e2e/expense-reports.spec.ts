@@ -1,7 +1,16 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+
 import { expect, test } from "@playwright/test";
+import type { ExpenseCorrection } from "../../packages/contracts/src";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 import { actAndAck, saveQuickAdd } from "./rpc-helpers";
+
+test.use({
+  video: process.env.E2E_VIDEO === "1" ? { mode: "on", size: { width: 1920, height: 1080 } } : "off",
+  launchOptions: { slowMo: process.env.E2E_VIDEO === "1" ? 250 : 0 },
+});
 
 /**
  * Expenses + profit reports. Specs share one wiped-at-boot sqlite
@@ -27,6 +36,12 @@ function parseAmount(text: string | null): number {
  * "5,000". Assertions read the DISPLAYED shape; the input keeps the typed one. */
 function shownAmount(amount: string): string {
   return amount.replace(/\B(?=(\d{3})+$)/u, ",");
+}
+
+function displayedMoment(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (match === null) throw new Error(`unexpected stored date/time: ${value}`);
+  return `${match[3]}/${match[2]}/${match[1]} ${match[4]}:${match[5]}`;
 }
 
 /** Select an expense category by its visible label. The withdrawal category
@@ -420,4 +435,270 @@ test("custom range controls stack and stay inside their column on a narrow windo
     expect(spill!.left).toBeGreaterThanOrEqual(-1);
     expect(spill!.right).toBeLessThanOrEqual(1);
   }
+});
+
+test("correct and undo an expense without moving it out of its original report period (#408)", async ({ page }) => {
+  test.setTimeout(60_000);
+  await ensureAuthed(page);
+  const stamp = Date.now().toString();
+  const note = `تصحيح-${stamp}`;
+  const originalAmount = 850;
+  const correctedAmount = 650;
+  const expenseDate = "13/02/2001";
+  const from = `${expenseDate} 00:00`;
+  const to = `${expenseDate} 23:59`;
+  const captureEvidence = process.env.E2E_VIDEO === "1";
+  const evidenceDir = path.resolve(".scratch/evidence/408");
+  if (captureEvidence) mkdirSync(evidenceDir, { recursive: true });
+  const holdForReading = async () => {
+    // Evidence playback holds each settled screen long enough to read it.
+    if (captureEvidence) await page.waitForTimeout(1_500);
+  };
+
+  await page.goto("/reports");
+  await chooseSelectOption(page, page.getByTestId("report-range-preset"), "فترة مخصصة");
+  await page.getByTestId("report-custom-from").fill(from);
+  await page.getByTestId("report-custom-to").fill(to);
+  await expect(page.getByTestId("report-range-label")).toHaveText(`${expenseDate} — ${expenseDate}`);
+  const readOperating = async () => parseAmount(await page.getByTestId("report-operating").textContent());
+  const baseline = await readOperating();
+
+  await page.goto("/expenses");
+  await selectExpenseCategory(page, "كراء المحل");
+  await page.getByTestId("expense-amount").fill(String(originalAmount));
+  await page.getByTestId("expense-note").fill(note);
+  await page.getByTestId("expense-date").fill(`${expenseDate} 12:00`);
+  await actAndAck(page, "expensesCreate", async () => {
+    await page.getByTestId("expense-save").click();
+  });
+
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
+  await page.getByTestId("expense-custom-from").fill(from);
+  await page.getByTestId("expense-custom-to").fill(to);
+  const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: note });
+  await expect(row).toContainText(shownAmount(String(originalAmount)));
+  await expect(row.locator("td").first()).toContainText(expenseDate);
+  await row.getByTestId("expense-correction-open-history").click();
+  await expect(page.getByTestId("expense-correction-original")).toContainText(expenseDate);
+  if (captureEvidence) {
+    mkdirSync(evidenceDir, { recursive: true });
+    await page.getByTestId("expense-correction-history").screenshot({ path: path.join(evidenceDir, "expense-correction-before.png") });
+  }
+  await holdForReading();
+
+  await row.getByTestId("expense-correction-open-editor").click();
+  await page.getByTestId("expense-correction-amount").fill(String(correctedAmount));
+  await page.getByTestId("expense-correction-reason").fill("قيمة الإيصال غير صحيحة");
+  await holdForReading();
+  const correction = await actAndAck<ExpenseCorrection>(page, "expensesCorrect", async () => {
+    await page.getByTestId("expense-correction-save").click();
+  });
+  await expect(page.getByTestId("expense-correction-saved")).toContainText("تم تسجيل التصحيح");
+  await expect(row.getByTestId("expense-row-effective-amount")).toHaveAttribute("data-value", String(correctedAmount));
+  const correctionEntry = page.getByTestId("expense-correction-entry").first();
+  await expect(correctionEntry).toContainText("قيمة الإيصال غير صحيحة");
+  expect(correction).toMatchObject({
+    effectiveAt: "2001-02-13T12:00:00",
+    beforeAmount: originalAmount,
+    afterAmount: correctedAmount,
+    difference: correctedAmount - originalAmount,
+    reason: "قيمة الإيصال غير صحيحة",
+  });
+  expect(correction.recordedAt).not.toBe(correction.effectiveAt);
+  await expect(correctionEntry).toContainText(shownAmount(String(originalAmount)));
+  await expect(correctionEntry).toContainText(shownAmount(String(correctedAmount)));
+  await expect(correctionEntry).toContainText(displayedMoment(correction.effectiveAt));
+  await expect(correctionEntry).toContainText(displayedMoment(correction.recordedAt));
+  if (correction.actorId === null) throw new Error("a new correction must carry its actor identity");
+  await expect(correctionEntry).toContainText(correction.actorId);
+  if (correction.actorName !== null) await expect(correctionEntry).toContainText(correction.actorName);
+  const difference = correctionEntry.getByTestId("expense-correction-difference");
+  const figures = difference.getByTestId("money-figures");
+  const figuresText = await figures.textContent();
+  const differenceEvidence = figuresText?.includes("−") ? "expense-correction-difference-after.png" : "expense-correction-difference-before.png";
+  if (captureEvidence) {
+    await difference.screenshot({ path: path.join(evidenceDir, differenceEvidence) });
+  }
+  await expect(difference).toContainText("−");
+  await expect(figures).toContainText("−");
+  expect(Math.abs(parseAmount(await difference.textContent()))).toBe(Math.abs(correction.difference));
+  if (captureEvidence) {
+    await page.getByTestId("expense-correction-history").screenshot({ path: path.join(evidenceDir, "expense-correction-after.png") });
+  }
+  await holdForReading();
+
+  await page.goto("/reports");
+  await chooseSelectOption(page, page.getByTestId("report-range-preset"), "فترة مخصصة");
+  await page.getByTestId("report-custom-from").fill(from);
+  await page.getByTestId("report-custom-to").fill(to);
+  await expect.poll(readOperating).toBe(baseline - correctedAmount);
+  const reportRow = page.getByTestId("report-breakdown").locator("tbody tr", { hasText: "كراء المحل" });
+  await expect.poll(async () => parseAmount(await reportRow.locator("td").nth(2).textContent())).toBe(correctedAmount);
+  await holdForReading();
+
+  await page.goto("/expenses");
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
+  await page.getByTestId("expense-custom-from").fill(from);
+  await page.getByTestId("expense-custom-to").fill(to);
+  const correctedRow = page.getByTestId("expense-history").locator("tbody tr", { hasText: note });
+  await correctedRow.getByTestId("expense-correction-open-history").click();
+  await page.getByTestId("expense-correction-undo").click();
+  await expect(page.getByTestId("expense-correction-undo-confirm")).toBeVisible();
+  await holdForReading();
+  await page.getByTestId("expense-correction-undo-cancel").click();
+  await expect(page.getByTestId("expense-correction-undo-confirm")).toHaveCount(0);
+  await page.getByTestId("expense-correction-undo").click();
+  await actAndAck(page, "expensesCorrectionUndo", async () => {
+    await page.getByTestId("expense-correction-undo-confirm-button").click();
+  });
+  await expect(page.getByTestId("expense-correction-saved")).toContainText("تم تسجيل التراجع");
+  await expect(correctedRow.getByTestId("expense-row-effective-amount")).toHaveAttribute("data-value", String(originalAmount));
+  await expect(page.getByTestId("expense-correction-entry").first()).toContainText("أُلغي بهذا التصحيح");
+  await holdForReading();
+
+  await page.goto("/reports");
+  await chooseSelectOption(page, page.getByTestId("report-range-preset"), "فترة مخصصة");
+  await page.getByTestId("report-custom-from").fill(from);
+  await page.getByTestId("report-custom-to").fill(to);
+  await expect.poll(readOperating).toBe(baseline - originalAmount);
+  await holdForReading();
+});
+
+test("expense refunds preserve cash dates, cancellation, failure retries and compensation", async ({ page }) => {
+  // Four full reloads and injected storage/transport refusals exceed the default journey budget.
+  test.slow();
+  await ensureAuthed(page);
+  await page.goto("/expenses");
+  await selectExpenseCategory(page, "كراء المحل");
+  const note = `refund-409-${Date.now()}`;
+  await page.getByTestId("expense-amount").fill("1000");
+  await page.getByTestId("expense-note").fill(note);
+  await page.getByTestId("expense-save").click();
+  await expect(page.getByTestId("expense-saved")).toBeVisible();
+  const row = page.getByTestId("expense-row").filter({ hasText: note });
+  await row.getByTestId("expense-correction-open-history").click();
+  const history = row.locator("xpath=following-sibling::tr[1]").getByTestId("expense-correction-history");
+  await expect(history.getByTestId("expense-correction-original")).toBeVisible();
+  const evidenceDir = path.join(process.cwd(), ".scratch", "evidence", "409");
+  mkdirSync(evidenceDir, { recursive: true });
+  await history.screenshot({ path: path.join(evidenceDir, "refund-before.png") });
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-form")).toBeVisible();
+  await history.getByTestId("expense-refund-amount").fill("300");
+  await history.getByTestId("expense-refund-date").fill("12/02/2020 10:00");
+  await history.getByTestId("expense-refund-reason").fill("cash recovery");
+  await history.getByTestId("expense-refund-cancel").click();
+  await expect(history.getByTestId("expense-refund-form")).toHaveCount(0);
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
+  await history.getByTestId("expense-refund-amount").fill("1001");
+  await history.getByTestId("expense-refund-date").fill("12/02/2020 10:00");
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
+  await history.getByTestId("expense-refund-amount").fill("300");
+  await history.getByTestId("expense-refund-reason").fill("cash recovery");
+  let refundWrites = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/rpc/expensesRefund")) refundWrites += 1;
+  });
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key.includes("expense-refund-pending")) {
+        Storage.prototype.setItem = original;
+        throw new DOMException("Storage refused", "QuotaExceededError");
+      }
+      original.call(this, key, value);
+    };
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  expect(refundWrites).toBe(0);
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(0);
+  let firstPayload = "";
+  let lostResponse = false;
+  await page.route("**/api/rpc/expensesRefund", async (route) => {
+    const payload = route.request().postData() ?? "";
+    if (!lostResponse) {
+      firstPayload = payload;
+      lostResponse = true;
+      await route.fetch();
+      await route.abort("failed");
+    } else {
+      expect(payload).toBe(firstPayload);
+      await route.continue();
+    }
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-amount")).toBeDisabled();
+  await page.reload();
+  const afterLossRow = page.getByTestId("expense-row").filter({ hasText: note });
+  await afterLossRow.getByTestId("expense-correction-open-history").click();
+  await afterLossRow.locator("xpath=following-sibling::tr[1]").getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await page.evaluate(() => {
+    const original = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function (key) {
+      if (key.includes("expense-refund-pending")) throw new DOMException("Cleanup refused", "SecurityError");
+      original.call(this, key);
+    };
+  });
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-error")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await expect(history.getByTestId("expense-refund-amount")).toBeDisabled();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  await page.reload();
+  await row.getByTestId("expense-correction-open-history").click();
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-saved")).toBeVisible();
+  expect(refundWrites).toBe(3);
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  await expect(history.getByTestId("expense-refund-balance")).toContainText("700");
+  const saved = history.getByTestId("expense-refund-entry");
+  await expect(saved).toContainText("12/02/2020 10:00");
+  await expect(saved).toContainText("cash recovery");
+  await saved.getByTestId("expense-refund-undo").click();
+  await history.getByTestId("expense-refund-confirm-cancel").click();
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(1);
+  let firstUndoPayload = "";
+  let undoRequests = 0;
+  await page.route("**/api/rpc/expensesRefundUndo", async (route) => {
+    const payload = route.request().postData() ?? "";
+    undoRequests += 1;
+    if (undoRequests === 1) {
+      firstUndoPayload = payload;
+      await route.fetch();
+      await route.abort("failed");
+    } else {
+      expect(payload).toBe(firstUndoPayload);
+      await route.continue();
+    }
+  });
+  await saved.getByTestId("expense-refund-undo").click();
+  await history.getByTestId("expense-refund-confirm-save").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await page.reload();
+  await row.getByTestId("expense-correction-open-history").click();
+  await history.getByTestId("expense-refund-open").click();
+  await expect(history.getByTestId("expense-refund-uncertain")).toBeVisible();
+  await history.getByTestId("expense-refund-save").click();
+  await expect(history.getByTestId("expense-refund-saved")).toBeVisible();
+  expect(undoRequests).toBe(2);
+  await expect(history.getByTestId("expense-refund-entry")).toHaveCount(2);
+  await expect(history.getByTestId("expense-refund-balance")).toContainText("1,000");
+  await history.screenshot({ path: path.join(evidenceDir, "refund-after.png") });
+  await page.reload();
+  const reloadedRow = page.getByTestId("expense-row").filter({ hasText: note });
+  await reloadedRow.getByTestId("expense-correction-open-history").click();
+  const reloadedHistory = reloadedRow.locator("xpath=following-sibling::tr[1]").getByTestId("expense-correction-history");
+  await reloadedHistory.getByTestId("expense-refund-open").click();
+  await expect(reloadedHistory.getByTestId("expense-refund-entry")).toHaveCount(2);
+  await expect(reloadedHistory.getByTestId("expense-correction-original")).toBeVisible();
+  await page.unroute("**/api/rpc/expensesRefund");
+  await page.unroute("**/api/rpc/expensesRefundUndo");
 });

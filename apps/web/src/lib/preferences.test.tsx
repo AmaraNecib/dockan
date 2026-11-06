@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { clearAuthLost, markAuthLost } from "./auth-refusal";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
@@ -9,17 +10,28 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 
 let store: Record<string, string>;
 let failRead = false;
+let readFailuresRemaining = 0;
 let failWrite = false;
 let writeCalls = 0;
 let writeGate: Promise<void> | null = null;
+let readGate: Promise<void> | null = null;
 /** Mimics a server that normalizes the value: the hook must use the echo. */
 let canonicalize: ((value: string) => string) | null = null;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     preferencesGet: async () => {
-      if (failRead) throw new Error("PREFERENCES_READ_FAILED");
-      return { values: { ...store } };
+      if (failRead || readFailuresRemaining > 0) {
+        readFailuresRemaining -= 1;
+        throw new Error("PREFERENCES_READ_FAILED");
+      }
+      const values = { ...store };
+      if (readGate !== null) {
+        const gate = readGate;
+        readGate = null;
+        await gate;
+      }
+      return { values };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
       writeCalls += 1;
@@ -79,8 +91,8 @@ interface ProbeHandle {
   unmount: () => Promise<void>;
 }
 
-async function mountProbe(prefKey = "ui.test.a"): Promise<ProbeHandle> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+async function mountProbe(prefKey = "ui.test.a", sharedClient?: QueryClient): Promise<ProbeHandle> {
+  const client = sharedClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -107,9 +119,11 @@ describe("preferences client (issue 97 follow-up)", () => {
   beforeEach(() => {
     store = {};
     failRead = false;
+    readFailuresRemaining = 0;
     failWrite = false;
     writeCalls = 0;
     writeGate = null;
+    readGate = null;
     canonicalize = null;
     focusManager.setFocused(undefined);
   });
@@ -123,8 +137,124 @@ describe("preferences client (issue 97 follow-up)", () => {
     failRead = true;
     const handle = await mountProbe("ui.test.b");
     expect(await waitFor(() => text(handle.host, "read-error") === "true")).toBe(true);
-    // the caller must be able to tell "not set" from "we could not ask"
-    await handle.unmount();
+    // Two live controls share the missing map after a failed boot read.
+    const other = await mountProbe("ui.sidebar.collapsed", handle.client);
+    let release = () => {};
+    try {
+      failRead = false;
+      readGate = new Promise<void>((resolve) => { release = resolve; });
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(store["ui.test.b"]).toBe("true");
+      expect(text(handle.host, "writing")).toBe("true");
+      await act(async () => other.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(await waitFor(() => text(other.host, "writing") === "false")).toBe(true);
+      expect(text(handle.host, "write-failed")).toBe("false");
+      expect(text(handle.host, "value")).toBe("true");
+      expect(text(other.host, "value")).toBe("true");
+      await act(async () => release());
+      await flush();
+      expect(handle.client.getQueryData<Record<string, string>>(["preferences"])).toEqual({ "ui.test.b": "true", "ui.sidebar.collapsed": "true" });
+    } finally {
+      release();
+      await other.unmount();
+      await handle.unmount();
+    }
+  });
+
+  it("recovers mounted consumers after a preference write and transient recovery-read failure", async () => {
+    failRead = true;
+    const first = await mountProbe("ui.test.recovery");
+    expect(await waitFor(() => text(first.host, "read-error") === "true")).toBe(true);
+    const second = await mountProbe("ui.sidebar.collapsed", first.client);
+    failRead = false;
+    readFailuresRemaining = 1;
+    store["ui.sidebar.collapsed"] = "true";
+
+    try {
+      await act(async () => first.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(await waitFor(() => text(first.host, "writing") === "false")).toBe(true);
+      expect(store["ui.test.recovery"]).toBe("true");
+      expect(text(first.host, "write-failed")).toBe("false");
+      expect(await waitFor(() => text(first.host, "value") === "true")).toBe(true);
+      expect(await waitFor(() => text(second.host, "value") === "true")).toBe(true);
+      expect(text(first.host, "read-error")).toBe("false");
+      expect(text(second.host, "read-error")).toBe("false");
+      expect(first.client.getQueryData<Record<string, string>>(["preferences"])).toEqual({
+        "ui.sidebar.collapsed": "true",
+        "ui.test.recovery": "true",
+      });
+    } finally {
+      await second.unmount();
+      await first.unmount();
+    }
+  });
+
+  it("does not start recovery or install a retired write after query cancellation awaits", async () => {
+    failRead = true;
+    const handle = await mountProbe("ui.test.cancel-retirement");
+    expect(await waitFor(() => text(handle.host, "read-error") === "true")).toBe(true);
+    failRead = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const cancel = spyOn(handle.client, "cancelQueries").mockImplementation(() => gate);
+    const fetch = spyOn(handle.client, "fetchQuery");
+    let settled = 0;
+    const unsubscribe = onPreferenceWriteSettled(() => { settled += 1; });
+    try {
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(cancel).toHaveBeenCalledTimes(1);
+      markAuthLost();
+      clearAuthLost();
+      await act(async () => {
+        release();
+        await gate;
+      });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(handle.client.getQueryData(["preferences"])).toBeUndefined();
+      expect(settled).toBe(0);
+    } finally {
+      unsubscribe();
+      release();
+      cancel.mockRestore();
+      fetch.mockRestore();
+      clearAuthLost();
+      await handle.unmount();
+    }
+  });
+
+  it("discards a recovery read retired during its await without refetching under a new credential", async () => {
+    failRead = true;
+    const handle = await mountProbe("ui.test.read-retirement");
+    expect(await waitFor(() => text(handle.host, "read-error") === "true")).toBe(true);
+    failRead = false;
+    let release!: () => void;
+    readGate = new Promise<void>((resolve) => { release = resolve; });
+    const fetch = spyOn(handle.client, "fetchQuery");
+    const invalidate = spyOn(handle.client, "invalidateQueries");
+    let settled = 0;
+    const unsubscribe = onPreferenceWriteSettled(() => { settled += 1; });
+    try {
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const recovery = fetch.mock.results[0]?.value;
+      expect(recovery).toBeDefined();
+      markAuthLost();
+      clearAuthLost();
+      await act(async () => {
+        release();
+        await expect(recovery).rejects.toThrow("SESSION_SCOPE_RETIRED");
+      });
+      expect(handle.client.getQueryData(["preferences"])).toBeUndefined();
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(settled).toBe(0);
+    } finally {
+      unsubscribe();
+      release();
+      fetch.mockRestore();
+      invalidate.mockRestore();
+      clearAuthLost();
+      await handle.unmount();
+    }
   });
 
   it("reports a failed write instead of pretending it landed", async () => {
@@ -138,6 +268,24 @@ describe("preferences client (issue 97 follow-up)", () => {
     expect(text(handle.host, "value")).toBe("false");
     expect(store["ui.test.c"]).toBeUndefined();
     await handle.unmount();
+  });
+
+  it("drops queued old-scope writes and settlement notifications after unmount", async () => {
+    let release!: () => void;
+    writeGate = new Promise<void>((resolve) => { release = resolve; });
+    const handle = await mountProbe("ui.test.retired");
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+    let settled = 0;
+    const stop = onPreferenceWriteSettled(() => { settled += 1; });
+    try {
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='unset']")?.click());
+      await handle.unmount();
+      release();
+      await flush();
+      expect(writeCalls).toBe(1);
+      expect(settled).toBe(0);
+    } finally { stop(); }
   });
 
   it("does not drop a second change made while a write is in flight", async () => {
@@ -245,7 +393,20 @@ describe("preferences client (issue 97 follow-up)", () => {
     const failed = await mountProbe();
     expect(await waitFor(() => text(failed.host, "loading") === "false")).toBe(true);
     expect(text(failed.host, "value")).toBe("false");
-    await failed.unmount();
+    const events: Array<{ key: string; ok: boolean }> = [];
+    const unsubscribe = onPreferenceWriteSettled((key, ok) => events.push({ key, ok }));
+    try {
+      await act(async () => failed.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+      expect(await waitFor(() => text(failed.host, "writing") === "false")).toBe(true);
+      expect(store["ui.test.a"]).toBe("true");
+      expect(text(failed.host, "read-error")).toBe("true");
+      expect(text(failed.host, "write-failed")).toBe("false");
+      expect(events).toEqual([{ key: "ui.test.a", ok: true }]);
+      expect(hasPreferenceWrite("ui.test.a")).toBe(true);
+    } finally {
+      unsubscribe();
+      await failed.unmount();
+    }
 
     failRead = false;
     store["ui.test.a"] = "true";

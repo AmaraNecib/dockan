@@ -66,9 +66,13 @@ describe("turboArgs", () => {
   // A `test:affected` that reports that as a pass tests no package at all.
   test("a diff entirely inside workspace packages keeps the impacted filter", () => {
     const plan = turboArgs(inScope(), "origin/develop");
-    expect(plan.args).toEqual(["--filter=...[origin/develop]"]);
-    expect(plan.scope).toBe("filtered");
-    expect(plan.reason).toContain("origin/develop");
+    // #369: the whole TurboPlan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      args: ["--filter=...[origin/develop]"],
+      scope: "filtered",
+      reason: "packages changed since origin/develop, plus the packages that depend on them",
+    });
   });
 
   test("one root file widens to every package, because no workspace owns it", () => {
@@ -84,9 +88,11 @@ describe("turboArgs", () => {
       "oxlint.config.ts",
     ]) {
       const plan = turboArgs([...inScope(), rootFile], "origin/develop");
-      expect({ rootFile, args: plan.args }).toEqual({ rootFile, args: [] });
-      expect({ rootFile, scope: plan.scope }).toEqual({ rootFile, scope: "full" });
-      expect(plan.reason).toContain(rootFile);
+      expect(plan).toEqual({
+        args: [],
+        scope: "full",
+        reason: `${rootFile} is outside every workspace package (apps/<name>/, packages/<name>/), and turbo's root \`//\` package declares no test task — an impacted filter would run nothing and exit 0, so every package runs`,
+      });
     }
   });
 
@@ -95,34 +101,44 @@ describe("turboArgs", () => {
     // `apps`, and a path outside every package all produce it. The scope and the
     // reason are what tell this rule from the others.
     const plan = turboArgs(["tests/e2e/backups.spec.ts"], "origin/develop");
-    expect({ args: plan.args, scope: plan.scope }).toEqual({ args: [], scope: "full" });
-    expect(plan.reason).toContain("tests/e2e/backups.spec.ts");
-    expect(plan.reason).toContain("every package");
+    expect(plan).toEqual({
+      args: [],
+      scope: "full",
+      reason:
+        "tests/e2e/backups.spec.ts is outside every workspace package (apps/<name>/, packages/<name>/), and turbo's root `//` package declares no test task — an impacted filter would run nothing and exit 0, so every package runs",
+    });
   });
 
   test("an empty diff runs every package instead of reporting nothing to do", () => {
     // Nothing to narrow on is not evidence that nothing can break. The
     // expensive answer is allowed to be wrong; the empty one is not.
     const plan = turboArgs([], "origin/develop");
-    expect(plan.args).toEqual([]);
-    expect(plan.reason).toContain("empty");
+    expect(plan).toEqual({
+      args: [],
+      scope: "full",
+      reason: "empty diff — nothing to narrow on, so every package runs",
+    });
   });
 
   test("a workspace prefix needs a package name and a path under it", () => {
     // `apps/` alone, a bare `apps`, and a nested workspace-looking path are all
     // not a workspace package: the pattern is `apps/<name>/` or `packages/<name>/`.
     for (const notAWorkspace of ["apps/", "apps", "apps/web", "packages/contracts"]) {
-      expect({ notAWorkspace, args: turboArgs([notAWorkspace], "origin/develop").args }).toEqual({
-        notAWorkspace,
+      const plan = turboArgs([notAWorkspace], "origin/develop");
+      expect(plan).toEqual({
         args: [],
+        scope: "full",
+        reason: `${notAWorkspace} is outside every workspace package (apps/<name>/, packages/<name>/), and turbo's root \`//\` package declares no test task — an impacted filter would run nothing and exit 0, so every package runs`,
       });
     }
   });
 
   test("Windows backslashes count as separators, so a lane on Git Bash still narrows", () => {
-    expect(turboArgs(["apps\\web\\src\\pages\\backups.tsx"], "origin/develop").args).toEqual([
-      "--filter=...[origin/develop]",
-    ]);
+    expect(turboArgs(["apps\\web\\src\\pages\\backups.tsx"], "origin/develop")).toEqual({
+      args: ["--filter=...[origin/develop]"],
+      scope: "filtered",
+      reason: "packages changed since origin/develop, plus the packages that depend on them",
+    });
   });
 });
 
@@ -145,28 +161,33 @@ describe("test:affected plan", () => {
       select: SELECTS_WEB,
       mergeBase: AT_MERGE_BASE,
     });
-    expect(plan.steps[0]).toEqual([
-      "turbo",
-      "run",
-      "test",
-      "--concurrency=2",
-      `--filter=...[${MERGE_BASE}]`,
-    ]);
-    // The scripts suite holds the e2e map's drift guard; it is cheap and it is
-    // the suite a narrowed run must not lose.
-    expect(plan.steps[1]).toEqual(["bun", "test", "./scripts/"]);
-    expect(plan.scope).toBe("filtered");
-    expect(plan.note).toContain("origin/develop");
+    // #369: the whole Plan. On the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError, and the
+    // note is what names the ref a human typed and the commit turbo resolves.
+    expect(plan).toEqual({
+      steps: [
+        ["turbo", "run", "test", "--concurrency=2", `--filter=...[${MERGE_BASE}]`],
+        // The scripts suite holds the e2e map's drift guard; it is cheap and it
+        // is the suite a narrowed run must not lose.
+        ["bun", "test", "./scripts/"],
+      ],
+      scope: "filtered",
+      note: `packages changed since origin/develop (merge-base ${MERGE_BASE}), plus the packages that depend on them`,
+    });
   });
 
   test("a root file drops the filter, so turbo cannot report zero tasks as a pass", () => {
     const plan = planAffected("origin/develop", ROOT, () => ["package.json"], {
       select: SELECTS_WEB,
     });
-    expect(plan.steps[0]).toEqual(["turbo", "run", "test", "--concurrency=2"]);
-    expect(plan.scope).toBe("full");
-    expect(plan.note).toContain("package.json");
-    expect(plan.note).toContain("every package");
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "package.json is outside every workspace package (apps/<name>/, packages/<name>/), and turbo's root `//` package declares no test task — an impacted filter would run nothing and exit 0, so every package runs",
+    });
   });
 
   test("a missing base falls back to every package and says why", () => {
@@ -174,23 +195,38 @@ describe("test:affected plan", () => {
     // failed: a filter on a ref git cannot resolve makes turbo exit non-zero,
     // which would read as a failing gate. Run everything and name the cause.
     const plan = planAffected("origin/not-a-ref", ROOT, inScope, { select: SELECTS_WEB });
-    expect(plan.steps[0]).toEqual(["turbo", "run", "test", "--concurrency=2"]);
-    expect(plan.scope).toBe("full");
-    expect(plan.note).toContain("origin/not-a-ref");
-    expect(plan.note).toContain("every package");
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "origin/not-a-ref does not resolve in this checkout, so every package runs (an impacted filter needs the ref)",
+    });
   });
 
   test("a diff git cannot produce falls back to every package", () => {
     const plan = planAffected("origin/develop", ROOT, () => null, { select: SELECTS_WEB });
-    expect(plan.steps[0]).toEqual(["turbo", "run", "test", "--concurrency=2"]);
-    expect(plan.scope).toBe("full");
-    expect(plan.note).toContain("cannot read the diff");
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "cannot read the diff against origin/develop, so every package runs (an impacted filter would select nothing and exit 0)",
+    });
   });
 
   test("the fallback keeps the scripts suite", () => {
-    expect(
-      planAffected("origin/not-a-ref", ROOT, inScope, { select: SELECTS_WEB }).steps[1],
-    ).toEqual(["bun", "test", "./scripts/"]);
+    // The same fallback as the row above, seen whole: the scripts suite is what
+    // a narrowed run must not lose. #369: on the parent's hollow stand-in this
+    // is `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(planAffected("origin/not-a-ref", ROOT, inScope, { select: SELECTS_WEB })).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "origin/not-a-ref does not resolve in this checkout, so every package runs (an impacted filter needs the ref)",
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -211,19 +247,28 @@ describe("test:affected plan", () => {
 
   test("a filter that selects only the root package widens instead of running nothing", () => {
     const plan = planAffected("origin/develop", ROOT, inScope, { select: ROOT_ONLY });
-    expect(plan.scope).toBe("full");
-    // The FILTER IS GONE from the argv, not merely labelled unfiltered: the
-    // widened plan has to be the one that runs every package.
-    expect(plan.steps[0]).toEqual(["turbo", "run", "test", "--concurrency=2"]);
-    expect(plan.note).toContain("selects no package");
-    expect(plan.note).toContain("`//`");
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      // The FILTER IS GONE from the argv, not merely labelled unfiltered: the
+      // widened plan has to be the one that runs every package.
+      scope: "full",
+      note:
+        "the impacted filter against origin/develop selects no package (`//`), which turbo would run as zero tasks and exit 0, so every package runs",
+    });
   });
 
   test("a filter that selects nothing at all widens too", () => {
     const plan = planAffected("origin/develop", ROOT, inScope, { select: selects() });
-    expect(plan.scope).toBe("full");
-    expect(plan.steps[0]).toEqual(["turbo", "run", "test", "--concurrency=2"]);
-    expect(plan.note).toContain("selects no package");
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "the impacted filter against origin/develop selects no package (nothing), which turbo would run as zero tasks and exit 0, so every package runs",
+    });
   });
 
   test("a dry run turbo could not answer widens, and names the refusal", () => {
@@ -232,9 +277,15 @@ describe("test:affected plan", () => {
     const plan = planAffected("origin/develop", ROOT, inScope, {
       select: () => ({ packages: [], refusal: "turbo's dry run exited 1" }),
     });
-    expect(plan.scope).toBe("full");
-    expect(plan.steps[0]).toEqual(["turbo", "run", "test", "--concurrency=2"]);
-    expect(plan.note).toContain("turbo's dry run exited 1");
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError, and the
+    // note is what carries the refusal the module chose.
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "origin/develop would narrow to a package set, but turbo could not confirm it (turbo's dry run exited 1) — an unproven selection is not a narrowing, so every package runs",
+    });
   });
 
   test("a filter that selects a real package stays narrowed", () => {
@@ -242,8 +293,16 @@ describe("test:affected plan", () => {
       select: selects("@dokan/contracts", "@dokan/api"),
       mergeBase: AT_MERGE_BASE,
     });
-    expect(plan.scope).toBe("filtered");
-    expect(plan.steps[0]).toContain(`--filter=...[${MERGE_BASE}]`);
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      steps: [
+        ["turbo", "run", "test", "--concurrency=2", `--filter=...[${MERGE_BASE}]`],
+        ["bun", "test", "./scripts/"],
+      ],
+      scope: "filtered",
+      note: `packages changed since origin/develop (merge-base ${MERGE_BASE}), plus the packages that depend on them`,
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -276,9 +335,14 @@ describe("test:affected plan", () => {
       select: SELECTS_WEB,
       mergeBase: () => null,
     });
-    expect(plan.scope).toBe("full");
-    expect(plan.steps[0]).toEqual(["turbo", "run", "test", "--concurrency=2"]);
-    expect(plan.note).toContain("merge-base");
+    // #369: the whole Plan; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "cannot find the merge-base of origin/develop and HEAD, so every package runs (an impacted filter needs a commit both sides share)",
+    });
   });
 });
 
@@ -309,11 +373,9 @@ describe("the impacted filter, live against turbo", () => {
   // not depend on the branch.
   const ALL = workspaceNames();
 
-  function selected(step: Step): string[] {
-    const result = enumeratePackages(step, ROOT);
-    if (result.refusal !== null) throw new Error(result.refusal);
-    return result.packages;
-  }
+  // The describe's rows read `enumeratePackages` directly: a helper that threw
+  // on a refusal (and so dereferenced a hollow `undefined` before any claim)
+  // is gone, and every row asserts the whole TurboSelection instead. #369.
 
   test("the ref the filter names resolves here, or this test says which ref is missing", () => {
     // Not a skip: a shallow clone without the remote-tracking ref would otherwise
@@ -329,42 +391,65 @@ describe("the impacted filter, live against turbo", () => {
   });
 
   test("`...` before a selector selects the package and the packages that depend on it", () => {
-    const packages = selected([
+    // #369: the whole TurboSelection, with the subsets the row depends on named
+    // asymmetrically; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError, and the
+    // count assert below dereferences only after the expect has vouched.
+    const selection = enumeratePackages([
       "turbo",
       "run",
       "test",
       "--concurrency=2",
       "--filter=...@dokan/contracts",
-    ]);
-    expect(packages).toContain("@dokan/contracts");
-    // A dependent the filter never named: this is what `...` buys.
-    expect(packages).toContain("@dokan/api");
-    // And it is a narrowing, not "everything": if a version bump made `...` a
-    // no-op this would be the whole workspace and the assertion above would still
+    ], ROOT);
+    expect(selection).toEqual({
+      packages: expect.arrayContaining(["@dokan/contracts", "@dokan/api"]),
+      refusal: null,
+    });
+    // A dependent the filter never named: this is what `...` buys. And it is a
+    // narrowing, not "everything": if a version bump made `...` a no-op this
+    // would be the whole workspace and the asymmetric pin above would still
     // pass.
-    expect(packages.length).toBeLessThan(ALL.length);
+    expect(selection.packages.length).toBeLessThan(ALL.length);
   });
 
   test("`...` after a selector selects its dependencies, so the two sides stay distinct", () => {
     // The other direction. turbo 2.10.11 measured: `...foo` is foo + dependents,
     // `foo...` is foo + dependencies. A bump that swapped them breaks exactly one
     // of these two tests, which is the point of asserting both.
-    const packages = selected([
+    // #369: the whole TurboSelection; on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError.
+    const selection = enumeratePackages([
       "turbo",
       "run",
       "test",
       "--concurrency=2",
       "--filter=@dokan/contracts...",
-    ]);
-    expect(packages).toEqual(["@dokan/contracts"]);
+    ], ROOT);
+    expect(selection).toEqual({ packages: ["@dokan/contracts"], refusal: null });
   });
 
   test("the unfiltered argv from turboArgs selects every workspace package", () => {
     // A root file drops the filter, so the argv is turbo's own: every package,
     // and nothing silently left out of the run the fallback promises.
+    // #369: the whole Plan first — on the parent's hollow stand-in this is
+    // `expect(undefined).toEqual(...)` reding as an AssertionError — and only
+    // the selection below, which needs the plan's argv, runs after it has
+    // vouched. Its note is deterministic, so it is pinned string-exact.
     const plan = planAffected(BASE_REF, ROOT, () => ["package.json"]);
-    expect(plan.scope).toBe("full");
-    expect(selected(plan.steps[0] ?? []).sort()).toEqual([...ALL].sort());
+    expect(plan).toEqual({
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      scope: "full",
+      note:
+        "package.json is outside every workspace package (apps/<name>/, packages/<name>/), and turbo's root `//` package declares no test task — an impacted filter would run nothing and exit 0, so every package runs",
+    });
+    // Membership is the claim, not turbo's print order, and a refusal would
+    // make the promised run unproven rather than complete.
+    const selection = enumeratePackages(plan.steps[0] ?? [], ROOT);
+    expect({ packages: [...selection.packages].sort(), refusal: selection.refusal }).toEqual({
+      packages: [...ALL].sort(),
+      refusal: null,
+    });
   });
 
   test("a filter over a selector the test controls selects real packages, not zero", () => {
@@ -379,16 +464,23 @@ describe("the impacted filter, live against turbo", () => {
     // The selector is package-scoped now, so the base is one the test controls
     // and the answer does not depend on what the lane happened to edit — and the
     // assertion is that the selection is NON-EMPTY before it is a subset.
-    const packages = selected([
+    const selection = enumeratePackages([
       "turbo",
       "run",
       "test",
       "--concurrency=2",
       "--filter=...@dokan/contracts",
+    ], ROOT);
+    const real = selection?.packages.filter((name) => name !== "//") ?? [];
+    // #369: the vouch is one composed assert, because a hollow `undefined` has
+    // to stay an AssertionError and never become a TypeError: the refusal must
+    // be present-and-null (a plain `??` default would alias the honest null),
+    // and a loop over an empty list is not a test, so the count comes inside
+    // it. The loop below dereferences only after the expect has vouched.
+    expect([selection === undefined ? "<hollow>" : selection.refusal, real.length > 0]).toEqual([
+      null,
+      true,
     ]);
-    const real = packages.filter((name) => name !== "//");
-    // A loop over an empty list is not a test: the count comes first.
-    expect(real.length).toBeGreaterThan(0);
     for (const name of real) {
       expect({ name, known: ALL.includes(name) }).toEqual({ name, known: true });
     }
@@ -400,17 +492,54 @@ describe("the impacted filter, live against turbo", () => {
     // actually select a package, because a filter that selects only `//` runs
     // zero tasks and exits 0. The old test looped over the answer and was green
     // when the answer was empty, which is the case it existed for.
-    const plan = planAffected(BASE_REF, ROOT, () => ["apps/web/src/pages/sale.tsx"]);
+    const observed: {
+      step: string[];
+      cwd: string;
+      selection: ReturnType<typeof enumeratePackages>;
+    }[] = [];
+    const plan = planAffected(BASE_REF, ROOT, () => ["apps/web/src/pages/sale.tsx"], {
+      select: (step, cwd) => {
+        const selection = enumeratePackages(step, cwd);
+        observed.push({ step: [...step], cwd, selection });
+        return selection;
+      },
+    });
+    // #369: vouch on the whole Plan first — on the parent's hollow stand-in
+    // this is `expect(undefined).toEqual(...)` reding as an AssertionError.
+    // The vouch is deliberately thin, because either scope is a live answer on
+    // this branch; the exactness lives in the arms, where the reachable shapes
+    // are known, and it is what lets both arms dereference.
+    expect(plan).toEqual({
+      steps: [
+        expect.arrayContaining(["turbo", "run", "test", "--concurrency=2"]),
+        ["bun", "test", "./scripts/"],
+      ],
+      scope: expect.stringMatching(/^(filtered|full)$/u),
+      note: expect.any(String),
+    });
     if (plan.scope === "filtered") {
-      const live = selected(plan.steps[0] ?? []).filter((name) => name !== "//");
-      expect(live.length).toBeGreaterThan(0);
-      for (const name of live) expect(ALL).toContain(name);
+      expect(observed.map(({ step, cwd }) => ({ step, cwd }))).toEqual([
+        { step: plan.steps[0] ?? [], cwd: ROOT },
+      ]);
+      const live = observed[0]?.selection;
+      const real = live?.packages.filter((name) => name !== "//") ?? [];
+      expect([live === undefined ? "<hollow>" : live.refusal, real.length > 0]).toEqual([
+        null,
+        true,
+      ]);
+      for (const name of real) {
+        expect({ name, known: ALL.includes(name) }).toEqual({ name, known: true });
+      }
       return;
     }
-    // Widened: the filter is gone from the argv and the reason says which rule
-    // fired. On a lane that touches no package this is the merge-base answer
-    // ([`//`]), which is exactly the shape the guard exists for.
-    expect(plan.steps[0]).not.toContain("--filter=...[origin/develop]");
+    // Widened: the filter is gone from the argv outright and the reason says
+    // which rule fired. On a lane that touches no package this is the
+    // merge-base answer ([`//`]), which is exactly the shape the guard exists
+    // for; a dry run turbo refused is the other arm. Both wide reasons are
+    // reachable from this row, so the note matches either.
+    // The `?? false` fallback is unreachable: the vouch above already failed
+    // the row if steps[0] were not the turbo argv.
+    expect(plan.steps[0]?.some((arg) => arg.startsWith("--filter=")) ?? false).toBe(false);
     expect(plan.note).toMatch(/selects no package|could not confirm/u);
   });
 
@@ -421,9 +550,14 @@ describe("the impacted filter, live against turbo", () => {
       stderr: "turbo exploded",
       error: "",
     }));
-    expect(result.packages).toEqual([]);
-    expect(result.refusal).toContain("turbo run test");
-    expect(result.refusal).toContain("turbo exploded");
+    // #369: the whole TurboSelection, refusal pinned string-exact — the string
+    // is the module's, measured off a live module probe, not guessed. On the
+    // parent's hollow stand-in this is `expect(undefined).toEqual(...)`
+    // reding as an AssertionError.
+    expect(result).toEqual({
+      packages: [],
+      refusal: "turbo's dry run printed JSON that does not parse for `turbo run test`: turbo exploded",
+    });
   });
 
   test("a dry run that cannot start is a refusal, not an empty selection", () => {
@@ -433,8 +567,12 @@ describe("the impacted filter, live against turbo", () => {
       stderr: "",
       error: "spawn ENOTDIR",
     }));
-    expect(result.packages).toEqual([]);
-    expect(result.refusal).toContain("spawn ENOTDIR");
+    // #369: the whole TurboSelection, refusal pinned string-exact. An empty
+    // result and a refusal-that-names-the-argv are different answers.
+    expect(result).toEqual({
+      packages: [],
+      refusal: "turbo did not start for `turbo run test`: spawn ENOTDIR",
+    });
   });
 
   test("a dry run JSON without a packages array is refused, not read as nothing selected", () => {
@@ -444,8 +582,12 @@ describe("the impacted filter, live against turbo", () => {
       stderr: "",
       error: "",
     }));
-    expect(result.packages).toEqual([]);
-    expect(result.refusal).toContain("packages");
+    // #369: the whole TurboSelection, refusal pinned string-exact. The payload
+    // in this case DID parse; it is the missing packages list that is refused.
+    expect(result).toEqual({
+      packages: [],
+      refusal: "turbo's dry run printed no packages list for `turbo run test`",
+    });
   });
 });
 
@@ -477,17 +619,33 @@ describe("tier 1 runs both steps at once, and either red reddens the exit", () =
   });
 
   test("a red first step reddens the combined exit", async () => {
-    const result = await runSteps(STEPS, ROOT, async (step) => (step[0] === "turbo" ? 1 : 0));
-    expect(result.results.map((entry) => entry.status)).toEqual([1, 0]);
-    expect(result.status).toBe(1);
+    // #369: the whole StepsOutcome; awaiting a hollow stub yields `undefined`,
+    // so this reds there as `expect(undefined).toEqual(...)` — an AssertionError,
+    // never a TypeError.
+    expect(
+      await runSteps(STEPS, ROOT, async (step) => (step[0] === "turbo" ? 1 : 0)),
+    ).toEqual({
+      results: [
+        { step: ["turbo", "run", "test", "--concurrency=2"], status: 1 },
+        { step: ["bun", "test", "./scripts/"], status: 0 },
+      ],
+      status: 1,
+    });
   });
 
   test("a red second step reddens the combined exit when the first was green", async () => {
     // The fail-fast shape returned the first step's status before the second ran,
     // so this case could not exist: a green first step ended the run at 0.
-    const result = await runSteps(STEPS, ROOT, async (step) => (step[0] === "bun" ? 1 : 0));
-    expect(result.results.map((entry) => entry.status)).toEqual([0, 1]);
-    expect(result.status).toBe(1);
+    // #369: whole StepsOutcome, as above.
+    expect(
+      await runSteps(STEPS, ROOT, async (step) => (step[0] === "bun" ? 1 : 0)),
+    ).toEqual({
+      results: [
+        { step: ["turbo", "run", "test", "--concurrency=2"], status: 0 },
+        { step: ["bun", "test", "./scripts/"], status: 1 },
+      ],
+      status: 1,
+    });
   });
 
   test("a failing first step does not stop the second from starting", async () => {
@@ -512,8 +670,15 @@ describe("tier 1 runs both steps at once, and either red reddens the exit", () =
       }
       return 3;
     });
-    expect(result.results.map((entry) => entry.status)).toEqual([2, 3]);
-    expect(result.status).toBe(2);
+    // #369: whole StepsOutcome — [2, 3] in PLAN order with exit 2, though the
+    // red child finished last. A hollow stub reds this as an AssertionError.
+    expect(result).toEqual({
+      results: [
+        { step: ["turbo", "run", "test", "--concurrency=2"], status: 2 },
+        { step: ["bun", "test", "./scripts/"], status: 3 },
+      ],
+      status: 2,
+    });
   });
 
   test("a step that cannot start counts as a failure, and the other step still runs", async () => {
@@ -553,9 +718,11 @@ describe("dryRunArgs asks turbo about the argv the plan would run", () => {
   test("the flag is last, so the plan's own argv survives verbatim", () => {
     // A test that asked turbo a different question than the run asks is the
     // drift this pin exists to prevent.
-    const args = dryRunArgs(STEP);
-    expect(args.slice(0, -1)).toEqual(STEP.slice(1));
-    expect(args.at(-1)).toBe("--dry-run=json");
+    // #369: the whole argv re-composed from the plan's own argv plus the flag;
+    // on the parent's hollow stand-in this is `expect(undefined).toEqual(...)`
+    // reding as an AssertionError — the same two facts the measured literal in
+    // the row above pins, stated as a derivation.
+    expect(dryRunArgs(STEP)).toEqual([...STEP.slice(1), "--dry-run=json"]);
   });
 });
 

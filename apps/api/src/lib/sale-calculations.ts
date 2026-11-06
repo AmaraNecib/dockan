@@ -13,20 +13,21 @@ export interface SaleLineTotalInput {
   price: SalePriceInput;
 }
 
-export interface SaleLineTotal {
+export interface SaleLineTotal<TInput extends SaleLineTotalInput = SaleLineTotalInput> {
+  input: TInput;
   unitPrice: number;
   grossTotal: number;
   discountAllocated: number;
   netTotal: number;
 }
 
-export interface SaleTotals {
+export interface SaleTotals<TInput extends SaleLineTotalInput = SaleLineTotalInput> {
   subtotalAmount: number;
   discountType: DiscountType | null;
   discountValue: number | null;
   discountAmount: number;
   totalAmount: number;
-  lines: SaleLineTotal[];
+  lines: SaleLineTotal<TInput>[];
 }
 
 /** Resolve one line's historical actual price without mutating the default. */
@@ -66,13 +67,13 @@ export function allocateInvoiceDiscount(grossTotals: readonly number[], requeste
 }
 
 /** Calculate line prices, subtotal, capped invoice discount, and final total. */
-export function calculateSaleTotals(
-  lines: readonly SaleLineTotalInput[],
+export function calculateSaleTotals<TInput extends SaleLineTotalInput>(
+  lines: readonly TInput[],
   discount?: { type: DiscountType; value: number },
-): SaleTotals {
-  const priced = lines.map((line) => {
-    const unitPrice = resolveActualUnitPrice(line.price);
-    return { unitPrice, grossTotal: line.quantity * unitPrice };
+): SaleTotals<TInput> {
+  const priced = lines.map((input) => {
+    const unitPrice = resolveActualUnitPrice(input.price);
+    return { input, unitPrice, grossTotal: input.quantity * unitPrice };
   });
   const subtotalAmount = priced.reduce((sum, line) => sum + line.grossTotal, 0);
   const discountType = discount?.type ?? null;
@@ -87,6 +88,7 @@ export function calculateSaleTotals(
   const resultLines = priced.map((line, index) => {
     const discountAllocated = allocations[index] ?? 0;
     return {
+      input: line.input,
       unitPrice: line.unitPrice,
       grossTotal: line.grossTotal,
       discountAllocated,

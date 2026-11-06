@@ -99,9 +99,12 @@
       "specs": [
         "items-flow.spec.ts",
         "items-categories.spec.ts",
+        "category-management.spec.ts",
+        "item-creation.spec.ts",
         "blankness-mark-only.spec.ts",
         "catalog-scan.spec.ts",
         "stock-ledger.spec.ts",
+        "item-history.spec.ts",
         "pagination.spec.ts",
         "arabic-search.spec.ts",
         "01-empty-states.spec.ts",
@@ -113,6 +116,8 @@
       "match": ["apps/web/src/pages/sale.test.tsx"],
       "specs": [
         "sale-checkout.spec.ts",
+        "sale-price-editor.spec.ts",
+        "keyboard-shortcuts.spec.ts",
         "no-write-window.spec.ts",
         "pagination.spec.ts",
         "completion-screens.spec.ts",
@@ -124,10 +129,10 @@
     {
       "$comment": "purchase intake, plus the learnability.spec.ts cases that pin the purchase form and its pinned bar at the two short window heights the owner uses (#231), and purchase-inline-product.spec.ts for the #257 line-scoped create. purchase.tsx is always_full (shared pickers + InvoiceHeader); the rule keeps the specs reachable for the unit-test sibling",
       "match": ["apps/web/src/pages/purchase.test.tsx"],
-      "specs": ["purchase-intake.spec.ts", "purchase-inline-product.spec.ts", "learnability.spec.ts"]
+      "specs": ["purchase-intake.spec.ts", "purchase-inline-product.spec.ts", "learnability.spec.ts", "keyboard-shortcuts.spec.ts"]
     },
     {
-      "$comment": "invoice list/detail, the shared invoice header (which the purchase page also renders) and the new-return form (ReturnsPanel), which returns.spec.ts drives through the invoice page (#231)",
+      "$comment": "invoice list/detail, the shared invoice header (which the purchase page also renders) and the new-return form (ReturnsPanel), which returns.spec.ts drives through the invoice page (#231); party-navigation.spec.ts proves linked invoice names and legacy text (#407)",
       "match": [
         "apps/web/src/pages/invoice.tsx",
         "apps/web/src/pages/invoices.tsx",
@@ -139,6 +144,9 @@
       ],
       "specs": [
         "invoice-payments.spec.ts",
+        "party-navigation.spec.ts",
+        "invoice-search.spec.ts",
+        "invoice-range.spec.ts",
         "invoice-print-a4.spec.ts",
         "pagination.spec.ts",
         "purchase-intake.spec.ts",
@@ -167,13 +175,14 @@
       "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts", "01-empty-states.spec.ts"]
     },
     {
-      "$comment": "customers + suppliers list and detail pages; parties.tsx and party-detail.tsx are always_full (shared components/parties tree), so this rule keeps the specs reachable for the unit-test files. phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride this page (#209 drift)",
+      "$comment": "customers + suppliers list and detail pages; parties.tsx and party-detail.tsx are always_full (shared components/parties tree), so this rule keeps the specs reachable for the unit-test files. phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride this page (#209 drift); party-navigation.spec.ts proves explicit Details routing by saved identity (#407)",
       "match": [
         "apps/web/src/pages/parties.test.tsx",
         "apps/web/src/pages/party-detail.test.tsx"
       ],
       "specs": [
         "customers.spec.ts",
+        "party-navigation.spec.ts",
         "customer-name-variants.spec.ts",
         "phone-identity.spec.ts",
         "supplier-account.spec.ts",
@@ -193,9 +202,9 @@
       "specs": ["supplier-adjustment.spec.ts", "supplier-account.spec.ts"]
     },
     {
-      "$comment": "supplier-adjustment.spec.ts drives the supplier-credit label and total on /debts (lines 162-167), so a debts.tsx-only diff must run it (#231)",
+      "$comment": "supplier-adjustment.spec.ts drives the supplier-credit label and total on /debts (lines 162-167), so a debts.tsx-only diff must run it (#231); party-navigation.spec.ts proves separate expansion/Details controls and linked/legacy RTL geometry (#407)",
       "match": ["apps/web/src/pages/debts.tsx", "apps/web/src/pages/debts.test.tsx"],
-      "specs": ["debts.spec.ts", "supplier-adjustment.spec.ts"]
+      "specs": ["debts.spec.ts", "party-navigation.spec.ts", "supplier-adjustment.spec.ts"]
     },
     {
       "$comment": "profit report and the expense history that feeds it",
@@ -237,7 +246,7 @@
     {
       "$comment": "auth is the one API area with dedicated specs; the rest of apps/api is critical",
       "match": ["apps/api/src/auth/**"],
-      "specs": ["login.spec.ts", "00-onboarding.spec.ts"]
+      "specs": ["login.spec.ts", "00-onboarding.spec.ts", "owner-profile.spec.ts", "cross-tab-session.spec.ts"]
     }
   ]
 }

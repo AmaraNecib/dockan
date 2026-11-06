@@ -18,20 +18,13 @@ git status --short --branch
 git rev-parse --verify HEAD
 ```
 
-`gh` commands are allowed in this repository; if `gh repo view` fails because
-there is no remote, fall back to Git-only checks and say so in the report.
+Use the absolute worktree path and pin base, head and tree. Check free space before installs or heavy work. Use unique output paths and preserve shell quoting. Stream logs to durable files while commands run; classify each result as passed, failed, error, timeout or running. A live process is not proof of progress: inspect output, descendants and progress before waiting again. Use actual command output for discovery and counts, never embedded expected values. Queue suites, builds and browser runs through `heavy_run`; an unknown holder is not proof all slots are full, so check `heavy_status`. Keep no-blind-kill and no-duplicate-run rules: confirm cancellation before another writer starts, and inspect the live job's durable results before a rerun. `gh` commands are allowed here; if `gh repo view` fails because there is no remote, use Git checks and report that limit.
 
 ## Phase 1 — Pre-commit
 
-Run before every commit. Uses the Husky pre-commit hook.
+Before a commit, run the focused test for changed behavior and direct callers, plus relevant typecheck, lint and generated-file checks. Do not run full suites, full browser tests, builds or audits per commit. The Husky hook separately runs `scripts/contracts-source-guard.ts`, `bun run lint`, `bun run skills:check` and `cd apps/api && bunx tsc --noEmit`; keep those checks intact.
 
-```
-[ ] bun run typecheck — passes? (turbo typecheck)
-[ ] bun run lint — 0 errors? (oxlint)
-[ ] bun run test — all tests pass? (turbo test)
-```
-
-If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
+If the change touches Rust Core (`apps/desktop/src-tauri/src/`), run focused Rust tests for changed behavior and direct callers, plus applicable clippy checks. Full crate tests are CI-final unless a concrete uncertainty or coverage gap requires them locally.
 ```
 [ ] cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml — passes?
 [ ] cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warnings — clean?
@@ -39,30 +32,43 @@ If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
 
 ## Phase 2 — Pre-review / pre-push
 
-This is the gate before the review round and before any push. It never pushes by
-itself. The parent's push runs the Husky pre-push hook when the hook is available.
+This is the local gate after local review and before any push or hosted review.
+Hosted review is not a pre-push or worker-handoff prerequisite; it starts after
+publication. Phase 2 never pushes by itself. The parent's push runs the Husky
+pre-push hook when the hook is available.
 
-**Run the CI `checks` job locally, not a subset of it.** A green focused test plus
-typecheck is step 1, not this gate. The full suite and the web build take a heavy
-slot (`bun tools/heavy-slot/heavy-slot.ts run "<label>" "<command>"`).
+Run focused local verification for changed behavior and direct callers, plus relevant typecheck, lint and generated-file checks. Add a build when the change affects bundling, imports, configuration or packaging. Run browser tests only when UI behavior, focus, navigation, rendering or a browser-specific failure needs proof; inspect the selector first. Keep targeted integration and negative tests for money, security and recovery contracts. The full repository unit suite, full browser suite, production build and audit are CI-final checks unless a concrete uncertainty or CI coverage gap requires a local run. Do not use a test count as evidence of quality. Tests must detect a named reachable failure with an independent expected result; before weakening one, name the surviving test and prove it detects the same failure.
+
+Use the verification mode explicitly passed by the parent. Current activation status, the protection checks the parent must perform, and the response to an enforcement regression are defined once in [`docs/engineering-workflow.md`](../../../docs/engineering-workflow.md#current-activation). A real regression blocks; it does not silently restore full local execution. `heavy_run` schedules work; it does not authorize broader scope.
+
+The red-on-parent replay runs only in the PR `checks` job and must pass before merge. Parents, workers (including nested subagents), reviewers and hooks must not run or delegate it locally. Missing local replay output does not block review, push or report acceptance. Ordinary failing-first TDD, focused regression tests and applicable current-head mutation checks remain required; follow [What counts as failing-first](../../../docs/verification-and-merge-gate.md#what-counts-as-failing-first). Only the actual-PR parent replay is CI-only.
+
+Distinguish the **PR red-on-parent gate** from **replay-tool self-tests**. The CI-only rule applies to replaying the actual branch against its parent for acceptance. The regular unit suite includes tests such as `scripts/red-on-parent.test.ts` that exercise the replay engine in small temporary fixture repositories with separate caches and cleanup. Those self-tests may run locally through the normal test queue; their output is not PR parent-replay acceptance evidence.
+
+#### Browser verification: selector first
+
+For a browser-relevant change, commit the complete PR scope, then inspect the selector before starting a browser run:
+
+```bash
+bun scripts/e2e-changed.ts --dry-run [--base <PR-base-ref>]
+```
+
+Use the actual PR base ref. A normal PR uses `origin/develop`; a stacked PR uses the branch named as that PR's base, not `origin/develop`. The local selector compares `merge-base(base, HEAD)..HEAD`. CI also diffs from a merge base, using the event's base and head SHAs, and falls back to the event's base SHA if merge-base fails. Local refs can resolve to different commits from those event SHAs. CI additionally forces full runs for push, dispatch and the `e2e:full` label. The checked-in selection map is shared; base inputs, failure handling and overrides can differ. CI remains the merge gate.
+
+Save post-commit evidence in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`. Record the exact `mode=`, `specs=`, `reason=`, and `source=` lines, plus the full `HEAD` SHA and base ref/SHA, run command, exit code and artifact paths, or the selector's skip decision. Record any reason for repeating a completed run there too. Do not make an evidence-only commit; hand the path and verified SHA to the parent for PR publication. Accept `affected` or `skip` only when the committed HEAD contains the complete PR scope and no reviewable tracked or untracked changes remain. The selector warns about dirty tracked files but does not include their edits; untracked files are not included. Resolve those changes into commits, then inspect the dry run again. `--files` bypasses Git and cannot prove complete PR scope, so it is never acceptance evidence.
+
+Follow the map without changing it. The selector defines CI scope, not a mandatory local full run. Record its decision even when local browser proof is unnecessary. Run local browser cases for changed behavior or a concrete CI coverage gap; record why those cases suffice and which remaining scope CI must verify. An unmapped or critical path must stay `full` in the selector; CI's selected-scope gate is unchanged. Route actual browser runs through `heavy_run` with the isolated `DOKAN_PORT`, `DOKAN_WEB_PORT`, `DOKAN_VAULT_PORT` and `DOKAN_VAULT_WEB_PORT`; the dry run needs no slot. Do not repeat a completed run for the same unchanged scope unless a specific need is recorded. The full suite and web build also take a heavy slot.
 
 ```
 [ ] bun run typecheck — passes?
 [ ] bun run lint — 0 errors?
 [ ] bun run skills:check — the .claude/skills mirror matches .agents/skills?
-[ ] bun run test — the full suite passes (turbo + scripts/ + tools/)
-[ ] bun run --filter @dokan/web build — the production bundle builds?
-[ ] bun audit --audit-level=high — no high/critical advisory?
-[ ] bun scripts/red-on-parent.ts --base <base> — every test file this change
-      **adds** fails on the parent, or carries a `red-on-parent-waive` line. New
-      files only; edited test files are not gated. A wrong-reason red (the file
-      cannot load on the parent) fails the gate, and so does a waiver on a test
-      that is already red. So does a test the change registers and the parent's
-      run never reports (`NOT ON PARENT`), and a run that did not finish
-      (`RUN INCOMPLETE` — no waiver covers a missing result).
-[ ] bun run test:e2e — passes? (only when the selector says the diff reaches a
-      spec, or the change touches a UI flow)
-[ ] git status — working tree clean?
+[ ] Focused regression tests cover changed behavior and direct affected integrations; full repository suites are CI-final
+[ ] Build and audit run locally only for a concrete uncertainty or CI coverage gap; otherwise CI-final owns these checks
+[ ] Browser verification follows "Browser verification: selector first" above; preserve the selector contract and evidence for the selected scope
+[ ] The worktree must be clean before handoff or publication
+[ ] Local status is recorded separately from CI acceptance; no local result implies CI accepted or merge-ready
+[ ] Verification mode is inherited from the parent; current-head CI acceptance remains a separate merge gate
 [ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```
 
@@ -96,47 +102,31 @@ get the docs-only exemption.
 **Lightweight** (genuinely non-reviewable files only):
 → Skip test-audit, debate, and code-review checks.
 
-**Standard** (code, CI, workflow, config):
-```
-[ ] Evidence exists for every lens the round ran, and none is stale
-[ ] A scoped round of one or two lenses is allowed when the change touches one
-      axis; the payload records exactly what ran, and three stays the default
-[ ] The reviewloop payload renders, and its score is the rule's score or lower
-```
+**Reviewable changes** follow the risk and bounded-fix policy in [`docs/engineering-workflow.md`](../../../docs/engineering-workflow.md#review-tiers). Check exact base/head, actual reviewer session and model, provenance and report. Reuse valid exact-tree evidence. Require reviewloop 5/5 with no unresolved actionable findings; this is true even when the renderer's score calculation omits a P2.
 
-**High-assurance** (auth/RBAC, backup/restore, invoice and debt money math, a schema-version bump):
-```
-[ ] All three lenses ran: debate, test-audit and code-review
-[ ] Every evidence file exists and is not stale
-[ ] The reviewloop payload renders, and its score is the rule's score or lower
-```
+Routine changes need one focused code-review execution covering Standards, Spec and affected-test adequacy. Record skipped lenses with reasons in the existing payload. High-assurance needs three separate initial sessions. After a bounded fix, one fresh reviewer checks the combined delta and affected callers, explicitly carrying forward unchanged conclusions; reopen another lens only for a new concrete risk. Never demand an automatic full restart.
 
 ## Phase 3 — Pre-report
 
-Run before the parent reports a local handoff or remote merge-readiness.
-During the trial, use the [comparison protocol](../../../docs/review-comparison.md)
-until the owner chooses which review path to keep. A local-only report is not
-merge-readiness while the hosted verdict is missing.
+Run before the parent reports a local handoff or remote merge-readiness. Phase 3 validates existing Phase 1/2 results and current-head review evidence; it does not rerun unchanged checks. Reuse only results whose input tree and command match the committed head. For a local worker handoff, report hosted review and CI as pending, not failed or passed. A local-only report is not merge-readiness; CI acceptance and the [paired hosted-review gate](../../../docs/review-comparison.md) remain parent-owned. Until the owner explicitly ends that trial, both current-head verdicts must be 5/5 with no unresolved actionable findings; a missing hosted verdict blocks merge. Request Greptile once per pushed head, never repeatedly for the same head.
 
 ```
-[ ] Local checks green (typecheck, lint, tests, e2e when relevant, Rust when relevant)
-[ ] Review evidence current for the selected tier
-[ ] Both current-head reviews are 5/5 with no actionable findings while the trial is active; a missing verdict blocks merge-readiness
+[ ] Guard Phase 1/2 evidence matches the committed input tree and required commands; no automatic duplicate run
+[ ] Local review evidence is current for the selected risk depth; exact-head provenance is verified
+[ ] For merge-readiness after publication: CI acceptance is green on the current head, required-check enforcement and owner bypass acceptance are recorded, both trial verdicts are 5/5, and no actionable finding remains
 [ ] CI — required checks green on GitHub (when the branch is pushed)
 [ ] The push and the PR came from the parent, and the merge followed the gate's classes — a cheap-to-reverse, no-decision diff merges itself once green, an expensive-to-reverse or decision diff waits for the owner
 [ ] PR description — accurate and complete
-[ ] Any deferred items — documented with follow-up issues
+[ ] Only reviewer-accepted nonblocking follow-ups are deferred, with issue links; no valid blocker is deferred
 [ ] (Parent) Wisdom — captured only if the pattern repeated; lanes report lessons and never write `.agents/wisdom/`
 ```
 
 ## When a check fails
 
-1. Report to the user what failed and why
-2. Do not proceed past the failing check
+1. Report the command, input tree and state: passed, failed, error, timed out or still running
+2. Do not turn missing evidence, an error or a timeout into a pass; do not proceed past a failed check
 3. If the user explicitly says "skip it" after being informed of the risk,
    note the waiver and continue.
 4. If the user says "fix it", fix it and re-run the check.
 
-**Mandatory gates (never skip):** typecheck, lint, applicable tests, and a
-clean reviewloop result. Inspect the actual findings rather than trusting
-command exit status; CI only counts once the branch is pushed.
+**Mandatory gates (never skip):** relevant typecheck, lint, applicable tests, a clean reviewloop 5/5, no unresolved actionable finding, and enforced CI acceptance before merge. Inspect findings rather than trusting command exit status. CI counts only after the branch is pushed.

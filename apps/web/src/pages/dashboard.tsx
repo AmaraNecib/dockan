@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -13,7 +14,7 @@ import { isOnboardingComplete } from "@/components/app/onboarding-steps";
 import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
 import { HOT_COUNTER_REFETCH_MS, SLOW_REFETCH_MS, hotCounterRefresh } from "@/lib/freshness";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { usePendingReturnsCount } from "../lib/pending-returns";
 import { formatDate } from "../lib/dates";
 
@@ -58,6 +59,7 @@ export function DashboardPage({
   refreshMs = REFRESH_MS,
   slowRefreshMs = SLOW_REFETCH_MS,
 }: { refreshMs?: number; slowRefreshMs?: number } = {}) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), ...hotCounterRefresh(refreshMs) });
   // issue #118 — a pending return does not move any balance until accepted, so
@@ -366,14 +368,58 @@ export function DashboardPage({
             <p className="mt-2 text-muted-foreground">{t("dashboardLowStockEmpty")}</p>
           ) : (
             <ul className="mt-2 divide-y rounded border bg-card" data-testid="dashboard-low-stock-list">
-              {summary.data.lowStockItems.map((item) => (
-                <li key={item.id} className="flex justify-between p-3">
-                  <span>{item.name}</span>
-                  <span className="font-semibold">
-                    {item.stockOnHand} / {item.lowStockThreshold}
-                  </span>
-                </li>
-              ))}
+              {summary.data.lowStockItems.map((item) => {
+                const stockStatus =
+                  item.stockOnHand === 0
+                    ? {
+                        label: t("dashboardStockOutOfStock"),
+                        className: "border-destructive/30 bg-destructive/10 text-destructive",
+                        testId: "out-of-stock",
+                      }
+                    : item.stockOnHand > 0
+                      ? {
+                          label: t("dashboardStockLow"),
+                          className: "border-warning/30 bg-warning/10 text-warning",
+                          testId: "low-stock",
+                        }
+                      : null;
+
+                return (
+                  <li
+                    key={item.id}
+                    className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between"
+                    data-testid={`dashboard-low-stock-row-${item.id}`}
+                  >
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="font-medium">{item.name}</span>
+                      {stockStatus !== null && (
+                        <span
+                          className={`rounded border px-2 py-0.5 text-sm font-semibold ${stockStatus.className}`}
+                          data-stock-status={stockStatus.testId}
+                        >
+                          {stockStatus.label}
+                        </span>
+                      )}
+                    </div>
+                    <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                      <div className="flex gap-1">
+                        <dt>{t("dashboardStockOnHand")}:</dt>
+                        {" "}
+                        <dd className="font-semibold text-foreground">
+                          <bdi dir="ltr">{item.stockOnHand}</bdi>
+                        </dd>
+                      </div>
+                      <div className="flex gap-1">
+                        <dt>{t("dashboardStockThreshold")}:</dt>
+                        {" "}
+                        <dd className="font-semibold text-foreground">
+                          <bdi dir="ltr">{item.lowStockThreshold}</bdi>
+                        </dd>
+                      </div>
+                    </dl>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </>

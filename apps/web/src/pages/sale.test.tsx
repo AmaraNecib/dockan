@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { Preferences } from "@dokan/contracts";
 
 import { SaleDraftProvider } from "@/components/app/sale-draft";
 
@@ -58,6 +59,11 @@ interface PartyCreateMutationOptions {
   onSuccess?: (party: { id: string; name: string; phone: string | null; createdAt: string }) => void;
   onError?: (error: { message?: string }) => void;
 }
+
+let preferenceValues: Preferences = {};
+let preferenceReadFails = false;
+let preferenceWriteFails = false;
+let preferenceGate: Promise<void> | null = null;
 
 let scanPrice = 1000;
 let scanFails = false;
@@ -158,6 +164,15 @@ mock.module("@/lib/rpc", () => ({
     },
   },
   rpcClient: {
+    preferencesGet: async () => {
+      if (preferenceGate !== null) await preferenceGate;
+      if (preferenceReadFails) throw new Error("preference read failed");
+      return { values: { ...preferenceValues } };
+    },
+    preferencesSet: async ({ key, value }: { key: string; value: string }) => {
+      if (preferenceWriteFails) throw new Error("preference write failed");
+      preferenceValues[key] = value; return { key, value };
+    },
     catalogSearch: async ({ query }: { query: string }) => {
       if (scanFails) throw new Error("UNEXPECTED");
       if (unknownScanCode !== null && query === unknownScanCode) return { exact: null };
@@ -217,6 +232,10 @@ describe("saleDebt (pre-commit customer debt preview)", () => {
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement; queryClient: QueryClient }> = [];
 
 beforeEach(() => {
+  preferenceValues = {};
+  preferenceReadFails = false;
+  preferenceWriteFails = false;
+  preferenceGate = null;
   scanPrice = 1000;
   scanFails = false;
   lastInvoiceInput = null;
@@ -291,6 +310,11 @@ function saveButton(host: HTMLElement): HTMLButtonElement {
   return button;
 }
 
+async function expandDiscount(host: HTMLElement): Promise<void> {
+  const button = host.querySelector<HTMLButtonElement>('[data-testid="sale-add-discount"]');
+  if (button !== null) await act(async () => button.click());
+}
+
 /** the sale row quantity input (a draft: it stays exactly as typed) */
 const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
 const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
@@ -301,6 +325,109 @@ const totalAmount = (host: HTMLElement) => Number(totalText(host).replaceAll(","
 const errorText = (host: HTMLElement) => host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
 const lineOverrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]')[index]!;
 const lineOverrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
+
+describe("SalePage effective price editor (#397)", () => {
+  it("remembers only the mode, not another transaction price", async () => {
+    const host = await mountSale();
+    await scan("397-mode");
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "80"));
+    expect(preferenceValues).toEqual({ "ui.sale.priceMode": "PERCENTAGE" });
+    const next = await mountSale();
+    scanPrice = 500;
+    await scan("397-next");
+    expect(lineOverrideValue(next)?.value).toBe("100");
+    expect(totalAmount(next)).toBe(500);
+  });
+
+  it("does not replace an edited amount with a late remembered percentage", async () => {
+    let release: (() => void) | undefined;
+    preferenceValues = { "ui.sale.priceMode": "PERCENTAGE" };
+    preferenceGate = new Promise<void>((resolve) => { release = resolve; });
+    const host = await mountSale();
+    await scan("397-late");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "800"));
+    await act(async () => { release?.(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(lineOverrideValue(host)?.value).toBe("800");
+    expect(totalAmount(host)).toBe(800);
+    expect(lineOverrideType(host, 0).textContent).toContain("مبلغ");
+  });
+
+  it("reports preference write failure without discarding the price or blocking sale", async () => {
+    preferenceWriteFails = true;
+    const host = await mountSale();
+    await scan("397-fail");
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "80"));
+    expect(host.textContent).toContain(i18n.t("salePriceModeNotSaved"));
+    expect(lineOverrideValue(host)?.value).toBe("80");
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput!.lines?.[0]?.priceOverride).toEqual({ type: "PERCENTAGE", value: 80 });
+    expect(preferenceValues).toEqual({});
+  });
+
+  it("uses amount for an unsupported mode and remains usable after preference read failure", async () => {
+    preferenceReadFails = true;
+    const host = await mountSale();
+    await scan("397-read");
+    expect(lineOverrideValue(host)?.value).toBe("1000");
+    expect(host.textContent).toContain(i18n.t("salePriceModeNotSaved"));
+    preferenceReadFails = false;
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    expect(preferenceValues["ui.sale.priceMode"]).toBe("PERCENTAGE");
+    await scan("397-read-second");
+    expect(lineOverrideType(host, 1).textContent).toContain("نسبة %");
+    const secondPrice = host.querySelectorAll<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]')[1];
+    expect(secondPrice?.value).toBe("100");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "900"));
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput!.lines?.[0]?.priceOverride).toEqual({ type: "AMOUNT", value: 900 });
+  });
+  it("keeps the original percentage when rounded money has several percentage representations", async () => {
+    scanPrice = 1;
+    const host = await mountSale();
+    await scan("397-round");
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "80"));
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    expect(lineOverrideValue(host)?.value).toBe("1");
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    expect(lineOverrideValue(host)?.value).toBe("80");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "0"));
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    expect(lineOverrideValue(host)?.value).toBe("0");
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-price-reset"]')!.click());
+    expect(lineOverrideValue(host)?.value).toBe("100");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    await chooseOption(lineOverrideType(host, 0), "نسبة %");
+    expect(lineOverrideValue(host)?.value).toBe("100");
+  });
+
+  it("edits the default directly, refuses clearing, and explicitly resets without an override", async () => {
+    const host = await mountSale();
+    await scan("397");
+    const price = lineOverrideValue(host);
+    expect(price).not.toBeNull();
+    expect(price!.value).toBe("1000");
+    await act(async () => setElementValue(price!, "٩٠٠"));
+    expect(totalAmount(host)).toBe(900);
+    await act(async () => setElementValue(price!, ""));
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).toBeNull();
+    expect(errorText(host)).toContain("أدخل تعديلاً صحيحاً للسعر");
+    const reset = host.querySelector<HTMLButtonElement>('[data-testid="sale-price-reset"]');
+    expect(reset).not.toBeNull();
+    await act(async () => reset!.click());
+    expect(price!.value).toBe("1000");
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput!.lines).toEqual([{ itemId: "item-397", quantity: 1 }]);
+  });
+});
 
 describe("SalePage commit states (greptile round-2)", () => {
   it("words a pending remainder as unattributed until a customer is named", async () => {
@@ -383,6 +510,7 @@ describe("SalePage commit states (greptile round-2)", () => {
   it("recomputes a percentage payment to zero when a discount zeroes the total (#171)", async () => {
     const host = await mountSale();
     await scan("111"); // total 1000
+    await expandDiscount(host);
     await act(async () => setInput(host, "sale-paid-percentage", "50"));
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
     const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
@@ -424,7 +552,7 @@ describe("SalePage commit states (greptile round-2)", () => {
       saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     const pending = host.querySelector<HTMLButtonElement>('[data-testid="sale-save"]');
-    expect(pending?.textContent).toBe("جارٍ الحفظ…");
+    expect(pending?.textContent).toContain("جارٍ الحفظ…");
     expect(pending?.disabled).toBe(true);
     expect(lastInvoiceInput).toEqual({
       kind: "SALE",
@@ -520,6 +648,7 @@ describe("SalePage commit states (greptile round-2)", () => {
   it("makes the sale non-editable while the commit is in flight", async () => {
     const host = await mountSale();
     await scan("555");
+    await expandDiscount(host);
     // give the line an override so the override-value input renders too
     const overrideType = host.querySelector<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]');
     if (overrideType === null) throw new Error("missing override type select");
@@ -633,18 +762,64 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector('[data-testid="picker-dialog"]')).not.toBeNull();
   });
 
-  it("reveals the discount controls and checkout bar only once a line exists", async () => {
+  it("keeps empty discount controls collapsed until the operator asks for them", async () => {
     const host = await mountSale();
     await scan("777");
 
     expect(host.querySelector('[data-testid="sale-empty"]')).toBeNull();
     expect(host.querySelector('[data-testid="sale-checkout-bar"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="sale-discount-type"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="sale-discount-value"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="sale-save"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="sale-add-discount"]')?.textContent).toBe("إضافة خصم");
+    expect(host.querySelector('[data-testid="sale-discount-type"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-value"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-save"]')?.textContent).toContain("1,000 دج");
 
     // exactly one picker action is on screen at any time
     expect(host.querySelectorAll('[data-testid="sale-open-picker"]').length).toBe(1);
+  });
+
+  it("keeps keyboard focus on the revealed discount type", async () => {
+    const host = await mountSale();
+    await scan("778");
+    const addDiscount = host.querySelector<HTMLButtonElement>('[data-testid="sale-add-discount"]');
+    if (addDiscount === null) throw new Error("missing Add discount button");
+    addDiscount.focus();
+    expect(document.activeElement === addDiscount).toBe(true);
+
+    await act(async () => addDiscount.click());
+
+    const discountType = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (discountType === null) throw new Error("missing revealed discount type");
+    expect(document.activeElement === discountType).toBe(true);
+  });
+
+  it("groups totals, reveals discount controls on demand, and saves the displayed amount", async () => {
+    const host = await mountSale();
+    await scan("778");
+
+    const addDiscount = host.querySelector<HTMLButtonElement>('[data-testid="sale-add-discount"]');
+    expect(addDiscount).not.toBeNull();
+    await act(async () => addDiscount!.click());
+
+    expect(host.querySelector('[data-testid="sale-add-discount"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-type"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-value"]')).not.toBeNull();
+    const totals = host.querySelector('[data-testid="sale-totals"]');
+    expect(totals).not.toBeNull();
+    expect(totals?.querySelector('[data-testid="sale-subtotal"]')?.textContent).toContain("1,000");
+
+    const discountType = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    expect(discountType).not.toBeNull();
+    await chooseOption(discountType!, "نسبة مئوية");
+    await act(async () => setInput(host, "sale-discount-value", "10"));
+
+    expect(totals?.querySelector('[data-testid="sale-discount"]')?.textContent).toContain("100");
+    expect(totalAmount(host)).toBe(900);
+    expect(host.querySelector('[data-testid="sale-save"]')?.textContent).toContain("900 دج");
+
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput).toMatchObject({ discount: { type: "PERCENTAGE", value: 10 }, lines: [{ itemId: "item-778", quantity: 1 }] });
+    expect(lastInvoiceInput?.initialPaid).toBe(900);
   });
 
   it("surfaces a submit error inside the checkout bar once a line exists", async () => {
@@ -677,6 +852,7 @@ describe("SalePage learnability (issue #94)", () => {
   it("clears the discount with the last line and reopens the teaching empty state", async () => {
     const host = await mountSale();
     await scan("999");
+    await expandDiscount(host);
 
     const discountType = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
     if (discountType === null) throw new Error("missing discount type");
@@ -694,15 +870,17 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector('[data-testid="sale-checkout-bar"]')).toBeNull();
     expect(host.querySelector('[data-testid="sale-empty"]')).not.toBeNull();
 
-    // a fresh line starts with no stale discount
+    // a fresh line starts with collapsed controls and no stale discount
     await scan("998");
-    expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("");
-    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.value).toBe("");
+    expect(host.querySelector('[data-testid="sale-add-discount"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-type"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-value"]')).toBeNull();
   });
 
   it("opens the themed discount select, selects a value, and closes", async () => {
     const host = await mountSale();
     await scan("606");
+    await expandDiscount(host);
 
     const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
     if (trigger === null) throw new Error("missing discount select");
@@ -791,6 +969,7 @@ describe("SalePage learnability (issue #94)", () => {
   it("clears an invoice discount back to none through the themed select", async () => {
     const host = await mountSale();
     await scan("707");
+    await expandDiscount(host);
 
     const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
     if (trigger === null) throw new Error("missing discount select");
@@ -814,8 +993,11 @@ describe("SalePage learnability (issue #94)", () => {
     await chooseOption(overrideType, "مبلغ");
     expect(host.querySelector('input[aria-label$="قيمة تعديل السعر"]')).not.toBeNull();
 
-    await chooseOption(overrideType, "الافتراضي");
-    expect(host.querySelector('input[aria-label$="قيمة تعديل السعر"]')).toBeNull();
+    const reset = host.querySelector<HTMLButtonElement>('[data-testid="sale-price-reset"]');
+    if (reset === null) throw new Error("missing reset-to-default action");
+    await act(async () => reset.click());
+    expect(lineOverrideValue(host)?.value).toBe("1000");
+    expect(totalAmount(host)).toBe(1000);
   });
 
   it("keeps a typed override value when the same type is re-selected", async () => {
@@ -1166,6 +1348,7 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
   it("blames the unusable discount, not the payment, when a typed payment survives an over-100% discount (greptile round 2)", async () => {
     const host = await mountSale();
     await scan("111"); // total 1000
+    await expandDiscount(host);
     // a typed payment pins the pair's source to "amount", so it survives the
     // total collapsing to zero
     await act(async () => setInput(host, "sale-paid", "500"));
@@ -1192,6 +1375,7 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
   it("pins a discounted cart total through the shared totals path", async () => {
     const host = await mountSale();
     await scan("111"); // 1 x 1000
+    await expandDiscount(host);
     const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
     if (trigger === null) throw new Error("missing discount select");
     await act(async () => {
@@ -1237,10 +1421,8 @@ describe("SalePage commit order (#198)", () => {
     await scan("1981"); // line 1
     await scan("1982"); // line 2
 
-    // line 1: a chosen amount override with an empty value is invalid
-    await act(async () => {
-      await chooseOption(lineOverrideType(host, 0), "مبلغ");
-    });
+    // Clearing the direct price is invalid; choosing a mode alone is not an edit.
+    await act(async () => setElementValue(lineOverrideValue(host)!, ""));
     // line 2: a cleared quantity is invalid
     const quantities = host.querySelectorAll<HTMLInputElement>('input[aria-label*="الكمية"]');
     await act(async () => setElementValue(quantities[1]!, ""));
@@ -1287,6 +1469,7 @@ describe("SalePage commit order (#198)", () => {
   it("submits a sale typed in Arabic-Indic digits as the same payload as ASCII (#210)", async () => {
     const host = await mountSale();
     await scan("1985"); // 1 x 1000
+    await expandDiscount(host);
     // quantity, price override, and discount all typed with Arabic-Indic digits
     await act(async () => setElementValue(quantityField(host), "٥"));
     await act(async () => {

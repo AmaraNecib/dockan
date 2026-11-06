@@ -203,6 +203,10 @@ const resources = {
       dashboardCategoriesCount: "عدد التصنيفات",
       dashboardLowStock: "منتجات على وشك النفاد",
       dashboardLowStockEmpty: "لا توجد منتجات منخفضة حالياً",
+      dashboardStockOnHand: "المخزون الحالي",
+      dashboardStockThreshold: "حد التنبيه",
+      dashboardStockOutOfStock: "نفد المخزون",
+      dashboardStockLow: "مخزون منخفض",
       // issue #118 — a pending return is invisible money until accepted
       dashboardPendingReturns: "مرتجعات قيد المراجعة",
       dashboardPendingReturnsHint: "يوجد {{count}} مرجوع قيد المراجعة لا يؤثر على الأرصدة حتى قبوله.",
@@ -236,6 +240,20 @@ const resources = {
       categoriesEmpty: "لا توجد تصنيفات بعد",
       categoriesEmptyHint: "اكتب اسم التصنيف في الحقل أعلاه ثم اضغط إضافة.",
       categoriesEmptyAction: "أضف تصنيفاً",
+      categoriesSearch: "ابحث في التصنيفات…",
+      categoriesNoMatches: "لا توجد تصنيفات مطابقة",
+      categoriesRename: "تعديل الاسم",
+      categoriesRenameLabel: "اسم التصنيف {{name}}",
+      categoriesSave: "حفظ",
+      categoriesSaving: "جارٍ الحفظ…",
+      categoriesCancel: "إلغاء",
+      categoriesDelete: "حذف",
+      categoriesConfirm: "تأكيد الحذف",
+      categoriesDeleting: "جارٍ الحذف…",
+      categoriesConfirmDelete: "حذف «{{name}}»؟",
+      categoriesRenamed: "تم تعديل اسم التصنيف",
+      categoriesDeleted: "تم حذف التصنيف",
+      categoriesUsed: "لا يمكن حذف التصنيف لأنه مرتبط بـ {{count}} منتجاً.",
       itemsTitle: "المنتجات",
       itemsTabsLabel: "أقسام المنتجات",
       itemsTabProducts: "المنتجات",
@@ -251,6 +269,7 @@ const resources = {
       itemsEdit: "تعديل",
       itemsCancel: "إلغاء",
       itemsNameRequired: "أدخل اسم المنتج",
+      itemsSavedName: "تم حفظ {{name}} — يمكنك إدخال المنتج التالي",
       itemsStockInvalid: "أدخل مخزوناً افتتاحياً صحيحاً (أرقام فقط)",
       itemsNoChanges: "لا توجد تغييرات لحفظها",
       itemsStock: "المخزون",
@@ -300,6 +319,15 @@ const resources = {
       historyLink: "السجل",
       historyTitle: "سجل المنتج",
       historyBack: "رجوع للمنتجات",
+      historyBreadcrumb: "مسار المنتج",
+      historyDetails: "تفاصيل الحركة",
+      historyUnavailable: "غير متوفر في السجل",
+      historySaleTotal: "إجمالي البيع المسجل",
+      historyNetSaleTotal: "صافي البيع بعد الخصم",
+      historyCostTotal: "إجمالي التكلفة المسجل",
+      historyRecordedAt: "تاريخ التسجيل",
+      historyLoadError: "تعذر تحميل سجل المنتج. أعد المحاولة.",
+      historyFactsHint: "القيم من السجل وليست أسعار اليوم. القيم القديمة غير المحفوظة غير متوفرة، وقد تكون تكلفة الوحدة مقربة.",
       historyDate: "التاريخ",
       historyKind: "النوع",
       historyKind_PURCHASE: "مشتريات",
@@ -312,11 +340,72 @@ const resources = {
       historyEmptyHint: "تظهر الحركات هنا بعد تسجيل شراء أو بيع أو تسوية للمخزون.",
       navBackups: "النسخ الاحتياطي",
       navSettings: "الإعدادات",
+      restoreTitle: "استعادة نسخة احتياطية",
+      restoreHint: "اختر نسخة دكان المشفّرة وافحصها قبل استبدال بيانات المتجر. لا تتغيّر بياناتك أثناء الفحص.",
+      restoreChoose: "اختيار نسخة للاستعادة",
+      restoreChoosing: "جارٍ فتح نافذة الاختيار…",
+      restoreDesktopOnly: "الاستعادة متاحة في تطبيق دكان على Windows فقط، وليست متاحة من المتصفح.",
+      restoreSelected: "الملف المختار:",
+      restoreBackupPassphrase: "كلمة سر النسخة المختارة",
+      restoreBackupRecovery: "مفتاح استرداد النسخة المختارة",
+      restoreUseRecovery: "استخدام مفتاح استرداد النسخة بدلاً من كلمة السر",
+      restoreInspect: "فحص النسخة",
+      restoreChecking: "جارٍ التحقق من النسخة…",
+      restoreSecretRequired: "أدخل كلمة سر النسخة أو مفتاح استردادها.",
+      restoreFileTime: "آخر تعديل للملف",
+      restoreSchema: "إصدار بيانات النسخة / الإصدار المدعوم",
+      restoreTimeCaveat: "هذا وقت تعديل الملف، وليس تاريخ إنشاء النسخة المؤكّد. قد يتغيّر عند نقل الملف؛ تاريخ إنشاء الخزنة لا يحدّد عمر النسخة.",
+      restoreWillMigrate: "النسخة مدعومة. ستُحدّث بياناتها إلى الإصدار الحالي أثناء الاستعادة.",
+      restoreCompatible: "النسخة سليمة ومتوافقة مع هذا الإصدار.",
+      restoreConfirmTitle: "استبدال بيانات المتجر الحالية؟",
+      restoreConfirmHint: "ستُحفظ نسخة أمان مشفّرة من بياناتك الحالية قبل الاستبدال. سيُقفل التطبيق، وستحتاج إلى كلمة سر النسخة المستعادة أو مفتاح استردادها.",
+      restoreCurrentPassphrase: "كلمة سر المتجر الحالي لحماية نسخة الأمان",
+      restoreCurrentRecovery: "مفتاح استرداد المتجر الحالي لحماية نسخة الأمان",
+      restoreUseCurrentRecovery: "استخدام مفتاح استرداد المتجر الحالي",
+      restoreConfirmCheck: "أوافق على استبدال كل بيانات المتجر الحالية بالنسخة المختارة.",
+      restoreReplace: "استبدال بيانات المتجر",
+      restoreReplacing: "جارٍ الاستبدال…",
+      restoreCancel: "إلغاء الاستعادة",
+      restoreWait: "جارٍ حفظ نسخة الأمان والاستعادة وإعادة القفل. لا تغلق التطبيق ولا تفصل القرص.",
+      restoreWorking: "جارٍ تنفيذ الطلب…",
+      restoreRefused: "تعذّر التحقق أو إكمال الطلب. تحقّق من كلمة السر أو مفتاح الاسترداد وسلامة الملف ثم أعد المحاولة.",
+      restoreNewer: "هذه النسخة من إصدار أحدث. حدّث دكان قبل استعادتها. لم تُستبدل بياناتك.",
+      restoreChanged: "تغيّر الملف بعد الفحص. ألغِ الاستعادة واختره وافحصه من جديد. لم تُستبدل بياناتك.",
+      restoreCurrentInvalid: "تعذّر التحقق من كلمة سر المتجر الحالي أو مفتاح استرداده. صحّحها ثم أعد المحاولة. لم تُستبدل بياناتك.",
+      restoreDrainUnconfirmed: "لم يتأكد توقف الكتابة بأمان، لذلك لم يبدأ الاستبدال. انتظر انتهاء العمل ثم أغلق دكان وافتحه من جديد قبل إعادة المحاولة.",
+      restoreSucceeded: "اكتملت الاستعادة وأُقفل المتجر.",
+      restoreFailedSafe: "لم تكتمل الاستعادة. أُعيدت بيانات المتجر السابقة بأمان.",
+      restoreNotReplaced: "لم يبدأ الاستبدال. بقيت بيانات المتجر الحالية كما هي.",
+      restoreUnlockIncoming: "افتح المتجر بكلمة سر النسخة المستعادة أو مفتاح استردادها.",
+      restoreUnlockOriginal: "افتح المتجر ببيانات الدخول الأصلية، ثم أعد اختيار النسخة للمحاولة من جديد.",
+      restoreSelectedPreserved: "لم يغيّر دكان ملف النسخة الذي اخترته.",
+      restoreSafetyFile: "نسخة الأمان المشفّرة لبيانات المتجر السابقة محفوظة في:",
+      restoreSafetyDirectory: "نسخ الأمان المشفّرة التي أُنشئت تبقى في هذا المجلد. لا تحذفها:",
       backupsTitle: "النسخ الاحتياطي",
       backupsHint: "تُنشأ نسخة تلقائية كل يوم عند تشغيل التطبيق. يمكنك أيضاً إنشاء نسخة الآن ونسخها إلى USB.",
+      backupsExternalDestination: "مجلد النسخة المشفّرة الإضافية",
+      backupsExternalDestinationHint: "أدخل مسار مجلد على قرص خارجي متصل",
+      backupsExternalSave: "حفظ المجلد",
+      backupsExternalCancel: "إلغاء التعديل",
+      backupsExternalReset: "إزالة الوجهة",
+      backupsExternalRun: "نسخ الآن",
+      backupsExternalLoading: "جارٍ تحميل حالة النسخة الخارجية…",
+      backupsExternalStatusFailed: "تعذّر تحميل حالة النسخة الخارجية.",
+      backupsExternalSameDrive: "هذا المجلد على القرص الفعلي نفسه الذي يحتوي بيانات المتجر.",
+      backupsExternalDriveUnknown: "تعذّر التحقق من القرص الفعلي لهذا المجلد.",
+      backupsExternalSuccess: "آخر نسخة ناجحة: {{at}}",
+      backupsExternalError_disconnected: "القرص غير متصل أو تعذّر الوصول إلى المجلد.",
+      backupsExternalError_unwritable: "لا يمكن الكتابة إلى المجلد المحدد.",
+      backupsExternalError_full: "لا توجد مساحة كافية على القرص.",
+      backupsExternalError_invalid: "تعذّر التحقق من النسخة المشفّرة؛ بقيت النسخ السابقة دون تغيير.",
       backupsExport: "إنشاء نسخة احتياطية الآن",
       backupsBusy: "جاري الإنشاء…",
       backupsDone: "تم إنشاء النسخة الاحتياطية في:",
+      backupsReveal: "إظهار الملف في المجلد",
+      backupsRevealing: "جاري إظهار الملف…",
+      backupsRevealMissing: "لم يعد ملف النسخة الاحتياطية موجوداً. أنشئ نسخة جديدة ثم حاول إظهارها.",
+      backupsRevealFailed: "تعذّر إظهار الملف في المجلد. حاول مجدداً أو افتح المسار الظاهر يدوياً.",
+      backupsRevealDesktopOnly: "إظهار الملف متاح في تطبيق دكان على Windows فقط. يمكنك فتح المسار الظاهر يدوياً.",
       // ticket 10 — settings (store identity)
       settingsTitle: "إعدادات المتجر",
       settingsHint: "يظهر اسم المتجر ورقم الهاتف في ترويسة الفواتير.",
@@ -368,6 +457,7 @@ const resources = {
       // issue #113 — a client asked to write a derived/completion preference;
       // the api's refusal is stable and must never render as the generic copy
       PREFERENCE_NOT_WRITABLE: "هذا الإعداد غير قابل للتعديل.",
+      ENCRYPTED_BACKUP_REQUIRED: "النسخ الخارجي متاح فقط عند تفعيل الخزنة المشفّرة.",
       // ADR-0008 §4.6 — the unified vault gate
       VAULT_WRONG_PASSPHRASE: "كلمة المرور غير صحيحة. تحقّق منها ثم أعد المحاولة.",
       VAULT_WRONG_RECOVERY: "مفتاح الاسترداد غير صحيح. تحقّق منه ثم أعد المحاولة.",
@@ -459,9 +549,10 @@ const resources = {
         "تعذّر التحقق من الملفات القديمة غير المشفّرة. تأكد يدوياً من عدم بقاء أي نسخة غير مشفّرة على القرص قبل المتابعة.",
       INVALID_ORIGIN: "المصدر غير مصرح به — أعد تحميل الصفحة",
       CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
+      CATEGORY_NOT_FOUND: "هذا التصنيف لم يعد موجوداً. حدّث القائمة ثم أعد المحاولة.",
+      CATEGORY_NAME_REQUIRED: "أدخل اسم التصنيف",
       BARCODE_EXISTS: "هذا الباركود مستعمل مع منتج آخر",
       INVALID_BARCODE: "الباركود غير صالح (حروف لاتينية وأرقام فقط)",
-      CATEGORY_NOT_FOUND: "التصنيف غير موجود",
       ITEM_NOT_FOUND: "المنتج غير موجود",
       ITEM_ERROR: "تعذّر حفظ المنتج",
       STOCK_NEGATIVE: "الكمية غير متوفرة في المخزون",
@@ -543,9 +634,16 @@ const resources = {
       saleDefault: "الافتراضي",
       saleOverrideAmount: "مبلغ",
       saleOverridePercentage: "نسبة %",
+      saleResetPrice: "إعادة للافتراضي",
+      salePricePerUnit: "سعر الوحدة النهائي:",
+      salePriceShare: "نسبة من السعر الافتراضي، سعر الوحدة:",
+      salePriceUnusable: "أدخل سعراً صحيحاً أو أعد الافتراضي",
+      salePriceSwitchRefused: "لا يمكن تبديل الوضع دون تغيير السعر. صحح القيمة أو أعد الافتراضي أولاً.",
+      salePriceModeNotSaved: "تعذر تذكر وضع إدخال السعر. يمكنك متابعة البيع وإعادة اختيار الوضع.",
       saleLineTotal: "الإجمالي",
       removeRow: "حذف",
       saleTotalsTitle: "ملخص الفاتورة",
+      saleAddDiscount: "إضافة خصم",
       saleDiscountType: "نوع الخصم",
       saleNoDiscount: "بدون خصم",
       saleDiscountAmount: "مبلغ",
@@ -570,6 +668,9 @@ const resources = {
       saleDiscardTitle: "بدء بيع جديد؟",
       saleDiscardDesc: "سيتم فقدان الأسطر والزبون غير المحفوظين. هل تريد بدء بيع جديد؟",
       saleDiscardConfirm: "بدء بيع جديد",
+      saleToPurchaseDiscardTitle: "فتح المشتريات؟",
+      saleToPurchaseDiscardDesc: "سيتم فقدان مسودة البيع غير المحفوظة. هل تريد فتح المشتريات؟",
+      saleToPurchaseDiscardConfirm: "تجاهل مسودة البيع وفتح المشتريات",
       // ticket 9 — debts screen (who owes whom)
       navDebts: "الديون",
       debtsTitle: "الديون",
@@ -602,6 +703,7 @@ const resources = {
       ITEM_NOT_ON_INVOICE: "المنتج ليس على هذه الفاتورة",
       INVOICE_NOT_FOUND: "الفاتورة غير موجودة",
       INVOICE_NOT_PURCHASE: "التصحيح يشترط فاتورة شراء",
+      INVOICE_ID_REQUIRED: "اختر الفاتورة التي تخصّها الدفعة.",
       LINE_NOT_FOUND: "سطر الفاتورة غير موجود",
       PAID_EXCEEDS_TOTAL: "المبلغ المدفوع يتجاوز الإجمالي",
       DISCOUNT_ONLY_SALE: "الخصم متاح لفواتير البيع فقط",
@@ -616,6 +718,22 @@ const resources = {
       invoicesStatusUnpaid: "غير مدفوعة",
       invoicesStatusPartial: "مدفوعة جزئياً",
       invoicesStatusPaid: "مسدّدة بالكامل",
+      invoicesSearch: "بحث الفواتير",
+      invoicesSearchHint: "رقم الفاتورة أو اسم الصنف المسجّل في الفاتورة أو الباركود",
+      invoicesSearchClear: "مسح البحث",
+      invoicesRangeFilters: "التصفية بالتاريخ ورقم الفاتورة",
+      invoicesFromDate: "من التاريخ",
+      invoicesToDate: "إلى التاريخ",
+      invoicesFromNumber: "من رقم الفاتورة",
+      invoicesToNumber: "إلى رقم الفاتورة",
+      invoicesNumberRangeHint: "أدخل رقماً أو INV-/SUP- ورقماً. تُقارن الأرقام عبر النوعين؛ الفواتير القديمة غير الرقمية لا تدخل في النطاق.",
+      invoicesOrder: "ترتيب التاريخ",
+      invoicesOrderNewest: "الأحدث أولاً",
+      invoicesOrderOldest: "الأقدم أولاً",
+      invoicesDateRangeInvalid: "تاريخ البداية يجب أن يسبق تاريخ النهاية أو يساويه.",
+      invoicesNumberRangeInvalid: "أدخل رقماً صحيحاً، واجعل رقم البداية أقل من رقم النهاية أو مساوياً له.",
+      invoicesFiltersClear: "مسح كل عوامل التصفية",
+      invoicesLoading: "جارٍ تحميل الفواتير",
       invoicesEmpty: "لا توجد فواتير",
       invoicesEmptyHint: "تظهر هنا فواتير البيع والشراء بعد إنشائها.",
       invoicesEmptyFilteredHint: "لا توجد فواتير مطابقة للتصفية الحالية.",
@@ -799,6 +917,7 @@ const resources = {
       RETURN_EXCEEDS_RETURNABLE: "الكمية تتجاوز المتبقي القابل للإرجاع",
       RETURN_NOT_PENDING: "المرجوع سبق أن قُورض",
       RETURN_LINE_NOT_RETURNABLE: "هذا السطر لا يمكن إرجاعه",
+      RETURN_DETAILS_INVALID: "بيانات المرجوع غير مكتملة. حدّد فاتورة وأسطرها، أو منتجاً وكمية ومبلغاً.",
       REFUND_SPLIT_INVALID: "المبلغ النقدي يتجاوز قيمة المرجوع",
       RETURN_DEBT_OFFSET_REFUSED: "تعذر خصم الدين — المبلغ غير متاح",
       // #256 round 2 — both round-1 refusals are answered, so the app never
@@ -806,6 +925,13 @@ const resources = {
       // decision (unreachable in the api, whose debt read is synchronous)
       RETURN_SETTLEMENT_UNRESOLVED: "تعذّر تحديد طريقة التسوية — أعد المحاولة",
       EXPENSE_CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
+      EXPENSE_NOT_FOUND: "المصروف غير موجود",
+      EXPENSE_CORRECTION_NOT_FOUND: "التصحيح غير موجود",
+      EXPENSE_CORRECTION_NO_CHANGE: "المبلغ الجديد يساوي المبلغ الحالي. غيّره قبل الحفظ.",
+      EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED: "تعذّرت إعادة المحاولة لأن بيانات التصحيح تغيّرت. أرسل تصحيحاً جديداً.",
+      EXPENSE_CORRECTION_ALREADY_REVERSED: "سبق التراجع عن هذا التصحيح.",
+      EXPENSE_CORRECTION_NOT_REVERSIBLE: "لا يمكن التراجع عن قيد التراجع. سجّل تصحيحاً جديداً بدلاً منه.",
+      EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE: "لا يمكن التراجع عن هذا التصحيح بعد تغييرات لاحقة. سجّل تصحيحاً جديداً بمبلغ صالح.",
       INVALID_RANGE: "الفترة غير صالحة",
       UNEXPECTED: "حدث خطأ غير متوقع",
 
@@ -859,6 +985,62 @@ const resources = {
       expenseColCategory: "التصنيف",
       expenseColNote: "الملاحظة",
       expenseColAmount: "المبلغ",
+      EXPENSE_REFUND_EXCEEDS_BALANCE: "المبلغ يتجاوز الرصيد القابل للاسترجاع أو غير صالح. راجع السجل وأدخل مبلغاً صحيحاً.",
+      EXPENSE_REFUND_KEY_REUSED: "بيانات إعادة المحاولة لا تطابق الطلب المحفوظ.",
+      EXPENSE_REFUND_NOT_FOUND: "قيد الاسترجاع غير موجود.",
+      EXPENSE_REFUND_ALREADY_REVERSED: "سبق تعويض هذا القيد. راجع السجل.",
+      EXPENSE_CORRECTION_BELOW_REFUNDED: "المبلغ المصحح أقل من الأموال المسترجعة. عوّض قيد الاسترجاع الخاطئ أولاً.",
+      expenseRefundTitle: "استرجاع مصروف",
+      expenseRefundHelp: "سجّل المال الذي عاد فعلاً للمحل. التصحيح يغيّر مبلغ المصروف؛ الاسترجاع يؤثر في تقرير تاريخ عودة المال ولا يغيّر حساب المورّد أو المخزون.",
+      expenseRefundBalance: "الرصيد القابل للاسترجاع",
+      expenseRefundAmount: "المبلغ المسترجع (دج)",
+      expenseRefundDate: "تاريخ عودة المال",
+      expenseRefundReason: "السبب (اختياري)",
+      expenseRefundSave: "حفظ الاسترجاع",
+      expenseRefundSaved: "تم حفظ القيد. يبقى المصروف وكل التصحيحات والاسترجاعات محفوظة.",
+      expenseRefundEntry: "استرجاع",
+      expenseRefundCompensation: "قيد تعويضي",
+      expenseRefundUndo: "تعويض القيد الخاطئ",
+      expenseRefundUndoHelp: "سيُضاف قيد معاكس مرتبط بالقيد الخاطئ في نفس تاريخ عودة المال لتصحيح التقرير. هذا ليس حركة نقدية جديدة ولا يحذف القيد الأصلي.",
+      expenseRefundReverses: "يعوّض القيد",
+      expenseRefundReversedBy: "عُوّض بالقيد",
+      expenseRefundReadError: "لم يُؤكّد السجل الحالي. أعد تحميله قبل تسجيل قيد جديد.",
+      expenseRefundJournalError: "تعذّر حفظ هوية الطلب في هذا التبويب. لم يُرسل طلب جديد. أبقِ التبويب مفتوحاً وتحقّق من إتاحة تخزين المتصفح قبل إعادة المحاولة.",
+      expenseRefundUncertain: "نتيجة الطلب غير مؤكدة. أعد محاولة نفس الطلب دون تغيير بياناته لتجنّب تكرار القيد. الإلغاء يخفي النموذج ولا يتراجع عن طلب وصل للخادم.",
+      expenseCorrectionHistoryButton: "السجل",
+      expenseCorrectionEditButton: "تصحيح",
+      expenseCorrectionHistoryHeading: "سجل المصروف",
+      expenseCorrectionOriginal: "المبلغ الأصلي",
+      expenseCorrectionStage: "تصحيح",
+      expenseCorrectionEffectiveDate: "تاريخ المصروف",
+      expenseCorrectionRecordedAt: "سُجّل في",
+      expenseCorrectionActor: "سجّله",
+      expenseCorrectionBefore: "قبل",
+      expenseCorrectionAfter: "بعد",
+      expenseCorrectionDifference: "التغيير",
+      expenseCorrectionReasonLabel: "سبب التصحيح (اختياري)",
+      expenseCorrectionNoReason: "بدون سبب",
+      expenseCorrectionReversedBy: "أُلغي بهذا التصحيح",
+      expenseCorrectionReversalOf: "تراجع عن التصحيح",
+      expenseCorrectionUndo: "تراجع عن التصحيح",
+      expenseCorrectionUndoConfirm: "سيُضاف قيد معاكس لهذا التصحيح. هل تريد المتابعة؟",
+      expenseCorrectionUndoConfirmButton: "تأكيد التراجع",
+      expenseCorrectionUndoCancel: "إلغاء",
+      expenseCorrectionNewAmount: "المبلغ الصحيح (دج)",
+      expenseCorrectionSave: "حفظ التصحيح",
+      expenseCorrectionSaving: "جارٍ الحفظ…",
+      expenseCorrectionDiscardWarning: "نتيجة التصحيح السابق غير مؤكدة. المتابعة تُسقط إمكانية إعادة محاولة الطلب السابق فقط؛ ولا تحذف قيداً من الخادم أو تتراجع عنه.",
+      expenseCorrectionDiscardConfirm: "تجاهل إعادة المحاولة السابقة والمتابعة",
+      expenseCorrectionCancel: "إلغاء",
+      expenseCorrectionSaved: "تم تسجيل التصحيح",
+      expenseCorrectionUndoSaved: "تم تسجيل التراجع",
+      expenseCorrectionDismiss: "إخفاء الإشعار",
+      expenseCorrectionAmountInvalid: "أدخل مبلغاً صحيحاً أكبر من صفر ولا يتجاوز الحد المسموح.",
+      expenseCorrectionLoadError: "تعذّر تحميل سجل التصحيح. أعد المحاولة.",
+      expenseCorrectionRetry: "إعادة المحاولة",
+      expenseCorrectionAmountUnverified: "المبلغ الحالي غير مؤكّد. أعد تحميل السجل قبل التعديل.",
+      expenseCorrectionAmountConflict: "تختلف قراءة القائمة عن السجل. أعد المحاولة قبل التعديل.",
+      expenseActorUnknown: "غير معروف",
       rangePreset_24H: "آخر 24 ساعة",
       rangePreset_7D: "آخر 7 أيام",
       rangePreset_28D: "آخر 28 يوماً",
@@ -897,7 +1079,12 @@ const resources = {
       shellGroupSystem: "النظام",
       shellMainNav: "التنقل الرئيسي",
       shellUser: "المستخدم",
+      accountOwner: "المالك",
+      accountLoading: "جارٍ تحميل الحساب…",
+      accountUnavailable: "تعذّر تحميل الحساب. أعد المحاولة.",
+      accountBlocked: "الحساب غير متاح.",
       sidebarToggle: "توسيع / طي الشريط الجانبي",
+      sidebarExpand: "توسيع الشريط الجانبي",
       themeLabel: "المظهر",
       themeLight: "فاتح",
       themeDark: "داكن",
@@ -905,6 +1092,8 @@ const resources = {
       shortcutsTitle: "اختصارات لوحة المفاتيح",
       shortcutsHint: "نفّذ الإجراءات الشائعة بدون الفأرة.",
       shortcutSearch: "البحث (قريباً)",
+      shortcutSale: "بدء البيع / التركيز على إدخال المنتجات",
+      shortcutPurchase: "فتح المشتريات",
       shortcutToggleSidebar: "توسيع / طي الشريط الجانبي",
       shortcutHelp: "فتح هذه المساعدة",
       shortcutClose: "إغلاق / رجوع",
@@ -952,6 +1141,7 @@ const resources = {
       partySaving: "جاري الحفظ…",
       partySaved: "تم الحفظ",
       partyDeleted: "تم الحذف",
+      partyDetails: "تفاصيل",
       partyEdit: "تعديل",
       partyDelete: "حذف",
       partyCancel: "إلغاء",
@@ -1102,6 +1292,7 @@ const resources = {
       ADJUSTMENT_NOT_TRANSACTIONAL: "تعذّر حفظ التسوية؛ أعد المحاولة",
       DUPLICATE_ADJUSTMENT: "سبق تسجيل هذه التسوية بنفس السبب والتاريخ",
       SUPPLIER_ENTRY_UNSIGNABLE: "حركة في حساب مورّد واحد على الأقل لا يمكن ترجيحها، فلا يمكن حساب الرصيد. راجع سجل المورّد وأصلح الحركة التي لا يمكن ترجيحها.",
+      OPENING_BALANCE_ROW_INVALID: "اختر مورّداً موجوداً أو أدخل اسم مورّد جديد.",
       DUPLICATE_OPENING_BALANCE_ROW: "هذا المورّد مكرّر في الدفعة بنفس المبلغ والاتجاه",
       OPENING_BALANCE_EXISTS: "لهذا المورّد حركات سابقة؛ أكّد قبل الإضافة",
       OPENING_BALANCE_TARGET_CHANGED: "تغيّرت وجهة الاسم؛ تحقّق من المورّد المذكور حديثاً قبل التأكيد",
@@ -1151,9 +1342,64 @@ const resources = {
       supplierOpeningRemovedDismiss: "فهمت، تابع الحفظ",
     },
   },
+  /**
+   * The type trade recorded for issue #331.
+   *
+   * `satisfies { ar: { translation: Record<string, string> } }` widens the
+   * resource values to `string`, so `t()` returns `string`. The property names
+   * still form an exact `MessageKey` union. Key construction and return typing
+   * are separate: widening values does not enable dynamic key construction.
+   *
+   * `as const` would preserve each Arabic literal and let i18next check
+   * interpolation names. The #322 catalogue had 66 interpolated keys. The saved
+   * #331 report says restoring `as const` produced 19 type errors across 8 files.
+   * Its reported breakdown was 14 numbers passed to unformatted, non-count
+   * placeholders typed as `string`, 4 plural-aware literal-return errors in
+   * `i18n.test.ts`, and 1 `t()` result widened into `useState`. This historical
+   * breakdown was not rerun here. It does not mean every interpolation value
+   * is a string; numeric `count` and formatter-specific values have their own
+   * types.
+   *
+   * Those rejects are fixable, so `as const` remains a viable alternative.
+   * Explicit `useState<string>(t(...))` or `let value: string` annotations fix
+   * literal-return narrowing; numeric placeholder arguments must also match
+   * their declared types. The trade is avoiding 19 reported typing fixes
+   * versus per-key option checking on the then-66 interpolated keys, not a
+   * requirement to widen the catalogue.
+   *
+   * The current catalogue has 67 property strings with `{{...}}` interpolations,
+   * counted from six-space-indented declarations. Comments and `<money/>`
+   * markers are not interpolation declarations. Runtime checks live in
+   * `i18n.test.ts`; they exercise dynamic-key families and real i18next
+   * interpolation, but do not replace per-key interpolation checking.
+   */
 } satisfies { ar: { translation: Record<string, string> } };
 
 export type MessageKey = keyof (typeof resources)["ar"]["translation"];
+
+/**
+ * The catalogue's keys as a VALUE, next to the same list as a type.
+ *
+ * `MessageKey` is a compile-time fact; this is the same list at run time, so
+ * a test can hold the catalogue and the loaded bundle side by side instead of
+ * asking the i18next instance about its own bundle (issue #331).
+ */
+export const CATALOGUE_KEYS =
+  // SAFETY: `Object.keys` types its result as `string[]`, and every key it
+  // returns here is a key of the catalogue literal this line reads — the type
+  // system cannot see that, so the assertion states it.
+  Object.keys(resources.ar.translation) as ReadonlyArray<MessageKey>;
+
+/**
+ * The narrow translator a view helper takes (issue #331).
+ *
+ * `TFunction` is i18next's whole surface — a namespace type, a set of
+ * overloads and about fifty members — and a helper that passes three literals
+ * and one `{ note }` needs none of it. This is the part it uses: the
+ * catalogue's key union, and the variables the copy interpolates. Narrowing it
+ * also lets a test stub `t` without importing i18next at all.
+ */
+export type Translate = (key: MessageKey, vars?: Record<string, string>) => string;
 
 /**
  * The translation surface is the catalogue (issue #322). Augmenting i18next's
@@ -1216,7 +1462,10 @@ const RETIRED_UNEXPECTED_KEYS = new Set(["UNEXPECTED", "unexpected"]);
  * resource entry (the UI validates the same rule inline, so both paths must
  * render the same sentence).
  */
-const SERVER_ERROR_ALIASES = new Map<string, MessageKey>([["INVALID_PARTY_PHONE", "partyPhoneInvalid"]]);
+const SERVER_ERROR_ALIASES = new Map<string, MessageKey>([
+  ["INVALID_PARTY_PHONE", "partyPhoneInvalid"],
+  ["RETURN_SHAPE_INVALID", "RETURN_DETAILS_INVALID"],
+]);
 
 /**
  * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, SETUP_LOCKED, …).

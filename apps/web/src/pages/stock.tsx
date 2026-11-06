@@ -1,9 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { Link, useParams } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
+
+import type { MovementKind } from "@dokan/contracts";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -11,9 +12,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 import { EmptyState } from "@/components/ui/empty-state";
 
-import { tError } from "../lib/i18n";
+import { tError, type MessageKey, type Translate } from "../lib/i18n";
 import { LEDGER_REFETCH_MS, hotCounterRefresh } from "../lib/freshness";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { inputClass } from "@/components/ui/input";
 import { usePagination } from "../hooks/use-pagination";
 import { Pager } from "@/components/ui/pager";
@@ -28,6 +29,7 @@ import { formatDateTime } from "../lib/dates";
  */
 
 export function StockForm() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const items = useQuery(orpc.itemsAll.queryOptions());
@@ -201,10 +203,32 @@ export function StockForm() {
   );
 }
 
-function kindLabel(t: TFunction, kind: string): string {
-  if (kind === "PURCHASE") return t("historyKind_PURCHASE");
-  if (kind === "SALE") return t("historyKind_SALE");
-  return t("historyKind_MANUAL_ADJUSTMENT");
+/**
+ * The copy for one movement kind, exhaustive over the contract's kinds
+ * (issue #331).
+ *
+ * `movementKinds` is the source of truth, so a kind added to the contract
+ * leaves this table missing a property and `bun run typecheck` fails HERE —
+ * at the table — instead of the screen quietly labelling the new kind as an
+ * adjustment. The if-chain this replaces had no such edge: it fell through to
+ * the adjustment copy for every kind it did not name, so a fourth kind
+ * rendered the adjustment copy with no error and no test.
+ */
+export const HISTORY_KIND_KEYS = {
+  PURCHASE: "historyKind_PURCHASE",
+  SALE: "historyKind_SALE",
+  MANUAL_ADJUSTMENT: "historyKind_MANUAL_ADJUSTMENT",
+} satisfies Record<MovementKind, MessageKey>;
+
+/**
+ * The label for a movement kind.
+ *
+ * The table covers every kind the contract declares, and the api validates the
+ * history output against that contract, so a kind outside the table cannot
+ * reach this view.
+ */
+export function kindLabel(t: Translate, kind: MovementKind): string {
+  return t(HISTORY_KIND_KEYS[kind]);
 }
 
 /** Translate the locale-neutral reasons the returns feature stores on stock
@@ -212,7 +236,7 @@ function kindLabel(t: TFunction, kind: string): string {
  * the correction token (`INVOICE_CORRECTION <invoiceNumber> #<lineId>`).
  * Unknown/legacy reasons (opening, pre-token Arabic corrections) render raw.
  * The api stores keys; this view owns the copy. */
-export function movementReasonText(t: TFunction, reason: string): string {
+export function movementReasonText(t: Translate, reason: string): string {
   if (reason === "COST_CORRECTION") return t("historyReasonCostCorrection");
   if (reason === "RETURN_RECORDED") return t("historyReasonReturnRecorded");
   if (reason.startsWith("RETURN_REJECTED_DAMAGED")) {
@@ -220,9 +244,11 @@ export function movementReasonText(t: TFunction, reason: string): string {
     // `note`, not `context`: `context` is one of i18next's own options, so the call
     // was looking up a `historyReasonReturnRejected_<note>` variant that does not
     // exist and only rendered correctly because the copy's placeholder happened to
-    // be named `{{context}}` too. The compiler does NOT catch this — `TOptionsBase`
-    // declares `context?: unknown`, so `{ context: rest }` typechecks before and
-    // after #322. It was found by reading the option list, not by the type system;
+    // be named `{{context}}` too. The compiler does NOT catch this — the narrow
+    // translator takes any variable name, so `{ context: rest }` typechecks here
+    // exactly as it did before #322, and i18next's `TOptionsBase` declares
+    // `context?: unknown`, so the library's own option list accepted it too. It
+    // was found by reading the option list, not by the type system;
     // stock.test.tsx pins the option/copy pairing at run time instead.
     return t("historyReasonReturnRejected", { note: rest });
   }
@@ -323,11 +349,18 @@ function pageLocalSupersededByCorrection(rows: readonly PrecedenceRow[]): Set<nu
   return superseded;
 }
 
+function HistoryAmount({ value }: { value: number | null | undefined }) {
+  const { t } = useTranslation();
+  return value == null ? <>{t("historyUnavailable")}</> : <Amount value={value} />;
+}
+
 export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?: number } = {}) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
   const pager = usePagination();
+  useEffect(() => { pager.reset(); }, [itemId]);
   const history = useQuery({
     ...orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }),
     // #295 — the running stock column on this screen is a hot counter too: a
@@ -344,22 +377,26 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
 
   return (
     <section>
-      <Button asChild variant="outline" size="sm">
-        <Link to="/items">
-          {/* RTL: back points right, and the arrow leads the label on its right */}
-          <ArrowRight size={16} aria-hidden="true" />
-          {t("historyBack")}
-        </Link>
-      </Button>
-      <h1 className="mt-2 text-xl font-bold">{t("historyTitle")}</h1>
+      <nav aria-label={t("historyBreadcrumb")} className="flex items-center gap-2 text-sm">
+        <Link to="/items" className="text-primary underline underline-offset-4">{t("navItems")}</Link>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{t("historyTitle")}</span>
+      </nav>
+      <h1 className="mt-2 text-xl font-bold">{t("historyTitle")}{history.data?.item ? <>: <bdi>{history.data.item.name}</bdi></> : null}</h1>
+      {history.isError && (
+        <div role="alert" className="mt-4 rounded border border-destructive p-3">
+          <p>{t("historyLoadError")}</p>
+          <Button variant="outline" className="mt-2" onClick={() => void history.refetch()}>{t("itemsSearchRetry")}</Button>
+        </div>
+      )}
 
-      {history.isPending || !history.data ? (
+      {history.isPending ? (
         <div className="mt-4 grid gap-3 rounded border bg-card p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
-      ) : history.data.total === 0 ? (
+      ) : !history.data ? null : history.data.total === 0 ? (
         <EmptyState
           testId="history-empty"
           card
@@ -375,7 +412,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
               <th className="p-3">{t("historyDate")}</th>
               <th className="p-3">{t("historyKind")}</th>
               <th className="p-3">{t("historyDelta")}</th>
-              <th className="p-3">{t("stockUnitCost")}</th>
+              <th className="p-3">{t("historyDetails")}</th>
               <th className="p-3">{t("historyStockAfter")}</th>
             </tr>
           </thead>
@@ -401,9 +438,27 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                   )}
                 </td>
                 <td className={`p-3 ${movementDeltaClass(movement.delta)}`}>
-                  {movement.delta > 0 ? `+${movement.delta}` : movement.delta}
+                  <bdi dir="ltr">{movement.delta > 0 ? `+${movement.delta}` : movement.delta}</bdi>
                 </td>
-                <td className="p-3">{movement.unitCost ?? "—"}</td>
+                <td className="p-3 align-top">
+                  <details className="max-w-md" key={`${itemId}-${movement.id}`}>
+                    <summary className="cursor-pointer rounded text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2">
+                      {t("historyDetails")}
+                    </summary>
+                    <dl className="mt-3 grid gap-2 text-sm">
+                      <div><dt className="text-muted-foreground">{t("stockSellingPrice")}</dt><dd data-testid="history-selling-price">{movement.details?.sellingPrice == null ? t("historyUnavailable") : <Amount value={movement.details.sellingPrice} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("stockUnitCost")}</dt><dd><HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} /></dd></div>
+                      <div><dt className="text-muted-foreground">{t("historySaleTotal")}</dt><dd data-testid="history-sale-total">{movement.details?.saleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.saleTotal} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("historyNetSaleTotal")}</dt><dd>{movement.details?.netSaleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.netSaleTotal} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("historyCostTotal")}</dt><dd data-testid="history-cost-total">{movement.details?.cost?.total == null ? t("historyUnavailable") : <Amount value={movement.details.cost.total} />}</dd></div>
+                      <div><dt className="text-muted-foreground">{t("historyRecordedAt")}</dt><dd>{formatDateTime(movement.createdAt)}</dd></div>
+                    </dl>
+                    <p className="mt-2 text-xs text-muted-foreground">{t("historyFactsHint")}</p>
+                    {movement.details?.documents.map((document) => (
+                      <Link key={document.id} to="/invoices/$invoiceId" params={{ invoiceId: document.id }} className="mt-2 block text-primary underline underline-offset-4"><bdi dir="ltr">{document.number}</bdi></Link>
+                    ))}
+                  </details>
+                </td>
                 <td className="p-3 font-semibold" data-testid="stock-after">
                   {movement.stockAfter}
                 </td>

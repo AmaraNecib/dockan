@@ -62,7 +62,7 @@ afterEach(() => {
  * Every nav target gets a route so Link resolution never falls back to an
  * error; nothing else from the app graph is imported.
  */
-async function mountSidebar(collapsed: boolean, pendingReturnsCount: number | null = 0, pendingReturnsError = false): Promise<HTMLElement> {
+async function mountSidebar(collapsed: boolean, pendingReturnsCount: number | null = 0, pendingReturnsError = false, accountState?: "failed" | "blocked" | "loading", onExpand = () => {}): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -71,10 +71,12 @@ async function mountSidebar(collapsed: boolean, pendingReturnsCount: number | nu
       <AppSidebar
         collapsed={collapsed}
         activeKey="sale"
-        user={{ name: "مالك", phone: null }}
+        user={accountState ? null : { name: "مالك", phone: null }}
         pendingReturnsCount={pendingReturnsCount}
         pendingReturnsError={pendingReturnsError}
-        onExpand={() => {}}
+        accountFailed={accountState === "failed"}
+        accountBlocked={accountState === "blocked"}
+        onExpand={onExpand}
       />
     ),
   });
@@ -225,6 +227,42 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
   });
 });
 
+describe("AppSidebar owner identity", () => {
+  it("announces collapsed account failure and lets the user expand to retry", async () => {
+    let expanded = 0;
+    const host = await mountSidebar(true, 0, false, "failed", () => { expanded += 1; });
+    const avatar = host.querySelector<HTMLButtonElement>("aside > div:last-child button");
+    expect(avatar?.getAttribute("aria-label")).toContain(i18n.t("accountUnavailable"));
+    expect(avatar?.getAttribute("aria-label")).toContain(i18n.t("sidebarExpand"));
+    expect(avatar?.getAttribute("title")).toBe(avatar?.getAttribute("aria-label"));
+    act(() => avatar?.click());
+    expect(expanded).toBe(1);
+  });
+
+  it("distinguishes blocked and loading accounts while collapsed", async () => {
+    for (const state of ["blocked", "loading"] as const) {
+      const host = await mountSidebar(true, 0, false, state);
+      const avatar = host.querySelector<HTMLButtonElement>("aside > div:last-child button");
+      expect(avatar?.getAttribute("aria-label")).toContain(i18n.t(state === "blocked" ? "accountBlocked" : "accountLoading"));
+      expect(avatar?.getAttribute("title")).toBe(avatar?.getAttribute("aria-label"));
+    }
+  });
+
+  it("keeps the verified name and role visible when expanded", async () => {
+    const host = await mountSidebar(false);
+    const footer = host.querySelector("aside > div:last-child");
+    expect(footer?.textContent).toContain("مالك");
+    expect(footer?.textContent).toContain(i18n.t("accountOwner"));
+  });
+
+  it("keeps the verified name and role in the collapsed avatar's accessible name", async () => {
+    const host = await mountSidebar(true);
+    const avatar = host.querySelector<HTMLButtonElement>("aside > div:last-child button");
+    expect(avatar?.getAttribute("aria-label")).toBe(`مالك — ${i18n.t("accountOwner")} — ${i18n.t("sidebarExpand")}`);
+    expect(avatar?.getAttribute("title")).toBe(`مالك — ${i18n.t("accountOwner")} — ${i18n.t("sidebarExpand")}`);
+  });
+});
+
 describe("AppSidebar accessible names (issue #94)", () => {
   it("expanded: every nav link shows its Arabic label as text", async () => {
     const host = await mountSidebar(false);
@@ -237,6 +275,8 @@ describe("AppSidebar accessible names (issue #94)", () => {
       expect(link).toBeDefined();
       expect(link?.textContent).toContain(i18n.t(item.labelKey));
     }
+    expect(linkFor(host, "/sale")?.getAttribute("title")).toBe("المبيعات (Ctrl+N)");
+    expect(linkFor(host, "/purchase")?.getAttribute("title")).toBe("المشتريات (Ctrl+B)");
     // The rare System cluster starts folded; open it and check its labels too.
     const toggle = Array.from(host.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")).find((button) =>
       button.textContent?.includes(i18n.t("shellGroupSystem")),
@@ -259,7 +299,8 @@ describe("AppSidebar accessible names (issue #94)", () => {
         const link = linkFor(host, item.to);
         expect(link).toBeDefined();
         expect(link?.getAttribute("aria-label")).toBe(i18n.t(item.labelKey));
-        expect(link?.getAttribute("title")).toBe(i18n.t(item.labelKey));
+        const keys = item.key === "sale" ? "Ctrl+N" : item.key === "purchase" ? "Ctrl+B" : null;
+        expect(link?.getAttribute("title")).toBe(keys ? `${i18n.t(item.labelKey)} (${keys})` : i18n.t(item.labelKey));
       }
     }
     // icon-only: the label is not rendered as text, only as the accessible name

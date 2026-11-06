@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "../lib/scoped-mutation";
 import { Link } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -21,12 +22,14 @@ import { PURCHASE_QUICK, type PurchaseQuickFields } from "@/lib/purchase-quick";
 import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseCartDirty, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
 import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
+import { useInvoiceEntryShortcut } from "@/hooks/use-invoice-entry-shortcut";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
 import { DiscardDraftDialog } from "../components/app/discard-draft-dialog";
 
 import { tError } from "../lib/i18n";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 
 /**
  * Ticket 29 — purchase intake (/purchase): multi-line PURCHASE invoices with
@@ -114,6 +117,7 @@ function lineCreateFormId(itemId: string): string {
 const LINES_FROZEN_ID = "purchase-lines-frozen-status";
 
 export function PurchasePage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const categories = useQuery(orpc.categoriesList.queryOptions());
@@ -434,7 +438,12 @@ export function PurchasePage() {
    * screen asks the same question: a sidebar link, the header action, the
    * browser's back button.
    */
-  const discardGuard = useDiscardNavigationGuard({ dirty: cartDirty, lineCount: lines.length });
+  useInvoiceEntryShortcut("purchase", () => {
+    if (savePending) return;
+    setSavedInvoice(null);
+    setPickerTarget({ kind: "append" });
+  });
+  const discardGuard = useDiscardNavigationGuard({ dirty: cartDirty, lineCount: lines.length, pending: savePending });
   // #345 review round 4 (Greptile P2) — one dialog at a time. The picker's layer
   // takes Escape before the question can, so an inner dialog under the question
   // makes Escape and the backdrop unreachable. Closing it when the question opens
@@ -659,7 +668,7 @@ export function PurchasePage() {
             <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
               <h2 className="me-auto text-sm font-semibold">{t("purchasesLinesTitle")}</h2>
               {lines.length > 0 && (
-                <Button data-testid="purchase-open-picker" disabled={savePending} onClick={() => setPickerTarget({ kind: "append" })}>
+                <Button data-testid="purchase-open-picker" title={`${t("purchasesAddItem")} (${shortcutKeys("onPurchase")})`} disabled={savePending} onClick={() => setPickerTarget({ kind: "append" })}>
                   {t("purchasesAddItem")}
                 </Button>
               )}
@@ -743,7 +752,7 @@ export function PurchasePage() {
                     title={t("purchasesEmptyTitle")}
                     hint={t("purchasesEmptyHint")}
                     action={
-                      <Button size="lg" data-testid="purchase-open-picker" disabled={savePending} onClick={() => setPickerTarget({ kind: "append" })}>
+                      <Button size="lg" data-testid="purchase-open-picker" title={`${t("purchasesAddItem")} (${shortcutKeys("onPurchase")})`} disabled={savePending} onClick={() => setPickerTarget({ kind: "append" })}>
                         {t("purchasesAddItem")}
                       </Button>
                     }
@@ -1024,6 +1033,7 @@ export function PurchasePage() {
 
 /** Post-save proposal: one-click attribution of earlier uninvoiced stock */
 export function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const proposal = useQuery(orpc.purchasesProposal.queryOptions({ input: { invoiceId } }));

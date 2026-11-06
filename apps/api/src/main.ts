@@ -13,7 +13,7 @@ import { openConnection, type Connection } from "./db/connection";
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
 import { snapshotFailurePolicy } from "./db/snapshot-failure-policy";
 import { openVaultStore } from "./db/vault-store";
-import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
+import { createExternalBackup, ensureDailyBackup, type BackupPathValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
 import { classifyPlaintextCleanup } from "./lib/vault/cleanup-status";
 import { createOverlay, type RequestHandler } from "./lib/overlay";
@@ -27,6 +27,10 @@ import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypt
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
+import { recoverVaultReplacement } from "./lib/vault/restore";
+import { runRestoreWorker } from "./lib/vault/restore-worker";
+import { VaultWriterDrain } from "./lib/vault/writer-drain";
+import { tokenMatches } from "./lib/boot-token";
 import { ReclaimRetry } from "./lib/vault/reclaim-retry";
 import { answerReclaimRetry } from "./lib/vault/refused-request";
 import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
@@ -49,6 +53,14 @@ import type { StorePort } from "./store/port";
 
 
 const config = createAppConfig();
+
+// A native-owned one-shot process, before logger/manager/port/server creation.
+// Preview is read-only; install acquires its own lock after the old child stops.
+if (process.argv.includes("--vault-restore-worker")) {
+  process.exit(await runRestoreWorker(config.dataDir));
+}
+const writerDrain = new VaultWriterDrain();
+let brokerActive = false;
 
 // A fresh install's app-data folder does not exist yet. Nothing else creates
 // it (backup copy targets <dataDir>/backups, the logger makes <dataDir>/logs),
@@ -325,7 +337,7 @@ async function reclaimUntilOwned(): Promise<void> {
 }
 
 /** Startup daily backup: one copy per Algeria-local day, validated by format. */
-async function runDailyBackup(store: StorePort, validate?: BackupFileValidator): Promise<void> {
+async function runDailyBackup(store: StorePort, validate?: BackupPathValidator): Promise<void> {
   try {
     const options: Parameters<typeof ensureDailyBackup>[0] = { store, dataDir: config.dataDir };
     if (validate !== undefined) options.validate = validate;
@@ -391,11 +403,38 @@ async function startPlaintext(): Promise<void> {
 let vaultStoreForBackup: StorePort | undefined;
 
 /** The first daily backup needs the committed header, so it runs post-commit. */
+function startExternalBackup(store: StorePort, conn: Connection): void {
+  if (conn.writeBackupTo === undefined || readyHandlerFor(lockLost) !== "live" || writerDrain.closed) return;
+  void writerDrain.run(() => createExternalBackup({
+    store,
+    dataDir: config.dataDir,
+    writeGuard: requireHeldLock(vaultLock),
+  })).then((result) => {
+    if (result.lastError !== null) logger.warn("SERVER_ERROR", `external backup failed: ${result.lastError}`);
+  }).catch((error) => {
+    if (error instanceof SnapshotPersistenceError) {
+      conn.onFatalError?.(error);
+      return;
+    }
+    if (!(error instanceof VaultLockLostError)) {
+      logger.error("SERVER_ERROR", "external encrypted backup failed", error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
 async function runVaultDailyBackup(): Promise<void> {
   const store = vaultStoreForBackup;
   const conn = activeConnection;
   if (store === undefined || conn === undefined) return;
+  // Every caller, including credential changes, must preserve recovery files
+  // that the sweep could not convert. The daily writer replaces invalid files.
+  const cleanup = await classifyPlaintextCleanup(
+    () => vaultManager?.cleanupLegacyPlaintext() ?? Promise.reject(new Error("vault manager unavailable")),
+    (error) => logger.error("SERVER_ERROR", "VAULT_PLAINTEXT_CLEANUP_UNKNOWN: daily backup deferred; manual verification required", error),
+  );
+  if (cleanup.status !== "clean") return;
   await runDailyBackup(store, conn.validateSnapshotFile?.bind(conn));
+  startExternalBackup(store, conn);
 }
 
 async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
@@ -505,6 +544,9 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
       logger,
       store,
       auth,
+      externalBackupEnabled: conn.writeBackupTo !== undefined,
+      externalBackupWriteGuard: requireHeldLock(vaultLock),
+      afterManualBackup: () => startExternalBackup(store, conn),
       vault: {
         sessionMatches: (token) => vault.sessionMatches(token),
         ownerId: () => vault.ownerId(),
@@ -530,9 +572,12 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     // A committed vault owns the data; a plaintext database (live or under
     // backups/) left behind by a failed or interrupted first-run cleanup is
     // stale and must not survive. Retry on every unlock until it is gone.
-    const cleanup = await vault.cleanupLegacyPlaintext();
-    if (cleanup.plaintextRemaining.length > 0) {
-      logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after unlock: ${cleanup.plaintextRemaining.join(", ")}`);
+    const cleanup = await classifyPlaintextCleanup(
+      () => vault.cleanupLegacyPlaintext(),
+      (error) => logger.error("SERVER_ERROR", "VAULT_PLAINTEXT_CLEANUP_UNKNOWN: could not verify plaintext cleanup after unlock; manual verification required", error),
+    );
+    if (cleanup.status === "remaining") {
+      logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after unlock: ${cleanup.remaining.join(", ")}`);
     }
     // unlock path only: the first-run path runs this after commitSetup, when
     // the header exists and a self-contained backup can actually be written.
@@ -922,10 +967,15 @@ function publishOwnedRegistryEntry(port: number): void {
  * writes nothing into it (#277 acceptance criterion 3).
  */
 function openVaultManager(): VaultManager {
+  // Startup and successful lock reclaim share this gate. Recovery must precede
+  // manager/setup/broker/cleanup and every connection that could checkpoint.
+  if (vaultLock === undefined) throw new Error("vault recovery requires the folder lock");
+  recoverVaultReplacement(config.dataDir, vaultLock);
   const manager = new VaultManager({
     dataDir: config.dataDir,
     legacyDbPath: config.db.path,
     logger,
+    cleanupWriteGuard: requireHeldLock(vaultLock),
   });
   vaultManager = manager;
   vaultApp = createVaultHttpApp({
@@ -942,6 +992,34 @@ function openVaultManager(): VaultManager {
   return manager;
 }
 
+const serveTrackedRequest: RequestHandler = async (request, env) => {
+  if (new URL(request.url).pathname === "/api/vault/quiesce" && request.method === "POST") {
+    // Native-only, authenticated and tied to this exact launched process. A
+    // renderer session alone must not stop another launch or a development API.
+    if (!config.vaultBroker || config.bootToken === undefined
+      || !tokenMatches(request.headers.get("x-dokan-boot-token"), config.bootToken)
+      || !vaultManager?.sessionMatches(request.headers.get("x-vault-session"))) {
+      return Response.json({ ok: false }, { status: 401 });
+    }
+    // A broker bootstrap/cleanup must finish before draining: it can create a
+    // connection or header after an HTTP request has already returned.
+    if (brokerActive || !appReady || lockLost) return Response.json({ ok: false }, { status: 409 });
+    try {
+      await writerDrain.stop(async () => {
+        requireHeldLock(vaultLock)();
+        await activeConnection?.close();
+        vaultManager?.close();
+        requireHeldLock(vaultLock)();
+      });
+      return Response.json({ ok: true });
+    } catch {
+      return Response.json({ ok: false }, { status: 500 });
+    }
+  }
+  if (writerDrain.closed) return Response.json({ error: { code: "VAULT_STOPPING" } }, { status: 503 });
+  return writerDrain.run(() => activeHandler(request, env));
+};
+
 function startServer(): void {
   // The ONE place the canonical port record goes out (#277). It waits for the
   // two facts it needs — this instance may be pointed at, and the listener is
@@ -953,7 +1031,7 @@ function startServer(): void {
   // about.
   void publication.run(publishOwnedPort);
   server = serve(
-    { fetch: (request, env) => activeHandler(request, env), port, hostname: config.host },
+    { fetch: serveTrackedRequest, port, hostname: config.host },
     async (info) => {
       // the listener is up: the canonical record may go out now, if this
       // instance may be pointed at (Greptile issue 1)
@@ -1141,7 +1219,8 @@ if (config.vault === "on") {
   }
   const manager = vaultManager;
   if (config.vaultBroker && manager !== undefined) {
-    await runVaultBroker(manager);
+    brokerActive = true;
+    try { await runVaultBroker(manager); } finally { brokerActive = false; }
   }
 } else {
   logger.warn(

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { logEventCopy, logMessageCopy } from "../lib/log-copy";
 
 /**
@@ -97,6 +97,7 @@ function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
  * page only parses and renders.
  */
 export function DiagnosticsPage() {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   const logs = useQuery(orpc.diagnosticsLogsTail.queryOptions({ input: { lines: 200 } }));
 

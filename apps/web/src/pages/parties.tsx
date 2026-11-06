@@ -9,12 +9,12 @@ import { displayAlgerianPhone } from "@dokan/contracts";
 import { DeletePartyDialog, PartyFormDialog } from "@/components/parties/party-forms";
 import { filterParties } from "@/components/parties/party-match";
 import { Amount } from "@/components/ui/amount";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 
 /** Name cell links to the role's full detail page (Q7: a page, not a modal). */
@@ -59,6 +59,7 @@ function RoleTabs({ role }: { role: PartyRole }) {
  * otherwise). Clicking a name opens the role's full detail page.
  */
 export function PartiesPage({ role }: { role: PartyRole }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   // both queries declared unconditionally; the role enables exactly one
   const customerList = useQuery({ ...orpc.customersList.queryOptions(), enabled: role === "customer" });
@@ -148,7 +149,7 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                 <TableHead>{t("partiesColInvoices")}</TableHead>
                 <TableHead>{t("partiesColRemaining")}</TableHead>
                 <TableHead>
-                  <span className="sr-only">{t("partyEdit")}</span>
+                  <span className="sr-only">{t("partyDetails")} / {t("partyEdit")} / {t("partyDelete")}</span>
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -167,6 +168,9 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1">
+                        <Link to={role === "customer" ? "/customers/$partyId" : "/suppliers/$partyId"} params={{ partyId: row.id }} className={buttonVariants({ variant: "outline", size: "sm" })} data-testid="party-row-details" aria-label={`${t("partyDetails")} ${row.name}`}>
+                          {t("partyDetails")}
+                        </Link>
                         <Button variant="ghost" size="sm" onClick={() => setEditing(row)} data-testid="party-row-edit" aria-label={`${t("partyEdit")} ${row.name}`}>
                           {t("partyEdit")}
                         </Button>

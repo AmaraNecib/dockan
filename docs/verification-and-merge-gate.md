@@ -15,14 +15,18 @@ fresh clone has this document but not the scripts.
 | the change | the evidence |
 | --- | --- |
 | **visual** — anything the eye can judge | before/after images **and** a video at real user pace. A screenshot pair alone does not show a transition, a focus ring or a hover state. |
-| **not visual** — logic, a feature, a refactor, a fix | the **measurements**. Not "it works": the failing-first run (red before, green after), the ablation/mutation proof that the new guard actually bites, the before/after numbers, and the decisions taken and why. |
+| **not visual** — logic, a feature, a refactor, a fix | the **measurements**. Not "it works": the failing-first run (red before, green after), the ablation/mutation proof that the new guard actually bites, the before/after numbers, and the decisions taken and why. The automated red-on-parent replay is CI-only. |
 
 An **inert** diff (§3) cannot reach the product, so its measurement is the CI run itself — still posted as the evidence comment reason 4 requires. The form changes; the obligation does not.
 
 The non-visual bar is the owner's own phrasing: *"You want evidence that it was right for you
 as the agent."* The parent has to be able to judge the change from the comment alone, without
 re-running it. A green check is not evidence that the right thing was built; it is evidence
-that something ran.
+that something ran. The stable CI job `CI acceptance` fails when a required job
+fails, is cancelled or skips without a successful selector proof. It does not
+prove that branch protection requires it. Local readiness is not CI acceptance
+or merge readiness; the owner must verify required-check enforcement and bypass
+policy before routine full local runs stop being required.
 
 ### Visual evidence, in its exact form
 
@@ -36,11 +40,24 @@ evidence comment carries all three:
 3. **the video link** — the full-quality mp4 beside the GIF. GitHub strips `<video>`, so the
    GIF is the only thing that plays in a PR comment; the mp4 is the full-speed copy.
 
-Record headless as webm, convert with ffmpeg (GIF via `palettegen`/`paletteuse`, mp4 as CRF 18),
-and upload to the public `crew-evidence` bucket under `<project>/<pr>/<artifact>` — the harness
-helper is `.scratch/scripts/evidence-put.sh`, and the bucket's `r2.dev` domain is public, so the
-URLs render inline. A screenshot pair alone does not show a transition, a focus ring or a hover
-state; a linked mp4 alone does not play.
+Use the repository-owned runner at [`scripts/capture-browser-evidence.ts`](../scripts/capture-browser-evidence.ts) for recording, conversion, validation and provenance. Its contract and invocation are documented in [`scripts/browser-evidence.md`](../scripts/browser-evidence.md). The journey owns UI actions and assertions; the runner owns process and artifact handling. Before and after captures use distinct clean source roots and exact revisions. Never swap tracked source under a running server.
+
+Upload validated PNG, GIF and MP4 files to the public `crew-evidence` bucket under `<project>/<pr>/<head>/<artifact>`. Use the existing authenticated `cf` CLI; `cf` and Wrangler have separate authentication, so a missing Wrangler token does not mean `cf` lacks credentials. Request private credentials only if a `cf` command itself fails authentication. Never print tokens or provision credentials when the existing `cf` login works.
+
+1. Run anonymous command discovery with no account or resource identifiers:
+   `cf cli search "upload local file to R2 object storage bucket"`.
+2. Check the existing `cf` authentication with `cf r2 buckets list` first. Read the discovered
+   command's help by appending `--help` to the full command returned, for example
+   `cf r2 objects put --help`. Inspect the public bucket domain with
+   `cf r2 buckets domains managed list --bucket-name crew-evidence`.
+3. Upload each PNG, GIF, and MP4 with its MIME type:
+   `cf r2 objects put <project>/<pr>/<head>/<artifact> --bucket-name crew-evidence --file <local-path> --content-type <mime-type>`.
+4. For each public URL, run `curl -fsS -D <headers-file> <public-url> -o <downloaded-file>`.
+   Confirm the response `Content-Type` matches the upload MIME type, then compare
+   `sha256sum <local-path> <downloaded-file>`. Post the URL only when the hashes match.
+
+Keep the existing bucket and policy unchanged. A screenshot pair alone does not show a transition,
+a focus ring or a hover state; a linked mp4 alone does not play.
 
 ### What counts as failing-first
 
@@ -49,14 +66,15 @@ change and green after it**, with the failing assertion named. A guard added wit
 reddens when the guard is deleted is not a guard. Run the guard's mutation against the current
 head; an inherited mutation table is an unrun gate.
 
-Put the evidence in the commit message body so the parent can reuse it for the PR description, and keep
-the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason
-4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
-lane that only writes the commit body produces no comment, so reason 4 fails at merge.
+These ordinary TDD and current-head mutation checks are distinct from the automated red-on-parent replay, which runs only in CI. Do not run or delegate that replay locally or require its local output. Browser-relevant changes follow the selector-first procedure in `.agents/skills/guard/SKILL.md`, including its recorded decision and selected-scope run.
 
-### The red is enforced by `scripts/red-on-parent.ts`, and a waiver is its only exception
+Put evidence already available before commit in the commit message body. Record post-commit verification in `.scratch/reviews/<issue>/<sha>-verification.md` and hand its path and verified SHA to the parent for the PR description. Do not create an evidence-only commit that moves the verified HEAD. Keep other lane notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason 4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
-"Red before green" is not an honour system here. `bun scripts/red-on-parent.ts` reconstructs the
+### CI enforces red-on-parent with `scripts/red-on-parent.ts`; a waiver is its only exception
+
+The PR `checks` job runs this gate, and its result must pass before merge. The automated parent-checkout replay is CI-only. Parents, workers (including nested subagents) and reviewers must not run or delegate it locally, or require local replay output to accept a review, push, report or merge. Use the PR `checks` result for this gate; keep ordinary TDD and focused regression tests. Hooks and local pre-push workflows also exclude this replay.
+
+"Red before green" is not an honour system here. In CI, `bun scripts/red-on-parent.ts` reconstructs the
 **parent of the change** (the merge-base, not the previous commit) and puts the files the diff adds
 into that checkout at their own paths: the added test files themselves, a **hollow** stand-in for each
 module they import that the parent does not have, and an **augmented** copy of each module the parent
@@ -157,11 +175,7 @@ assertion is rejected only in the shapes the gate can distinguish.
 A pull request may be merged when **all four** hold. Not three. Any one missing sends it back to
 the queue or back to a lane.
 
-1. **The review confidence is 5/5.** Not 3, not 4. `reviewloop` writes it; while the Greptile A/B
-   runs, both current-head reviews must be 5/5 with no actionable findings. Follow the
-   [comparison protocol](review-comparison.md) until the owner ends the trial. A missing
-   verdict blocks merging; scores are not averaged. A 3/5 naming two "silent escapes"
-   is a refusal, not a note.
+1. **The local review confidence is 5/5.** Not 3, not 4. Review depth follows reachable risk, but every reviewable change needs local review. A routine change uses one focused code-review session; a named high-risk failure uses the three initial lenses. `reviewloop` writes the local score. No unresolved actionable finding may remain at any score. Until the owner explicitly ends the [paired trial](review-comparison.md), both current-head verdicts must be 5/5 with no unresolved actionable findings. Request Greptile once per pushed head; a missing verdict blocks merge, including when credit is unavailable. Lean local review does not waive the hosted gate.
 2. **`Last reviewed commit` equals the current head SHA.** A verdict anchored to an older commit
    says nothing about the code being merged. A rebase or a fix invalidates the previous verdict —
    re-request the review.
@@ -172,9 +186,7 @@ the queue or back to a lane.
 4. **An evidence comment is present**, in the form section 1 requires for that change — and the
    evidence must be **at the head being merged**, not at some earlier commit.
 
-On top of the four: **every CI check is green or legitimately skipped** (a correctly gated job
-reporting `skipped` is fine; a `pending`, or `pending`-then-cancelled, check is not), and the PR
-is **not** `CONFLICTING`.
+On top of the four: **CI acceptance is green on the current head**, every required CI check is green or legitimately skipped (a correctly gated job reporting `skipped` is fine; a pending or pending-then-cancelled check is not), and the PR is not `CONFLICTING`. The parent verifies effective protection using [Current activation](engineering-workflow.md#current-activation), which records the existing owner acceptance. Only the owner changes protection or accepts bypass; a regression blocks merge.
 
 ### What the predicate scripts and what the parent checks
 
@@ -244,12 +256,14 @@ When the trigger list is silent, ask: *if this lands and is wrong, what does und
 (owner decision, 2026-10-17). It is not limited by visuals: a visual diff is cheap to reverse
 and auto-merges too, once the before/after packet is posted at the head. For `AUTO` the parent
 still posts the evidence comment at the head — then merges without waiting. For `OWNER` nothing
-changes: a 5/5 with no findings, anchored to the current head, with every check green, is the bar
+changes: a current-head 5/5 with no unresolved actionable findings, with every check green, is the bar
 to *ask* — not permission.
 
 The parent re-checks the class, the triggers and the four reasons **at the current head, every
 time**. A push after a verdict voids it, and a diff that was reversible before a push can be
 irreversible after it. A `.github/` change is always the owner's, whatever else is true.
+
+The rules for same-PR refinements and finding resolution are defined in [`docs/engineering-workflow.md`](engineering-workflow.md#review-invariants); they do not weaken this gate.
 
 ## 4. If it cannot merge now
 

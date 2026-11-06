@@ -32,7 +32,7 @@ const LANE_READERS = [
 // fragment is a single line, so Windows CRLF cannot split one in half.
 const REQUIRED_FACTS: [name: string, fragment: string][] = [
   ["the evidence marker", "<!-- crew-evidence -->"],
-  ["reason 1 (5/5)", "The review confidence is 5/5"],
+  ["reason 1 (5/5)", "The local review confidence is 5/5"],
   ["reason 2 (the field)", "Last reviewed commit"],
   ["reason 2 (the head anchor)", "equals the current head SHA"],
   ["reason 3 (nothing after the verdict)", "No comment lands after the verdict"],
@@ -99,49 +99,224 @@ describe("the verification rule is discoverable (#259)", () => {
     });
   }
 
-  test("the A/B protocol keeps paired evidence and an owner-controlled end", () => {
+  test("lean local review cannot retire the owner-controlled hosted verdict gate", () => {
     const comparison = read("docs/review-comparison.md");
+    expect(comparison).toContain("Until the owner explicitly ends the trial");
+    expect(comparison).toContain("both current-head verdicts must be 5/5");
+    expect(comparison).toContain("Request Greptile once after pushing a new head");
+    for (const file of ["docs/engineering-workflow.md", "docs/verification-and-merge-gate.md", ".agents/skills/guard/SKILL.md", ".agents/skills/feature-implement/SKILL.md", "AGENTS.md"]) {
+      expect(read(file), file).toContain("docs/review-comparison.md".replace("docs/", ""));
+      expect(read(file), file).not.toContain("no standing paired-review trial");
+      expect(read(file), file).not.toContain("there is no paired-review requirement");
+    }
+  });
+
+  test("issue-only requests route through lifecycle, wisdom and authority", () => {
+    const agents = read("AGENTS.md");
+    expect(agents).toContain("When the owner says `Work on issue #N.`");
+    expect(agents).toContain("read issue #N and its linked specification");
+    expect(agents).toContain("`feature-implement`");
+    expect(agents).toContain(".agents/wisdom/README.md");
+    expect(agents).toContain("docs/agent-delegation-template.md");
+    const template = read("docs/agent-delegation-template.md");
+    for (const field of ["Goal", "Worktree", "Base and head", "Required reading", "Scope and authority", "Verification mode", "Concrete proof", "Completion report"]) {
+      expect(template).toMatch(new RegExp(`\\r?\\n${field}\\r?\\n`));
+    }
+    expect(template).toContain("reviewer is read-only on the source tree");
+    expect(template).toContain("raw task input");
+    expect(template).toContain("spaces and newlines");
+  });
+
+  test("activation is recorded once and the parent verifies effective protection", () => {
+    const workflow = read("docs/engineering-workflow.md");
     for (const fact of [
-      "Continue across PRs until the owner chooses",
-      "same base SHA and head SHA",
-      "before reading the other system's findings",
-      "Both current-head reviews must be 5/5",
-      "one request per head",
-      "not an automatic replacement",
-      "verified unique defects",
-      "false positives",
-      "elapsed review time",
-      "unknown rather than zero",
-    ]) expect(comparison).toContain(fact);
-    expect(read(".agents/skills/guard/SKILL.md")).toContain(
-      "Both current-head reviews are 5/5 with no actionable findings",
-    );
+      "CI-final activation",
+      "#439",
+      "issuecomment-6667884162",
+      "issuecomment-6667906366",
+      "f4dd3bad10dcea42d81063c2c6aa32fc31891279",
+      "`app_id` 15368",
+      "enforce_admins",
+      "strict",
+      "force pushes and deletions",
+      "A real enforcement regression is an explicit blocker",
+      "explicitly passes each worker's verification mode",
+    ]) expect(workflow).toContain(fact);
+    const guard = read(".agents/skills/guard/SKILL.md");
+    expect(guard).not.toContain("#### Before activation");
+    expect(guard).not.toContain("Until activation");
+    expect(guard).toContain("`heavy_run` schedules work; it does not authorize broader scope.");
+    expect(guard).toContain("money, security and recovery contracts");
+    expect(guard).toContain("CI-final checks");
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    expect(feature).not.toContain("Until activation");
+    expect(feature).toContain("The parent explicitly passes the verification mode");
   });
 
-  test("reviewloop extraction retains cross-lens agreement and ordered lens dispatch", () => {
-    const skill = read(".agents/skills/reviewloop/SKILL.md");
-    expect(skill).toContain("Run `debate`, then `test-audit`, then `code-review`");
-    expect(skill).toContain("one entry per verified");
-    expect(skill).toContain("defect per lens comment; never collapse agreement");
-    expect(skill).toContain("two P2");
-    expect(skill).toContain("score is 4/5");
+  test("entry references cannot restore the retired local baseline", () => {
+    for (const file of ["docs/development-workflow.md", "docs/ci.md", "docs/verification-and-merge-gate.md"]) {
+      const doc = read(file);
+      expect(doc, file).toContain("engineering-workflow.md#current-activation");
+      expect(doc, file).not.toContain("keep the prior local baseline");
+      expect(doc, file).not.toContain("Keep the pre-activation local baseline");
+      expect(doc, file).not.toContain("before activating reduced local");
+    }
+    expect(read("docs/engineering-workflow.md")).toContain("A pending CI check does not block local implementation, review or publication");
+    expect(read("docs/agent-delegation-template.md")).toContain("ordinary failing-first focused test");
   });
 
-  test("the workflow states the Standard-only scoped lens exception", () => {
+  test("UI issue lifecycle routes through impeccable before the first UI edit", () => {
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    const qualityStart = feature.indexOf("| If the change touches...");
+    const qualityEnd = feature.indexOf("\n\nCommit the complete reviewable scope", qualityStart);
+    const quality = feature.slice(qualityStart, qualityEnd);
+    expect(quality).toContain("| UI components, pages, or visual design | `impeccable` |");
+    expect(quality).not.toContain("frontend-design");
+    expect(quality).not.toContain("web-design-guidelines");
+    expect(quality).not.toContain("redesign-existing-projects");
+    const critique = feature.indexOf("critique the incumbent surface before the first UI edit");
+    const implementation = feature.indexOf("Load `implement` skill");
+    expect(critique).toBeGreaterThan(-1);
+    expect(critique).toBeLessThan(implementation);
+    expect(feature).toContain("Operate mode");
+    expect(feature).toContain("ask the owner before a broader redesign");
+    expect(feature).toContain("documented direct-context fallback");
+    expect(feature).toContain("Keep keyboard, RTL, relevant states");
+  });
+
+  test("delegation template keeps task input readable and bounded", () => {
+    const template = read("docs/agent-delegation-template.md");
+    expect(template).toContain("findings verbatim");
+    expect(template).toContain("file:line");
+    expect(template).toContain("absolute worktree path");
+    expect(template).toContain("Model provenance");
+  });
+
+  test("activated CI-final policy has no unconditional local acceptance mandate", () => {
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    const guard = read(".agents/skills/guard/SKILL.md");
+    const development = read("docs/development-workflow.md");
+    expect(feature).not.toContain("Do not trade this for a focused test run and a typecheck");
+    expect(guard).toContain("The selector defines CI scope, not a mandatory local full run.");
+    expect(development).toContain("The aggregate `CI acceptance` check is mandatory before merge");
+    expect(guard).toContain("The worktree must be clean before handoff or publication");
+  });
+
+  test("CI acceptance remains a current-head merge gate", () => {
+    const workflow = read("docs/engineering-workflow.md");
+    const gate = read("docs/verification-and-merge-gate.md");
+    expect(workflow).toContain("The stable aggregate `CI acceptance` check remains mandatory for merge");
+    expect(workflow).toContain("current-head CI acceptance");
+    expect(gate).toContain("CI acceptance is green on the current head");
+    expect(gate).toContain("both current-head verdicts must be 5/5");
+  });
+
+  test("routine review is one focused execution; concrete risks select three lenses", () => {
     const workflow = read("docs/engineering-workflow.md").replace(/\s+/g, " ");
-    expect(workflow).toContain("All three lenses are the default at Standard");
-    expect(workflow).toContain("one or two lenses for a single-axis Standard change");
-    expect(workflow).toContain("High-assurance always requires all three lenses");
-    expect(workflow).toContain("all three skipped is not a review");
+    const reviewloop = read(".agents/skills/reviewloop/SKILL.md");
+    expect(workflow).toContain("one fresh `code-review` context");
+    expect(workflow).toContain("Standards, Spec and affected-test adequacy");
+    expect(workflow).toContain("three distinct sessions initially");
+    for (const risk of ["CI", "security", "schema", "dependency", "money", "recovery", "auth", "crypto", "release"]) {
+      expect(workflow.toLowerCase()).toContain(risk.toLowerCase());
+    }
+    expect(workflow).not.toContain("Standard otherwise uses all three lenses");
+    expect(reviewloop).toContain("A routine reversible localized change gets one fresh `code-review` session");
+    expect(reviewloop).toContain("Record only executions that actually happened");
+    const debate = read(".agents/skills/debate/SKILL.md");
+    expect(debate).toContain("Run one reviewer session with explicit critic and defender sections");
+    expect(debate).not.toContain("Run two parallel reviewer sub-agents");
+    expect(debate).not.toContain("critic + defender sub-agents");
+  });
+
+  test("a review fix gets one bounded fresh review without a full restart", () => {
+    const workflow = read("docs/engineering-workflow.md");
+    const reviewloop = read(".agents/skills/reviewloop/SKILL.md");
+    expect(workflow).toContain("one fresh reviewer to inspect the combined delta and direct affected callers");
+    expect(workflow).toContain("explicitly carries forward unchanged conclusions");
+    expect(workflow).toContain("Rerun another lens only if the fix creates a concrete risk");
+    expect(reviewloop).toContain("Do not restart every lens after a bounded fix");
+    expect(reviewloop).toContain("no unresolved actionable finding may remain");
+    expect(reviewloop).toContain("A 5/5 with zero unresolved actionable findings remains mandatory");
+  });
+
+  test("local payload recovery and rendering precede worker handoff", () => {
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    expect(feature).toContain("| Local review payload missing or stale | Steps 7–9 before Guard Phase 2 |");
+    expect(feature).toContain("The handoff may supply the author account; a fresh author-review session is not required.");
+    const workflow = read("docs/engineering-workflow.md");
+    const lifecycle = workflow.match(/## Feature lifecycle\r?\n\r?\n```\r?\n([\s\S]*?)```/)?.[1];
+    expect(lifecycle).toBeDefined();
+    const steps = [
+      "Commit complete reviewable scope",
+      "Risk-sized local review",
+      "Local reviewloop payload and 5/5",
+      "Guard Phase 2 — verify committed HEAD",
+      "Handoff verified SHA and local evidence",
+      "Push + open PR",
+      "CI acceptance — required on the current head before merge",
+    ];
+    const positions = steps.map((step) => (lifecycle ?? "").indexOf(step));
+    let previous = -1;
+    for (const position of positions) {
+      expect(position).toBeGreaterThan(previous);
+      previous = position;
+    }
+    expect(feature).toContain("Commit the complete reviewable scope before step 6");
+  });
+
+  test("finding dispositions and refinements cannot bypass review gates", () => {
+    const workflow = read("docs/engineering-workflow.md");
+    const gate = workflow.match(/^- \*\*A bounded fix gets one bounded review\.[^\r\n]*/m)?.[0] ?? "";
+    for (const fact of [
+      "one fresh reviewer to inspect the combined delta and direct affected callers",
+      "explicitly carries forward unchanged conclusions",
+      "Never clear or defer an actionable finding",
+    ]) expect(gate).toContain(fact);
+    const refinement = workflow.match(/^- \*\*Small related refinements[^\r\n]*/m)?.[0] ?? "";
+    for (const fact of [
+      "serve the same acceptance goal, stay localized",
+      "add no behavior, risk, decision, dependency or architecture scope",
+      "optional only when the reviewer accepts its disposition and applicable gates allow it",
+    ]) expect(refinement).toContain(fact);
+    const skill = read(".agents/skills/reviewloop/SKILL.md");
+    const resolution = skill.split("### 5. Verify and resolve findings")[1]?.split("### 6.")[0] ?? "";
+    for (const fact of [
+      "hold dependent work for substantial blockers",
+      "reviewer resolution",
+      "no unresolved actionable finding may remain at any score",
+      "Do not hide one in `summary.dismissed`",
+    ]) expect(resolution).toContain(fact);
+  });
+
+  test("shared implementation ownership retains every safety condition", () => {
+    const agents = read("AGENTS.md");
+    const ownership = agents.match(/^\*\*One writer owns[^\r\n]*/m)?.[0] ?? "";
+    for (const fact of [
+      "One writer owns the PR worktree at a time",
+      'one implementation worker with `delegate_task` and `isolation: "shared"`',
+      "the parent gives up edits while the worker owns it",
+      "Reviewers may share the same tree read-only at the pinned head",
+      "Freeze source during final verification and review",
+      "Before replacing a writer, cancel it and confirm it stopped",
+      "never use the shared project root for concurrent writes",
+    ]) expect(ownership).toContain(fact);
+  });
+
+  test("same-family fallback records standing approval without waiving gates", () => {
+    const skill = read(".agents/skills/reviewloop/SKILL.md").replace(/\s+/g, " ");
+    for (const fact of [
+      "when OpenCode is unavailable, same-family review is allowed without asking again per PR",
+      "Prefer an enabled working non-author family; otherwise use separate reviewer sessions",
+      "not model-family-independent reviews",
+      '"approvedBy": "owner"',
+      "It waives neither required lenses nor current-head 5/5",
+    ]) expect(skill).toContain(fact);
   });
 
   test("review entry points link to the A/B protocol", () => {
     for (const [file, link] of [
-      ["docs/engineering-workflow.md", "review-comparison.md"],
-      ["docs/verification-and-merge-gate.md", "review-comparison.md"],
-      [".agents/skills/feature-implement/SKILL.md", "../../../docs/review-comparison.md"],
-      [".agents/skills/reviewloop/SKILL.md", "../../../docs/review-comparison.md"],
-      [".agents/skills/guard/SKILL.md", "../../../docs/review-comparison.md"],
+      ["docs/engineering-workflow.md", "verification-and-merge-gate.md"],
     ] as const) expect(read(file)).toContain(`](${link})`);
   });
 

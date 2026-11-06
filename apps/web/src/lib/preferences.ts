@@ -1,9 +1,32 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { authLossRevision } from "./auth-refusal";
+import { sessionRefreshGeneration } from "./session-refresh";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { Preferences } from "@dokan/contracts";
+import type { DokanClient, Preferences } from "@dokan/contracts";
 
 import { rpcClient } from "./rpc";
+import { useRpc } from "./rpc-context";
+import { createCredentialLease, type CredentialLease } from "./credential-lease";
+
+/** Capture this object before a read, so its continuation cannot borrow a new scope. */
+export function createPreferenceClient(client: DokanClient = rpcClient, lease: CredentialLease = createCredentialLease()) {
+  return Object.freeze({
+    isLive: lease.isLive,
+    read: async () => {
+      lease.assertLive();
+      const values = await readPreferences(client);
+      lease.assertLive();
+      return values;
+    },
+    write: (key: string, value: string) => { lease.assertLive(); return writePreference(key, value, client); },
+  });
+}
+
+export function usePreferenceClient() {
+  const { rpcClient: client, lease } = useRpc();
+  return useMemo(() => createPreferenceClient(client, lease), [client, lease]);
+}
 
 export const PREFERENCES_QUERY_KEY = ["preferences"] as const;
 
@@ -15,8 +38,8 @@ export const PREFERENCE_STALE_MS = 30_000;
  * keeps the query retryable: an errored query is refetched on the next
  * mount/focus, which is how a transient boot hiccup self-heals.
  */
-export async function readPreferences(): Promise<Preferences> {
-  const { values } = await rpcClient.preferencesGet();
+export async function readPreferences(client: DokanClient = rpcClient): Promise<Preferences> {
+  const { values } = await client.preferencesGet();
   return values;
 }
 
@@ -25,9 +48,9 @@ export async function readPreferences(): Promise<Preferences> {
  * the write failed. This is a loopback call to local sqlite, so the caller can
  * simply await it instead of guessing.
  */
-export async function writePreference(key: string, value: string): Promise<string | null> {
+export async function writePreference(key: string, value: string, client: DokanClient = rpcClient): Promise<string | null> {
   try {
-    const { value: stored } = await rpcClient.preferencesSet({ key, value });
+    const { value: stored } = await client.preferencesSet({ key, value });
     return stored;
   } catch {
     return null;
@@ -67,10 +90,21 @@ export interface Preference<T> {
 // can take over a value the server rejected. The import consults this so a
 // background migration can never overtake a newer choice that will land.
 const writtenKeys = new Set<string>();
+const writeScope = () => `${sessionRefreshGeneration()}:${authLossRevision()}`;
+let writtenScope = writeScope();
+
+function currentWrittenKeys(): Set<string> {
+  const scope = writeScope();
+  if (scope !== writtenScope) {
+    writtenKeys.clear();
+    writtenScope = scope;
+  }
+  return writtenKeys;
+}
 
 /** True while this page session has a write for `key` in flight or landed. */
 export function hasPreferenceWrite(key: string): boolean {
-  return writtenKeys.has(key);
+  return currentWrittenKeys().has(key);
 }
 
 type PreferenceWriteListener = (key: string, ok: boolean) => void;
@@ -118,9 +152,10 @@ export function usePreference<T>(
   serialize: (value: T) => string,
 ): Preference<T> {
   const queryClient = useQueryClient();
+  const preferences = usePreferenceClient();
   const query = useQuery({
     queryKey: PREFERENCES_QUERY_KEY,
-    queryFn: readPreferences,
+    queryFn: preferences.read,
     staleTime: PREFERENCE_STALE_MS,
     // one immediate failure keeps the UI responsive; the errored query is
     // refetched on the next mount/focus, so a boot hiccup still self-heals
@@ -134,32 +169,59 @@ export function usePreference<T>(
   const inFlight = useRef(false);
   /** the newest change made while a write was in flight, sent once it settles */
   const queued = useRef<{ next: T } | null>(null);
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; queued.current = null; };
+  }, []);
 
   const raw = query.data?.[key];
   const value = raw === undefined ? defaultValue : parse(raw);
 
   function send(next: T): void {
+    if (!active.current || !preferences.isLive()) return;
     inFlight.current = true;
     setPending(true);
     setWriteFailed(false);
-    writtenKeys.add(key);
+    currentWrittenKeys().add(key);
+    const scope = writeScope();
+    const isCurrent = () => active.current && preferences.isLive() && scope === writeScope();
     let failed = false;
-    void writePreference(key, serialize(next))
-      .then((stored) => {
+    void preferences.write(key, serialize(next))
+      .then(async (stored) => {
+        if (!isCurrent()) return;
         if (stored === null) {
           // the write failed; the server value stands and the caller is told
           failed = true;
           setWriteFailed(true);
           return;
         }
-        // install only the server's own returned value, and never create a
-        // partial map: the cache holds full server reads only
+        // Discard older reads before installing this acknowledged choice.
+        await queryClient.cancelQueries({ queryKey: PREFERENCES_QUERY_KEY, exact: true });
+        if (!isCurrent()) return;
+        if (queryClient.getQueryData<Preferences>(PREFERENCES_QUERY_KEY) === undefined) {
+          // A failed boot read leaves no full map to merge. Recover that map
+          // rather than creating a cache entry containing only this key.
+          try {
+            await queryClient.fetchQuery({ queryKey: PREFERENCES_QUERY_KEY, queryFn: preferences.read, staleTime: 0 });
+          } catch {
+            if (!isCurrent()) return;
+            // Persistence succeeded, but a failed recovery leaves mounted
+            // consumers on their defaults. Invalidate once so the active
+            // shared query gets one bounded refetch. This is still a successful
+            // write; only a later successful full-map read clears query.isError.
+            await queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY, exact: true });
+            return;
+          }
+        }
+        if (!isCurrent()) return;
         queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) => {
           if (previous === undefined) return previous;
           return { ...previous, [key]: stored };
         });
       })
       .finally(() => {
+        if (!isCurrent()) { queued.current = null; return; }
         inFlight.current = false;
         setPending(false);
         const queuedNext = queued.current;
@@ -178,6 +240,7 @@ export function usePreference<T>(
   }
 
   function setValue(next: T): void {
+    if (!active.current || !preferences.isLive()) return;
     // synchronous guard: two clicks in one tick cannot issue two writes
     if (inFlight.current) {
       queued.current = { next };

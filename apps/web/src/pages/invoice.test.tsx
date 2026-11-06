@@ -555,6 +555,55 @@ describe("InvoicePage invoice switch (#171)", () => {
   });
 });
 
+describe("InvoicePage account navigation (#407)", () => {
+  for (const [kind, role] of [["SALE", "customers"], ["PURCHASE", "suppliers"]] as const) {
+    it(`links the stored ${kind} identity to its existing role-specific page`, async () => {
+      await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName: "اسم مكرر" });
+      const link = host.querySelector<HTMLAnchorElement>('[data-testid="invoice-party"] a');
+      expect(link).not.toBeNull();
+      expect(link?.textContent).toBe("اسم مكرر");
+      expect(link?.getAttribute("href")).toBe(`/${role}/$partyId?partyId=party-407`);
+    });
+  }
+
+  for (const [kind, role] of [["SALE", "customers"], ["PURCHASE", "suppliers"]] as const) {
+    for (const counterpartyId of [null, ""]) {
+      it(`keeps ${kind} legacy text unlinked with identity ${JSON.stringify(counterpartyId)}`, async () => {
+        await renderPage({ ...makeInvoice(900), kind, counterpartyId, counterpartyName: "اسم مكرر" });
+        expect(host.querySelector('[data-testid="invoice-party"]')?.textContent).toBe("اسم مكرر");
+        expect(host.querySelector('[data-testid="invoice-party"] a')).toBeNull();
+      });
+    }
+    for (const counterpartyName of [
+      null, "", "   ", "\u200e\u200f\u061c", "\u202d\u202e", "\u2066\u2067\u2068\u2069",
+      "\u200b", "\u200c", "\u200d", "\u2060", "\u2062", "\u2063", "\u2064", "\u00ad", "\ufeff",
+      "\u0001", "\u007f", "\u0085", "\u0600", "\ufff9", "\ufffb",
+      " \u200b\u200c\u200d\u2060\u2062\u2063\u2064\u200f ",
+    ]) {
+      it(`offers ${kind} account navigation for blank name ${JSON.stringify(counterpartyName)}`, async () => {
+        await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName });
+        const link = host.querySelector<HTMLAnchorElement>('[data-testid="invoice-party"] a');
+        expect(link?.textContent).toBe("تفاصيل");
+        expect(link?.getAttribute("href")).toBe(`/${role}/$partyId?partyId=party-407`);
+      });
+    }
+    for (const counterpartyName of ["\u200fاسم ٥\u200e", "٥", "\u202eاسم\u202c", "اسم عربي", "👩‍🔧", "\u2060اسم\u200d", "\u0001اسم", "\u0600اسم"]) {
+      it(`preserves visible ${kind} name content ${JSON.stringify(counterpartyName)}`, async () => {
+        await renderPage({ ...makeInvoice(900), kind, counterpartyId: "party-407", counterpartyName });
+        expect(host.querySelector('[data-testid="invoice-party"] a')?.textContent).toBe(counterpartyName);
+      });
+    }
+    for (const counterpartyName of [null, "", "   ", "\u200f", "\u202e", "\u200b\u200c\u200d", "\u2060\u2062\u2063\u2064"]) {
+      it(`preserves unlinked ${kind} legacy name ${JSON.stringify(counterpartyName)}`, async () => {
+        await renderPage({ ...makeInvoice(900), kind, counterpartyId: null, counterpartyName });
+        const field = host.querySelector('[data-testid="invoice-party"]');
+        expect(field?.textContent).toBe(counterpartyName ?? "—");
+        expect(field?.querySelector("a")).toBeNull();
+      });
+    }
+  }
+});
+
 describe("InvoicePage notes (issue #126)", () => {
   it("shows the notes section with the stored text when present", async () => {
     await renderPage({ ...makeInvoice(900), notes: "الاتصال قبل التسليم" });

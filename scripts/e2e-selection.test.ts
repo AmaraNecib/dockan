@@ -93,6 +93,12 @@ describe("e2e-selection map", () => {
     expect(orphans).toEqual([]);
   });
 
+  test("auth changes select the cross-tab session journey", () => {
+    const scope = selectSpecs(["apps/api/src/auth/auth.ts"], map);
+    expect(scope.mode).toBe("affected");
+    expect(scope.specs).toEqual(["00-onboarding.spec.ts", "cross-tab-session.spec.ts", "login.spec.ts", "owner-profile.spec.ts"]);
+  });
+
   test("every spec a rule names exists on disk", () => {
     const missing = [...new Set(map.features.flatMap((f) => f.specs))].filter((s) => !onDisk.includes(s));
     expect(missing).toEqual([]);
@@ -210,6 +216,7 @@ describe("e2e-selection behaviour", () => {
       "activity.spec.ts",
       "backups.spec.ts",
       "debts.spec.ts",
+      "party-navigation.spec.ts",
       "supplier-adjustment.spec.ts",
     ]);
     // pagination.spec.ts lives in several rules; a multi-rule diff must not repeat it.
@@ -255,7 +262,7 @@ describe("e2e-selection behaviour", () => {
     expect(page.reason).toContain("critical path");
     const rule = selectSpecs(["apps/web/src/pages/purchase.test.tsx"], map);
     expect(rule.mode).toBe("affected");
-    expect(rule.specs).toEqual(["learnability.spec.ts", "purchase-inline-product.spec.ts", "purchase-intake.spec.ts"]);
+    expect(rule.specs).toEqual(["keyboard-shortcuts.spec.ts", "learnability.spec.ts", "purchase-inline-product.spec.ts", "purchase-intake.spec.ts"]);
   });
 
   test("a debts page edit runs the supplier-credit checks (#231)", () => {
@@ -265,7 +272,7 @@ describe("e2e-selection behaviour", () => {
     // exact list so a later over-widening is visible too.
     const scope = selectSpecs(["apps/web/src/pages/debts.tsx"], map);
     expect(scope.mode).toBe("affected");
-    expect(scope.specs).toEqual(["debts.spec.ts", "supplier-adjustment.spec.ts"]);
+    expect(scope.specs).toEqual(["debts.spec.ts", "party-navigation.spec.ts", "supplier-adjustment.spec.ts"]);
   });
 
   test("an activity page edit runs the backup-filename check (#231)", () => {
@@ -291,10 +298,12 @@ describe("e2e-selection behaviour", () => {
       "completion-screens.spec.ts",
       "customer-name-variants.spec.ts",
       "items-flow.spec.ts",
+      "keyboard-shortcuts.spec.ts",
       "learnability.spec.ts",
       "no-write-window.spec.ts",
       "pagination.spec.ts",
       "sale-checkout.spec.ts",
+      "sale-price-editor.spec.ts",
     ]);
   });
 

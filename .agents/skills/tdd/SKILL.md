@@ -15,6 +15,18 @@ Tests verify behavior through public interfaces, not implementation details. Cod
 
 See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
 
+### Test-value rubric
+
+Before adding, weakening or removing a test:
+
+1. Name the observable contract, caller and realistic input path. Distinguish type-enforced invariants from untrusted runtime input such as pasted money, subprocess output or persisted data. A TypeScript annotation does not validate runtime input.
+2. Name the distinct failure the test detects and an independent expected result from the contract or a worked example. Exercise the relevant state before asserting. Prefer evidence that a targeted mutation fails over an implementation mirror or a framework-only check with no application contract.
+3. Use the cheapest layer that detects the failure. Keep integration checks when adapters, wiring or external formats are the contract; a unit test is not automatically equivalent. Text checks can protect discoverability or configuration, but matching policy fragments cannot prove agent compliance. Keep a useful policy guard when no sound replacement exists, and state its limits.
+4. Control clocks and scheduling so failures reflect the contract, not machine load. Rare security, money, backup and race failures still matter. Mocks, timers and fake clocks alone do not justify deletion.
+5. Before consolidation, name the surviving test, input, setup and assertion that detect the same failure. Record before/after coverage and targeted discrimination evidence for any weakened assertion. If equivalence is unproven, retain the test and report the hypothesis. Optimize detection, not test counts or deletion percentages.
+
+T3 Code PR #22557 restored 22 auth checks removed as "timing" despite deterministic clocks. Preserve expiry, isolation and permission contracts; judge the failure detected, not the testing technique.
+
 ## Seams: where tests go
 
 A **seam** is the public boundary you test at: the interface where you observe behavior without reaching inside. Tests live at seams, never against internals.

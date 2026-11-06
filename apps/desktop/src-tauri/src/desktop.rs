@@ -60,6 +60,10 @@ use std::time::{Duration, Instant};
 
 use tauri::{App, AppHandle, Manager, WebviewWindow};
 
+#[cfg(all(test, feature = "native-restore-webview-test"))]
+#[path = "restore_webview_tests.rs"]
+mod restore_webview_tests;
+
 // The api's default port (4317) is a dev-only fallback now: the packaged
 // shell binds a listener on port 0 and the kernel assigns the port (PR #51
 // TOCTOU fix), so the shell never probes or predicts a port.
@@ -125,6 +129,16 @@ pub struct SidecarState(pub Mutex<SidecarSlot>);
 pub struct SidecarSlot {
     config: Option<SidecarConfig>,
     sidecar: Option<Sidecar>,
+    restore_selection: Option<RestoreSelection>,
+    restore_outcome: Option<serde_json::Value>,
+    restore_session_reset_epoch: Option<String>,
+}
+
+fn take_restore_session_reset(slot: &mut SidecarSlot, requested_epoch: Option<&str>) -> bool {
+    if slot.restore_session_reset_epoch.as_deref() != requested_epoch || requested_epoch.is_none() {
+        return false;
+    }
+    slot.restore_session_reset_epoch.take().is_some()
 }
 
 /// Set once shutdown begins (window close / app exit). The launch path checks
@@ -191,6 +205,7 @@ pub fn kill_sidecar(app: &AppHandle) {
     // the flag goes up BEFORE taking the lock: a launch in flight (holding no
     // lock while it verifies) re-checks it and kills whatever it started
     SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::backup_restore::shutdown();
     let state = app.state::<SidecarState>();
     let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(sidecar) = guard.sidecar.take() {
@@ -259,6 +274,10 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Reveal is not granted by the wildcard-port gate capability. Only this
+    // verified launch's exact origin receives its separate native authority.
+    app.add_capability(backup_reveal_capability(port).to_string())?;
+    app.add_capability(backup_restore_capability(port).to_string())?;
     if let Some(window) = app.get_webview_window("main") {
         navigate(window, &setup_navigation_url(port, &boot_token))?;
     }
@@ -345,6 +364,11 @@ fn setup_navigation_url(port: u16, boot_token: &str) -> String {
     format!("http://127.0.0.1:{port}/#setup_token={boot_token}")
 }
 
+fn restore_navigation_url(port: u16, boot_token: &str, reset_epoch: &str) -> String {
+    format!("http://127.0.0.1:{port}/#setup_token={boot_token}&session_reset_epoch={reset_epoch}")
+}
+
+
 /* ------------------------------------------------------------------ */
 /*  Stdin broker IPC (issue #141)                                       */
 /* ------------------------------------------------------------------ */
@@ -359,6 +383,7 @@ pub struct BrokerReply {
     pub retry_after_ms: Option<u64>,
     pub session_token: Option<String>,
     pub session_generation: Option<u64>,
+    pub session_reset: Option<bool>,
     pub recovery_key: Option<String>,
     pub plaintext_remaining: Option<Vec<String>>,
     /// "clean" | "remaining" | "unknown" on the setup follow-up
@@ -518,8 +543,16 @@ async fn run_broker_task<T: Send + 'static>(
 
 /// Gate status over the pipe. Carries no secret.
 #[tauri::command]
-pub async fn vault_status(app: AppHandle) -> Result<BrokerReply, String> {
-    run_broker_task(move || broker_exchange(&app, "status", serde_json::json!({}))).await
+pub async fn vault_status(app: AppHandle, reset_epoch: Option<String>) -> Result<BrokerReply, String> {
+    run_broker_task(move || {
+        let mut reply = broker_exchange(&app, "status", serde_json::json!({}))?;
+        let state = app.state::<SidecarState>();
+        let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+        if take_restore_session_reset(&mut slot, reset_epoch.as_deref()) {
+            reply.session_reset = Some(true);
+        }
+        Ok(reply)
+    }).await
 }
 
 /// Unlock with the passphrase. The secret exists only in this call and on the
@@ -620,6 +653,467 @@ pub async fn vault_logout(app: AppHandle) -> Result<(), String> {
     .await
 }
 
+fn backup_reveal_capability(port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "identifier": "backup-reveal-sidecar",
+        "description": "Reveal recorded backups from the verified sidecar only",
+        "windows": ["main"],
+        "local": false,
+        "remote": {"urls": [format!("http://127.0.0.1:{port}")]},
+        "permissions": ["allow-backup-reveal"]
+    })
+}
+
+fn backup_restore_capability(port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "identifier":"backup-restore-sidecar", "description":"Restore only from this verified native launch",
+        "windows":["main"], "local":false,
+        "remote":{"urls":[format!("http://127.0.0.1:{port}")]},
+        "permissions":["allow-backup-restore"]
+    })
+}
+
+fn reveal_origin_matches(url: &tauri::Url, port: u16) -> bool {
+    url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
+        && url.port_or_known_default() == Some(port)
+        && url.username().is_empty() && url.password().is_none()
+}
+
+/// Validate the live native launch before HTTP and again after it. The second
+/// call receives a newly-read origin and the captured PID, so replacement,
+/// shutdown, or navigation during the request invalidates the operation.
+fn capture_live_reveal_launch(
+    slot: &mut SidecarSlot,
+    window_label: &str,
+    origin: &tauri::Url,
+    shutting_down: bool,
+    expected_pid: Option<u32>,
+) -> Result<(SidecarConfig, u32), &'static str> {
+    let config = slot.config.clone().ok_or(crate::backup_reveal::FAILED)?;
+    if window_label != "main" || !reveal_origin_matches(origin, config.port) || shutting_down {
+        return Err(crate::backup_reveal::FAILED);
+    }
+    let sidecar = slot.sidecar.as_mut().ok_or(crate::backup_reveal::FAILED)?;
+    let pid = sidecar.child.id();
+    if !sidecar.served || !matches!(sidecar.child.try_wait(), Ok(None))
+        || expected_pid.is_some_and(|expected| expected != pid)
+    {
+        return Err(crate::backup_reveal::FAILED);
+    }
+    Ok((config, pid))
+}
+
+/// A selection belongs to one native launch and one authenticated session.
+/// Only the native picker supplies its path. No credentials are retained here.
+struct RestoreSelection {
+    id: String,
+    path: PathBuf,
+    pid: u32,
+    session: String,
+    sha256: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum RestoreCredential {
+    Passphrase(PassphraseCredential),
+    Recovery(RecoveryCredential),
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassphraseCredential { passphrase: String }
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryCredential { #[serde(rename = "recoveryKey")] recovery_key: String }
+
+fn restore_worker_command(config: &SidecarConfig) -> Command {
+    let mut command = build_command(&config.binary);
+    for (key, value) in child_environment(&config.data_dir, &config.port_root, &config.web_dist, config.port, &config.boot_token) { command.env(key, value); }
+    command
+}
+
+fn restore_live(app: &AppHandle, window: &WebviewWindow, expected_pid: Option<u32>) -> Result<(SidecarConfig, u32), String> {
+    let state = app.state::<SidecarState>();
+    let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+    capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| crate::backup_restore::FAILED)?, shutdown_began(), expected_pid).map_err(str::to_string)
+}
+
+fn restore_selection(slot: &SidecarSlot, id: &str, session: &str, pid: u32) -> Result<(PathBuf, Option<String>), String> {
+    let selection = slot.restore_selection.as_ref().ok_or(crate::backup_restore::FAILED)?;
+    if selection.id != id || selection.session != session || selection.pid != pid { return Err(crate::backup_restore::FAILED.to_string()); }
+    Ok((selection.path.clone(), selection.sha256.clone()))
+}
+
+/// Authenticate before showing a picker or inspecting local files. The URL,
+/// headers and port are native-owned, with no renderer HTTP fragments.
+fn restore_authenticate(config: &SidecarConfig, session: &str) -> Result<(), String> {
+    use crate::backup_restore::FAILED;
+    if session.len() != 43 || !session.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') { return Err(FAILED.to_string()); }
+    let mut stream = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127,0,0,1], config.port)), Duration::from_secs(3)).map_err(|_| FAILED)?;
+    stream.set_write_timeout(Some(Duration::from_secs(3))).map_err(|_| FAILED)?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    write!(stream, "GET /api/vault/status HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nx-vault-session: {}\r\nConnection: close\r\n\r\n", config.port, session).map_err(|_| FAILED)?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()).ok_or(FAILED)?;
+        stream.set_read_timeout(Some(remaining)).map_err(|_| FAILED)?;
+        let count = stream.read(&mut chunk).map_err(|_| FAILED)?;
+        if count == 0 { break; }
+        bytes.extend_from_slice(&chunk[..count]);
+        if bytes.len() > 8192 { return Err(FAILED.to_string()); }
+    }
+    let response = std::str::from_utf8(&bytes).map_err(|_| FAILED)?;
+    let (headers, body) = response.split_once("\r\n\r\n").ok_or(FAILED)?;
+    if !headers.starts_with("HTTP/1.1 200 ") && !headers.starts_with("HTTP/1.0 200 ") { return Err(FAILED.to_string()); }
+    let mut length = None;
+    for line in headers.lines().skip(1) {
+        let (name, value) = line.split_once(':').ok_or(FAILED)?;
+        if name.eq_ignore_ascii_case("transfer-encoding") || name.eq_ignore_ascii_case("content-encoding") { return Err(FAILED.to_string()); }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() { return Err(FAILED.to_string()); }
+            length = Some(value.trim().parse::<usize>().map_err(|_| FAILED)?);
+        }
+    }
+    if length != Some(body.len()) { return Err(FAILED.to_string()); }
+    let reply: serde_json::Value = serde_json::from_str(body).map_err(|_| FAILED)?;
+    if reply.get("session") != Some(&serde_json::json!(true)) || reply.get("broker") != Some(&serde_json::json!(true)) { return Err(FAILED.to_string()); }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn backup_restore_choose(app: AppHandle, window: WebviewWindow, session_token: String) -> Result<Option<serde_json::Value>, String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (config, pid) = restore_live(&app, &window, None)?;
+        restore_authenticate(&config, &session_token)?;
+        let state = app.state::<SidecarState>();
+        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection = None;
+        #[cfg(windows)]
+        let owner = window.hwnd().map_err(|_| crate::backup_restore::FAILED)?.0 as isize;
+        #[cfg(not(windows))]
+        let owner = 0;
+        let path = crate::backup_picker::choose(owner)?;
+        restore_live(&app, &window, Some(pid))?;
+        restore_authenticate(&config, &session_token)?;
+        let Some(path) = path else { return Ok(None); };
+        let id = generate_boot_token();
+        let name = path.file_name().ok_or(crate::backup_restore::FAILED)?.to_string_lossy().into_owned();
+        let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+        slot.restore_outcome = None;
+        slot.restore_selection = Some(RestoreSelection { id: id.clone(), path, pid, session: session_token, sha256: None });
+        Ok(Some(serde_json::json!({"id":id,"name":name})))
+    }).await
+}
+
+#[tauri::command]
+pub async fn backup_restore_preview(app: AppHandle, window: WebviewWindow, session_token: String, selection_id: String, credential: RestoreCredential) -> Result<serde_json::Value, String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (config, pid) = restore_live(&app, &window, None)?;
+        restore_authenticate(&config, &session_token)?;
+        let state = app.state::<SidecarState>();
+        let (path, _) = restore_selection(&*state.0.lock().map_err(|_| crate::backup_restore::FAILED)?, &selection_id, &session_token, pid)?;
+        // A failed re-preview must not leave an earlier confirmation valid.
+        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection.as_mut().ok_or(crate::backup_restore::FAILED)?.sha256 = None;
+        let reply = crate::backup_restore::run_worker(restore_worker_command(&config), &serde_json::json!({"action":"preview","path":path,"credential":credential}), CLEANUP_REPLY_TIMEOUT)?;
+        restore_live(&app, &window, Some(pid))?;
+        restore_authenticate(&config, &session_token)?;
+        let sha = reply.pointer("/preview/sha256").and_then(|v| v.as_str()).ok_or(crate::backup_restore::FAILED)?;
+        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection.as_mut().ok_or(crate::backup_restore::FAILED)?.sha256 = Some(sha.to_string());
+        Ok(reply["preview"].clone())
+    }).await
+}
+
+#[tauri::command]
+pub async fn backup_restore_cancel(app: AppHandle, window: WebviewWindow, session_token: String, selection_id: String) -> Result<(), String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (_, pid) = restore_live(&app, &window, None)?;
+        let state = app.state::<SidecarState>();
+        let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+        restore_selection(&slot, &selection_id, &session_token, pid)?;
+        slot.restore_selection = None;
+        Ok(())
+    }).await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreConfirmation {
+    selection_id: String,
+    expected_sha256: String,
+    credential: RestoreCredential,
+    current_credential: RestoreCredential,
+    confirmed: bool,
+}
+
+#[tauri::command]
+pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, session_token: String, confirmation: RestoreConfirmation) -> Result<(), String> {
+    run_broker_task(move || {
+        let RestoreConfirmation { selection_id, expected_sha256, credential, current_credential, confirmed } = confirmation;
+        use crate::backup_restore::{capture_restore_baseline, quiesce, run_restore_lifecycle_from_baseline, run_worker, stop_child, FAILED};
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (config, pid) = restore_live(&app, &window, None)?;
+        restore_authenticate(&config, &session_token)?;
+        let state = app.state::<SidecarState>();
+        let (path, digest) = restore_selection(&*state.0.lock().map_err(|_| FAILED)?, &selection_id, &session_token, pid)?;
+        if !confirmed || digest.as_deref() != Some(&expected_sha256) { return Err(FAILED.to_string()); }
+        let preview = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"preview","path":path,"credential":credential}), CLEANUP_REPLY_TIMEOUT)?;
+        if preview.pointer("/preview/sha256") != Some(&serde_json::json!(expected_sha256)) { return Err("VAULT_BACKUP_CHANGED".to_string()); }
+        run_worker(restore_worker_command(&config), &serde_json::json!({"action":"current","credential":current_credential}), CLEANUP_REPLY_TIMEOUT).map_err(|_| "VAULT_RESTORE_CURRENT_CREDENTIAL".to_string())?;
+        restore_live(&app, &window, Some(pid))?;
+        let restore_baseline = capture_restore_baseline(&config.data_dir)?;
+        // Never kill a process whose drain was not acknowledged. A timeout
+        // can still have admitted work in flight; replacement must fail closed.
+        quiesce(config.port, &config.boot_token, &session_token, CLEANUP_REPLY_TIMEOUT).map_err(|_| "VAULT_RESTORE_DRAIN_UNCONFIRMED".to_string())?;
+        restore_live(&app, &window, Some(pid))?;
+        state.0.lock().map_err(|_| FAILED)?.restore_selection = None;
+        let ((), outcome) = run_restore_lifecycle_from_baseline(
+            &config.data_dir,
+            restore_baseline,
+            || {
+                let mut old = {
+                    let mut slot = state.0.lock().map_err(|_| FAILED)?;
+                    capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), Some(pid)).map_err(|_| FAILED)?;
+                    slot.sidecar.take().ok_or(FAILED)?
+                };
+                if let Err(error) = stop_child(&mut old.child) {
+                    install_sidecar(&mut state.0.lock().unwrap_or_else(|p| p.into_inner()), old);
+                    return Err(error);
+                }
+                Ok(())
+            },
+            || {
+                let _ = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"install","path":path,"credential":credential,"currentCredential":current_credential,"expectedSha256":expected_sha256,"confirmed":true}), CLEANUP_REPLY_TIMEOUT);
+            },
+            || {
+                if shutdown_began() || !crate::backup_restore::worker_stopped() { return Err(FAILED.to_string()); }
+                let sidecar = launch_verified_sidecar(&config)?;
+                if !install_sidecar(&mut *state.0.lock().map_err(|_| FAILED)?, sidecar) { return Err(FAILED.to_string()); }
+                Ok(())
+            },
+        )?;
+        {
+            let mut slot = state.0.lock().map_err(|_| FAILED)?;
+            slot.restore_outcome = Some(outcome);
+            // Only a successful native-confirmed restore resets the renderer's
+            // generation epoch. No renderer parameter can request this reset.
+            slot.restore_session_reset_epoch = Some(generate_boot_token());
+        }
+        if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
+        let reset_epoch = state.0.lock().map_err(|_| FAILED)?.restore_session_reset_epoch.clone().ok_or(FAILED)?;
+        window.navigate(restore_navigation_url(config.port, &config.boot_token, &reset_epoch).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
+        // The fresh gate reads the native-owned outcome, including rollback.
+        Ok(())
+    }).await
+}
+
+#[tauri::command]
+pub fn backup_restore_outcome(app: AppHandle, window: WebviewWindow) -> Result<Option<serde_json::Value>, String> {
+    let state = app.state::<SidecarState>();
+    let slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+    let config = slot.config.as_ref().ok_or(crate::backup_restore::FAILED)?;
+    if shutdown_began() || window.label() != "main" || !reveal_origin_matches(&window.url().map_err(|_| crate::backup_restore::FAILED)?, config.port) { return Err(crate::backup_restore::FAILED.to_string()); }
+    Ok(slot.restore_outcome.clone())
+}
+
+const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+struct BackupAuditPage {
+    items: Vec<BackupAuditItem>,
+    total: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct BackupAuditItem {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "ref")]
+    reference: BackupAuditReference,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum BackupAuditReference {
+    Null,
+    Path(String),
+}
+
+/// Read the existing authenticated audit RPC, never a renderer-selected URL.
+/// All pages share one deadline; each raw response keeps the fixed size cap.
+fn backup_audit(
+    port: u16,
+    session_token: &str,
+    path: &Path,
+) -> Result<serde_json::Value, &'static str> {
+    backup_audit_with_timeout(port, session_token, path, Duration::from_secs(3))
+}
+
+fn backup_audit_with_timeout(
+    port: u16,
+    session_token: &str,
+    path: &Path,
+    timeout: Duration,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    // VaultManager tokens are 32 random bytes in base64url. This also prevents
+    // a renderer from injecting HTTP headers into the native request.
+    if session_token.len() != 43 || !session_token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
+        return Err(FAILED);
+    }
+    find_backup_audit_with_timeout(path, timeout, |offset, remaining| {
+        backup_audit_page(port, session_token, offset, remaining)
+    })
+}
+
+/// Paginate inside the native audit module. The activity RPC accepts offsets
+/// and reports the unfiltered total; a missing match on page one is not proof
+/// that an older backup lacks an audit record.
+fn find_backup_audit_with_timeout(
+    path: &Path,
+    timeout: Duration,
+    mut fetch_page: impl FnMut(usize, Duration) -> Result<serde_json::Value, &'static str>,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    let deadline = Instant::now().checked_add(timeout).ok_or(FAILED)?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(FAILED)
+    };
+    let mut offset = 0usize;
+    loop {
+        let page = fetch_page(offset, remaining()?)?;
+        remaining()?;
+        let parsed: BackupAuditPage =
+            serde::Deserialize::deserialize(page.get("json").ok_or(FAILED)?).map_err(|_| FAILED)?;
+        let items = parsed.items;
+        let total = parsed.total;
+        let next_offset = offset.checked_add(items.len()).ok_or(FAILED)?;
+        if items.len() > 500
+            || offset > total
+            || next_offset > total
+            || items.len() != 500.min(total - offset)
+        {
+            return Err(FAILED);
+        }
+        if items.iter().any(|item| {
+            item.kind == "BACKUP_CREATED"
+                && matches!(&item.reference, BackupAuditReference::Path(recorded) if Path::new(recorded) == path)
+        }) {
+            return Ok(page);
+        }
+        if next_offset >= total {
+            return Err(FAILED);
+        }
+        offset = next_offset;
+    }
+}
+
+fn backup_audit_page(
+    port: u16,
+    session_token: &str,
+    offset: usize,
+    timeout: Duration,
+) -> Result<serde_json::Value, &'static str> {
+    use crate::backup_reveal::FAILED;
+    let deadline = Instant::now().checked_add(timeout).ok_or(FAILED)?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(FAILED)
+    };
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, remaining()?).map_err(|_| FAILED)?;
+    let body = format!(r#"{{"json":{{"limit":500,"offset":{offset}}}}}"#);
+    let request = format!("POST /api/rpc/activitiesList HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {session_token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    stream.set_write_timeout(Some(remaining()?)).map_err(|_| FAILED)?;
+    stream.write_all(request.as_bytes()).map_err(|_| FAILED)?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        stream.set_read_timeout(Some(remaining()?)).map_err(|_| FAILED)?;
+        let count = stream.read(&mut chunk).map_err(|_| FAILED)?;
+        if count == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(count) > BACKUP_AUDIT_MAX_RESPONSE {
+            return Err(FAILED);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    let response = std::str::from_utf8(&bytes).map_err(|_| FAILED)?;
+    let (headers, body) = response.split_once("\r\n\r\n").ok_or(FAILED)?;
+    let mut lines = headers.lines();
+    let status = lines.next().ok_or(FAILED)?;
+    let mut status_parts = status.split_whitespace();
+    if !matches!(status_parts.next(), Some("HTTP/1.0" | "HTTP/1.1"))
+        || status_parts.next() != Some("200")
+    {
+        return Err(FAILED);
+    }
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or(FAILED)?;
+        if name.is_empty() {
+            return Err(FAILED);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding")
+            || name.eq_ignore_ascii_case("content-encoding")
+        {
+            return Err(FAILED);
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(FAILED);
+            }
+            content_length = Some(value.trim().parse::<usize>().map_err(|_| FAILED)?);
+        }
+    }
+    if content_length != Some(body.len()) {
+        return Err(FAILED);
+    }
+    serde_json::from_str(body).map_err(|_| FAILED)
+}
+
+/// Native authority comes from SidecarConfig and the authenticated audit, not
+/// the renderer's path. Recheck the launch after HTTP; never hold the lifecycle
+/// mutex across network/Shell work, because shutdown must still kill the child.
+#[tauri::command]
+pub async fn backup_reveal(app: AppHandle, window: WebviewWindow, path: String, session_token: String) -> Result<(), String> {
+    use crate::backup_reveal::FAILED;
+    let origin = window.url().map_err(|_| FAILED.to_string())?;
+    let window_label = window.label().to_string();
+    let reveal_window = window.clone();
+    run_broker_task(move || {
+        use crate::backup_reveal::{check_candidate, reveal_backup};
+        if !cfg!(windows) { return Err("BACKUP_REVEAL_UNSUPPORTED".to_string()); }
+        let state = app.state::<SidecarState>();
+        let (config, pid) = {
+            let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
+            capture_live_reveal_launch(&mut guard, &window_label, &origin, shutdown_began(), None)
+                .map_err(str::to_string)?
+        };
+        let path = Path::new(&path);
+        check_candidate(path, &config.data_dir).map_err(str::to_string)?;
+        let audit = backup_audit(config.port, &session_token, path).map_err(str::to_string)?;
+        let current_origin = reveal_window.url().map_err(|_| FAILED.to_string())?;
+        if reveal_window.label() != "main" || !reveal_origin_matches(&current_origin, config.port) {
+            return Err(FAILED.to_string());
+        }
+        {
+            let mut guard = state.0.lock().map_err(|_| FAILED.to_string())?;
+            capture_live_reveal_launch(&mut guard, reveal_window.label(), &current_origin, shutdown_began(), Some(pid))
+                .map_err(str::to_string)?;
+        }
+        reveal_backup(path, &config.data_dir, &audit).map_err(str::to_string)
+    }).await
+}
+
 /// The bundled sidecar lands in the resource dir under its plain name; the
 /// `-<target-triple>` suffix is stripped at bundle time.
 fn sidecar_file_name() -> &'static str {
@@ -652,9 +1146,10 @@ fn build_command(sidecar: &Path) -> Command {
  * plaintext database and skip the vault gate (the API also refuses the
  * opt-out when DOKAN_WEB_DIST is set; this is the first line of defence).
  */
-fn child_environment(data_dir: &Path, port_root: &Path, web_dist: &Path, port: u16, boot_token: &str) -> Vec<(String, String)> {
+pub(crate) fn child_environment(data_dir: &Path, port_root: &Path, web_dist: &Path, port: u16, boot_token: &str) -> Vec<(String, String)> {
     vec![
         ("DOKAN_DATA_DIR".to_string(), data_dir.to_string_lossy().into_owned()),
+        ("DOKAN_DB_PATH".to_string(), data_dir.join("dokan.db").to_string_lossy().into_owned()),
         ("DOKAN_PORT_ROOT".to_string(), port_root.to_string_lossy().into_owned()),
         ("DOKAN_WEB_DIST".to_string(), web_dist.to_string_lossy().into_owned()),
         ("DOKAN_PORT".to_string(), port.to_string()),
@@ -819,6 +1314,7 @@ mod tests {
         );
         // a packaged child can never be told to skip the gate
         assert!(env.contains(&("DOKAN_VAULT".to_string(), "on".to_string())));
+        assert!(env.contains(&("DOKAN_DB_PATH".to_string(), Path::new("C:\\data").join("dokan.db").to_string_lossy().into_owned())));
         assert!(env.contains(&("DOKAN_PORT".to_string(), "4318".to_string())));
         // issue #141: the shell owns the credential prompt over the child's pipe
         assert!(env.contains(&("DOKAN_VAULT_STDIN".to_string(), "1".to_string())));
@@ -892,6 +1388,30 @@ mod tests {
     }
 
     #[test]
+    fn restore_session_reset_is_bound_to_the_new_navigation_epoch() {
+        let old_page_epoch = Some("old-page".to_string());
+        let mut slot = SidecarSlot { restore_session_reset_epoch: Some("new-page".to_string()), ..SidecarSlot::default() };
+
+        // An old status request may return after restore, or have waited behind
+        // BROKER_GATE until the replacement sidecar was installed. Its captured
+        // epoch is still old, so neither ordering can spend the new grant.
+        assert!(!take_restore_session_reset(&mut slot, old_page_epoch.as_deref()));
+        // A previously queued IPC invocation carries the same retired epoch
+        // even if it reaches native only after the replacement sidecar starts.
+        assert!(!take_restore_session_reset(&mut slot, Some("queued-old-page")));
+        assert_eq!(slot.restore_session_reset_epoch.as_deref(), Some("new-page"));
+
+        assert!(take_restore_session_reset(&mut slot, Some("new-page")));
+        assert!(!take_restore_session_reset(&mut slot, Some("new-page")));
+        assert!(!take_restore_session_reset(&mut slot, None));
+    }
+
+    #[test]
+    fn restore_navigation_url_carries_native_reset_epoch() {
+        assert_eq!(restore_navigation_url(4321, "abc123", "epoch456"), "http://127.0.0.1:4321/#setup_token=abc123&session_reset_epoch=epoch456");
+    }
+
+    #[test]
     fn broker_reply_serialises_the_stable_code_without_a_passphrase_field() {
         let reply = BrokerReply {
             ok: false,
@@ -899,6 +1419,7 @@ mod tests {
             retry_after_ms: Some(30_000),
             session_token: None,
             session_generation: None,
+            session_reset: None,
             recovery_key: None,
             plaintext_remaining: None,
             plaintext_status: None,
@@ -1330,6 +1851,384 @@ mod tests {
             });
             assert!(allowed, "{command} must be allowed from the remote sidecar origin");
         }
+    }
+
+    fn reveal_test_config() -> SidecarConfig {
+        SidecarConfig {
+            binary: PathBuf::from("dokan-api"), data_dir: PathBuf::from("C:\\data"),
+            port_root: PathBuf::from("C:\\data\\run"), web_dist: PathBuf::from("C:\\ui"),
+            port: 4318, boot_token: "test-token".to_string(),
+        }
+    }
+
+    fn reveal_test_slot(with_config: bool) -> SidecarSlot {
+        let mut slot = SidecarSlot::default();
+        if with_config { slot.config = Some(reveal_test_config()); }
+        let mut sidecar = dummy_sidecar();
+        sidecar.served = true;
+        slot.sidecar = Some(sidecar);
+        slot
+    }
+
+    #[test]
+    fn reveal_launch_gate_rejects_wrong_window_origin_missing_launch_shutdown_and_dead_child() {
+        let origin: tauri::Url = "http://127.0.0.1:4318/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "settings", &origin, false, None).is_err());
+        let wrong_origin: tauri::Url = "http://127.0.0.1:4319/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "main", &wrong_origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut SidecarSlot::default(), "main", &origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(false), "main", &origin, false, None).is_err());
+        assert!(capture_live_reveal_launch(&mut reveal_test_slot(true), "main", &origin, true, None).is_err());
+        let mut dead = reveal_test_slot(true);
+        let child = &mut dead.sidecar.as_mut().unwrap().child;
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(capture_live_reveal_launch(&mut dead, "main", &origin, false, None).is_err());
+        if let Some(sidecar) = dead.sidecar.take() { reap_sidecar(sidecar); }
+        let mut unserved = reveal_test_slot(true);
+        unserved.sidecar.as_mut().unwrap().served = false;
+        assert!(capture_live_reveal_launch(&mut unserved, "main", &origin, false, None).is_err());
+        if let Some(sidecar) = unserved.sidecar.take() { reap_sidecar(sidecar); }
+    }
+
+    #[test]
+    fn reveal_launch_recheck_rejects_replacement_shutdown_and_reread_origin_change() {
+        let origin: tauri::Url = "http://127.0.0.1:4318/backups".parse().unwrap();
+        let mut slot = reveal_test_slot(true);
+        let (_, captured_pid) = capture_live_reveal_launch(&mut slot, "main", &origin, false, None).unwrap();
+        let old = slot.sidecar.take().unwrap();
+        reap_sidecar(old);
+        let mut replacement = dummy_sidecar();
+        replacement.served = true;
+        slot.sidecar = Some(replacement);
+        assert!(capture_live_reveal_launch(&mut slot, "main", &origin, false, Some(captured_pid)).is_err());
+        assert!(capture_live_reveal_launch(&mut slot, "main", &origin, true, Some(captured_pid)).is_err());
+        let changed_origin: tauri::Url = "http://127.0.0.1:4319/backups".parse().unwrap();
+        assert!(capture_live_reveal_launch(&mut slot, "main", &changed_origin, false, Some(captured_pid)).is_err());
+        if let Some(sidecar) = slot.sidecar.take() { reap_sidecar(sidecar); }
+    }
+
+    #[test]
+    fn reveal_capability_is_only_for_the_exact_native_sidecar_origin() {
+        use std::collections::BTreeMap;
+        use tauri::utils::acl::{capability::Capability, manifest::Manifest, resolved::Resolved, ExecutionContext};
+        use tauri::utils::platform::Target;
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |name: &str| std::fs::read_to_string(manifest.join("gen/schemas").join(name)).unwrap();
+        let acl: BTreeMap<String, Manifest> = serde_json::from_str(&read("acl-manifests.json")).unwrap();
+        let mut capabilities: BTreeMap<String, Capability> = serde_json::from_str(&read("capabilities.json")).unwrap();
+        let static_acl = Resolved::resolve(&acl, capabilities.clone(), Target::Windows).unwrap();
+        assert!(!static_acl.allowed_commands.contains_key("backup_reveal"), "no wildcard or asset capability may grant reveal");
+        let cap: Capability = serde_json::from_value(backup_reveal_capability(4318)).unwrap();
+        assert!(!cap.local);
+        assert_eq!(cap.windows, ["main"]);
+        capabilities.insert(cap.identifier.clone(), cap);
+        let resolved = Resolved::resolve(&acl, capabilities, Target::Windows).unwrap();
+        let commands = resolved.allowed_commands.get("backup_reveal").expect("runtime reveal permission resolves");
+        for (text, expected) in [("http://127.0.0.1:4318/backups", true),
+            ("http://127.0.0.1:4319/backups", false), ("http://dokan.localhost:4318/", false),
+            ("http://localhost:4318/", false), ("https://127.0.0.1:4318/", false), ("tauri://localhost/", false)] {
+            let url: tauri::Url = text.parse().unwrap();
+            assert_eq!(commands.iter().any(|command| matches!(&command.context, ExecutionContext::Remote { url: pattern } if pattern.test(&url))), expected, "{text}");
+            assert_eq!(reveal_origin_matches(&url, 4318), expected, "runtime origin: {text}");
+        }
+    }
+
+    #[test]
+    fn backup_restore_capability_is_exact_origin_only_and_all_commands_are_granted_together() {
+        use std::collections::BTreeMap;
+        use tauri::utils::acl::{capability::Capability, manifest::Manifest, resolved::Resolved, ExecutionContext};
+        use tauri::utils::platform::Target;
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |name: &str| std::fs::read_to_string(manifest.join("gen/schemas").join(name)).unwrap();
+        let acl: BTreeMap<String, Manifest> = serde_json::from_str(&read("acl-manifests.json")).unwrap();
+        let mut caps: BTreeMap<String, Capability> = serde_json::from_str(&read("capabilities.json")).unwrap();
+        let names = ["backup_restore_choose", "backup_restore_preview", "backup_restore_cancel", "backup_restore_confirmed", "backup_restore_outcome"];
+        let static_acl = Resolved::resolve(&acl, caps.clone(), Target::Windows).unwrap();
+        for name in names { assert!(!static_acl.allowed_commands.contains_key(name)); }
+        let cap: Capability = serde_json::from_value(backup_restore_capability(4318)).unwrap();
+        assert!(!cap.local); assert_eq!(cap.windows, ["main"]);
+        caps.insert(cap.identifier.clone(), cap);
+        let resolved = Resolved::resolve(&acl, caps, Target::Windows).unwrap();
+        for name in names {
+            let commands = resolved.allowed_commands.get(name).expect("all restore commands resolve");
+            for (origin, expected) in [("http://127.0.0.1:4318/backups", true), ("http://127.0.0.1:4319/", false), ("http://dokan.localhost:4318/", false), ("tauri://localhost/", false), ("https://127.0.0.1:4318/", false)] {
+                let url = origin.parse().unwrap();
+                assert_eq!(commands.iter().any(|c| matches!(&c.context, ExecutionContext::Remote { url: p } if p.test(&url))), expected, "{name} {origin}");
+            }
+        }
+    }
+
+    #[test]
+    fn backup_restore_outcome_does_not_reuse_a_previous_rollback_for_a_refusal() {
+        let old = br#"{"state":"rolled-back","safetyFile":"restore-old.dknvbak"}"#;
+        let outcome = crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(old)).unwrap();
+        assert_eq!(outcome["status"], "refused");
+        assert_eq!(outcome["safetyPath"], serde_json::Value::Null);
+        let rolled = br#"{"state":"rolled-back","safetyFile":"restore-new.dknvbak"}"#;
+        let outcome = crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(rolled)).unwrap();
+        assert_eq!(outcome["status"], "rolled-back");
+        assert!(outcome["safetyPath"].as_str().unwrap().contains("restore-new.dknvbak"));
+        let committed = br#"{"state":"committed","safetyFile":"restore-new.dknvbak"}"#;
+        assert_eq!(crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(committed)).unwrap()["status"], "restored");
+        let pending = br#"{"state":"pending","safetyFile":"restore-new.dknvbak"}"#;
+        assert!(crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(pending)).is_err());
+    }
+
+    #[test]
+    fn backup_restore_selection_binds_launch_session_and_opaque_id() {
+        let mut slot = SidecarSlot { restore_selection: Some(RestoreSelection { id:"chosen".into(), path:PathBuf::from("C:/selected.dknvbak"), pid:7, session:"owner".into(), sha256:Some("a".repeat(64)) }), ..Default::default() };
+        assert!(restore_selection(&slot, "chosen", "owner", 7).is_ok());
+        assert!(restore_selection(&slot, "C:/injected", "owner", 7).is_err());
+        assert!(restore_selection(&slot, "chosen", "stale", 7).is_err());
+        assert!(restore_selection(&slot, "chosen", "owner", 8).is_err());
+        slot.restore_selection = None;
+        assert!(restore_selection(&slot, "chosen", "owner", 7).is_err());
+        assert!(serde_json::from_value::<RestoreCredential>(serde_json::json!({"passphrase":"fixture","recoveryKey":"injected"})).is_err());
+    }
+
+    #[test]
+    fn reveal_audit_refuses_missing_invalid_and_revoked_sessions() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        for token in [
+            format!("{}!", "a".repeat(42)),
+            format!("{}=", "a".repeat(42)),
+        ] {
+            assert_eq!(token.len(), 43);
+            assert!(backup_audit(port, &token, Path::new("C:/shop/backups/completed.db")).is_err());
+        }
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ), "invalid tokens must be rejected before connecting");
+
+        let (port, responder, _listener) = spawn_responder(|request| {
+            assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+            assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
+            "HTTP/1.0 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+        });
+        assert!(backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).is_err());
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_rejects_malformed_truncated_encoded_and_mismatched_responses() {
+        let malformed = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n{";
+        let truncated = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n{}";
+        let transfer_encoded = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}";
+        let content_encoded = "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 2\r\n\r\n{}";
+        let mismatched = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n{}";
+
+        for response in [malformed, truncated, transfer_encoded, content_encoded, mismatched] {
+            let response = response.to_string();
+            let (port, responder, _listener) = spawn_responder(move |_| response.clone());
+            assert!(backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).is_err());
+            responder.join().unwrap();
+        }
+    }
+
+    fn audit_page(total: usize, items: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"json":{"items":items,"total":total}})
+    }
+
+    fn full_audit_page() -> serde_json::Value {
+        let items = (0..500)
+            .map(|index| serde_json::json!({"type":"ITEM_CREATED","ref":format!("item-{index}")}))
+            .collect();
+        audit_page(501, serde_json::Value::Array(items))
+    }
+
+    #[test]
+    fn reveal_audit_finds_a_backup_after_the_first_500_activity_rows() {
+        let path = Path::new("C:/shop/backups/older.db");
+        let mut offsets = Vec::new();
+        let audit = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+            offsets.push(offset);
+            match offset {
+                0 => Ok(full_audit_page()),
+                500 => Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]))),
+                other => panic!("unexpected activity offset {other}"),
+            }
+        })
+        .expect("the older completed backup remains auditable");
+
+        assert_eq!(offsets, [0, 500]);
+        assert_eq!(audit["json"]["items"][0]["type"], "BACKUP_CREATED");
+        assert_eq!(audit["json"]["items"][0]["ref"], path.to_string_lossy().as_ref());
+    }
+
+    #[test]
+    fn reveal_audit_exhausts_reported_pages_before_refusing_a_missing_backup() {
+        let path = Path::new("C:/shop/backups/missing.db");
+        let mut offsets = Vec::new();
+        let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+            offsets.push(offset);
+            match offset {
+                0 => Ok(full_audit_page()),
+                500 => Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED","ref":null}]))),
+                other => panic!("unexpected activity offset {other}"),
+            }
+        });
+
+        assert_eq!(offsets, [0, 500]);
+        assert!(result.is_err(), "a completed full scan without the target must fail closed");
+    }
+
+    #[test]
+    fn reveal_audit_rejects_malformed_or_failed_later_pages() {
+        let path = Path::new("C:/shop/backups/older.db");
+        for second_page in [
+            Err(crate::backup_reveal::FAILED),
+            Ok(serde_json::json!({"json":{"items":[]}})),
+            Ok(audit_page(501, serde_json::json!([{"type":"ITEM_CREATED"}]))),
+        ] {
+            let result = find_backup_audit_with_timeout(path, Duration::from_secs(1), |offset, _| {
+                match offset {
+                    0 => Ok(full_audit_page()),
+                    500 => second_page.clone(),
+                    other => panic!("unexpected activity offset {other}"),
+                }
+            });
+            assert!(result.is_err(), "invalid later page must fail closed");
+        }
+    }
+
+    #[test]
+    fn reveal_audit_deadline_covers_every_page() {
+        let path = Path::new("C:/shop/backups/older.db");
+        let calls = std::cell::Cell::new(0);
+        let result = find_backup_audit_with_timeout(path, Duration::from_millis(20), |offset, _| {
+            calls.set(calls.get() + 1);
+            match offset {
+                0 => Ok(full_audit_page()),
+                500 => {
+                    std::thread::sleep(Duration::from_millis(40));
+                    Ok(audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}])))
+                }
+                other => panic!("unexpected activity offset {other}"),
+            }
+        });
+
+        assert!(result.is_err(), "the deadline must include time spent on later pages");
+        assert_eq!(calls.get(), 2, "the second page began before the shared deadline expired");
+    }
+
+    #[test]
+    fn reveal_audit_accepts_exact_raw_response_limit_and_rejects_one_byte_over() {
+        fn response_with_raw_length(target: usize) -> String {
+            let mut body_len = target - 64;
+            for _ in 0..4 {
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n");
+                body_len = target - header.len();
+            }
+            let body = format!("{{}}{}", " ".repeat(body_len - 2));
+            http200(&body)
+        }
+
+        for raw_length in [BACKUP_AUDIT_MAX_RESPONSE, BACKUP_AUDIT_MAX_RESPONSE + 1] {
+            let response = response_with_raw_length(raw_length);
+            assert_eq!(response.len(), raw_length);
+            let (port, responder, _listener) = spawn_responder(move |_| response.clone());
+            let result = backup_audit_page(port, &"a".repeat(43), 0, Duration::from_secs(3));
+            if raw_length == BACKUP_AUDIT_MAX_RESPONSE {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.is_err());
+            }
+            responder.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn reveal_audit_has_a_total_deadline_against_a_slow_trickling_responder() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let acceptor = listener.try_clone().unwrap();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = acceptor.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            for byte in b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" {
+                if stream.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        });
+
+        assert!(backup_audit_with_timeout(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db"), Duration::from_millis(250)).is_err());
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_uses_only_the_fixed_authenticated_read_rpc() {
+        let (port, responder, _listener) = spawn_responder(|request| {
+            assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+            assert!(request.contains(r#"{"json":{"limit":500,"offset":0}}"#));
+            http200(r#"{"json":{"items":[{"type":"BACKUP_CREATED","ref":"C:/shop/backups/completed.db"}],"total":1}}"#)
+        });
+        let audit = backup_audit(port, &"a".repeat(43), Path::new("C:/shop/backups/completed.db")).unwrap();
+        assert_eq!(audit["json"]["items"][0]["type"], "BACKUP_CREATED");
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn reveal_audit_requests_each_activity_offset_from_the_native_sidecar() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let responder = std::thread::spawn(move || {
+            for offset in [0, 500] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(request.starts_with("POST /api/rpc/activitiesList HTTP/1.0"));
+                assert!(request.contains(&format!(r#""limit":500,"offset":{offset}"#)));
+                assert!(request.contains("x-vault-session: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"));
+                let page = if offset == 0 {
+                    full_audit_page()
+                } else {
+                    audit_page(501, serde_json::json!([{"type":"BACKUP_CREATED","ref":"C:/shop/backups/older.db"}]))
+                };
+                stream.write_all(http200(&page.to_string()).as_bytes()).unwrap();
+            }
+        });
+
+        let path = Path::new("C:/shop/backups/older.db");
+        let audit = backup_audit(port, &"a".repeat(43), path).unwrap();
+        assert_eq!(audit["json"]["items"][0]["ref"], path.to_string_lossy().as_ref());
+        responder.join().unwrap();
+    }
+
+    /// Opt-in wire/native proof against a real broker-mode API. The harness
+    /// supplies a native-owned root and the session over its process environment.
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "requires a running authenticated API and interactive Windows desktop"]
+    fn recorded_backup_native_wire_proof() {
+        let root = std::env::var("DOKAN_401_NATIVE_ROOT").unwrap();
+        let path = std::env::var("DOKAN_401_NATIVE_PATH").unwrap();
+        let port: u16 = std::env::var("DOKAN_401_NATIVE_PORT").unwrap().parse().unwrap();
+        let token = std::env::var("DOKAN_401_NATIVE_SESSION").unwrap();
+        let path = Path::new(&path);
+        let before = std::fs::read(path).unwrap();
+        let audit = backup_audit(port, &token, path).expect("live session must read the real API audit");
+        assert_eq!(crate::backup_reveal::reveal_backup(path, Path::new(&root), &audit), Ok(()));
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert!(backup_audit(port, &"x".repeat(43), path).is_err(), "invalid session must be refused by the API");
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let logout = format!("POST /api/vault/logout HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-vault-session: {token}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+        stream.write_all(logout.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.lines().next().unwrap().contains(" 200 "), "fixture logout must revoke the real session");
+        assert!(backup_audit(port, &token, path).is_err(), "the previously valid session must no longer authorize the audit");
+        println!("Authenticated audit read refused the revoked session.");
+        println!("Authenticated native reveal selected completed backup: {}", path.display());
+        println!("Backup bytes unchanged: {}", before.len());
     }
 
     /// Test-only sibling of [`kill_sidecar`] (which needs an AppHandle).

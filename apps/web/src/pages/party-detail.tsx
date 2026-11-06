@@ -22,7 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, formatDateTime } from "../lib/dates";
 import { PARTY_INVOICES_QUERY_KEY, PARTY_PAYMENTS_QUERY_KEY, SUPPLIER_ENTRIES_QUERY_KEY } from "../lib/query-keys";
 import { usePagination } from "../hooks/use-pagination";
-import { orpc } from "../lib/rpc";
+import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
 
@@ -162,6 +162,7 @@ function StatsStrip({ detail, role }: { detail: PartyDetail; role: PartyRole }) 
  * «الفواتير» / «الدفعات» / «المعلومات».
  */
 export function PartyDetailPage({ role }: { role: PartyRole }) {
+  const { orpc } = useRpc();
   const { t } = useTranslation();
   // SAFETY: both detail routes declare a $partyId segment; strict:false drops
   // the per-route generic, so the shape is asserted here from the route tree.

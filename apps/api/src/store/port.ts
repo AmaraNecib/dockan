@@ -6,6 +6,11 @@ import type {
   DebtSummary,
   Expense,
   ExpenseCategory,
+  ExpenseCorrection,
+  ExpenseCorrectionHistory,
+  ExpenseRefund,
+  ExpenseRefundHistory,
+  ExpenseListItem,
   Invoice,
   InvoiceDetail,
   InvoiceKind,
@@ -43,7 +48,16 @@ import type {
   SupplierReturnRecord,
 } from "@dokan/contracts";
 
-export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory, SupplierAccountEntry, SupplierAccountSummary, SupplierReturnRecord, SupplierReturnLine, SupplierEntryKind, PartyName };
+export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory, ExpenseCorrection, ExpenseCorrectionHistory, ExpenseListItem, SupplierAccountEntry, SupplierAccountSummary, SupplierReturnRecord, SupplierReturnLine, SupplierEntryKind, PartyName };
+
+/** A signed expense fact for one profit-report window. */
+export interface ExpenseReportEntry {
+  categoryId: string;
+  amount: number;
+  occurredAt: string;
+  /** Original expenses count once; cash recoveries and compensations count zero. */
+  expenseCount: 0 | 1;
+}
 
 /**
  * One raw SALE invoice line fact the profit report sums. Read via a JOIN of
@@ -261,12 +275,21 @@ export type PartyDeleteResult = "DELETED" | "HAS_INVOICES" | "NOT_FOUND";
  * `createDrizzleStore` implements it over bun:sqlite today; a postgres adapter
  * implements the same interface behind the DOKAN_DB_DRIVER config switch.
  */
+/** Read methods needed by composed snapshot reads; no write or transaction handle. */
+export type StoreReadPort = Pick<StorePort,
+  "getItemsByIds" | "listStockMovements" | "listItemHistoryLines" |
+  "listStockLinksByItem" | "getReturnHeader" | "getSupplierReturn" | "getExpenseRefundHistory"
+>;
+
 export interface StorePort {
   /** idempotent: create tables, seed the default category + settings */
   setup(): Promise<void>;
 
   listCategories(): Promise<Category[]>;
   createCategory(input: { name: string }): Promise<Category>;
+  renameCategory(id: string, input: { name: string }): Promise<Category | undefined>;
+  /** Deletes only when no items reference the category; otherwise returns their count. */
+  deleteCategory(id: string): Promise<{ deleted: boolean; itemCount: number }>;
 
   listItems(pagination?: PaginationInput): Promise<{ items: ItemListItem[]; total: number }>;
   listLowStockItems(): Promise<Item[]>;
@@ -292,6 +315,8 @@ export interface StorePort {
    */
   listStockMovementsSince(itemId: string, recordedAfter: string): Promise<Array<StockMovement & { seq: number }>>;
   countStockMovements(itemId: string): Promise<number>;
+  /** Recorded invoice facts only, never joined to current item prices. */
+  listItemHistoryLines(itemId: string): Promise<Array<InvoiceLine & { invoiceNumber: string; invoiceKind: InvoiceKind }>>;
 
   // --- purchase linkage (ticket 29) ----------------------------------------
   /** appends an attribution record between a purchase invoice and an earlier
@@ -304,10 +329,24 @@ export interface StorePort {
   listExpenseCategories(): Promise<ExpenseCategory[]>;
   /** names are UNIQUE; the adapter surfaces the violation as EXPENSE_CATEGORY_EXISTS */
   createExpenseCategory(input: { name: string; isOwnerWithdrawal?: boolean }): Promise<ExpenseCategory>;
-  insertExpense(input: { categoryId: string; amount: number; note?: string | null; occurredAt: string }): Promise<Expense>;
-  /** raw rows inside the optional category/range filters (ordering happens in
-   * the pure module, so sort behavior is unit-tested without SQL) */
+  insertExpense(input: { categoryId: string; amount: number; note?: string | null; occurredAt: string; actorId?: string | null; actorName?: string | null }): Promise<Expense>;
+  /** raw original rows inside the optional category/range filters */
   listExpenseRecords(filters: { categoryIds?: string[]; from?: string; to?: string }): Promise<Expense[]>;
+  /** list rows with the original plus all signed corrections applied */
+  listExpenseListItems(filters: { categoryIds?: string[]; from?: string; to?: string }): Promise<ExpenseListItem[]>;
+  /** one expense and its append-only correction timeline, or undefined if absent */
+  getExpenseCorrectionHistory(expenseId: string): Promise<ExpenseCorrectionHistory | undefined>;
+  getExpenseCorrection(correctionId: string): Promise<ExpenseCorrection | undefined>;
+  findExpenseCorrectionByIdempotencyKey(expenseId: string, idempotencyKey: string): Promise<ExpenseCorrection | undefined>;
+  /** appends only; caller must hold `withTransactionImmediate` */
+  insertExpenseCorrection(input: Omit<ExpenseCorrection, "id"> & { idempotencyKey: string }): Promise<ExpenseCorrection>;
+  getExpenseRefundHistory(expenseId: string): Promise<ExpenseRefundHistory | undefined>;
+  getExpenseRefund(refundId: string): Promise<ExpenseRefund | undefined>;
+  findExpenseRefundByIdempotencyKey(expenseId: string, key: string): Promise<ExpenseRefund | undefined>;
+  /** Append only; requires withTransactionImmediate and rechecks the effective balance. */
+  insertExpenseRefund(input: Omit<ExpenseRefund, "id"> & { idempotencyKey: string }): Promise<ExpenseRefund>;
+  /** original amount and signed deltas, each on its effective business date */
+  listExpenseReportEntries(filters: { categoryIds?: string[]; from: string; to: string }): Promise<ExpenseReportEntry[]>;
   /** raw SALE line facts (netTotal/costAtSale/cogsExact) for invoices dated in [from, to] */
   listSaleLinesForProfit(from: string, to: string): Promise<ProfitSaleLine[]>;
 
@@ -396,6 +435,8 @@ export interface StorePort {
    * bypassed for its own calls, so nested operations never deadlock and no
    * external call can ever land inside this transaction. */
   withTransaction<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
+  /** Coherent serialized read snapshot; rejects writes and never dirties the vault. */
+  withReadTransaction<T>(fn: (tx: StoreReadPort) => Promise<T>): Promise<T>;
   /** Like withTransaction but BEGIN IMMEDIATE — the write lock is taken before
    * the first read so money units never deadlock on a stale WAL read snapshot
    * (SQLITE_BUSY_SNAPSHOT) against a second process writing the same file.

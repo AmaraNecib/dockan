@@ -5,15 +5,30 @@ import {
   activityListInputSchema,
   activityListOutputSchema,
   backupManualOutputSchema,
+  externalBackupDestinationInputSchema,
+  externalBackupDeviceOutputSchema,
+  externalBackupStatusSchema,
   catalogSearchInputSchema,
   catalogSearchOutputSchema,
   categoryCreateInputSchema,
+  categoryDeleteInputSchema,
+  categoryDeleteOutputSchema,
+  categoryRenameInputSchema,
   categorySchema,
   dashboardSummaryOutputSchema,
   debtsByPartyInputSchema,
   debtsOutputSchema,
   expenseCategoryCreateInputSchema,
   expenseCategorySchema,
+  expenseCorrectInputSchema,
+  expenseRefundSchema,
+  expenseRefundHistorySchema,
+  expenseRefundInputSchema,
+  expenseRefundUndoInputSchema,
+  expenseCorrectionHistoryInputSchema,
+  expenseCorrectionHistorySchema,
+  expenseCorrectionSchema,
+  expenseCorrectionUndoInputSchema,
   expenseCreateInputSchema,
   expenseListInputSchema,
   expenseListOutputSchema,
@@ -108,6 +123,8 @@ export const dokanContract = {
   // --- categories ----------------------------------------------------------
   categoriesList: oc.output(z.object({ items: z.array(categorySchema) })),
   categoriesCreate: oc.input(categoryCreateInputSchema).output(categorySchema),
+  categoriesRename: oc.input(categoryRenameInputSchema).output(categorySchema),
+  categoriesDelete: oc.input(categoryDeleteInputSchema).output(categoryDeleteOutputSchema),
 
   // --- items ---------------------------------------------------------------
   itemsList: oc.input(itemListInputSchema).output(itemListOutputSchema),
@@ -222,12 +239,24 @@ export const dokanContract = {
   expenseCategoriesCreate: oc.input(expenseCategoryCreateInputSchema).output(expenseCategorySchema),
   expensesList: oc.input(expenseListInputSchema).output(expenseListOutputSchema),
   expensesCreate: oc.input(expenseCreateInputSchema).output(expenseSchema),
+  expenseRefundHistory: oc.input(expenseCorrectionHistoryInputSchema).output(expenseRefundHistorySchema.extend({ requestActorId: z.string().min(1) })),
+  expensesRefund: oc.input(expenseRefundInputSchema).output(expenseRefundSchema),
+  expensesRefundUndo: oc.input(expenseRefundUndoInputSchema).output(expenseRefundSchema),
+  expenseCorrectionHistory: oc.input(expenseCorrectionHistoryInputSchema).output(expenseCorrectionHistorySchema),
+  expensesCorrect: oc.input(expenseCorrectInputSchema).output(expenseCorrectionSchema),
+  expensesCorrectionUndo: oc.input(expenseCorrectionUndoInputSchema).output(expenseCorrectionSchema),
 
   // --- debts screen drill-down (ticket 9) ----------------------------------
   /** unpaid invoices for one person, matched by the same identity debtSummaries groups by */
   debtsByParty: oc.input(debtsByPartyInputSchema).output(invoiceListOutputSchema),
 
   // --- settings ------------------------------------------------------------
+  currentOwner: oc.output(z.object({
+    id: z.string(),
+    name: z.string(),
+    phone: z.string().nullable(),
+    role: z.literal("owner"),
+  })),
   settingsGet: oc.output(settingsSchema),
   settingsUpdate: oc.input(settingsUpdateInputSchema).output(settingsSchema),
 
@@ -244,6 +273,10 @@ export const dokanContract = {
 
   // --- backup --------------------------------------------------------------
   backupManual: oc.output(backupManualOutputSchema),
+  externalBackupStatus: oc.output(externalBackupStatusSchema),
+  externalBackupDevice: oc.output(externalBackupDeviceOutputSchema),
+  externalBackupDestinationSet: oc.input(externalBackupDestinationInputSchema).output(externalBackupStatusSchema),
+  externalBackupRun: oc.output(externalBackupStatusSchema),
 };
 
 /** The typed client the web app and tests consume. */

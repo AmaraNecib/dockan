@@ -22,13 +22,13 @@ afterEach(() => {
   }
 });
 
-function makeV7Database(): string {
-  directory = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-activity-actor-v7-"));
+function makeV9Database(): string {
+  directory = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-activity-actor-v9-"));
   const dbPath = path.join(directory, "dokan.db");
   const db = new Database(dbPath, { create: true });
   db.exec("CREATE TABLE activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)");
   db.exec("INSERT INTO activities (id, at, type, summary, ref) VALUES ('legacy-activity', '2026-01-02T03:04:05', 'SALE_CREATED', 'SALE_CREATED INV-0001', 'INV-0001')");
-  db.exec("PRAGMA user_version = 7");
+  db.exec("PRAGMA user_version = 9");
   db.close();
   return dbPath;
 }
@@ -44,14 +44,14 @@ describe("activity actor snapshot migration", () => {
       await store.insertActivity({ type: "SALE_CREATED", summary: "SALE_CREATED INV-0001", ref: "INV-0001" });
       const activity = (await store.listActivities({ limit: 10 })).items[0];
       expect(activity).toMatchObject({ actorId: null, actorName: null });
-      expect(readSchemaVersion(conn.raw)).toBe(8);
+      expect(readSchemaVersion(conn.raw)).toBe(10);
     } finally {
       conn.close();
     }
   });
 
   it("rolls back the first ALTER after an injected second-column failure, then retries setup", async () => {
-    const dbPath = makeV7Database();
+    const dbPath = makeV9Database();
     const conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: directory, DOKAN_DB_PATH: dbPath }));
     try {
       const store = createDrizzleStore(conn);
@@ -75,19 +75,19 @@ describe("activity actor snapshot migration", () => {
       const failedColumns = conn.raw.query("PRAGMA table_info(activities)").all() as Array<{ name: string }>;
       expect(failedColumns.map((column) => column.name)).not.toContain("actor_id");
       expect(failedColumns.map((column) => column.name)).not.toContain("actor_name");
-      expect(readSchemaVersion(conn.raw)).toBe(7);
+      expect(readSchemaVersion(conn.raw)).toBe(9);
 
       await store.setup();
       const retried = (await store.listActivities({ limit: 10 })).items.find((activity) => activity.id === "legacy-activity");
       expect(retried).toMatchObject({ actorId: null, actorName: null });
-      expect(readSchemaVersion(conn.raw)).toBe(8);
+      expect(readSchemaVersion(conn.raw)).toBe(10);
     } finally {
       conn.close();
     }
   });
 
   it("rolls back actor columns when recording the schema version fails, then retries safely", async () => {
-    const dbPath = makeV7Database();
+    const dbPath = makeV9Database();
     const conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: directory, DOKAN_DB_PATH: dbPath }));
     const originalExec = conn.raw.exec.bind(conn.raw);
     try {
@@ -95,7 +95,7 @@ describe("activity actor snapshot migration", () => {
       Object.defineProperty(conn.raw, "exec", {
         configurable: true,
         value: (query: string) => {
-          if (query === "PRAGMA user_version = 8") throw new Error("injected version stamp failure");
+          if (query === "PRAGMA user_version = 10") throw new Error("injected version stamp failure");
           return originalExec(query);
         },
       });
@@ -105,9 +105,9 @@ describe("activity actor snapshot migration", () => {
       const columns = conn.raw.query("PRAGMA table_info(activities)").all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).not.toContain("actor_id");
       expect(columns.map((column) => column.name)).not.toContain("actor_name");
-      expect(readSchemaVersion(conn.raw)).toBe(7);
+      expect(readSchemaVersion(conn.raw)).toBe(9);
       await store.setup();
-      expect(readSchemaVersion(conn.raw)).toBe(8);
+      expect(readSchemaVersion(conn.raw)).toBe(10);
       expect((await store.listActivities()).items.find((row) => row.id === "legacy-activity"))
         .toMatchObject({ actorId: null, actorName: null, summary: "SALE_CREATED INV-0001" });
     } finally {
@@ -117,28 +117,28 @@ describe("activity actor snapshot migration", () => {
   });
 
   it("refuses a newer database before setup changes its schema", async () => {
-    const dbPath = makeV7Database();
+    const dbPath = makeV9Database();
     const conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: directory, DOKAN_DB_PATH: dbPath }));
     try {
-      conn.raw.exec("PRAGMA user_version = 9");
+      conn.raw.exec("PRAGMA user_version = 11");
       const before = conn.raw.query("SELECT sql FROM sqlite_master ORDER BY name").all();
       await expect(createDrizzleStore(conn).setup()).rejects.toThrow(UnsupportedSchemaVersionError);
       expect(conn.raw.query("SELECT sql FROM sqlite_master ORDER BY name").all()).toEqual(before);
-      expect(readSchemaVersion(conn.raw)).toBe(9);
+      expect(readSchemaVersion(conn.raw)).toBe(11);
     } finally {
       conn.close();
     }
   });
 
-  it("adds nullable snapshots without attributing old activity, stamps v8, refuses v7 readers, and reopens safely", async () => {
-    const dbPath = makeV7Database();
+  it("adds nullable snapshots without attributing old activity, stamps v10, refuses v9 readers, and reopens safely", async () => {
+    const dbPath = makeV9Database();
     const conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: directory, DOKAN_DB_PATH: dbPath }));
     try {
       const store = createDrizzleStore(conn);
       await store.setup();
-      expect(CURRENT_SCHEMA_VERSION).toBe(8);
-      expect(readSchemaVersion(conn.raw)).toBe(8);
-      expect(() => assertSchemaVersionSupported(conn.raw, 7)).toThrow(UnsupportedSchemaVersionError);
+      expect(CURRENT_SCHEMA_VERSION).toBe(10);
+      expect(readSchemaVersion(conn.raw)).toBe(10);
+      expect(() => assertSchemaVersionSupported(conn.raw, 9)).toThrow(UnsupportedSchemaVersionError);
 
       const row = (await store.listActivities({ limit: 10 })).items.find((activity) => activity.id === "legacy-activity");
       expect(row).toMatchObject({

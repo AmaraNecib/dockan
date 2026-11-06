@@ -9,6 +9,9 @@ import { openItemsTab } from "./items-helpers";
  * dialog that never creates data without an explicit choice.
  */
 test("catalog search, wedge scanning, and the unknown-scan path", async ({ page }) => {
+  // Install before navigation so timers and performance.now share one clock.
+  // Let it run normally through setup, network requests, and manual search.
+  await page.clock.install();
   // 0. sign in (the session guard is part of the seam)
   await signIn(page);
 
@@ -81,22 +84,61 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("scan-found")).toContainText("بطارية");
 
-  await page.keyboard.type("UNKNOWN-999", { delay: 12 });
-  await page.keyboard.press("Enter");
   const dialog = page.getByTestId("unknown-scan-dialog");
-  await expect(dialog).toBeVisible();
-  // both lookups must have hit the wire
-  await expect.poll(() => searchCalls, { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
-  const callsBeforeDuplicate = searchCalls;
+  // Pause before BOTH unknown commits. Browser/network latency must not spend
+  // the 1200 ms window. runFor fires due timers instead of skipping callbacks.
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1_000));
+  try {
+    const scanUnknown = async () => {
+      // Real key events, with 12 ms of scanner time between keys, including
+      // the final character and Enter. A paused keyboard.type delay alone
+      // would give every key the same timestamp and erase burst timing.
+      for (const key of "UNKNOWN-999") {
+        await page.keyboard.press(key);
+        await page.clock.runFor(12);
+      }
+      const commitAt = await page.evaluate(() => performance.now());
+      await page.keyboard.press("Enter");
+      return commitAt;
+    };
 
-  // 4. true duplicate suppression: rescanning the SAME code inside the
-  //    duplicate window (~150 ms of typing vs a 1200 ms window) must be
-  //    swallowed — no second catalogSearch RPC, no state change.
-  await page.keyboard.type("UNKNOWN-999", { delay: 12 });
-  await page.keyboard.press("Enter");
-  await page.waitForTimeout(400); // settle past any in-flight work
-  expect(searchCalls).toBe(callsBeforeDuplicate); // suppressed, not re-sent
-  await expect(dialog).toBeVisible();
+    const firstUnknownCommitAt = await scanUnknown();
+    await expect(dialog).toBeVisible();
+    // Network and rendering must not consume the controlled duplicate window.
+    expect(await page.evaluate(() => performance.now())).toBe(firstUnknownCommitAt);
+    expect(searchCalls).toBe(2); // known barcode + first unknown lookup
+    const callsBeforeDuplicate = searchCalls;
+
+    // 4. Same code, a distinct burst inside the window: no second lookup.
+    await page.clock.runFor(200);
+    const duplicateCommitAt = await scanUnknown();
+    expect(duplicateCommitAt - firstUnknownCommitAt).toBe(332);
+    await page.clock.runFor(400);
+    expect(searchCalls).toBe(2);
+    expect(searchCalls).toBe(callsBeforeDuplicate);
+    await expect(dialog).toBeVisible();
+
+    // Positive control: the same physical scan is accepted outside the window.
+    await page.clock.runFor(1_201);
+    const outsideResponse = page.waitForResponse("**/api/rpc/catalogSearch");
+    const outsideCommitAt = await scanUnknown();
+    expect(outsideCommitAt - firstUnknownCommitAt).toBe(2_065);
+    expect(outsideCommitAt - firstUnknownCommitAt).toBeGreaterThan(1_200);
+    const response = await outsideResponse;
+    expect(response.ok()).toBe(true);
+    expect(response.request().postDataJSON()).toEqual({ json: { query: "UNKNOWN-999" } });
+    await response.finished();
+    await page.clock.runFor(0);
+    await expect(dialog).toBeVisible();
+    expect(searchCalls).toBe(3); // only the outside-window control adds a call
+    await test.info().attach("scanner-clock", {
+      body: JSON.stringify({ firstUnknownCommitAt, duplicateCommitAt, outsideCommitAt, searchCalls }),
+      contentType: "application/json",
+    });
+  } finally {
+    // The rest of the existing scanner flow keeps normal timer progression.
+    await page.clock.resume();
+  }
 
   const rowsWithUnknownCode = page.getByRole("row", { name: /UNKNOWN-999/ });
   await expect(rowsWithUnknownCode).toHaveCount(0);

@@ -1,7 +1,79 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { saveQuickAdd } from "./rpc-helpers";
+
+async function expectDiscountControlsCollapsed(page: Page): Promise<void> {
+  await expect(page.getByRole("button", { name: "إضافة خصم", exact: true })).toBeVisible();
+  await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
+  await expect(page.getByTestId("sale-discount-value")).toHaveCount(0);
+}
+
+async function openDiscountControls(page: Page): Promise<void> {
+  const discountType = page.getByTestId("sale-discount-type");
+  if (!(await discountType.isVisible())) {
+    const addDiscount = page.getByRole("button", { name: "إضافة خصم", exact: true });
+    await expect(addDiscount).toBeVisible();
+    await addDiscount.click();
+  }
+  await expect(discountType).toBeVisible();
+  await expect(page.getByTestId("sale-discount-value")).toBeVisible();
+}
+
+test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 520 });
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `مجموع-تصنيف-${stamp}`;
+  const itemName = `مجموع-منتج-${stamp}`;
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  await page.goto("/sale");
+  await page.getByTestId("sale-quick-add").click();
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await page.getByLabel("سعر البيع (دج)").fill("1000");
+  await page.getByTestId("sale-quick-stock").fill("2");
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
+
+  await expect(page.getByRole("button", { name: "إضافة خصم" })).toBeVisible();
+  await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
+  const quantity = page.getByLabel(`${itemName}: الكمية`);
+  await quantity.focus();
+  await expect(quantity).toBeFocused();
+  const [lineBox, checkoutBox] = await Promise.all([quantity.boundingBox(), page.getByTestId("sale-checkout-bar").boundingBox()]);
+  if (lineBox === null || checkoutBox === null) throw new Error("The final sale line or checkout bar is outside the viewport");
+  expect(lineBox.y + lineBox.height).toBeLessThanOrEqual(checkoutBox.y);
+
+  const addDiscount = page.getByRole("button", { name: "إضافة خصم" });
+  await addDiscount.focus();
+  await addDiscount.press("Enter");
+  await expect(page.getByTestId("sale-discount-type")).toBeFocused();
+  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
+  await page.getByTestId("sale-discount-value").fill("10");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("1,000");
+  await expect(page.getByTestId("sale-discount")).toContainText("100");
+  await expect(page.getByTestId("sale-total")).toContainText("900");
+  await expect(page.getByTestId("sale-save")).toContainText("900 دج");
+
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+  await page.getByTestId("sale-open-invoice").click();
+  await expect(page.getByTestId("invoice-total")).toHaveText("900 دج");
+});
 
 /**
  * Sale checkout through the existing catalog seams. The flow uses
@@ -185,10 +257,14 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   // Choosing an override type with an EMPTY value must not submit a free
   // (0 DZD) line: save is rejected, the error is shown, the cart stays intact.
   await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  // Choosing a mode now shows the default. Clearing it is still a refusal.
+  await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-error")).toContainText("أدخل تعديلاً صحيحاً للسعر");
   await expect(page.getByTestId("sale-subtotal")).toContainText("3,000");
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("900");
+  await expectDiscountControlsCollapsed(page);
+  await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   await page.getByTestId("sale-discount-value").fill("100");
   await expect(page.getByTestId("sale-subtotal")).toContainText("2,700");
@@ -214,8 +290,10 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
     quantityLabel: "الكمية",
   });
   await expect(page.getByTestId("sale-lines")).toContainText(secondName);
+  await expectDiscountControlsCollapsed(page);
   await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${secondName}: نوع تعديل السعر`), "نسبة %");
   await page.getByTestId("sale-lines").getByLabel(`${secondName}: قيمة تعديل السعر`).fill("80");
+  await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
   await page.getByTestId("sale-discount-value").fill("10");
   await expect(page.getByTestId("sale-subtotal")).toContainText("400");
@@ -241,6 +319,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
     itemName: oversellName,
     quantityLabel: "الكمية",
   });
+  await expectDiscountControlsCollapsed(page);
   const oversellQty = page.getByTestId("sale-lines").getByLabel(`${oversellName}: الكمية`);
   await oversellQty.fill("2");
   await page.getByTestId("sale-save").click();
@@ -299,6 +378,8 @@ test("sale checkout: Arabic-Indic digits price the line and the discount like AS
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`).fill("٥");
   await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("٩٠٠");
+  await expectDiscountControlsCollapsed(page);
+  await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   await page.getByTestId("sale-discount-value").fill("١٠٠");
   await expect(page.getByTestId("sale-subtotal")).toContainText("4,500");
@@ -357,6 +438,8 @@ test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the type
   const overrideValue = page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`);
   await overrideValue.fill(`${rlm}٩٠٠`);
   await expect(overrideValue).toHaveValue(`${rlm}٩٠٠`);
+  await expectDiscountControlsCollapsed(page);
+  await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   const discountValue = page.getByTestId("sale-discount-value");
   await discountValue.fill(`${rlm}١٠٠`);
@@ -409,6 +492,7 @@ test("sale checkout: a mark-only payment draft is blank, not a refusal (#238)", 
   // predicate reads it as blank = «nothing paid now», so the invoice saves with
   // the whole 1000 as debt.
   await quickAdd(amountItem, "1000");
+  await expectDiscountControlsCollapsed(page);
   const paid = page.getByTestId("sale-paid");
   await paid.fill(rlm);
   // the field really holds the invisible mark, so the pin cannot pass by the
@@ -424,6 +508,7 @@ test("sale checkout: a mark-only payment draft is blank, not a refusal (#238)", 
   await page.getByTestId("sale-new").click();
   await expect(page.getByTestId("sale-form")).toBeVisible();
   await quickAdd(percentageItem, "1000");
+  await expectDiscountControlsCollapsed(page);
   const paidPercentage = page.getByTestId("sale-paid-percentage");
   await paidPercentage.fill(rlm);
   await expect(paidPercentage).toHaveValue(rlm);

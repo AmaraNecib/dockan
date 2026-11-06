@@ -35,7 +35,7 @@ and every worktree, lane and CI lane puts its artifacts on the drive you chose:
 | Variable | What it moves | Effect |
 | --- | --- | --- |
 | `PLAYWRIGHT_BROWSERS_PATH` | the Playwright browser download (~1.8 GB) | The browsers already live in one **per-user** directory, so checkouts share them — no re-download per checkout. The variable decides **where** that directory is, which is what moves the 1.8 GB off the system drive. |
-| `RED_ON_PARENT_CACHE` | the cached worktrees `scripts/red-on-parent.ts` makes | Without it, those throwaway worktrees land in the OS temp folder and quietly fill the system drive. |
+| `RED_ON_PARENT_CACHE` | the cached worktrees `scripts/red-on-parent.ts` makes | CI runner configuration only, not local machine setup. It moves the gate's throwaway worktrees out of the runner's OS temp folder. |
 | `BUN_INSTALL_CACHE_DIR` | bun's install cache | Keeping the cache on the same drive as the checkout means installs stay warm instead of re-copying every package into a fresh worktree. |
 
 Turbo's cache needs no variable: a worktree shares the **main** checkout's `.turbo/cache`
@@ -59,23 +59,23 @@ Guard Phase 1 — pre-commit checks
     ↓
 Quality check — relevant skills
     ↓
-Debate — default at Standard, required at High-assurance
+Commit complete reviewable scope
     ↓
-Test audit — default at Standard, required at High-assurance
+Risk-sized local review — one code-review for routine changes; three lenses only for named elevated risk
     ↓
-Code-review — Standards + Spec axes against pinned base SHA
+Local reviewloop payload and 5/5 — selected executions, no unresolved actionable findings
     ↓
-Guard Phase 2 — pre-push gate
+Guard Phase 2 — verify committed HEAD; commit fixes and refresh checks if needed
     ↓
-commit — the lane stops here
+Handoff verified SHA and local evidence — the lane stops here
     ↓
 ── parent-owned from here ──
     ↓
 Push + open PR
     ↓
-Review round (reviewloop) — to a 5/5; Greptile runs beside it while the two are compared
+CI acceptance — required on the current head before merge
     ↓
-Architecture review — improve-codebase-architecture (only once the code is accepted)
+Architecture review — parent-only when a module, seam, adapter or interface changed
     ↓
 Guard Phase 3 — pre-report gate
     ↓
@@ -84,11 +84,36 @@ Capture wisdom (repeated pattern only) + report to the owner
 Merge — cheap-to-reverse merges itself; expensive or decision diffs wait for the owner
 ```
 
-A **worker lane stops at Guard Phase 2** and commits. Its completion wakes the
+A **worker lane commits before local review and rendering**, verifies that same HEAD through Guard Phase 2, and stops with a handoff. Commit review fixes before refreshing affected checks and current-head reviews. Post-commit results go in `.scratch/reviews/<issue-id>/<head-sha>-verification.md`; do not create an evidence-only commit. A fix requires a new commit and refreshed checks and stale reviews. Its completion wakes the
 parent session, which pushes, opens the PR, drives the review rounds and merges.
 A lane that pushes is breaking its authority boundary, not helping.
 
+The red-on-parent replay runs only in the PR `checks` job and must pass before
+merge. Parents, workers (including nested subagents), reviewers and hooks must
+not run or delegate it locally. Local replay output is not an acceptance
+requirement for review, push or report. Ordinary TDD and focused regression
+tests still apply. For browser verification, follow `guard`'s **Browser
+verification: selector first** procedure: inspect
+`bun scripts/e2e-changed.ts --dry-run` before taking a heavy slot. The selector's
+map remains fail-closed; CI keeps its own event-range and override behavior.
+
 Do not run a later phase without recording the earlier gate, its commands, and its result.
+
+## Local verification and CI acceptance
+
+### Current activation
+
+CI-final activation is complete. PR [#439](https://github.com/AmaraNecib/dockan/pull/439) merged as `f4dd3bad10dcea42d81063c2c6aa32fc31891279`. The owner recorded protection and bypass acceptance in [the protection comment](https://github.com/AmaraNecib/dockan/pull/439#issuecomment-6667884162), then recorded merge and activation in [the activation comment](https://github.com/AmaraNecib/dockan/pull/439#issuecomment-6667906366). The accepted configuration requires `CI acceptance` from GitHub Actions (`app_id` 15368), strict/up-to-date checks, `enforce_admins: true`, and disables force pushes and deletions. No bypass allowance is configured.
+
+Historical activation is not proof of current enforcement or current-head acceptance. Before relying on CI-final for a PR, the parent reads effective `develop` protection with `gh api repos/AmaraNecib/dockan/branches/develop/protection` and verifies the required check identity, strict mode, administrator enforcement, and disabled force pushes/deletions. Before merge, the parent separately verifies that the PR's current head has successful `CI acceptance`. A pending CI check does not block local implementation, review or publication; it blocks merge. A real enforcement regression is an explicit blocker: report it to the owner and do not silently restore the retired full local baseline. Only the owner changes protection or accepts bypass.
+
+The parent selects and explicitly passes each worker's verification mode. A worker inherits that mode; it does not rediscover activation or widen verification. If the parent has not supplied a mode, ask the parent rather than guessing.
+
+### Guard Phase 2 local proof
+
+Local proof targets changed behavior and direct callers. Run focused regression and affected integration tests. Add relevant typecheck, lint and generated-file checks. Keep focused integration and negative proof for money, security and recovery contracts. Run local browser cases for affected rendering, focus, navigation or interaction. Full suites, full browser runs, production builds and dependency audits are CI-final, not routine local work. Name a concrete uncertainty or CI coverage gap before running one locally. `heavy_run` schedules justified heavy work; it does not authorize broader scope. Tests must detect a named reachable failure with an independent expected result.
+
+The stable aggregate `CI acceptance` check remains mandatory for merge. It must fail closed when required jobs fail, cancel or skip without a successful selector proof; critical selectors and full-run overrides remain part of CI. Local readiness, current-head CI acceptance and merge readiness are separate states.
 
 ## Review invariants
 
@@ -98,39 +123,19 @@ Do not run a later phase without recording the earlier gate, its commands, and i
   ablation proof the guard bites, the before/after numbers). The rule, and the
   four-part merge gate it feeds, is written down in
   [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md).
-- **Verify a finding before fixing it.** A review comment can re-list findings a
-  later commit already fixed. Read the cited lines first; if the finding is stale,
-  close it on the PR with the line evidence rather than re-implementing a fix that
-  exists.
-- **Two reviews per change: the author's, then an independent one** (owner decision,
-  2026-10-20). The author review is written by the author's model in a fresh session that
-  reads the diff: the intent, the load-bearing part, the known weak spots, what was
-  deliberately left out, and where a reviewer should look hardest. It approves nothing. The
-  independent review is the lens round, and the lenses read the author review first, so
-  the known-weak list is their checklist and the author's claims are claims to test.
-- **Reviewers are independent.** `debate`, `test-audit` and `code-review` run as
-  separate sub-agents. A child that reports "I ran the gates in-lane" has not run
-  them — re-run the lenses where the tool exists, and record the disclosure.
+- **Verify every finding against the reviewed tree.** If stale or factually wrong, show code evidence and obtain reviewer resolution. Never mark a valid finding resolved by calling it a refinement; the complete disposition rule is below.
+- **Review follows reachable risk, not size or path.** Every reviewable change gets local review and a reviewloop 5/5 with no unresolved actionable finding. A routine, reversible, localized change uses one fresh `code-review` context for Standards, Spec and affected-test adequacy. Record the risk rationale and explicit `debate`/`test-audit` skips in the existing payload. A new interface, cross-package behavior, integration uncertainty, or a concrete CI, security, schema, dependency, money, recovery, auth, crypto, release or merge-policy failure mode escalates the review. Name the failure mode; matching a path alone is not enough. High-assurance runs three distinct sessions initially: `debate`, `test-audit` and `code-review`. Specialist fanout is for a specific unanswered question, not the default. Review mechanics and evidence format live in `reviewloop`.
+- **Verify each finding against source.** The parent checks base/head, actual reviewer session and model IDs, provenance and report. A worker claim is not evidence; reuse an exact-tree execution rather than duplicating it. Use an enabled non-author family when available. OpenCode is opt-in and never a quota fallback. When no independent family is enabled, the owner's standing exception permits separate same-family sessions; record actual model IDs, the availability reason and the `independence` object. The exception does not waive review, 5/5 or finding resolution.
 - **The lenses run on a different model family than the author (owner decision, 2026-10-19; family
   rule 2026-10-26).** The author is the lane's model, read from its commit trailer, never the
   parent's. Independence is a family, not an exact ID: free and paid DeepSeek are one opinion.
-  Pick from the free ladder first — `opencode/deepseek-v4.1-flash-free`,
-  `opencode/glm-5.3-flash-free`, `opencode/mimo-v2.6-flash-free`, `opencode/beam-free` — then the
-  cheap paid fallback `opencode-go/deepseek-v4.1-flash` and `opencode-go/mimo-v2.6-flash`, only
-  when the free routes are exhausted. With more than one lens, at least two families must appear.
-  A route unused this session gets a one-line probe first. Free lenses carry no parallelism cap.
-  When every non-author family is exhausted, the owner may approve an exception recorded as
-  `independence: { approvedBy, reason }`; a lane cannot approve its own.
-- **Run both reviews until the owner ends the trial.** The parent runs `reviewloop` and
-  Greptile on the same pinned boundary across several PRs. Follow the
-  [comparison protocol](review-comparison.md) for independent first-pass records, verified
-  findings, time and cost. Neither review replaces the other automatically.
-- **All three lenses are the default at Standard and required at High-assurance.**
-  The parent may scope a round to one or two lenses for a single-axis Standard change.
-  Record exactly which lenses ran and the reason for each skip in the payload.
-  High-assurance always requires all three lenses; all three skipped is not a review.
-  Run the selected lenses in order: debate, test-audit, code-review. The tier also
-  decides how much scrutiny each failure mode earns.
+  Select reviewers from the session's enabled routes using `.agents/skills/reviewloop/SKILL.md`.
+  OpenCode review is optional, not a prerequisite for review or a quota-triggered fallback. Do not
+  probe or request it unless the owner opts in for the current scope. With more than one lens,
+  at least two families must appear unless an approved exception applies.
+  The owner gives standing approval for same-family review when OpenCode is unavailable; no new per-PR approval is needed. Prefer an enabled working non-author family; otherwise use separate reviewer sessions and disclose the shared family. Record the standing approval in `independence: { approvedBy, reason }` under `reviewloop`. All required lenses, current-head 5/5 and finding-resolution gates still apply.
+- **A bounded fix gets one bounded review.** Commit the fix, rerun checks it affects, then ask one fresh reviewer to inspect the combined delta and direct affected callers. The reviewer reads prior findings and explicitly carries forward unchanged conclusions. Rerun another lens only if the fix creates a concrete risk that lens covers. After three fix rounds, reassess the design. Never clear or defer an actionable finding to reach 5/5; a score cannot override one. A new head needs current-head evidence for the fix review, not a full restart of every initial lens.
+- **Small related refinements may stay in the PR.** They must serve the same acceptance goal, stay localized, add no behavior, risk, decision, dependency or architecture scope, and fit bounded tests and review. Copy clarification or local duplication cleanup may qualify; a new goal, cross-cutting change, auth redesign or schema migration belongs in a separate PR. One focus line that can reach saved prices is not compact. Correctness and safety dependencies are blockers. Reassess review depth, batch refinements before final review and stop opportunistic chains. A nonblocking improvement is optional only when the reviewer accepts its disposition and applicable gates allow it.
 - **A lens returns findings, not an essay.** The evidence file holds the detail; the message back to
 the parent holds the finding list, each one line with file:line, severity and the smallest fix. A
 lens that pastes its whole report into the conversation costs the same tokens as ten findings and
@@ -187,6 +192,8 @@ Both forms are cheap; skipping the question is not. The report **never lands in 
 written to the OS temp dir and its absolute path goes in the PR evidence comment so the review is
 reproducible from the PR alone.
 
+The review and finding-resolution rules above govern architecture findings too. Split substantial work only when the current change does not depend on it; otherwise hold this PR until the blocker is fixed and the new head meets the review gate.
+
 **It is a loop with a fixed point, not a one-shot step.** reviewloop's 5/5 and this review have to agree
 on the same head, and a finding has exactly three ways out:
 
@@ -197,23 +204,9 @@ architecture review (this diff only)
       ↓
 finding about this diff?
       ├─ nothing ────→ merge
-      ├─ fixable here ──→ fix → push → reviewloop 5/5 → review again (two rounds max)
-      └─ too big for this PR ──→ its own issue + its own PR/lane → merge this one on its 5/5
+      ├─ fixable here ──→ fix → review all applicable checks at the new head
+      └─ substantial, independent work ──→ separate issue and PR; dependent work stays held
 ```
-
-**Small fix here, big fix elsewhere.** A finding the diff can absorb is fixed on the branch, and the
-head moves, so reviewloop is asked once more there. A finding that needs its own PR — a seam move, a
-deepening across several modules — does not hold this PR hostage: it gets an issue and a lane, and
-this PR merges on the 5/5 it already has. What it does not do is vanish, so the guardrail is: **read
-the evidence comment before merging and confirm the follow-up issue number is in it.**
-
-**Stop rule: two rounds, then the owner.** If the second review still finds something, it is not a
-detail — it is a disagreement about the design, and it goes to the owner rather than round three. An
-unbounded loop spends review budget and never converges.
-
-**Scope is always the diff under review.** A finding about older code is an issue, never a loop
-iteration; otherwise the loop never terminates. A review that finds nothing about this diff costs
-nothing: the 5/5 stands and the PR merges.
 
 **The two vocabulary skills are always on, like TDD** (owner decision, 2026-10-20). `codebase-design`
 supplies the words for every design conversation and `domain-modeling` keeps `CONTEXT.md` current while
@@ -228,7 +221,7 @@ repository, and it is paid for once per PR.
 | Output | At most five candidates, each with a deletion-test verdict and one sentence of change. |
 | Chat | The report path goes in the PR comment; the HTML is never pasted back into the conversation. |
 | Re-runs | Two passes: one on the head reviewloop scored, one on the head that carries the fold. The second is spent only when the fold changed code — a fold that changed nothing leaves the first pass describing the tree. |
-| Default | No seam moved means no report at all — the one-line form costs one sentence. |
+| Default | No seam moved means no architecture report. Record `architecture: no seam moved` in the existing PR handoff. |
 
 **What a measured run returns.** On PR #291 the review produced five candidates: two that the
 code-review lens had already written down in passing, and three new ones — **none of them a
@@ -245,29 +238,20 @@ scoped to the diff and never runs twice.
 ## Review tiers
 
 **The tier follows the failure mode, never the diff size.** Ask what the change
-can break, not how many lines it touches. A 600-line PR that adds a screen without
+can break, not how many lines it touches. Local review is required for every
+reviewable change; compact selects its depth, not whether review happens. A 600-line PR that adds a screen without
 risking a named failure is Standard; a 12-line PR under `apps/api/src/auth/**`
 that can bypass a session check is High-assurance.
 
 | Tier | Decision: what the change can break | Required review |
 | --- | --- | --- |
-| Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
-| Standard | Everything else: code, tests, config, UI, API, skills, docs | Default Standard gates: guard 1 → quality check → debate → test-audit → code-review → guard 2 → reviewloop → guard 3. The parent may scope a single-axis round as specified in Review invariants. |
-| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | All three lenses required, plus a debate re-run on the final head once the fixes are in; all other Standard gates still apply |
+| Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard and quality checks only |
+| Standard | Everything else without a named elevated failure mode | One focused code-review context for Standards, Spec and affected-test adequacy; local reviewloop 5/5 |
+| High-assurance | A named reachable failure could affect money, inventory, debt direction, auth/session/RBAC/secrets, security/crypto, recovery/backup, schema or dependencies; CI/release/merge policy; a new interface, cross-package behavior, or unresolved integration uncertainty | Three distinct initial sessions: debate, test-audit and code-review; local reviewloop 5/5. A bounded fix uses the one-review process above, not a repeated three-lens cycle. |
 
-Auth/RBAC, backup/restore, invoice & debt money calculations, security and a
-schema-version bump are **examples that hint at a failure mode, never a test**.
-The same goes for paths such as `apps/api/src/auth/**` or `store/**`. A path that
-matches one of these does not by itself make a change High-assurance; a path that
-matches none does not exempt it. Money only travels through *some* store
-functions, so `store/**` is not blanket High-assurance, and naming that pattern
-would make every lane High-assurance forever. Dokan examples that exercise these
-modes: stock quantity going below zero, average-cost recomputation, payment
-amounts exceeding invoice totals, debt direction (who owes whom), auth login.
+Examples include stock going negative, incorrect average cost or invoice totals, wrong debt direction, a bypassed session check, lost backup data, or a dependency/configuration change that can break a release. Name the affected contract and reachable failure. A path match is only a prompt to inspect callers, never a tier assignment; a path outside these areas does not exempt a real risk.
 
-Every lane **records its chosen tier and a one-line justification in its design
-doc** (`.scratch/implementation/<issue-id>-design.md`), so the choice is
-reviewable next to the verdict instead of being invisible.
+Record the tier and a short risk rationale in the existing design or PR handoff. Do not create an extra mandatory artifact just to justify review depth. Compare prototypes early when visual behavior is uncertain; a prototype comparison is not required for every document or change.
 
 ## Tickets and specs
 
@@ -316,9 +300,7 @@ cheap to reverse, so it auto-merges too, once its before/after packet is posted 
 A lane never merges at all; squash merges only. A 5/5 reviewloop verdict with no findings,
 anchored to the current head SHA, and every CI check green is the **bar to merge at
 all** — auto-merging below it is not allowed, and a REFUSED verdict never merges.
-Until the owner ends the [paired review trial](review-comparison.md), both current-head
-reviews must be 5/5 with no actionable findings. Investigate disagreement before
-merging; a missing verdict blocks the gate and scores are not averaged.
+The local reviewloop verdict must be 5/5 with no unresolved actionable findings. Until the owner ends the [paired trial](review-comparison.md), both current-head verdicts must be 5/5 with no unresolved actionable findings. Request Greptile once per pushed head; a missing hosted verdict blocks merge, including when credit is unavailable. Lean local review does not retire that requirement.
 
 The gate itself is [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md):
 the four reasons (5/5, `Last reviewed commit` == head, no comments after the

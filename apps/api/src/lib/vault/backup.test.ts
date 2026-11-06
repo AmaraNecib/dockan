@@ -1,18 +1,22 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { Database } from "bun:sqlite";
 import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
 import { buildEncryptedSnapshot, createEncryptedConnection } from "../../db/encrypted-connection";
 import type { KdfParams } from "./crypto";
-import { createVaultBackupBundle, extractVaultBackup, type ExtractVaultBackupOptions, readVaultBackupBundle } from "./backup";
+import { createVaultBackupBundle, extractVaultBackup, preflightVaultBackup, type ExtractVaultBackupOptions, readVaultBackupBundle } from "./backup";
+import { createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../backups";
 import { VaultCore } from "./core";
 import { VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, parseVaultHeader, readSnapshotFence } from "./format";
 import { acquireVaultLock, VaultAlreadyLockedError, VaultLockLostError } from "./lock";
 import { VaultManager } from "./manager";
 import { AppLogger } from "../logger";
 import { createDrizzleStore } from "../../store/drizzle-store";
+import type { StorePort } from "../../store/port";
 
 const FAST_KDF: KdfParams = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 };
 const PASSPHRASE = "correct horse battery";
@@ -87,6 +91,44 @@ describe("vault backup bundle", () => {
     expect(decoded?.snapshot.equals(snapshot)).toBe(true);
   });
 
+  it("preflights credentials, encrypted integrity, and schema compatibility", async () => {
+    const header = await headerText();
+    const core = VaultCore.open({ read: () => header, write: async () => {} });
+    if (core === undefined) throw new Error("test header did not open");
+    const key = core.unlockPassphrase(PASSPHRASE);
+    const imageDb = new Database(":memory:");
+    imageDb.exec("PRAGMA user_version = 1");
+    const encrypted = buildEncryptedSnapshot(key, parseVaultHeader(header).vaultId, imageDb.serialize());
+    key.fill(0);
+    imageDb.close();
+    const bundle = createVaultBackupBundle(header, encrypted);
+
+    await expect(preflightVaultBackup(bundle, { passphrase: "wrong passphrase" })).rejects.toThrow();
+    const damaged = Buffer.from(bundle);
+    const finalByte = damaged.length - 1;
+    damaged[finalByte] = (damaged[finalByte] ?? 0) ^ 0xff;
+    await expect(preflightVaultBackup(damaged, { passphrase: PASSPHRASE })).rejects.toThrow();
+
+    const preview = await preflightVaultBackup(bundle, { passphrase: PASSPHRASE });
+    expect(preview).toMatchObject({ vaultId: parseVaultHeader(header).vaultId, schemaVersion: 1, compatible: true });
+    expect(preview.vaultCreatedAt).toBe(parseVaultHeader(header).createdAt);
+    expect("createdAt" in preview).toBe(false);
+    expect("image" in preview).toBe(false);
+
+    const newerDb = new Database(":memory:");
+    newerDb.exec("PRAGMA user_version = 999");
+    const newerImage = newerDb.serialize();
+    newerDb.close();
+    const newerCore = VaultCore.open({ read: () => header, write: async () => {} });
+    if (newerCore === undefined) throw new Error("test header did not open");
+    const newerKey = newerCore.unlockPassphrase(PASSPHRASE);
+    const newerBundle = createVaultBackupBundle(header, buildEncryptedSnapshot(newerKey, parseVaultHeader(header).vaultId, newerImage));
+    newerKey.fill(0);
+    const original = Buffer.from(newerBundle);
+    await expect(preflightVaultBackup(newerBundle, { passphrase: PASSPHRASE })).rejects.toThrow("نسخة قاعدة البيانات 999");
+    expect(newerBundle.equals(original)).toBe(true);
+  });
+
   it("returns undefined for raw snapshots, truncated bundles, and garbage", async () => {
     const header = await headerText();
     const bundle = createVaultBackupBundle(header, fakeSnapshot());
@@ -99,14 +141,96 @@ describe("vault backup bundle", () => {
     expect(readVaultBackupBundle(Buffer.alloc(0))).toBeUndefined();
   });
 
-  it("extracts a bundle into a restorable data dir and refuses a non-bundle", async () => {
-    const header = await headerText();
-    const bundle = createVaultBackupBundle(header, fakeSnapshot());
-    const target = tempDir("dokan-backup-extract-");
-    const paths = await extractVaultBackup(bundle, target);
-    expect(fs.existsSync(paths.headerPath)).toBe(true);
-    expect(fs.existsSync(paths.snapshotPath)).toBe(true);
-    await expect(extractVaultBackup(Buffer.from("nope"), tempDir("dokan-backup-bad-"))).rejects.toThrow();
+  it("reopens persisted encrypted records after extracting a backup, with the prior vault independently recoverable", async () => {
+    const makeVault = async (dir: string, category: string) => {
+      const manager = new VaultManager({
+        dataDir: dir,
+        legacyDbPath: path.join(dir, "dokan.db"),
+        logger: new AppLogger(dir),
+        kdf: FAST_KDF,
+      });
+      const { recoveryKey, vaultId } = await manager.prepareSetup(PASSPHRASE);
+      const connection = createEncryptedConnection({
+        vaultId,
+        masterKey: manager.setupMasterKey(),
+        snapshotPath: manager.snapshotPath,
+        headerPath: manager.headerPath,
+        fresh: true,
+      });
+      const store = createDrizzleStore(connection);
+      await store.setup();
+      await store.createCategory({ name: category });
+      await manager.commitSetup();
+      const bundle = createVaultBackupBundle(
+        fs.readFileSync(manager.headerPath, "utf8"),
+        fs.readFileSync(manager.snapshotPath),
+      );
+      connection.close();
+      manager.close();
+      return { bundle, recoveryKey };
+    };
+
+    const currentDir = tempDir("dokan-restore-current-");
+    const incomingDir = tempDir("dokan-restore-incoming-");
+    const targetDir = tempDir("dokan-restore-target-");
+    const safetyDir = tempDir("dokan-restore-safety-");
+    const current = await makeVault(currentDir, "الحالي");
+    const incoming = await makeVault(incomingDir, "المستعاد");
+
+    await extractVaultBackup(current.bundle, targetDir);
+    const safety = createVaultBackupBundle(
+      fs.readFileSync(path.join(targetDir, "vault", "vault.json"), "utf8"),
+      fs.readFileSync(path.join(targetDir, "dokan.db.enc")),
+    );
+    await extractVaultBackup(incoming.bundle, targetDir);
+    await extractVaultBackup(safety, safetyDir);
+
+    const reopened = new VaultManager({
+      dataDir: targetDir,
+      legacyDbPath: path.join(targetDir, "dokan.db"),
+      logger: new AppLogger(targetDir),
+      kdf: FAST_KDF,
+    });
+    await reopened.unlock(PASSPHRASE);
+    const connection = createEncryptedConnection({
+      snapshotPath: reopened.snapshotPath,
+      masterKey: reopened.requireMasterKey(),
+      vaultId: reopened.metadata().vaultId,
+    });
+    const store = createDrizzleStore(connection);
+    await store.setup();
+    expect((await store.listCategories()).map(({ name }) => name)).toContain("المستعاد");
+    connection.close();
+    reopened.close();
+
+    const recoveredSafety = new VaultManager({
+      dataDir: safetyDir,
+      legacyDbPath: path.join(safetyDir, "dokan.db"),
+      logger: new AppLogger(safetyDir),
+      kdf: FAST_KDF,
+    });
+    await recoveredSafety.unlock(PASSPHRASE);
+    const safetyConnection = createEncryptedConnection({
+      snapshotPath: recoveredSafety.snapshotPath,
+      masterKey: recoveredSafety.requireMasterKey(),
+      vaultId: recoveredSafety.metadata().vaultId,
+    });
+    const safetyStore = createDrizzleStore(safetyConnection);
+    await safetyStore.setup();
+    expect((await safetyStore.listCategories()).map(({ name }) => name)).toContain("الحالي");
+    safetyConnection.close();
+    recoveredSafety.close();
+  });
+
+  it("refuses a malformed bundle before changing either live encrypted file", async () => {
+    const target = tempDir("dokan-backup-refusal-");
+    const vaultDir = path.join(target, "vault");
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, "vault.json"), "existing header");
+    fs.writeFileSync(path.join(target, "dokan.db.enc"), "existing encrypted snapshot");
+    await expect(extractVaultBackup(Buffer.from("nope"), target)).rejects.toThrow();
+    expect(fs.readFileSync(path.join(vaultDir, "vault.json"), "utf8")).toBe("existing header");
+    expect(fs.readFileSync(path.join(target, "dokan.db.enc"), "utf8")).toBe("existing encrypted snapshot");
   });
 
   itHeavy("exports a self-contained backup that restores the shop on a fresh install (finding: unlockable backups)", async () => {
@@ -130,12 +254,133 @@ describe("vault backup bundle", () => {
     await store.createCategory({ name: "رحلة" });
     await sourceManager.commitSetup();
 
-    // the exported backup is ONE file; the key wraps travel with the snapshot
-    const bundlePath = path.join(source, "backup.dknvbak");
-    await store.copyDatabaseTo(bundlePath);
+    const savedHeader = fs.readFileSync(sourceManager.headerPath);
+    const mismatchedHeader = savedHeader.toString().replace(vaultId, "99999999-0000-0000-0000-000000000000");
+    expect(mismatchedHeader).not.toBe(savedHeader.toString());
+    fs.writeFileSync(sourceManager.headerPath, mismatchedHeader);
+    try {
+      await expect(conn.writeBackupTo(path.join(source, "mismatched-header.dknvbak")))
+        .rejects.toThrow("backup header does not belong to this vault");
+    } finally {
+      fs.writeFileSync(sourceManager.headerPath, savedHeader);
+    }
+
+    // The actual external-copy seam writes a unique, validated encrypted bundle.
+    const externalDir = tempDir("dokan-backup-external-");
+    await setExternalBackupDestination(source, externalDir);
+    const reservationTime = Date.now();
+    const collisionDirectory = path.join(externalDir, `dokan-backup-${reservationTime}-${process.pid}-${"11".repeat(8)}`);
+    fs.mkdirSync(collisionDirectory);
+    let randomCall = 0;
+    const randomSpy = spyOn(crypto, "randomBytes").mockImplementation((size) => {
+      randomCall++;
+      return Buffer.alloc(size, randomCall === 2 ? 0x11 : randomCall === 3 ? 0x22 : 0x33);
+    });
+    const timeSpy = spyOn(Date, "now").mockReturnValue(reservationTime);
+    let outcome: Awaited<ReturnType<typeof createExternalBackup>>;
+    try {
+      outcome = await createExternalBackup({
+        store,
+        dataDir: source,
+      });
+    } finally {
+      randomSpy.mockRestore();
+      timeSpy.mockRestore();
+    }
+    expect(randomCall).toBeGreaterThanOrEqual(4);
+    expect(fs.existsSync(collisionDirectory)).toBe(true);
+    expect(fs.readdirSync(collisionDirectory)).toEqual([]);
+    expect(outcome.lastError).toBeNull();
+    expect(outcome.lastSuccessAt).not.toBeNull();
+    const bundlePath = outcome.lastPath;
+    expect(bundlePath).not.toBeNull();
+    if (bundlePath === null) throw new Error("external backup did not produce an artifact");
     expect(conn.validateSnapshotFile(bundlePath)).toBe(true);
+    expect(path.basename(bundlePath)).toBe("dokan-backup.dknvbak");
+    expect(path.basename(path.dirname(bundlePath))).toMatch(/^dokan-backup-/);
     const bundle = fs.readFileSync(bundlePath);
     expect(readVaultBackupBundle(bundle)).toBeDefined();
+
+    const unpluggedStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async () => { throw Object.assign(new Error("device disappeared"), { code: "ENOENT" }); },
+    };
+    const disconnected = await createExternalBackup({
+      store: unpluggedStore,
+      dataDir: source,
+    });
+    expect(disconnected.lastError).toBe("disconnected");
+    expect(disconnected.lastPath).toBe(bundlePath);
+    expect(fs.readFileSync(bundlePath).equals(bundle)).toBe(true);
+
+    // Invalid/truncated staged bytes never reach the published filename or replace the prior artifact.
+    const corruptStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async (target) => { fs.writeFileSync(target, bundle.subarray(0, 24)); },
+    };
+    const invalid = await createExternalBackup({
+      store: corruptStore,
+      dataDir: source,
+    });
+    expect(invalid.lastError).toBe("invalid");
+    expect(invalid.lastPath).toBe(bundlePath);
+    expect(fs.readFileSync(bundlePath).equals(bundle)).toBe(true);
+    expect(fs.readdirSync(externalDir).sort()).toEqual([path.basename(collisionDirectory), path.basename(path.dirname(bundlePath))].sort());
+
+    let externalReadStarted!: () => void;
+    let releaseExternalRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { externalReadStarted = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseExternalRead = resolve; });
+    // SAFETY: this test calls readFile without an encoding, so it always receives bytes.
+    const readFile = fs.promises.readFile.bind(fs.promises) as (file: Parameters<typeof fs.promises.readFile>[0]) => Promise<Buffer>;
+    // SAFETY: the replacement preserves the byte-returning overload used by this test.
+    const delayedRead = spyOn(fs.promises, "readFile").mockImplementation((async (file: Parameters<typeof fs.promises.readFile>[0]) => {
+      if (String(file).startsWith(externalDir) && String(file).endsWith(".partial")) {
+        externalReadStarted();
+        await readGate;
+      }
+      return readFile(file);
+    }) as typeof fs.promises.readFile);
+    try {
+      const pendingCopy = createExternalBackup({ store, dataDir: source });
+      await Promise.race([readStarted, Bun.sleep(3_000).then(() => { throw new Error("external async read did not start"); })]);
+      expect((await store.listCategories()).some((category) => category.name === "رحلة")).toBe(true);
+      releaseExternalRead();
+      expect((await pendingCopy).lastError).toBeNull();
+    } finally {
+      releaseExternalRead();
+      delayedRead.mockRestore();
+    }
+
+    // A stale outcome cannot overwrite a later destination change: the per-data-dir queue serializes both operations.
+    const nextExternalDir = tempDir("dokan-backup-external-next-");
+    let signalCopyStarted!: () => void;
+    let releaseCopy!: () => void;
+    const copyStarted = new Promise<void>((resolve) => { signalCopyStarted = resolve; });
+    const copyGate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+    const copyStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async (target) => {
+        signalCopyStarted();
+        await copyGate;
+        await store.copyDatabaseTo(target);
+      },
+    };
+    const copyPromise = createExternalBackup({ store: copyStore, dataDir: source });
+    await copyStarted;
+    let destinationChangeFinished = false;
+    const destinationChange = setExternalBackupDestination(source, nextExternalDir).then((value) => {
+      destinationChangeFinished = true;
+      return value;
+    });
+    await Bun.sleep(10);
+    expect(destinationChangeFinished).toBe(false);
+    releaseCopy();
+    await copyPromise;
+    const changed = await destinationChange;
+    expect(changed).toMatchObject({ destination: nextExternalDir, lastSuccessAt: null, lastPath: null });
+    expect(readExternalBackupStatus(source)).toEqual(changed);
+
     conn.close();
 
     // restore on a "fresh machine" and unlock with the PASSPHRASE
@@ -190,6 +435,274 @@ function writeLockRecord(
     }),
   );
 }
+
+type LockedExternalBackupHarness = {
+  source: string;
+  external: string;
+  manager: VaultManager;
+  lock: ReturnType<typeof acquireVaultLock>;
+  conn: ReturnType<typeof createEncryptedConnection>;
+  store: StorePort;
+};
+
+async function lockedExternalBackupHarness(): Promise<LockedExternalBackupHarness> {
+  const source = tempDir("dokan-backup-locked-source-");
+  const external = tempDir("dokan-backup-locked-external-");
+  const manager = new VaultManager({
+    dataDir: source,
+    legacyDbPath: path.join(source, "dokan.db"),
+    logger: new AppLogger(source),
+    kdf: FAST_KDF,
+  });
+  const { vaultId } = await manager.prepareSetup(PASSPHRASE);
+  const lock = acquireVaultLock(source, { onLost: () => undefined });
+  const conn = createEncryptedConnection({
+    vaultId,
+    masterKey: manager.setupMasterKey(),
+    snapshotPath: manager.snapshotPath,
+    headerPath: manager.headerPath,
+    fresh: true,
+    writeGuard: () => lock.assertHeld(),
+    writeStamp: () => lock.currentOwner().token,
+  });
+  const store = createDrizzleStore(conn);
+  await store.setup();
+  await manager.commitSetup();
+  await setExternalBackupDestination(source, external, () => lock.assertHeld());
+  return { source, external, manager, lock, conn, store };
+}
+
+async function closeLockedExternalBackupHarness(harness: LockedExternalBackupHarness): Promise<void> {
+  await harness.conn.close().catch(() => undefined);
+  harness.lock.release();
+  harness.manager.close();
+}
+
+describe("vault external backup lock fencing", () => {
+  it("assigns monotonic attempt markers for repeated identical failures in one local second", async () => {
+    const harness = await lockedExternalBackupHarness();
+    const fixedClock = spyOn(Date.prototype, "toLocaleString").mockReturnValue("2026-11-05, 10:00:01");
+    try {
+      await setExternalBackupDestination(harness.source, path.join(harness.external, "missing"), () => harness.lock.assertHeld());
+      const first = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      const second = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      const third = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      expect(first.lastAttemptAt).toBe("2026-11-05T10:00:01");
+      expect(second.lastAttemptAt).toBe("2026-11-05T10:00:02");
+      expect(third.lastAttemptAt).toBe("2026-11-05T10:00:03");
+      for (const status of [first, second, third]) {
+        expect(status.lastError).toBe("disconnected");
+        expect(status.lastSuccessAt).toBeNull();
+        expect(status.lastPath).toBeNull();
+      }
+    } finally {
+      fixedClock.mockRestore();
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("rejects equal-length ciphertext changes in the external copy and retains the known-good outcome", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const knownGood = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      const knownGoodPath = knownGood.lastPath;
+      if (knownGoodPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodBytes = fs.readFileSync(knownGoodPath);
+      // SAFETY: bind preserves the exact copyFile overload used below.
+      const realCopyFile = fs.promises.copyFile.bind(fs.promises) as typeof fs.promises.copyFile;
+      // SAFETY: the spy preserves copyFile's overload and delegates with its original arguments.
+      const copySpy = spyOn(fs.promises, "copyFile").mockImplementation((async (source, destination, mode) => {
+        await realCopyFile(source, destination, mode);
+        if (String(destination).endsWith(".partial")) {
+          const corrupted = await fs.promises.readFile(destination);
+          const middle = Math.floor(corrupted.length / 2);
+          const byte = corrupted[middle];
+          if (byte === undefined) throw new Error("ciphertext fixture is unexpectedly empty");
+          corrupted[middle] = byte ^ 1;
+          await fs.promises.writeFile(destination, corrupted);
+        }
+      }) as typeof fs.promises.copyFile);
+      try {
+        const failed = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+        expect(failed.lastError).toBe("invalid");
+        expect(failed.lastPath).toBe(knownGoodPath);
+        expect(failed.lastSuccessAt).toBe(knownGood.lastSuccessAt);
+        expect(fs.readFileSync(knownGoodPath).equals(knownGoodBytes)).toBe(true);
+      } finally {
+        copySpy.mockRestore();
+      }
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("rebuilds a trusted external backup from live data when the unchanged snapshot ciphertext is damaged", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const snapshot = fs.readFileSync(harness.manager.snapshotPath);
+      const corrupted = Buffer.from(snapshot);
+      const changedByte = Math.floor(corrupted.length / 2);
+      const originalByte = corrupted[changedByte];
+      if (originalByte === undefined) throw new Error("snapshot fixture is unexpectedly empty");
+      corrupted[changedByte] = originalByte ^ 1;
+      fs.writeFileSync(harness.manager.snapshotPath, corrupted);
+      expect(harness.conn.validateSnapshotBytes(corrupted)).toBe(false);
+
+      const outcome = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      expect(outcome).toEqual({
+        destination: harness.external,
+        lastAttemptAt: expect.any(String),
+        lastSuccessAt: expect.any(String),
+        lastError: null,
+        lastPath: expect.any(String),
+      });
+      if (outcome.lastPath === null) throw new Error("the rebuilt encrypted backup was not published");
+      const backupBytes = fs.readFileSync(outcome.lastPath);
+      expect(harness.conn.validateSnapshotBytes(backupBytes)).toBe(true);
+      expect(harness.conn.validateSnapshotBytes(fs.readFileSync(harness.manager.snapshotPath))).toBe(true);
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("refuses publication after the lock is replaced at the validated partial boundary", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const writeGuard = () => harness.lock.assertHeld();
+      const knownGood = await createExternalBackup({
+        store: harness.store,
+        dataDir: harness.source,
+        writeGuard,
+      });
+      expect(knownGood.lastError).toBeNull();
+      const knownGoodPath = knownGood.lastPath;
+      if (knownGoodPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodBytes = fs.readFileSync(knownGoodPath);
+      const savedSettings = fs.readFileSync(path.join(harness.source, "external-backup.json"));
+
+      const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+      let completedDigests = 0;
+      let digestsFinished = false;
+      const digestSpy = spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+        const digest = await realDigest(algorithm, data);
+        completedDigests += 1;
+        if (completedDigests === 2) {
+          digestsFinished = true;
+          writeLockRecord(harness.source, { token: "publication-thief" });
+        }
+        return digest;
+      });
+      try {
+        await expect(createExternalBackup({
+          store: harness.store,
+          dataDir: harness.source,
+          writeGuard,
+        })).rejects.toBeInstanceOf(VaultLockLostError);
+      } finally {
+        digestSpy.mockRestore();
+      }
+
+      expect(digestsFinished).toBe(true);
+      const attemptDirectories = fs.readdirSync(harness.external)
+        .filter((name) => path.join(harness.external, name) !== path.dirname(knownGoodPath));
+      expect(attemptDirectories).toHaveLength(1);
+      const attemptDirectoryName = attemptDirectories[0];
+      if (attemptDirectoryName === undefined) throw new Error("the interrupted attempt directory was not reserved");
+      const attemptDirectory = path.join(harness.external, attemptDirectoryName);
+      expect(fs.readdirSync(attemptDirectory)).toEqual(["dokan-backup.dknvbak.partial"]);
+      expect(fs.existsSync(path.join(attemptDirectory, "dokan-backup.dknvbak"))).toBe(false);
+      expect(fs.readFileSync(knownGoodPath).equals(knownGoodBytes)).toBe(true);
+      expect(fs.readFileSync(path.join(harness.source, "external-backup.json")).equals(savedSettings)).toBe(true);
+      expect(readExternalBackupStatus(harness.source)).toEqual(knownGood);
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("keeps the prior saved outcome when lock loss follows publication but precedes status persistence", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const validate = harness.conn.validateSnapshotBytes.bind(harness.conn);
+      const writeGuard = () => harness.lock.assertHeld();
+      const knownGood = await createExternalBackup({
+        store: harness.store,
+        dataDir: harness.source,
+        writeGuard,
+      });
+      expect(knownGood.lastError).toBeNull();
+      if (knownGood.lastPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodPath = knownGood.lastPath;
+      if (knownGoodPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodBytes = fs.readFileSync(knownGoodPath);
+      const previousPaths = new Set(fs.readdirSync(harness.external)
+        .map((name) => path.join(harness.external, name, "dokan-backup.dknvbak")));
+      let theftInjected = false;
+      const guardAtPublicationStatusBoundary = () => {
+        const newBundle = fs.readdirSync(harness.external)
+          .map((name) => path.join(harness.external, name, "dokan-backup.dknvbak"))
+          .find((candidate) => !previousPaths.has(candidate) && fs.existsSync(candidate));
+        if (newBundle !== undefined && !theftInjected) {
+          theftInjected = true;
+          writeLockRecord(harness.source, { token: "status-thief" });
+        }
+        harness.lock.assertHeld();
+      };
+
+      await expect(createExternalBackup({
+        store: harness.store,
+        dataDir: harness.source,
+        writeGuard: guardAtPublicationStatusBoundary,
+      })).rejects.toBeInstanceOf(VaultLockLostError);
+
+      expect(theftInjected).toBe(true);
+      const publishedButUnattributed = fs.readdirSync(harness.external)
+        .map((name) => path.join(harness.external, name, "dokan-backup.dknvbak"))
+        .filter((candidate) => !previousPaths.has(candidate) && fs.existsSync(candidate));
+      expect(publishedButUnattributed).toHaveLength(1);
+      const unreportedPath = publishedButUnattributed[0];
+      if (unreportedPath === undefined) throw new Error("the new bundle was not published before loss detection");
+      expect(validate(fs.readFileSync(unreportedPath))).toBe(true);
+      expect(fs.readFileSync(knownGoodPath).equals(knownGoodBytes)).toBe(true);
+      expect(readExternalBackupStatus(harness.source)).toEqual(knownGood);
+      expect(readExternalBackupStatus(harness.source).lastPath).toBe(knownGood.lastPath);
+      expect(fs.readdirSync(harness.source).filter((name) => name.startsWith("external-backup.json.partial."))).toEqual([]);
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("does not write a destination change after lock loss at the settings-file open boundary", async () => {
+    const harness = await lockedExternalBackupHarness();
+    const settingsPath = path.join(harness.source, "external-backup.json");
+    const previousSettings = fs.readFileSync(settingsPath);
+    const previousStatus = readExternalBackupStatus(harness.source);
+    const originalOpen = fs.promises.open.bind(fs.promises);
+    let openedPartial: string | undefined;
+    const openSpy = spyOn(fs.promises, "open").mockImplementation(async (file, flags, mode) => {
+      const handle = await originalOpen(file, flags, mode);
+      if (String(file).startsWith(`${settingsPath}.partial.`)) {
+        openedPartial = String(file);
+        writeLockRecord(harness.source, { token: "settings-thief" });
+      }
+      return handle;
+    });
+    try {
+      await expect(setExternalBackupDestination(
+        harness.source,
+        path.join(harness.external, "new-destination"),
+        () => harness.lock.assertHeld(),
+      )).rejects.toBeInstanceOf(VaultLockLostError);
+      expect(openedPartial).toBeDefined();
+      if (openedPartial === undefined) throw new Error("the settings partial was not opened");
+      expect(fs.statSync(openedPartial).size).toBe(0);
+      expect(fs.readFileSync(settingsPath).equals(previousSettings)).toBe(true);
+      expect(readExternalBackupStatus(harness.source)).toEqual(previousStatus);
+    } finally {
+      openSpy.mockRestore();
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+});
 
 /**
  * Restore while a second instance replaces `vault.lock` at the instant one of

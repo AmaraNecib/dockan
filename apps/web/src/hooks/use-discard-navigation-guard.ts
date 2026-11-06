@@ -17,6 +17,10 @@ export interface DiscardNavigationGuardOptions {
   dirty: boolean;
   /** How many lines that work is; the prompt names it. */
   lineCount: number;
+  /** A submitted write cannot be discarded or navigated away from. */
+  pending?: boolean;
+  /** A synchronous write flag for attempts made before React commits the next render. */
+  pendingRef?: Readonly<{ current: boolean }>;
 }
 
 /**
@@ -42,13 +46,13 @@ export interface DiscardNavigationGuardOptions {
  * already current before the browser can deliver the click or the popstate that
  * starts a navigation (the same rule as #204's write gates).
  */
-export function useDiscardNavigationGuard({ dirty, lineCount }: DiscardNavigationGuardOptions): DiscardNavigationGuard {
-  const live = useRef({ dirty, lineCount });
+export function useDiscardNavigationGuard({ dirty, lineCount, pending = false, pendingRef }: DiscardNavigationGuardOptions): DiscardNavigationGuard {
+  const live = useRef({ dirty, lineCount, pending });
   useLayoutEffect(() => {
-    live.current = { dirty, lineCount };
-  }, [dirty, lineCount]);
+    live.current = { dirty, lineCount, pending };
+  }, [dirty, lineCount, pending]);
 
-  const shouldBlock = useCallback(() => live.current.dirty, []);
+  const shouldBlock = useCallback(() => live.current.dirty || live.current.pending || pendingRef?.current === true, [pendingRef]);
 
   const resolver = useBlocker({
     shouldBlockFn: shouldBlock,
@@ -58,8 +62,17 @@ export function useDiscardNavigationGuard({ dirty, lineCount }: DiscardNavigatio
     withResolver: true,
   });
 
-  const discard = useCallback(() => resolver.proceed?.(), [resolver]);
+  // Refuse the attempt, rather than holding a destination until the write settles.
+  // A response arriving under another dialog must leave the saved result here.
+  useLayoutEffect(() => {
+    if (pending && resolver.status === "blocked") resolver.reset?.();
+  }, [pending, resolver]);
+
+  const discard = useCallback(() => {
+    if (live.current.pending) resolver.reset?.();
+    else resolver.proceed?.();
+  }, [resolver]);
   const stay = useCallback(() => resolver.reset?.(), [resolver]);
 
-  return { blocked: resolver.status === "blocked", lineCount, discard, stay };
+  return { blocked: resolver.status === "blocked" && !pending, lineCount, discard, stay };
 }

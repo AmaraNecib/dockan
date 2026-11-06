@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-backup-reveal"
+description = "Reveals an existing completed backup in Windows Explorer without opening or changing its contents."
+commands.allow = ["backup_reveal"]
+
+[[permission]]
+identifier = "allow-backup-restore"
+description = "Selects and authenticates an encrypted backup, then replaces data only after digest-bound confirmation from the verified native launch."
+commands.allow = ["backup_restore_choose", "backup_restore_preview", "backup_restore_cancel", "backup_restore_confirmed", "backup_restore_outcome"]

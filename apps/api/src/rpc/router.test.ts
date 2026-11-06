@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { dashboardSummaryOutputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient, stockMovementWithBalanceSchema } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, invoiceListInputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient, stockMovementWithBalanceSchema } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -154,6 +154,8 @@ describe("health", () => {
 
   it("rejects a business procedure without a session (merged auth guard)", async () => {
     await expect(unauthed.categoriesList()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.categoriesRename({ id: "00000000-0000-4000-8000-000000000001", name: "ممنوع" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.categoriesDelete({ id: "00000000-0000-4000-8000-000000000001" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
   it("reports the service up with a version", async () => {
     const health = await client.health();
@@ -172,8 +174,43 @@ describe("categories", () => {
     expect(list.items.some((c) => c.id === created.id && c.name === "زيوت")).toBe(true);
   });
 
+  it("renames in place, refreshes joined labels, and refuses deletion with the actual item count", async () => {
+    const category = await client.categoriesCreate({ name: `إدارة-${Date.now()}` });
+    const itemOne = await client.itemsCreate({ name: `إدارة-منتج-1-${Date.now()}`, categoryId: category.id, costPrice: 10, sellingPrice: 20 });
+    const itemTwo = await client.itemsCreate({ name: `إدارة-منتج-2-${Date.now()}`, categoryId: category.id, costPrice: 10, sellingPrice: 20 });
+
+    const renamed = await client.categoriesRename({ id: category.id, name: "تصنيف بعد التعديل" });
+    expect(renamed).toMatchObject({ id: category.id, name: "تصنيف بعد التعديل" });
+    expect((await client.categoriesList()).items.some((row) => row.id === category.id && row.name === renamed.name)).toBe(true);
+    const listedItems = await client.itemsAll();
+    expect(listedItems.items.find((row) => row.id === itemOne.id)?.categoryName).toBe(renamed.name);
+    expect(listedItems.items.find((row) => row.id === itemTwo.id)?.categoryId).toBe(category.id);
+
+    await expect(client.categoriesDelete({ id: category.id })).resolves.toEqual({ deleted: false, itemCount: 2 });
+    expect((await client.itemsAll()).items.some((row) => row.id === itemOne.id && row.categoryId === category.id)).toBe(true);
+
+    const unused = await client.categoriesCreate({ name: `حذف-آمن-${Date.now()}` });
+    await expect(client.categoriesDelete({ id: unused.id })).resolves.toEqual({ deleted: true, itemCount: 0 });
+    expect((await client.categoriesList()).items.some((row) => row.id === unused.id)).toBe(false);
+  });
+
+  it("refuses normalized duplicate and blank category renames", async () => {
+    const original = await client.categoriesCreate({ name: `زينة مُوحَّدة-${Date.now()}` });
+    const duplicate = await client.categoriesCreate({ name: `اخرى-${Date.now()}` });
+
+    await expect(client.categoriesRename({ id: duplicate.id, name: original.name.replace("زينة", "زِينَة") })).rejects.toThrow(/CATEGORY_EXISTS/);
+    await expect(client.categoriesRename({ id: duplicate.id, name: "   " })).rejects.toThrow();
+    expect((await client.categoriesList()).items.find((row) => row.id === duplicate.id)?.name).toBe(duplicate.name);
+  });
+
   it("rejects a duplicate category name with a clear error", async () => {
     await expect(client.categoriesCreate({ name: "زيوت" })).rejects.toThrow(/CATEGORY_EXISTS/);
+  });
+
+  it("rejects category names that collide under normalized category identity", async () => {
+    await client.categoriesCreate({ name: "هوية مُوحَّدة" });
+
+    await expect(client.categoriesCreate({ name: "هُوية موحدة" })).rejects.toThrow(/CATEGORY_EXISTS/);
   });
 
   it("two concurrent creates of the same category resolve as CONFLICT, not a raw error", async () => {
@@ -445,6 +482,7 @@ describe("stock ledger (ticket 27)", () => {
     }
     expect(rejected).toBe(true);
     expect(await client.itemsHistory({ itemId: item.id })).toEqual({
+      item: { id: item.id, name: item.name },
       movements: [],
       total: 0,
       stockOnHand: 0,
@@ -907,8 +945,18 @@ describe("stock ledger — backdated inflows (greptile P1)", () => {
 });
 
 describe("backups (ticket 13)", () => {
-  it("rejects backupManual without a session", async () => {
+  it("rejects every external-backup RPC without a session", async () => {
+    await expect(unauthed.externalBackupStatus()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.externalBackupDevice()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.externalBackupDestinationSet({ destination: dir })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.externalBackupRun()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     await expect(unauthed.backupManual()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("refuses external backup setup and export when the live store is not encrypted", async () => {
+    await expect(client.externalBackupDestinationSet({ destination: dir })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(client.externalBackupRun()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(fs.existsSync(path.join(dir, "external-backup.json"))).toBe(false);
   });
 
   it("exports a copy under dataDir/backups and logs BACKUP_CREATED", async () => {
@@ -1246,7 +1294,7 @@ describe("purchase intake (ticket 29)", () => {
       code = (err as Error).message;
     }
     expect(code).toContain("PURCHASE_REQUIRES_INFLOW");
-    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], total: 0, stockOnHand: 0 });
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ item: { id: item.id, name: item.name }, movements: [], total: 0, stockOnHand: 0 });
   });
 
   it("proposes FIFO availability, links partially, and reports the unmatched share without minting stock", async () => {
@@ -1580,6 +1628,16 @@ describe("sale checkout (ticket 30)", () => {
     expect(amount.totalAmount).toBe(1_150);
     expect(amount.lines.reduce((sum, line) => sum + line.discountAllocated, 0)).toBe(250);
     expect(amount.lines.reduce((sum, line) => sum + line.netTotal, 0)).toBe(1_150);
+    const expectedAllocationByItem = {
+      [a.id]: { discountAllocated: 161, netTotal: 739 },
+      [b.id]: { discountAllocated: 89, netTotal: 411 },
+    };
+    const allocationByItem = (lines: typeof amount.lines) => Object.fromEntries(
+      lines.map(({ itemId, discountAllocated, netTotal }) => [itemId, { discountAllocated, netTotal }]),
+    );
+    expect(allocationByItem(amount.lines)).toEqual(expectedAllocationByItem);
+    const amountReread = await client.invoicesGet({ id: amount.id });
+    expect(allocationByItem(amountReread.lines)).toEqual(expectedAllocationByItem);
 
     const percentageItem = await makeSaleItem("بيع-خصم-نسبة-ثاني", 100, 1_000);
     await client.stockAddManual({ itemId: percentageItem.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
@@ -4102,6 +4160,59 @@ describe("returns & refunds", () => {
     expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(100);
   });
 
+  it("rolls back an inserted batch movement when a later scrap insert fails", async () => {
+    const item = await makeReturnItem("مرجوع-تراجع-دفعة", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1 }, { itemId: item.id, quantity: 1 }],
+    });
+    const created = await client.returnsCreate({
+      invoiceId: sale.id,
+      lines: sale.lines.map((line) => ({ invoiceLineId: line.id, quantity: 1 })),
+    });
+    const beforeHistory = await client.itemsHistory({ itemId: item.id });
+    const beforeItem = (await client.itemsAll()).items.find((row) => row.id === item.id);
+    const beforeActivities = (await store.listActivities({ limit: MAX_PAGE_SIZE })).items
+      .filter((activity) => activity.type === "RETURN_REVIEWED" && activity.ref === created.id);
+    let movementInsertAttempts = 0;
+    let firstMovementInserted = false;
+
+    const failingStore: StorePort = {
+      ...store,
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransactionImmediate((tx: StorePort) =>
+          fn({
+            ...tx,
+            insertStockMovement: async (input) => {
+              movementInsertAttempts += 1;
+              if (movementInsertAttempts === 2) throw new Error("second-scrap-insert-boom");
+              const inserted = await tx.insertStockMovement(input);
+              firstMovementInserted = true;
+              return inserted;
+            },
+          }),
+        ),
+    };
+
+    await expect(clientForStore(failingStore).returnsReject({ returnId: created.id, reason: "تلف" })).rejects.toThrow();
+    expect(movementInsertAttempts).toBe(2);
+    expect(firstMovementInserted).toBe(true);
+
+    const afterHistory = await client.itemsHistory({ itemId: item.id });
+    const afterItem = (await client.itemsAll()).items.find((row) => row.id === item.id);
+    const afterReturn = await client.returnsGet({ returnId: created.id });
+    const afterActivities = (await store.listActivities({ limit: MAX_PAGE_SIZE })).items
+      .filter((activity) => activity.type === "RETURN_REVIEWED" && activity.ref === created.id);
+    expect(afterHistory.movements).toEqual(beforeHistory.movements);
+    expect(afterHistory.stockOnHand).toBe(beforeHistory.stockOnHand);
+    expect(afterItem?.stockOnHand).toBe(beforeItem?.stockOnHand);
+    expect(afterItem?.costPrice).toBe(beforeItem?.costPrice);
+    expect(afterReturn.status).toBe("PENDING_REVIEW");
+    expect(afterReturn.reason).toBe(created.reason);
+    expect(afterActivities).toEqual(beforeActivities);
+  });
+
   it("reject after some units were resold clamps the removal to available stock and never blocks the review", async () => {
     // returned goods are salable immediately; by review time some may be gone
     const item = await makeReturnItem("مرجوع-إعادة-بيع", 100, 300);
@@ -4785,6 +4896,9 @@ describe("purchase return default refund (#256)", () => {
     // the return reduced the debt instead of handing cash back; #260 reads a
     // debt we owe as a NEGATIVE balance
     expect(returned.balance).toBe(-500);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((movement) => movement.reason === "SUPPLIER_RETURN")?.details?.documents)
+      .toContainEqual({ id: purchase.id, number: purchase.invoiceNumber });
   });
 
   it("defaults to cash back when nothing is owed either way", async () => {
@@ -5170,6 +5284,23 @@ describe("UI preferences (issue 97 follow-up)", () => {
     await expect(unauthed.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" })).rejects.toMatchObject({
       code: "UNAUTHORIZED",
     });
+  });
+
+  it("remembers only supported sale price modes and refuses draft values (#397)", async () => {
+    await client.preferencesSet({ key: "ui.sale.priceMode", value: "PERCENTAGE" });
+    expect((await client.preferencesGet()).values["ui.sale.priceMode"]).toBe("PERCENTAGE");
+    for (const value of ["", "DISCOUNT", "900", "percentage", "AMOUNT:900"]) {
+      await expect(client.preferencesSet({ key: "ui.sale.priceMode", value })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    }
+    await expect(client.preferencesSet({ key: "ui.sale.priceMode.other-user", value: "AMOUNT" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+    if (session === null) throw new Error("expected the authenticated owner");
+    const ownKey = `ui.sale.priceMode.${session.user.id}`;
+    expect((await store.getPreferences())[ownKey]).toBe("PERCENTAGE");
+    await store.setPreference("ui.sale.priceMode.some-other-operator", "AMOUNT");
+    const visible = (await client.preferencesGet()).values;
+    expect(visible["ui.sale.priceMode"]).toBe("PERCENTAGE");
+    expect(Object.keys(visible).some((key) => key.startsWith("ui.sale.priceMode."))).toBe(false);
   });
 
   it("round-trips a client-owned preference over the wire", async () => {
@@ -5635,5 +5766,116 @@ describe("movement posting seam parity (issue 143)", () => {
     expect(history.movements.at(-1)).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 0, unitCost: 250, reason: "COST_CORRECTION" });
     expect(history.stockOnHand).toBe(10);
     expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(250);
+  });
+});
+
+describe("item history 399", () => {
+  it("399 keeps matching rounded sale COGS unavailable while preserving exact inflow totals", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-max-safe-399", categoryId: category.id, costPrice: Number.MAX_SAFE_INTEGER, sellingPrice: 20 });
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: Number.MAX_SAFE_INTEGER, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((movement) => movement.ref === sale.id)?.details?.cost).toEqual({
+      unitCost: Number.MAX_SAFE_INTEGER,
+      total: null,
+    });
+    expect(history.movements.find((movement) => movement.kind === "PURCHASE")?.details?.cost).toEqual({
+      unitCost: Number.MAX_SAFE_INTEGER,
+      total: Number.MAX_SAFE_INTEGER,
+    });
+    expect(itemHistoryOutputSchema.safeParse(history).success).toBe(true);
+  });
+
+  it("399 keeps history readable when an inflow total exceeds exact money range", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-overflow-399", categoryId: category.id, costPrice: Number.MAX_SAFE_INTEGER, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: Number.MAX_SAFE_INTEGER, kind: "PURCHASE" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements[0]?.details?.cost).toEqual({ unitCost: Number.MAX_SAFE_INTEGER, total: null });
+    expect(itemHistoryOutputSchema.safeParse(history).success).toBe(true);
+    expect(history.stockOnHand).toBe(2);
+  });
+
+  it("399 preserves recorded sale prices and exact cost after current price changes", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-snapshots-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 250 }, lines: [{ itemId: item.id, quantity: 6 }] });
+    await client.itemsUpdate({ id: item.id, sellingPrice: 999, costPrice: 400 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history).toMatchObject({ item: { id: item.id, name: "history-snapshots-399" } });
+    expect(history.movements.find((m) => m.ref === sale.id)).toMatchObject({
+      details: { sellingPrice: 300, saleTotal: 1800, netSaleTotal: 1550, cost: { unitCost: 117, total: 700 }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+    });
+  });
+
+  it("399 leaves ambiguous sale and manual-outflow facts unknown, preserving zero costs", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-unknown-399", categoryId: category.id, costPrice: 0, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 8, unitCost: 0, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }, { itemId: item.id, quantity: 2 }] });
+    await client.stockAddManual({ itemId: item.id, delta: -1, reason: "damaged" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements[0]?.details).toMatchObject({ sellingPrice: null, cost: { unitCost: 0, total: 0 } });
+    expect(history.movements.filter((m) => m.ref === sale.id).map((m) => m.details)).toEqual([
+      { sellingPrice: null, saleTotal: null, netSaleTotal: null, cost: { unitCost: null, total: null }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+      { sellingPrice: null, saleTotal: null, netSaleTotal: null, cost: { unitCost: null, total: null }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+    ]);
+    expect(history.movements.at(-1)?.details).toMatchObject({ sellingPrice: null, cost: { unitCost: null, total: null } });
+    await expect(unauthed.itemsHistory({ itemId: item.id })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("399 retains original purchase costs, stable backdates and corrections across pages", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-order-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
+    const purchase = await client.invoicesCreate({ kind: "PURCHASE", invoiceDate: "2025-01-02", lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }] });
+    await client.purchasesCorrectLine({ lineId: purchase.lines[0]!.id, quantity: 10, unitCost: 250 });
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 50, kind: "PURCHASE", occurredAt: "2025-01-01T10:00:00" });
+    await client.itemsUpdate({ id: item.id, costPrice: 500 });
+    const full = await client.itemsHistory({ itemId: item.id });
+    expect(full.movements[0]).toMatchObject({ delta: 2, stockAfter: 2 });
+    expect(full.movements[1]).toMatchObject({ delta: 10, details: { cost: { unitCost: 100, total: 1000 }, documents: [{ id: purchase.id, number: purchase.invoiceNumber }] } });
+    expect(full.movements.at(-1)).toMatchObject({ delta: 0, details: { cost: { unitCost: 500, total: null } } });
+    const page1 = await client.itemsHistory({ itemId: item.id, limit: 2 });
+    const page2 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 2 });
+    const page3 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 4 });
+    expect([...page1.movements, ...page2.movements, ...page3.movements]).toEqual(full.movements);
+    expect(full.stockOnHand).toBe(12);
+  });
+
+  it("399 links recorded returns to their original invoice without claiming a new sale price", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: "history-return-399", categoryId: category.id, costPrice: 100, sellingPrice: 300 });
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100 });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const returned = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((m) => m.ref === returned.id)).toMatchObject({
+      delta: 1, details: { sellingPrice: null, cost: { unitCost: 100, total: 100 }, documents: [{ id: sale.id, number: sale.invoiceNumber }] },
+    });
+  });
+});
+
+describe("invoice list search contract", () => {
+  it("accepts safe bare/prefixed number bounds and rejects malformed or reversed bounds", () => {
+    expect(invoiceListInputSchema.parse({ fromNumber: "111", toNumber: "SUP-120", order: "OLDEST" })).toMatchObject({ fromNumber: "111", toNumber: "SUP-120", order: "OLDEST" });
+    expect(invoiceListInputSchema.safeParse({ fromNumber: "INV-9007199254740992" }).success).toBe(false);
+    expect(invoiceListInputSchema.safeParse({ fromNumber: "INV-LEGACY" }).success).toBe(false);
+    expect(invoiceListInputSchema.safeParse({ fromNumber: "SUP-120", toNumber: "INV-111" }).success).toBe(false);
+    expect(invoiceListInputSchema.safeParse({ fromDate: "2086-01-03", toDate: "2086-01-01" }).success).toBe(false);
+  });
+
+  it("rejects malformed ranges at the authenticated RPC seam", async () => {
+    // SAFETY: the cast intentionally sends invalid runtime input past static typing to verify RPC validation.
+    await expect(client.invoicesList({ fromNumber: "INV-LEGACY" } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    // SAFETY: reversed dates are runtime-invalid input for the same validation contract.
+    await expect(client.invoicesList({ fromDate: "2086-01-03", toDate: "2086-01-01" } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("accepts 200 characters and rejects 201 using the exported input schema", () => {
+    expect(invoiceListInputSchema.safeParse({ search: "x".repeat(200) }).success).toBe(true);
+    expect(invoiceListInputSchema.safeParse({ search: "x".repeat(201) }).success).toBe(false);
   });
 });

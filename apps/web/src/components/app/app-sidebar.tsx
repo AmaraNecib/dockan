@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, UserRound } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { shortcutKeys } from "@/lib/keyboard-actions";
 import { NAV_GROUPS, type NavItem } from "./navigation";
 
 export const SIDEBAR_EXPANDED_WIDTH = 240;
@@ -50,12 +51,20 @@ interface AppSidebarProps {
   /** true when the count read failed; the badge must read as unknown, not zero */
   pendingReturnsError: boolean;
   onExpand: () => void;
+  accountFailed?: boolean;
+  accountBlocked?: boolean;
+  retryAccount?: () => void;
 }
 
-export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pendingReturnsError, onExpand }: AppSidebarProps) {
+export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pendingReturnsError, onExpand, accountFailed = false, accountBlocked = false, retryAccount }: AppSidebarProps) {
   const { t } = useTranslation();
   const systemHasActive = activeKey !== null && COLLAPSIBLE_GROUP_ITEMS.some((item) => item.key === activeKey);
   const [systemOpen, setSystemOpen] = useState(systemHasActive);
+  let accountLabel = t("accountLoading");
+  if (accountBlocked) accountLabel = t("accountBlocked");
+  else if (accountFailed) accountLabel = t("accountUnavailable");
+  if (user) accountLabel = `${displayName(user)} — ${t("accountOwner")}`;
+  const collapsedAccountLabel = `${accountLabel} — ${t("sidebarExpand")}`;
 
   // Never hide the current page's link (and aria-current) behind the collapsed
   // group: open it whenever the active route lives inside, including on load.
@@ -141,23 +150,35 @@ export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pe
         {collapsed ? (
           <button
             type="button"
+            data-testid={user ? "sidebar-owner-identity" : undefined}
             onClick={onExpand}
-            title={displayName(user) || t("shellUser")}
+            title={collapsedAccountLabel}
             className="mx-auto grid size-8 place-items-center rounded-full bg-primary text-primary-foreground text-xs font-semibold"
-            aria-label={displayName(user) || t("shellUser")}
+            aria-label={collapsedAccountLabel}
           >
             <AvatarGlyph user={user} />
           </button>
         ) : (
-          <div className="flex items-center gap-3">
+          <div data-testid={user ? "sidebar-owner-identity" : undefined} className="flex items-center gap-3">
             <div className="grid size-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-xs font-semibold">
               <AvatarGlyph user={user} />
             </div>
             <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{displayName(user) || t("shellUser")}</div>
-              {user?.phone ? (
-                <div className="truncate text-xs text-muted-foreground">{user.phone}</div>
-              ) : null}
+              {user ? (
+                <>
+                  <bdi className="block truncate text-sm font-medium" title={displayName(user)}>{displayName(user)}</bdi>
+                  <div className="truncate text-xs text-muted-foreground">{t("accountOwner")}</div>
+                  {user.phone ? <div className="truncate text-xs text-muted-foreground">{user.phone}</div> : null}
+                </>
+              ) : accountBlocked ? (
+                <span role="status" className="text-xs text-muted-foreground">{t("accountBlocked")}</span>
+              ) : accountFailed ? (
+                <button type="button" onClick={retryAccount} className="text-start text-xs text-destructive" title={t("accountUnavailable")}>
+                  {t("accountUnavailable")}
+                </button>
+              ) : (
+                <span role="status" className="text-xs text-muted-foreground">{t("accountLoading")}</span>
+              )}
             </div>
           </div>
         )}
@@ -194,6 +215,7 @@ function NavLink({ item, activeKey, collapsed, badgeCount = null, badgeUnavailab
   const active = activeKey === item.key;
   const Icon = item.icon;
   const label = t(item.labelKey);
+  const shortcut = item.key === "sale" ? shortcutKeys("onSale") : item.key === "purchase" ? shortcutKeys("onPurchase") : null;
   // a failed count is not a confirmed zero: label and draw it as unknown,
   // never as "nothing pending" (round-2 finding 1)
   const badgeLabel = badgeUnavailable
@@ -206,7 +228,7 @@ function NavLink({ item, activeKey, collapsed, badgeCount = null, badgeUnavailab
     <Link
       to={item.to}
       search={item.preserveSearch ? true : undefined}
-      title={collapsed ? label : undefined}
+      title={shortcut ? `${label} (${shortcut})` : collapsed ? label : undefined}
       // `title` is a tooltip, not an accessible name: a collapsed icon-only
       // link must carry the label itself, and a badge state must be announced
       // rather than hidden behind an aria-hidden number.

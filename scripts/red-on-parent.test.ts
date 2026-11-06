@@ -2459,6 +2459,7 @@ test("rejects zero", () => {
       ],
     );
     let holder: ReturnType<typeof spawn> | null = null;
+    let holderClosed: Promise<void> | undefined;
     let parentRelaxed = false;
     try {
       const lockPath = join(fixture.cache, `wt-${fixture.base}.lock`);
@@ -2500,6 +2501,10 @@ test("rejects zero", () => {
           ["-e", "process.stdout.write(process.cwd()); setTimeout(() => {}, 20000)"],
           { cwd: lockPath, stdio: ["ignore", "pipe", "ignore"] },
         );
+        const child = holder;
+        holderClosed = new Promise<void>((closed) => {
+          child.once("close", () => closed());
+        });
         await new Promise<void>((held) => {
           const timer = setTimeout(held, 5_000);
           holder?.stdout?.once("data", () => {
@@ -2536,8 +2541,12 @@ test("rejects zero", () => {
       expect(status).toBe(2);
     } finally {
       if (parentRelaxed) chmodSync(fixture.cache, 0o755);
-      holder?.kill();
-      fixture.cleanup();
+      try {
+        if (holder && holder.exitCode === null && holder.signalCode === null) holder.kill();
+        await holderClosed;
+      } finally {
+        fixture.cleanup();
+      }
     }
   }, 60_000);
 
@@ -3978,6 +3987,24 @@ describe("red-on-parent round 24 — a hollow stand-in for a module the change a
       const hollow = hollowModuleSource(source, "scripts/mod.ts");
       expect({ source, ok: hollow.ok }).toEqual({ source, ok: false });
     }
+  });
+
+  test("a local export list and an external re-export name distinct refusal causes", () => {
+    const local = hollowModuleSource(
+      `import { AUTH_REFUSAL } from "@dokan/contracts";\nexport { AUTH_REFUSAL };\n`,
+      "apps/web/src/lib/auth-refusal.ts",
+    );
+    const external = hollowModuleSource(
+      `export { AUTH_REFUSAL } from "@dokan/contracts";\n`,
+      "apps/web/src/lib/auth-refusal.ts",
+    );
+
+    expect(local.ok).toBe(false);
+    expect(external.ok).toBe(false);
+    if (local.ok || external.ok) return;
+    expect(local.refusal).toContain("local export list");
+    expect(local.refusal).not.toContain("re-exports from another module");
+    expect(external.refusal).toContain("re-exports from another module");
   });
 
   test("an enum, a namespace and a local export list are refused", () => {

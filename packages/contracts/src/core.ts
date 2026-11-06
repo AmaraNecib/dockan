@@ -482,10 +482,81 @@ export const expenseSchema = z.object({
   amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
   /** mirror of the input cap so persisted and returned shapes agree */
   note: z.string().max(500).nullable(),
-  /** Algeria-local moment of the expense (editable for backdating) */
+  /** Algeria-local business moment of the expense (editable for backdating) */
   occurredAt: localDateTimeSchema,
+  /** server recording time; legacy rows keep the timestamp even when their actor is unknown */
   createdAt: localDateTimeSchema,
+  /** server-authenticated actor snapshot; null on legacy rows */
+  actorId: idSchema.nullable(),
+  actorName: z.string().nullable(),
 });
+
+export const expenseListItemSchema = expenseSchema.extend({
+  /** original amount plus every signed correction */
+  effectiveAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  correctionCount: z.number().int().min(0),
+});
+
+/** One immutable signed change to an expense's effective amount. */
+export const expenseCorrectionSchema = z.object({
+  id: idSchema,
+  expenseId: idSchema,
+  effectiveAt: localDateTimeSchema,
+  recordedAt: localDateTimeSchema,
+  beforeAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  afterAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  difference: z.number().int().min(-MAX_EXPENSE_AMOUNT).max(MAX_EXPENSE_AMOUNT),
+  actorId: idSchema.nullable(),
+  actorName: z.string().nullable(),
+  reason: z.string().max(500).nullable(),
+  reversesCorrectionId: idSchema.nullable(),
+});
+
+export const expenseCorrectionHistoryEntrySchema = expenseCorrectionSchema.extend({
+  /** the later immutable row that reversed this correction, if any */
+  reversedByCorrectionId: idSchema.nullable(),
+});
+
+export const expenseCorrectionHistorySchema = z.object({
+  original: expenseSchema,
+  effectiveAmount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  corrections: z.array(expenseCorrectionHistoryEntrySchema),
+});
+
+const expenseRefundMomentSchema = localDateTimeSchema.and(z.iso.datetime({ local: true }));
+
+/** Expense cash recovery; negative difference is cash returned, positive compensates it. */
+export const expenseRefundSchema = z.object({
+  id: idSchema,
+  expenseId: idSchema,
+  difference: z.number().int().min(-MAX_EXPENSE_AMOUNT).max(MAX_EXPENSE_AMOUNT),
+  occurredAt: expenseRefundMomentSchema,
+  recordedAt: expenseRefundMomentSchema,
+  actorId: idSchema,
+  actorName: z.string().nullable(),
+  reason: z.string().max(500).nullable(),
+  reversesRefundId: idSchema.nullable(),
+});
+export const expenseRefundHistorySchema = z.object({
+  expense: expenseCorrectionHistorySchema,
+  refundableAmount: z.number().int().min(0).max(MAX_EXPENSE_AMOUNT),
+  refunds: z.array(expenseRefundSchema.extend({ reversedByRefundId: idSchema.nullable() })),
+});
+export const expenseRefundInputSchema = z.object({
+  expenseId: idSchema,
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  occurredAt: expenseRefundMomentSchema,
+  reason: z.string().trim().max(500).optional(),
+  idempotencyKey: idSchema,
+});
+export const expenseRefundUndoInputSchema = z.object({
+  refundId: idSchema,
+  idempotencyKey: idSchema,
+});
+export type ExpenseRefund = z.infer<typeof expenseRefundSchema>;
+export type ExpenseRefundHistory = z.infer<typeof expenseRefundHistorySchema>;
+export type ExpenseRefundInput = z.infer<typeof expenseRefundInputSchema>;
+export type ExpenseRefundUndoInput = z.infer<typeof expenseRefundUndoInputSchema>;
 
 /** Flexible report windows, computed in Algeria local time (ticket 31). */
 export const reportRangePresets = [
@@ -522,7 +593,7 @@ export const expenseCategoryTotalSchema = z.object({
   categoryId: idSchema,
   categoryName: z.string(),
   isOwnerWithdrawal: z.boolean(),
-  total: z.number().int().min(0),
+  total: z.number().int(),
   count: z.number().int().min(0),
 });
 
@@ -537,8 +608,8 @@ export const profitReportOutputSchema = z.object({
   revenue: z.number().int().min(0),
   cogs: z.number().int().min(0),
   grossProfit: z.number().int(),
-  operatingExpenses: z.number().int().min(0),
-  ownerWithdrawals: z.number().int().min(0),
+  operatingExpenses: z.number().int(),
+  ownerWithdrawals: z.number().int(),
   resultAfterExpenses: z.number().int(),
   byCategory: z.array(expenseCategoryTotalSchema),
 });
@@ -1010,8 +1081,16 @@ export const firstTimeSetupOutputSchema = z.object({
 });
 
 export const categoryCreateInputSchema = z.object({
-  name: z.string().trim().min(1),
+  name: z.string().trim().min(1, "CATEGORY_NAME_REQUIRED"),
 });
+
+export const categoryRenameInputSchema = z.object({
+  id: idSchema,
+  name: z.string().trim().min(1, "CATEGORY_NAME_REQUIRED"),
+});
+
+export const categoryDeleteInputSchema = z.object({ id: idSchema });
+export const categoryDeleteOutputSchema = z.object({ deleted: z.boolean(), itemCount: z.number().int().nonnegative() });
 
 export const itemCreateInputSchema = z.object({
   name: z.string().trim().min(1),
@@ -1401,12 +1480,39 @@ export const returnsGetInputSchema = z.object({
   returnId: idSchema,
 });
 
+const invoiceNumberBoundSchema = z.string().trim().min(1).max(40)
+  .regex(/^(?:(?:INV|SUP)-)?\d+$/iu, "expected a number or INV-/SUP-prefixed number")
+  .refine((value) => {
+    const digits = /(?:^|-)\d+$/u.exec(value)?.[0].replace(/^-/, "") ?? "";
+    return Number.isSafeInteger(Number(digits));
+  }, "invoice number sequence must be a safe integer");
+
+function invoiceNumberBoundSequence(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  return Number(/(?:^|-)\d+$/u.exec(value)?.[0].replace(/^-/, ""));
+}
+
 export const invoiceListInputSchema = paginationInputSchema.extend({
+  search: z.string().trim().max(200).optional(),
   kind: invoiceKindSchema.optional(),
   /** UNPAID | PARTIAL | PAID — derived from remainingAmount */
   status: z.enum(["UNPAID", "PARTIAL", "PAID"]).optional(),
   fromDate: localDateSchema.optional(),
   toDate: localDateSchema.optional(),
+  /** Inclusive numeric document sequence, independent of INV/SUP prefix. */
+  fromNumber: invoiceNumberBoundSchema.optional(),
+  toNumber: invoiceNumberBoundSchema.optional(),
+  /** Business-date order; absent preserves the historical newest-first default. */
+  order: z.enum(["OLDEST", "NEWEST"]).optional(),
+}).superRefine((filters, context) => {
+  if (filters.fromDate !== undefined && filters.toDate !== undefined && filters.fromDate > filters.toDate) {
+    context.addIssue({ code: "custom", path: ["toDate"], message: "toDate must be on or after fromDate" });
+  }
+  const from = invoiceNumberBoundSequence(filters.fromNumber);
+  const to = invoiceNumberBoundSequence(filters.toNumber);
+  if (from !== undefined && to !== undefined && from > to) {
+    context.addIssue({ code: "custom", path: ["toNumber"], message: "toNumber must be on or after fromNumber" });
+  }
 });
 
 export const activityListInputSchema = paginationInputSchema;
@@ -1448,6 +1554,21 @@ export const expenseCreateInputSchema = z.object({
   occurredAt: localDateTimeSchema.optional(),
 });
 
+export const expenseCorrectionHistoryInputSchema = z.object({ expenseId: idSchema });
+
+export const expenseCorrectInputSchema = z.object({
+  expenseId: idSchema,
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  reason: z.string().trim().max(500).optional(),
+  /** client identity for a retry; actor and timestamps are server-owned */
+  idempotencyKey: idSchema,
+});
+
+export const expenseCorrectionUndoInputSchema = z.object({
+  correctionId: idSchema,
+  idempotencyKey: idSchema,
+});
+
 export const expenseListInputSchema = paginationInputSchema.extend({
   /** empty/absent = all categories (a record never escapes every filter) */
   categoryIds: z.array(idSchema).max(100).optional(),
@@ -1470,7 +1591,7 @@ export const expenseListInputSchema = paginationInputSchema.extend({
   sortDir: z.enum(["asc", "desc"]).optional(),
 });
 
-export const expenseListOutputSchema = pagedOutputSchema(expenseSchema);
+export const expenseListOutputSchema = pagedOutputSchema(expenseListItemSchema);
 
 // --- purchase intake (ticket 29) -------------------------------------------
 
@@ -1554,12 +1675,22 @@ export const itemHistoryInputSchema = z.object({
  * WHOLE ledger, so the badge survives pagination. `null` means no such
  * correction supersedes the row.
  */
+export const itemHistoryDetailsSchema = z.object({
+  sellingPrice: dinarsSchema.nullable(),
+  saleTotal: dinarsSchema.nullable(),
+  netSaleTotal: dinarsSchema.nullable(),
+  cost: z.object({ unitCost: dinarsSchema.nullable(), total: dinarsSchema.nullable() }).nullable(),
+  documents: z.array(z.object({ id: idSchema, number: z.string() })),
+});
+
 export const itemHistoryMovementSchema = stockMovementWithBalanceSchema.extend({
+  details: itemHistoryDetailsSchema.optional(),
   seq: z.number().int().min(1).optional(),
   supersededBySeq: z.number().int().min(1).nullable().optional(),
 });
 
 export const itemHistoryOutputSchema = z.object({
+  item: z.object({ id: idSchema, name: z.string() }).optional(),
   movements: z.array(itemHistoryMovementSchema),
   /** number of movements in the whole ledger, not just this page */
   total: z.number().int().min(0),
@@ -1675,6 +1806,17 @@ export const backupManualOutputSchema = z.object({
   createdAt: localDateTimeSchema,
 });
 
+export const externalBackupStatusSchema = z.object({
+  destination: z.string().nullable(),
+  lastAttemptAt: localDateTimeSchema.nullable(),
+  lastSuccessAt: localDateTimeSchema.nullable(),
+  lastError: z.enum(["disconnected", "unwritable", "full", "invalid"]).nullable(),
+  lastPath: z.string().nullable(),
+});
+export const externalBackupDestinationInputSchema = z.object({ destination: z.string().trim().min(1).nullable() });
+export const externalBackupDeviceOutputSchema = z.enum(["same", "different", "unknown"]);
+export type ExternalBackupStatus = z.infer<typeof externalBackupStatusSchema>;
+
 // ---------------------------------------------------------------------------
 // Types (z.infer) — the API and web import these, never z directly.
 // ---------------------------------------------------------------------------
@@ -1730,6 +1872,10 @@ export type DashboardSummary = z.infer<typeof dashboardSummaryOutputSchema>;
 export type OnboardingProgress = z.infer<typeof onboardingProgressOutputSchema>;
 export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
 export type Expense = z.infer<typeof expenseSchema>;
+export type ExpenseListItem = z.infer<typeof expenseListItemSchema>;
+export type ExpenseCorrection = z.infer<typeof expenseCorrectionSchema>;
+export type ExpenseCorrectionHistoryEntry = z.infer<typeof expenseCorrectionHistoryEntrySchema>;
+export type ExpenseCorrectionHistory = z.infer<typeof expenseCorrectionHistorySchema>;
 export type ReportRangePreset = z.infer<typeof reportRangePresetSchema>;
 export type ExpenseCategoryTotal = z.infer<typeof expenseCategoryTotalSchema>;
 export type ProfitReport = z.infer<typeof profitReportOutputSchema>;
@@ -1771,5 +1917,8 @@ export type ReturnsListFilters = z.infer<typeof returnsListInputSchema>;
 export type ReturnsReview = z.infer<typeof returnsReviewInputSchema>;
 export type ExpenseCategoryCreate = z.infer<typeof expenseCategoryCreateInputSchema>;
 export type ExpenseCreate = z.infer<typeof expenseCreateInputSchema>;
+export type ExpenseCorrect = z.infer<typeof expenseCorrectInputSchema>;
+export type ExpenseCorrectionHistoryInput = z.infer<typeof expenseCorrectionHistoryInputSchema>;
+export type ExpenseCorrectionUndo = z.infer<typeof expenseCorrectionUndoInputSchema>;
 export type ExpenseListFilters = z.infer<typeof expenseListInputSchema>;
 export type ProfitReportInput = z.infer<typeof profitReportInputSchema>;

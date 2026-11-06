@@ -1,5 +1,6 @@
 import { implement, ORPCError } from "@orpc/server";
-import { AUTH_REFUSAL, dokanContract, normalizeBarcode, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { eq } from "drizzle-orm";
+import { AUTH_REFUSAL, dokanContract, MAX_EXPENSE_AMOUNT, normalizeBarcode, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -11,14 +12,16 @@ import type { AppLogger, LogContext } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
-import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
+import { StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
+import { readItemHistory } from "./item-history";
+import { itemStockProjection, recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
-import { createBackup } from "../lib/backups";
+import { createBackup, createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../lib/backups";
+import { comparePhysicalDevice, type PhysicalDeviceRelation } from "../lib/backup-device";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { resolveVaultCredential } from "../lib/vault/session";
 import { tokenMatches } from "../lib/boot-token";
@@ -73,6 +76,9 @@ type RpcDeps = {
    * itself is untouched, so employee logins can be added later without
    * changing the vault.
    */
+  externalBackupEnabled?: boolean;
+  externalBackupWriteGuard?: () => void;
+  afterManualBackup?: () => void;
   vault?: {
     sessionMatches(token: string | null | undefined): boolean;
     ownerId(): string | undefined;
@@ -272,25 +278,35 @@ async function resolveOpeningNames(
  * supported returns review scrap is up to 200 lines), reading each item's
  * history and writing its cache once — see `recordStockMovements`.
  */
+const rethrowStockPostingRefusal = (error: Error): never => {
+  if (error instanceof StockItemMissingError) {
+    throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+  }
+  if (error instanceof StockLedgerError) {
+    throw new ORPCError("BAD_REQUEST", { message: error.code });
+  }
+  throw error;
+};
+
 async function postStockBatch(tx: StorePort, specs: readonly StockMovementSpec[]) {
   try {
     return await recordStockMovements(tx, specs);
   } catch (error) {
-    if (error instanceof StockItemMissingError) {
-      throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
-    }
-    if (error instanceof StockLedgerError) {
-      throw new ORPCError("BAD_REQUEST", { message: error.code });
-    }
+    if (error instanceof Error) rethrowStockPostingRefusal(error);
     throw error;
   }
 }
 
 /** The length-one case of `postStockBatch`, for the single-movement call sites. */
 async function postStock(tx: StorePort, spec: StockMovementSpec) {
-  const [posted] = await postStockBatch(tx, [spec]);
-  // SAFETY: the batch returns exactly one result per spec, and we passed one
-  return posted!;
+  try {
+    // the single-movement form of the batch: it posts the one movement and
+    // resyncs the item cache, through the same seam and the same rule
+    return await recordStockMovement(tx, spec);
+  } catch (error) {
+    if (error instanceof Error) rethrowStockPostingRefusal(error);
+    throw error;
+  }
 }
 
 /**
@@ -379,6 +395,11 @@ export function createRpcRouter(deps: RpcDeps) {
     return session;
   };
 
+  const expenseActor = async (session: SessionIdentity): Promise<{ id: string; name: string | null }> => {
+    const rows = await deps.db.select({ name: users.name }).from(users).where(eq(users.id, session.user.id)).limit(1);
+    return { id: session.user.id, name: rows[0]?.name ?? null };
+  };
+
   /**
    * #317 — a supplier account holding a row the rule table cannot sign used to
    * reach the owner as an unmapped internal error, and the UI's `serverErrorKey`
@@ -433,14 +454,14 @@ export function createRpcRouter(deps: RpcDeps) {
     }
   };
 
-  /** Like guarded, but passes the procedure input through as well. */
-  const guardedInput = <T, I>(handler: (input: I, context: RpcContext) => Promise<T>) => async ({
+  /** Like guarded, but passes the procedure input and authenticated identity. */
+  const guardedInput = <T, I>(handler: (input: I, context: RpcContext, session: SessionIdentity) => Promise<T>) => async ({
     input,
     context,
   }: { input: I; context: RpcContext }): Promise<T> => {
-    await requireSession(context);
+    const session = await requireSession(context);
     try {
-      return await handler(input, context);
+      return await handler(input, context, session);
     } catch (error) {
       // a thrown non-Error (`throw "x"`) carries no store refusal to translate
       if (error instanceof Error) rethrowStoreRefusal(error);
@@ -588,7 +609,7 @@ export function createRpcRouter(deps: RpcDeps) {
         try {
           return await deps.store.withTransaction(async (tx) => {
             const existing = await tx.listCategories();
-            if (existing.some((c) => c.name === input.name)) {
+            if (existing.some((c) => normalizeTextKey(c.name) === normalizeTextKey(input.name))) {
               throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
             }
             const category = await tx.createCategory({ name: input.name });
@@ -602,6 +623,36 @@ export function createRpcRouter(deps: RpcDeps) {
           throw err;
         }
       }),
+    ),
+    categoriesRename: os.categoriesRename.handler(
+      guardedInput(async (input) => {
+        try {
+          return await deps.store.withTransaction(async (tx) => {
+            const existing = await tx.listCategories();
+            if (!existing.some((category) => category.id === input.id)) {
+              throw new ORPCError("NOT_FOUND", { message: "CATEGORY_NOT_FOUND" });
+            }
+            if (existing.some((category) => category.id !== input.id && normalizeTextKey(category.name) === normalizeTextKey(input.name))) {
+              throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
+            }
+            const category = await tx.renameCategory(input.id, { name: input.name });
+            if (category === undefined) throw new ORPCError("NOT_FOUND", { message: "CATEGORY_NOT_FOUND" });
+            return category;
+          });
+        } catch (err) {
+          if (err instanceof Error && isUniqueViolation(err)) {
+            throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
+          }
+          throw err;
+        }
+      }),
+    ),
+    categoriesDelete: os.categoriesDelete.handler(
+      guardedInput(async ({ id: categoryId }) => deps.store.withTransaction(async (tx) => {
+        const exists = (await tx.listCategories()).some((category) => category.id === categoryId);
+        if (!exists) throw new ORPCError("NOT_FOUND", { message: "CATEGORY_NOT_FOUND" });
+        return tx.deleteCategory(categoryId);
+      })),
     ),
 
     // --- items (ticket 03) ---------------------------------------------------
@@ -829,29 +880,7 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
-    itemsHistory: os.itemsHistory.handler(
-      guardedInput(async (input) => {
-        const item = (await deps.store.getItemsByIds([input.itemId])).get(input.itemId);
-        if (item === undefined) {
-          throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
-        }
-        // `stockAfter` is cumulative, so the whole ledger is projected first;
-        // only the projected rows are sliced. `total` is the full ledger count.
-        const movements = await deps.store.listStockMovements(item.id);
-        const projected = historyWithRemaining(movements);
-        const { limit, offset } = resolvePagination(input);
-        const page = projected.slice(offset, offset + limit);
-        // Precedence is resolved for the page's window only (issue 222). The
-        // index still walks the ledger above the page, so a correction on a
-        // prior page badges its superseded row (issue 215) without re-scanning
-        // those rows for every page row.
-        const superseded = supersededByCorrectionSeq(projected, offset, offset + page.length);
-        const rows = page.map((row, index) => ({ ...row, supersededBySeq: superseded[index] ?? null }));
-        // the last running balance IS stock on hand (same delta sum)
-        const stockOnHand = projected.at(-1)?.stockAfter ?? 0;
-        return { movements: rows, total: movements.length, stockOnHand };
-      }),
-    ),
+    itemsHistory: os.itemsHistory.handler(guardedInput((input) => readItemHistory(deps.store, input))),
 
     // --- parties (issue 120): customers & suppliers share one code path -------
     customersList: os.customersList.handler(guarded(async () => ({ items: await deps.store.listParties("customer") }))),
@@ -1002,8 +1031,13 @@ export function createRpcRouter(deps: RpcDeps) {
           if (target.kind === "CREDIT") {
             credit = input.amount;
           } else if (target.kind === "INVOICE") {
-            // SAFETY: the contract superRefine requires an invoiceId for INVOICE
-            credit = (await payInvoice(target.invoiceId!, input.amount)).credit;
+            const targetInvoiceId = target.invoiceId;
+            if (targetInvoiceId === undefined) {
+              // the contract refuses an INVOICE target with no invoice; the
+              // handler proves it too rather than assuming it
+              throw new ORPCError("BAD_REQUEST", { message: "INVOICE_ID_REQUIRED" });
+            }
+            credit = (await payInvoice(targetInvoiceId, input.amount)).credit;
           } else {
             const outstanding = await tx.listOutstandingPurchaseInvoices(input.supplierId);
             const plan = allocateOldestFirst(outstanding, input.amount);
@@ -1035,7 +1069,6 @@ export function createRpcRouter(deps: RpcDeps) {
           const occurredAt = localDateTime();
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
           const returnNumber = await tx.allocateSupplierReturnNumber();
-          const invoiceLinked = input.invoiceId !== undefined && input.lines !== undefined;
 
           // Snapshot every returned line first so the header amounts and the
           // stock movements are computed from one consistent read.
@@ -1043,41 +1076,49 @@ export function createRpcRouter(deps: RpcDeps) {
           let amount = 0;
           let invoiceRemaining: number | null = null;
           let invoiceId: string | null = null;
+          const linkedInvoiceId = input.invoiceId;
+          const linkedLines = input.lines;
+          const invoiceLinked = linkedInvoiceId !== undefined && linkedLines !== undefined;
           if (invoiceLinked) {
-            // SAFETY: the contract superRefine guarantees both fields here
-            const detail = await tx.getInvoiceDetail(input.invoiceId!);
+            const detail = await tx.getInvoiceDetail(linkedInvoiceId);
             if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
               throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
             }
             const linesById = new Map(detail.lines.map((line) => [line.id, line]));
-            for (const entry of input.lines!) {
+            const resolvedLines = linkedLines.map((entry) => {
               const line = linesById.get(entry.invoiceLineId);
               if (line === undefined) throw new ORPCError("BAD_REQUEST", { message: "LINE_NOT_ON_INVOICE" });
               if (line.itemId === null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_LINE_NOT_RETURNABLE" });
-            }
+              return { entry, line, itemId: line.itemId };
+            });
             // cap: bought minus already returned, per original line
             const already = await tx.returnedByPurchaseLine(detail.id);
             const violation = returnCapViolation(
-              input.lines!,
+              linkedLines,
               detail.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
               already,
             );
             if (violation !== null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
             invoiceId = detail.id;
             invoiceRemaining = detail.remainingAmount;
-            for (const entry of input.lines!) {
-              // SAFETY: every requested line was resolved above
-              const line = linesById.get(entry.invoiceLineId)!;
+            for (const { entry, line, itemId } of resolvedLines) {
               const lineAmount = entry.quantity * line.unitPrice;
-              lines.push({ invoiceLineId: line.id, itemId: line.itemId!, description: line.description, quantity: entry.quantity, unitCost: line.unitPrice, amount: lineAmount });
+              lines.push({ invoiceLineId: line.id, itemId, description: line.description, quantity: entry.quantity, unitCost: line.unitPrice, amount: lineAmount });
               amount += lineAmount;
             }
           } else {
-            // SAFETY: the contract superRefine guarantees the free-standing trio
-            const item = (await tx.getItemsByIds([input.itemId!])).get(input.itemId!);
+            const itemId = input.itemId;
+            const quantity = input.quantity;
+            const freeAmount = input.amount;
+            if (itemId === undefined || quantity === undefined || freeAmount === undefined) {
+              // the contract refuses a return that is neither invoice-linked
+              // nor free-standing; the handler proves it too
+              throw new ORPCError("BAD_REQUEST", { message: "RETURN_SHAPE_INVALID" });
+            }
+            const item = (await tx.getItemsByIds([itemId])).get(itemId);
             if (item === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
-            amount = input.amount!;
-            lines.push({ invoiceLineId: null, itemId: item.id, description: item.name, quantity: input.quantity!, unitCost: item.costPrice, amount });
+            amount = freeAmount;
+            lines.push({ invoiceLineId: null, itemId: item.id, description: item.name, quantity, unitCost: item.costPrice, amount });
           }
 
           const split = supplierReturnSplit(amount, invoiceRemaining);
@@ -1273,8 +1314,13 @@ export function createRpcRouter(deps: RpcDeps) {
               }
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {
-              // SAFETY: the contract superRefine guarantees newSupplierName here
-              const candidates = candidatesForName(row.newSupplierName!);
+              const newSupplierName = row.newSupplierName;
+              if (newSupplierName === undefined) {
+                // the contract refuses a row that names neither an existing
+                // supplier nor a new one; the handler proves it too
+                throw new ORPCError("BAD_REQUEST", { message: "OPENING_BALANCE_ROW_INVALID" });
+              }
+              const candidates = candidatesForName(newSupplierName);
               // #177 round 3 (finding 2) — a retry must stay on the account that
               // already holds the signature. Checking only the entry-count winner
               // can pick a different folded-match that has since gained more
@@ -1304,7 +1350,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 }
                 plan.push({ supplierId: resolved.id, name: resolved.name, direction: row.direction, amount: row.amount });
               } else {
-                const party = await tx.createParty("supplier", { name: row.newSupplierName! });
+                const party = await tx.createParty("supplier", { name: newSupplierName });
                 suppliersByName.set(normalizeTextKey(party.name), [{ id: party.id, name: party.name, entries: 0 }]);
                 plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
               }
@@ -1383,9 +1429,14 @@ export function createRpcRouter(deps: RpcDeps) {
         // resolution is the first thing inside the unit.
         return deps.store.withTransaction(async (tx) => {
         const itemsById = await tx.getItemsByIds(input.lines.map((line) => line.itemId));
-        for (const line of input.lines) {
-          if (!itemsById.has(line.itemId)) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
-        }
+        // resolve every line's item ONCE, here: a line that names an item that
+        // does not exist refuses now, and the rest of the handler never has to
+        // prove the item is still there
+        const pricedLines = input.lines.map((line) => {
+          const item = itemsById.get(line.itemId);
+          if (item === undefined) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+          return { line, item };
+        });
         // identity integrity (issue 120): a picked party must exist AND belong
         // to the invoice's role. Without this a stale picker id (party deleted
         // in another tab) or a wrong-role id would silently land as an orphan
@@ -1405,22 +1456,18 @@ export function createRpcRouter(deps: RpcDeps) {
             (input.discountType !== undefined && input.discountValue !== undefined
               ? { type: input.discountType, value: input.discountValue }
               : undefined);
-          const totals = calculateSaleTotals(
-            input.lines.map((line) => {
-              const item = itemsById.get(line.itemId)!;
-              return {
-                quantity: line.quantity,
-                price: {
-                  defaultUnitPrice: item.sellingPrice,
-                  unitPrice: line.unitPrice,
-                  priceOverride: line.priceOverride,
-                  priceOverrideType: line.priceOverrideType,
-                  priceOverrideValue: line.priceOverrideValue,
-                },
-              };
-            }),
-            discount,
-          );
+          const saleCalculationInputs = pricedLines.map(({ line, item }) => ({
+            quantity: line.quantity,
+            price: {
+              defaultUnitPrice: item.sellingPrice,
+              unitPrice: line.unitPrice,
+              priceOverride: line.priceOverride,
+              priceOverrideType: line.priceOverrideType,
+              priceOverrideValue: line.priceOverrideValue,
+            },
+            source: { line, item },
+          }));
+          const totals = calculateSaleTotals(saleCalculationInputs, discount);
           const paidAmount = input.initialPaid ?? 0;
           if (paidAmount > totals.totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
           const invoiceDate = input.invoiceDate ?? localDate();
@@ -1450,11 +1497,8 @@ export function createRpcRouter(deps: RpcDeps) {
               notes: input.notes ?? null,
             });
             const insertedLines: InvoiceDetail["lines"] = [];
-            for (const [index, line] of input.lines.entries()) {
-              // SAFETY: every itemId was resolved in itemsById at the start of
-              // this unit, and the map is immutable while it runs.
-              const item = itemsById.get(line.itemId)!;
-              const calculated = totals.lines[index]!;
+            for (const calculated of totals.lines) {
+              const { line, item } = calculated.input.source;
               // The seam owns the FIFO snapshot for the SALE, validation, the
               // movement insert and the cache resync; an explicit invoice date
               // bounds the movement time inside it. The line stamps costAtSale
@@ -1508,7 +1552,7 @@ export function createRpcRouter(deps: RpcDeps) {
         }
         // Existing purchase intake behavior: omitted line prices default to the
         // item's cost because purchase prices are the stock cost basis.
-        const totalAmount = input.lines.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? itemsById.get(line.itemId)!.costPrice), 0);
+        const totalAmount = pricedLines.reduce((sum, { line, item }) => sum + line.quantity * (line.unitPrice ?? item.costPrice), 0);
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
         const invoiceDate = input.invoiceDate ?? localDate();
@@ -1533,10 +1577,7 @@ export function createRpcRouter(deps: RpcDeps) {
             notes: input.notes ?? null,
           });
           const insertedLines: InvoiceDetail["lines"] = [];
-          for (const line of input.lines) {
-            // SAFETY: every itemId was resolved in itemsById at the start of
-            // this unit, and the map is immutable while it runs.
-            const item = itemsById.get(line.itemId)!;
+          for (const { line, item } of pricedLines) {
             const unitCost = line.unitPrice ?? item.costPrice;
             // For PURCHASE, the line price is the cost basis feeding ADR-0002.
             const inserted = await tx.insertInvoiceLine({
@@ -2236,7 +2277,7 @@ export function createRpcRouter(deps: RpcDeps) {
         const range = resolveWindow({ preset: input.preset, customFrom: input.customFrom, customTo: input.customTo });
         const [saleLines, expenses, categories] = await Promise.all([
           deps.store.listSaleLinesForProfit(range.from, range.to),
-          deps.store.listExpenseRecords({ from: range.from, to: range.to }),
+          deps.store.listExpenseReportEntries({ from: range.from, to: range.to }),
           deps.store.listExpenseCategories(),
         ]);
         return computeProfitReport({ saleLines, expenses, categories, range });
@@ -2301,10 +2342,11 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     expensesCreate: os.expensesCreate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         // category existence is validated INSIDE the transaction unit, so an
         // FK violation on a race (category vanishing mid-call) surfaces as the
         // translated CATEGORY_NOT_FOUND instead of a raw constraint error
+        const actor = await expenseActor(session);
         return deps.store.withTransaction(async (tx) => {
           const categories = await tx.listExpenseCategories();
           if (!categories.some((category) => category.id === input.categoryId)) {
@@ -2314,10 +2356,164 @@ export function createRpcRouter(deps: RpcDeps) {
             categoryId: input.categoryId,
             amount: input.amount,
             note: input.note ?? null,
-            occurredAt: input.occurredAt ?? localDateTime(),
+            occurredAt: input.occurredAt ?? localDateTime(deps.now?.() ?? new Date()),
+            actorId: actor.id,
+            actorName: actor.name,
           });
           await tx.insertActivity({ type: "EXPENSE_RECORDED", summary: `EXPENSE_RECORDED ${input.amount}`, ref: expense.id });
           return expense;
+        });
+      }),
+    ),
+    expenseRefundHistory: os.expenseRefundHistory.handler(
+      guardedInput(async ({ expenseId }, _context, session) => {
+        const actor = await expenseActor(session);
+        const history = await deps.store.withReadTransaction((tx) => tx.getExpenseRefundHistory(expenseId));
+        if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+        return { ...history, requestActorId: actor.id };
+      }),
+    ),
+    expensesRefund: os.expensesRefund.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        const reason = input.reason?.trim() || null;
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const existing = await tx.findExpenseRefundByIdempotencyKey(input.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (existing.actorId === actor.id && existing.difference === -input.amount &&
+                existing.occurredAt === input.occurredAt && existing.reason === reason && existing.reversesRefundId === null) return existing;
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_KEY_REUSED" });
+          }
+          const history = await tx.getExpenseRefundHistory(input.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+          if (input.amount > history.refundableAmount) throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_EXCEEDS_BALANCE" });
+          return tx.insertExpenseRefund({
+            expenseId: input.expenseId, difference: -input.amount, occurredAt: input.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()),
+            actorId: actor.id, actorName: actor.name, reason, reversesRefundId: null, idempotencyKey: input.idempotencyKey,
+          });
+        });
+      }),
+    ),
+    expensesRefundUndo: os.expensesRefundUndo.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const target = await tx.getExpenseRefund(input.refundId);
+          if (target === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_REFUND_NOT_FOUND" });
+          const existing = await tx.findExpenseRefundByIdempotencyKey(target.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (existing.actorId === actor.id && existing.reversesRefundId === target.id) return existing;
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_KEY_REUSED" });
+          }
+          const history = await tx.getExpenseRefundHistory(target.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+          if (history.refunds.some((refund) => refund.reversesRefundId === target.id)) throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_ALREADY_REVERSED" });
+          const after = history.refundableAmount - target.difference;
+          if (after < 0 || after > history.expense.effectiveAmount) throw new ORPCError("CONFLICT", { message: "EXPENSE_REFUND_EXCEEDS_BALANCE" });
+          return tx.insertExpenseRefund({
+            expenseId: target.expenseId, difference: -target.difference, occurredAt: target.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()), actorId: actor.id, actorName: actor.name,
+            reason: null, reversesRefundId: target.id, idempotencyKey: input.idempotencyKey,
+          });
+        });
+      }),
+    ),
+    expenseCorrectionHistory: os.expenseCorrectionHistory.handler(
+      guardedInput(async ({ expenseId }) => {
+        const history = await deps.store.getExpenseCorrectionHistory(expenseId);
+        if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+        return history;
+      }),
+    ),
+    expensesCorrect: os.expensesCorrect.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        const reason = input.reason?.trim() || null;
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const history = await tx.getExpenseCorrectionHistory(input.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+
+          const existing = await tx.findExpenseCorrectionByIdempotencyKey(input.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (
+              existing.actorId === actor.id &&
+              existing.afterAmount === input.amount &&
+              existing.reason === reason &&
+              existing.reversesCorrectionId === null
+            ) {
+              return existing;
+            }
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED" });
+          }
+          if (history.effectiveAmount === input.amount) {
+            throw new ORPCError("BAD_REQUEST", { message: "EXPENSE_CORRECTION_NO_CHANGE" });
+          }
+
+          const refunds = await tx.getExpenseRefundHistory(input.expenseId);
+          if (refunds !== undefined && input.amount + refunds.refundableAmount - history.effectiveAmount < 0) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_BELOW_REFUNDED" });
+          }
+          return tx.insertExpenseCorrection({
+            expenseId: input.expenseId,
+            effectiveAt: history.original.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()),
+            beforeAmount: history.effectiveAmount,
+            afterAmount: input.amount,
+            difference: input.amount - history.effectiveAmount,
+            actorId: actor.id,
+            actorName: actor.name,
+            reason,
+            reversesCorrectionId: null,
+            idempotencyKey: input.idempotencyKey,
+          });
+        });
+      }),
+    ),
+    expensesCorrectionUndo: os.expensesCorrectionUndo.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        return deps.store.withTransactionImmediate(async (tx) => {
+          const target = await tx.getExpenseCorrection(input.correctionId);
+          if (target === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_CORRECTION_NOT_FOUND" });
+
+          const existing = await tx.findExpenseCorrectionByIdempotencyKey(target.expenseId, input.idempotencyKey);
+          if (existing !== undefined) {
+            if (existing.actorId === actor.id && existing.reversesCorrectionId === target.id) return existing;
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_IDEMPOTENCY_KEY_REUSED" });
+          }
+
+          const history = await tx.getExpenseCorrectionHistory(target.expenseId);
+          if (history === undefined) throw new ORPCError("NOT_FOUND", { message: "EXPENSE_NOT_FOUND" });
+          if (target.reversesCorrectionId !== null) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_NOT_REVERSIBLE" });
+          }
+          if (history.corrections.some((correction) => correction.reversesCorrectionId === target.id)) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_ALREADY_REVERSED" });
+          }
+
+          const difference = -target.difference;
+          const afterAmount = history.effectiveAmount + difference;
+          if (afterAmount < 1 || afterAmount > MAX_EXPENSE_AMOUNT) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_UNDO_OUT_OF_RANGE" });
+          }
+          const refunds = await tx.getExpenseRefundHistory(target.expenseId);
+          if (refunds !== undefined && afterAmount + refunds.refundableAmount - history.effectiveAmount < 0) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CORRECTION_BELOW_REFUNDED" });
+          }
+          return tx.insertExpenseCorrection({
+            expenseId: target.expenseId,
+            effectiveAt: history.original.occurredAt,
+            recordedAt: localDateTime(deps.now?.() ?? new Date()),
+            beforeAmount: history.effectiveAmount,
+            afterAmount,
+            difference,
+            actorId: actor.id,
+            actorName: actor.name,
+            reason: null,
+            reversesCorrectionId: target.id,
+            idempotencyKey: input.idempotencyKey,
+          });
         });
       }),
     ),
@@ -2331,7 +2527,7 @@ export function createRpcRouter(deps: RpcDeps) {
             ? "CURRENT_MONTH"
             : undefined));
         const range = resolveWindow({ preset, customFrom: input.customFrom, customTo: input.customTo, from: input.from, to: input.to });
-        const rows = await deps.store.listExpenseRecords({ categoryIds: input.categoryIds, from: range.from, to: range.to });
+        const rows = await deps.store.listExpenseListItems({ categoryIds: input.categoryIds, from: range.from, to: range.to });
         // sortExpenses owns ordering (a tested pure module), so the page is
         // sliced after the sort; `total` is the filtered, sorted length.
         const sorted = sortExpenses(rows, input.sortBy, input.sortDir);
@@ -2341,6 +2537,18 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
 
     // --- settings (ticket 10: store identity for the invoice header) ----
+    currentOwner: os.currentOwner.handler(async ({ context }) => {
+      const session = await requireSession(context);
+      // Vault credentials resolve the owner ID in memory. Verify the same
+      // persisted provisioning invariant before disclosing the profile.
+      const ownerId = await deps.store.getSetting("adminUserId");
+      if (ownerId !== session.user.id) throw new ORPCError("FORBIDDEN", { message: "FORBIDDEN" });
+      const [owner] = await deps.db.select({ id: users.id, name: users.name, phone: users.phoneNumber })
+        .from(users).where(eq(users.id, session.user.id)).limit(1);
+      if (!owner) throw new ORPCError("FORBIDDEN", { message: "FORBIDDEN" });
+      return { ...owner, role: "owner" as const };
+    }),
+
     settingsGet: os.settingsGet.handler(guarded(async () => deps.store.getSettings())),
     settingsUpdate: os.settingsUpdate.handler(
       guardedInput(async (input) => {
@@ -2376,9 +2584,25 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- UI preferences (issue 97 follow-up) ---------------------------------
     // shell state, not store identity: cheap read/write, no audit entry (the
     // sidebar toggle alone would spam the activity log)
-    preferencesGet: os.preferencesGet.handler(guarded(async () => ({ values: await deps.store.getPreferences() }))),
+    preferencesGet: os.preferencesGet.handler(guarded(async (context) => {
+      const session = await requireSession(context);
+      const stored = await deps.store.getPreferences();
+      // Price mode belongs to the operator, including the vault owner. Never
+      // project another operator's choice into the shared shell preferences.
+      const priceModeKey = `ui.sale.priceMode.${session.user.id}`;
+      const values = Object.fromEntries(Object.entries(stored).filter(([key]) => key !== "ui.sale.priceMode" && !key.startsWith("ui.sale.priceMode.")));
+      if (stored[priceModeKey] !== undefined) values["ui.sale.priceMode"] = stored[priceModeKey];
+      return { values };
+    })),
+
     preferencesSet: os.preferencesSet.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, context) => {
+        if (input.key === "ui.sale.priceMode") {
+          if (input.value !== "AMOUNT" && input.value !== "PERCENTAGE") throw new ORPCError("BAD_REQUEST", { message: "PREFERENCE_NOT_WRITABLE" });
+          const session = await requireSession(context);
+          await deps.store.setPreference(`ui.sale.priceMode.${session.user.id}`, input.value);
+          return { key: input.key, value: input.value };
+        }
         // the completion milestone is derived from shop records, so a client
         // must not be able to set it: setting it would hide the checklist
         // forever with nothing behind it. Only the keys the owner owns pass,
@@ -2400,6 +2624,38 @@ export function createRpcRouter(deps: RpcDeps) {
       // bounded read is the caller's choice, newest-last (chronological)
       guardedInput(async ({ lines }) => deps.logger.tail(lines ?? 100)),
     ),
+    externalBackupStatus: os.externalBackupStatus.handler(
+      guarded(async () => readExternalBackupStatus(deps.config.dataDir)),
+    ),
+    externalBackupDevice: os.externalBackupDevice.handler(
+      guarded(async (): Promise<PhysicalDeviceRelation> => {
+        const destination = readExternalBackupStatus(deps.config.dataDir).destination;
+        return destination === null ? "unknown" : comparePhysicalDevice(deps.config.dataDir, destination);
+      }),
+    ),
+    externalBackupDestinationSet: os.externalBackupDestinationSet.handler(
+      guardedInput(async ({ destination }) => {
+        if (deps.externalBackupWriteGuard === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
+        return setExternalBackupDestination(deps.config.dataDir, destination, deps.externalBackupWriteGuard);
+      }),
+    ),
+    externalBackupRun: os.externalBackupRun.handler(
+      guarded(async () => {
+        if (!deps.externalBackupEnabled) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
+        if (deps.externalBackupWriteGuard === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
+        const local = await createBackup({ store: deps.store, dataDir: deps.config.dataDir });
+        await deps.store.insertActivity({
+          type: "BACKUP_CREATED",
+          summary: `BACKUP_CREATED ${local.path.split(/[\\/]/).pop()}`,
+          ref: local.path,
+        });
+        return createExternalBackup({
+          store: deps.store,
+          dataDir: deps.config.dataDir,
+          writeGuard: deps.externalBackupWriteGuard,
+        });
+      }),
+    ),
     backupManual: os.backupManual.handler(
       guarded(async () => {
         // checkpoint+copy through the store seam; the audit entry lands only
@@ -2410,6 +2666,7 @@ export function createRpcRouter(deps: RpcDeps) {
           summary: `BACKUP_CREATED ${result.path.split(/[\\/]/).pop()}`,
           ref: result.path,
         });
+        deps.afterManualBackup?.();
         return result;
       }),
     ),

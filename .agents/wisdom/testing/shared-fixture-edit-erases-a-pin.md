@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-16 · **Ticket:** 229 · **Area:** apps/web/src/components/parties/supplier-return-panel.test.tsx
 
+Seen in: #229, #408. In #408, the upper-bound case replaced the lower-bound undo refusal in a shared fixture.
+
 Greptile's 4/5 round on the #210 Arabic-Indic PR found two pins in one test file
 that passed against the code they claimed to guard.
 

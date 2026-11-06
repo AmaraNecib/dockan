@@ -32,7 +32,7 @@ type Row = {
 };
 
 /** every request the page made, in order, so apply-then-clear is provable */
-let requests: Array<{ kind?: string; status?: string; limit?: number; offset?: number }> = [];
+let requests: Array<{ search?: string; kind?: string; status?: string; fromDate?: string; toDate?: string; fromNumber?: string; toNumber?: string; order?: "OLDEST" | "NEWEST"; limit?: number; offset?: number }> = [];
 
 const allInvoices: Row[] = [
   { id: "inv-1", invoiceNumber: "INV-0001", kind: "SALE", status: "UNPAID", counterpartyName: "زبون", invoiceDate: "2026-08-01", totalAmount: 1000, remainingAmount: 1000 },
@@ -40,6 +40,7 @@ const allInvoices: Row[] = [
 ];
 /** the seeded rows are restored after every test; the empty-state specs mutate them */
 const seedInvoices: Row[] = [...allInvoices];
+let refreshGate: Promise<void> | undefined;
 
 // stub the whole seam + Link (rendered as a plain anchor) so the page is
 // testable without a network or a router mount, matching returns.test.tsx
@@ -55,16 +56,29 @@ mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesList: {
       // SAFETY: mirror the real tanstack-query utils signature ({ input })
-      queryOptions: ({ input }: { input: { kind?: "SALE" | "PURCHASE"; status?: Status; limit?: number; offset?: number } }) => ({
+      queryOptions: ({ input }: { input: { search?: string; kind?: "SALE" | "PURCHASE"; status?: Status; fromDate?: string; toDate?: string; fromNumber?: string; toNumber?: string; order?: "OLDEST" | "NEWEST"; limit?: number; offset?: number } }) => ({
         queryKey: ["invoicesList", input],
         queryFn: async () => {
           requests.push(input);
-          const items = allInvoices.filter(
+          await refreshGate;
+          const filtered = allInvoices.filter(
             (row) =>
+              (input.search === undefined || row.invoiceNumber.includes(input.search)) &&
               (input.kind === undefined || row.kind === input.kind) &&
-              (input.status === undefined || row.status === input.status),
-          );
-          return { items, total: items.length };
+              (input.status === undefined || row.status === input.status) &&
+              (input.fromDate === undefined || row.invoiceDate >= input.fromDate) &&
+              (input.toDate === undefined || row.invoiceDate <= input.toDate) &&
+              (input.fromNumber === undefined || Number(/(?:^|-)(\d+)$/u.exec(row.invoiceNumber)?.[1] ?? -1) >= Number(/(?:^|-)(\d+)$/u.exec(input.fromNumber)?.[1] ?? input.fromNumber)) &&
+              (input.toNumber === undefined || Number(/(?:^|-)(\d+)$/u.exec(row.invoiceNumber)?.[1] ?? -1) <= Number(/(?:^|-)(\d+)$/u.exec(input.toNumber)?.[1] ?? input.toNumber)),
+          ).sort((a, b) => {
+            if (input.order === undefined) return 0;
+            const direction = input.order === "OLDEST" ? 1 : -1;
+            const date = a.invoiceDate.localeCompare(b.invoiceDate) * direction;
+            return date || (Number(/(?:^|-)(\d+)$/u.exec(a.invoiceNumber)?.[1] ?? 0) - Number(/(?:^|-)(\d+)$/u.exec(b.invoiceNumber)?.[1] ?? 0)) * direction;
+          });
+          const offset = input.offset ?? 0;
+          const items = filtered.slice(offset, offset + (input.limit ?? filtered.length));
+          return { items, total: filtered.length };
         },
       }),
     },
@@ -82,6 +96,7 @@ beforeEach(() => {
   allInvoices.length = 0;
   allInvoices.push(...seedInvoices);
   requests = [];
+  refreshGate = undefined;
 });
 
 afterEach(() => {
@@ -104,7 +119,7 @@ const waitFor = async (predicate: () => boolean) => {
   throw new Error("condition not met within timeout");
 };
 
-async function mountPage() {
+async function mountPage(waitForInitialData = true) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -117,11 +132,13 @@ async function mountPage() {
       </QueryClientProvider>,
     );
   });
-  await waitFor(
-    () =>
-      container.querySelector("[data-testid='invoices-table']") !== null ||
-      container.querySelector("[data-testid='invoices-empty']") !== null,
-  );
+  if (waitForInitialData) {
+    await waitFor(
+      () =>
+        container.querySelector("[data-testid='invoices-table']") !== null ||
+        container.querySelector("[data-testid='invoices-empty']") !== null,
+    );
+  }
   return {
     rows: () => Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='invoice-row']")),
     numbers: () =>
@@ -133,8 +150,90 @@ async function mountPage() {
     emptyPurchaseAction: () => container.querySelector<HTMLElement>("[data-testid='invoices-empty-action-purchase']"),
     kindFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-kind-filter']"),
     statusFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-status-filter']"),
+    loading: () => container.querySelector('[role="status"]'),
+    search: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-search']"),
+    nextPage: () => container.querySelector<HTMLButtonElement>("[data-testid='invoices-pager-next']"),
+    fromDate: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-from-date']"),
+    toDate: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-to-date']"),
+    fromNumber: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-from-number']"),
+    toNumber: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-to-number']"),
+    order: () => container.querySelector<HTMLElement>("[data-testid='invoices-order-filter']"),
+    rangeDetails: () => container.querySelector<HTMLDetailsElement>("[data-testid='invoices-range-details']"),
+    rangeToggle: () => container.querySelector<HTMLElement>("[data-testid='invoices-range-filters-toggle']"),
+    clearFilters: () => container.querySelector<HTMLButtonElement>("[data-testid='invoices-filters-clear']"),
   };
 }
+
+function setNativeValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+describe("InvoicesPage search", () => {
+  it("resets pagination with the debounced query, not on the first keystroke", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(...Array.from({ length: 12 }, (_, index) => ({
+      id: `search-page-${index}`,
+      invoiceNumber: `INV-SEARCH-${String(index).padStart(4, "0")}`,
+      kind: "SALE" as const,
+      status: "UNPAID" as const,
+      counterpartyName: null,
+      invoiceDate: "2026-08-01",
+      totalAmount: 100,
+      remainingAmount: 100,
+    })));
+    const page = await mountPage();
+    await act(async () => page.nextPage()?.click());
+    await waitFor(() => requests.at(-1)?.offset === 10 && page.numbers().length === 2);
+    const beforeSearch = requests.length;
+
+    await act(async () => setNativeValue(page.search()!, "SEARCH-0001"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(requests).toHaveLength(beforeSearch);
+    expect(requests.at(-1)?.offset).toBe(10);
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 125)); });
+    await waitFor(() => requests.at(-1)?.search === "SEARCH-0001");
+    expect(requests).toHaveLength(beforeSearch + 1);
+    expect(requests.at(-1)?.offset).toBe(0);
+    await waitFor(() => page.numbers().join() === "INV-SEARCH-0001");
+  });
+
+  it("debounces and trims search while retaining rows during refresh", async () => {
+    const page = await mountPage();
+    let release: (() => void) | undefined;
+    refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const beforeSearch = requests.length;
+      await act(async () => setNativeValue(page.search()!, "  INV-0002  "));
+      expect(requests).toHaveLength(beforeSearch);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+      await waitFor(() => requests.at(-1)?.search === "INV-0002");
+      expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesLoading"));
+    } finally {
+      await act(async () => release?.());
+      refreshGate = undefined;
+      await waitFor(() => page.numbers().join() === "INV-0002" && page.loading() === null);
+    }
+  });
+
+  it("offers a clear action when search alone has no matches", async () => {
+    const page = await mountPage();
+    const search = page.search()!;
+    await act(async () => setNativeValue(search, "missing-invoice"));
+    await waitFor(() => requests.at(-1)?.search === "missing-invoice" && page.empty() !== null);
+
+    expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
+    expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 2 && page.loading() === null);
+    expect(search.value).toBe("");
+    expect(document.activeElement).toBe(search);
+    expect(requests.at(-1)?.search).toBeUndefined();
+  });
+});
 
 describe("InvoicesPage filters", () => {
   it("sends no filter initially, then narrows by kind and clears it again", async () => {
@@ -142,7 +241,7 @@ describe("InvoicesPage filters", () => {
 
     // unfiltered: both rows, and the first request carries no filter at all
     expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
-    expect(requests[0]).toEqual({ kind: undefined, status: undefined, limit: 10, offset: 0 });
+    expect(requests[0]).toEqual({ kind: undefined, status: undefined, fromDate: undefined, toDate: undefined, fromNumber: undefined, toNumber: undefined, order: undefined, limit: 10, offset: 0 });
 
     // apply: the request narrows and the list follows
     await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterSale"));
@@ -150,11 +249,20 @@ describe("InvoicesPage filters", () => {
     expect(requests.at(-1)?.kind).toBe("SALE");
     expect(page.numbers()).toEqual(["INV-0001"]);
 
-    // clear through the empty-valued "All" option: the parameter must disappear
-    await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterAll"));
-    await waitFor(() => page.numbers().length === 2);
-    expect(requests.at(-1)?.kind).toBeUndefined();
-    expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+    // Returning to a cached key must announce refresh without hiding its rows.
+    let release: (() => void) | undefined;
+    refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterAll"));
+      await waitFor(() => page.numbers().length === 2);
+      expect(requests.at(-1)?.kind).toBeUndefined();
+      expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+      expect(page.loading()?.getAttribute("aria-label")).toBe(i18n.t("invoicesLoading"));
+    } finally {
+      await act(async () => release?.());
+      refreshGate = undefined;
+    }
+    await waitFor(() => page.loading() === null);
   });
 
   it("narrows by payment status and clears it again", async () => {
@@ -168,6 +276,98 @@ describe("InvoicesPage filters", () => {
     await chooseOption(page.statusFilter()!, i18n.t("invoicesStatusAll"));
     await waitFor(() => page.numbers().length === 2);
     expect(requests.at(-1)?.status).toBeUndefined();
+  });
+});
+
+describe("InvoicesPage range filters and ordering (#406)", () => {
+  it("composes date/number bounds with existing filters and resets paging on each change", async () => {
+    allInvoices.push(...Array.from({ length: 10 }, (_, index) => ({
+      id: `old-page-${index}`, invoiceNumber: `INV-${String(index + 10).padStart(4, "0")}`, kind: "SALE" as const, status: "UNPAID" as const,
+      counterpartyName: null, invoiceDate: "2026-07-01", totalAmount: 100, remainingAmount: 100,
+    })));
+    const page = await mountPage();
+    expect(page.rangeDetails()?.open).toBe(false);
+    expect(page.rangeToggle()?.textContent).toBe(i18n.t("invoicesRangeFilters"));
+    await act(async () => page.rangeToggle()?.click());
+    expect(page.rangeDetails()?.open).toBe(true);
+    const advanceToSecondPage = async () => {
+      await act(async () => page.nextPage()?.click());
+      await waitFor(() => requests.at(-1)?.offset === 10);
+    };
+    await advanceToSecondPage();
+    await act(async () => setNativeValue(page.fromDate()!, "2026-07-01"));
+    await waitFor(() => requests.at(-1)?.fromDate === "2026-07-01");
+    expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
+    await act(async () => setNativeValue(page.toDate()!, "2026-08-02"));
+    await waitFor(() => requests.at(-1)?.toDate === "2026-08-02");
+    expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
+    await act(async () => setNativeValue(page.fromNumber()!, "1"));
+    await waitFor(() => requests.at(-1)?.fromNumber === "1");
+    expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
+    await act(async () => setNativeValue(page.toNumber()!, "SUP-120"));
+    await waitFor(() => requests.at(-1)?.toNumber === "SUP-120");
+    expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
+    await act(async () => chooseOption(page.order()!, i18n.t("invoicesOrderOldest")));
+    await waitFor(() => requests.at(-1)?.order === "OLDEST");
+    expect(requests.at(-1)?.offset).toBe(0);
+    expect(requests.at(-1)).toMatchObject({ fromDate: "2026-07-01", toDate: "2026-08-02", fromNumber: "1", toNumber: "SUP-120", order: "OLDEST", offset: 0 });
+    expect(page.numbers()).toEqual(["INV-0010", "INV-0011", "INV-0012", "INV-0013", "INV-0014", "INV-0015", "INV-0016", "INV-0017", "INV-0018", "INV-0019"]);
+  });
+
+  it("rejects malformed and reversed number bounds without querying them", async () => {
+    const page = await mountPage();
+    const requestCount = requests.length;
+    await act(async () => setNativeValue(page.fromNumber()!, "INV-LEGACY"));
+    await waitFor(() => document.querySelector("[data-testid='invoices-range-error']") !== null);
+    expect(page.fromNumber()?.getAttribute("aria-invalid")).toBe("true");
+    expect(requests).toHaveLength(requestCount);
+    await act(async () => setNativeValue(page.fromNumber()!, "120"));
+    await act(async () => setNativeValue(page.toNumber()!, "111"));
+    await waitFor(() => page.toNumber()?.getAttribute("aria-invalid") === "true");
+    expect(requests).toHaveLength(requestCount + 1);
+  });
+
+  it.each(["fromNumber", "toNumber"] as const)("rejects an overlong %s locally and accepts the 40-character boundary", async (field) => {
+    const page = await mountPage();
+    await act(async () => page.rangeToggle()?.click());
+    const input = page[field]()!;
+    const requestCount = requests.length;
+    const oversized = `INV-${"0".repeat(36)}1`;
+    await act(async () => setNativeValue(input, oversized));
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(document.querySelector("[data-testid='invoices-range-error']")?.textContent).toBe(i18n.t("invoicesNumberRangeInvalid"));
+    expect(requests).toHaveLength(requestCount);
+    expect(document.querySelector("[data-testid='invoices-error']")).toBeNull();
+
+    const accepted = `INV-${"0".repeat(35)}1`;
+    await act(async () => setNativeValue(input, ` ${accepted} `));
+    await waitFor(() => requests.at(-1)?.[field] === accepted);
+    expect(input.getAttribute("aria-invalid")).toBe("false");
+    expect(document.querySelector("[data-testid='invoices-range-error']")).toBeNull();
+    expect(input.maxLength).toBe(40);
+  });
+
+  it("shows a reversed-date error without issuing an invalid query and clears to defaults", async () => {
+    const page = await mountPage();
+    const requestCount = requests.length;
+    await act(async () => setNativeValue(page.fromDate()!, "2026-08-02"));
+    await act(async () => setNativeValue(page.toDate()!, "2026-08-01"));
+    await waitFor(() => document.querySelector("[data-testid='invoices-range-error']") !== null);
+    expect(requests).toHaveLength(requestCount + 1);
+    expect(requests.at(-1)?.toDate).toBeUndefined();
+    await act(async () => page.clearFilters()?.click());
+    await waitFor(() => requests.at(-1)?.fromDate === undefined && requests.at(-1)?.offset === 0);
+    expect(requests.at(-1)).toMatchObject({ kind: undefined, status: undefined, fromDate: undefined, toDate: undefined, fromNumber: undefined, toNumber: undefined, order: undefined, offset: 0 });
+    expect(page.fromDate()?.value).toBe("");
+    expect(page.fromNumber()?.value).toBe("");
   });
 });
 
@@ -260,5 +460,40 @@ describe("InvoicesPage empty states (issue #96)", () => {
     // status is what narrowed the view to nothing, even though kind is set too:
     // focus must not go to a control that did not empty it
     expect(focusedTestId()).toBe("invoices-status-filter");
+  });
+
+  it("reopens range details and focuses the exact input after clearing an empty range", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(seedInvoices[0]!);
+    const page = await mountPage();
+
+    await act(async () => page.rangeToggle()?.click());
+    await act(async () => setNativeValue(page.toNumber()!, "0"));
+    await waitFor(() => page.empty() !== null);
+    expect(requests.at(-1)?.toNumber).toBe("0");
+
+    await act(async () => page.rangeToggle()?.click());
+    expect(page.rangeDetails()?.open).toBe(false);
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 1);
+
+    expect(page.rangeDetails()?.open).toBe(true);
+    expect(document.activeElement).toBe(page.toNumber());
+  });
+
+  it("returns focus to order when order changed last in an empty range result", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(seedInvoices[0]!);
+    const page = await mountPage();
+
+    await act(async () => page.rangeToggle()?.click());
+    await act(async () => setNativeValue(page.fromNumber()!, "9999"));
+    await waitFor(() => page.empty() !== null);
+    await act(async () => chooseOption(page.order()!, i18n.t("invoicesOrderOldest")));
+    await waitFor(() => requests.at(-1)?.order === "OLDEST" && page.empty() !== null);
+
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 1);
+    expect(document.activeElement).toBe(page.order());
   });
 });

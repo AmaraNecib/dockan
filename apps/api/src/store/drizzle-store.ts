@@ -10,6 +10,11 @@ import type {
   DebtSummary,
   Expense,
   ExpenseCategory,
+  ExpenseCorrection,
+  ExpenseCorrectionHistory,
+  ExpenseRefund,
+  ExpenseRefundHistory,
+  ExpenseListItem,
   Invoice,
   InvoiceDetail,
   InvoiceLine,
@@ -41,17 +46,17 @@ import type {
   SupplierEntryKind,
   SupplierReturnRecord,
 } from "@dokan/contracts";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
+import { expenseRefundSchema, MAX_EXPENSE_AMOUNT, arabicIncludes, foldArabic, ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SnapshotPersistenceError } from "../db/encrypted-connection";
 import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
-import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
+import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberBoundSequence, invoiceNumberFor, invoiceNumberPrefixFor, invoiceSequenceForRange, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersion } from "../lib/schema-version";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
+import type { DashboardAggregates, ExpenseReportEntry, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, StoreReadPort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
 import { sameParty, trimSql } from "./trim-chars";
 
@@ -373,6 +378,21 @@ const expenseCols = {
   note: expenses.note,
   occurredAt: expenses.occurredAt,
   createdAt: expenses.createdAt,
+  actorId: expenses.actorId,
+  actorName: expenses.actorName,
+};
+const expenseCorrectionCols = {
+  id: expenseCorrections.id,
+  expenseId: expenseCorrections.expenseId,
+  effectiveAt: expenseCorrections.effectiveAt,
+  recordedAt: expenseCorrections.recordedAt,
+  beforeAmount: expenseCorrections.beforeAmount,
+  afterAmount: expenseCorrections.afterAmount,
+  difference: expenseCorrections.difference,
+  actorId: expenseCorrections.actorId,
+  actorName: expenseCorrections.actorName,
+  reason: expenseCorrections.reason,
+  reversesCorrectionId: expenseCorrections.reversesCorrectionId,
 };
 const movementCols = {
   id: stockMovements.id,
@@ -497,7 +517,22 @@ const toReturnLine = (r: typeof returnLines.$inferSelect): ReturnDetail["lines"]
 const toExpenseCategory = (r: typeof expenseCategories.$inferSelect): ExpenseCategory =>
   ({ id: r.id, name: r.name, isOwnerWithdrawal: r.isOwnerWithdrawal === 1, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies ExpenseCategory;
 const toExpense = (r: typeof expenses.$inferSelect): Expense =>
-  ({ id: r.id, categoryId: r.categoryId, amount: r.amount, note: r.note, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies Expense;
+  ({ id: r.id, categoryId: r.categoryId, amount: r.amount, note: r.note, occurredAt: r.occurredAt, createdAt: r.createdAt, actorId: r.actorId, actorName: r.actorName }) satisfies Expense;
+type ExpenseCorrectionRow = Omit<typeof expenseCorrections.$inferSelect, "idempotencyKey">;
+const toExpenseCorrection = (row: ExpenseCorrectionRow): ExpenseCorrection =>
+  ({
+    id: row.id,
+    expenseId: row.expenseId,
+    effectiveAt: row.effectiveAt,
+    recordedAt: row.recordedAt,
+    beforeAmount: row.beforeAmount,
+    afterAmount: row.afterAmount,
+    difference: row.difference,
+    actorId: row.actorId,
+    actorName: row.actorName,
+    reason: row.reason,
+    reversesCorrectionId: row.reversesCorrectionId,
+  }) satisfies ExpenseCorrection;
 const toStockLink = (r: typeof stockLinks.$inferSelect): StockLink =>
   ({ id: r.id, invoiceId: r.invoiceId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
 
@@ -811,6 +846,8 @@ type DebtSummaryRow = {
 const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "setup",
   "createCategory",
+  "renameCategory",
+  "deleteCategory",
   "createItem",
   "updateItem",
   "setItemStockAndCost",
@@ -818,6 +855,8 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "insertStockLink",
   "createExpenseCategory",
   "insertExpense",
+  "insertExpenseCorrection",
+  "insertExpenseRefund",
   "createParty",
   "updateParty",
   "deleteParty",
@@ -854,6 +893,10 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
  * speaks StorePort (ADR-0003). A postgres adapter replaces this file, not
  * anything above it.
  */
+function requireExpenseActorPair(input: { actorId?: string | null; actorName?: string | null }): void {
+  if (((input.actorId ?? null) === null) !== ((input.actorName ?? null) === null)) throw new Error("expense actor fields must be paired");
+}
+
 export function createDrizzleStore(conn: Connection, logger?: StoreLogger): StorePort {
   const { db } = conn;
 
@@ -911,47 +954,54 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // SAFETY: same key set and same values; no wrapper is applied
     Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value])) as StorePort;
 
+  let immediateTransaction = false;
+
   /** Shared BEGIN/COMMIT/ROLLBACK body for deferred and write-first units.
    * immediate=true uses BEGIN IMMEDIATE, which takes the write lock BEFORE the
    * first read — see withTransactionImmediate's comment for why money paths
    * need it (no SQLITE_BUSY_SNAPSHOT on read-to-write upgrade). */
-  const runTransaction = <T>(immediate: boolean, fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+  const runTransaction = <T>(immediate: boolean, fn: (tx: StorePort) => Promise<T>, readOnly = false): Promise<T> => {
     // serialized against every other store call; the unit keeps the queue
     // for its whole run so no second BEGIN can appear mid-transaction. The
     // callback receives an unqueued store (directSeed) so its internal calls
     // never deadlock, while every EXTERNAL operation queues behind the unit
     // and can never land inside this transaction (greptile P1).
     return runSerialized(async () => {
-      const tx = directSeed(store);
-      conn.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
-      // set the flag only after BEGIN succeeded: a failed BEGIN must never
-      // leave persistence permanently disabled, and the catch below must only
-      // run with a real open transaction
-      conn.inTransaction = true;
-      let committed = false;
+      const queryOnly = readOnly ? conn.raw.query<{ query_only: number }, []>("PRAGMA query_only").get()?.query_only ?? 0 : 0;
+      if (readOnly) conn.raw.exec("PRAGMA query_only = ON");
       try {
-        const result = await fn(tx);
-        conn.raw.exec("COMMIT");
-        committed = true;
-        // the unit committed: vault mode must persist the image before the
-        // caller sees the result (a crash after a money response must not
-        // lose the money); the file-backed connection ignores this seam
-        conn.inTransaction = false;
-        conn.markDirty();
-        await persistOrFail();
-        return result;
-      } catch (err) {
-        conn.inTransaction = false;
-        // only a unit that never committed may be rolled back; after COMMIT a
-        // failed snapshot write is fail-stop (never reported as a failed call)
-        if (!committed) {
-          try {
-            conn.raw.exec("ROLLBACK");
-          } catch {
-            // a failed BEGIN leaves no transaction to roll back
+        const tx = directSeed(store);
+        conn.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
+        // Set only after BEGIN succeeds; a failed BEGIN opened no transaction.
+        conn.inTransaction = true;
+        immediateTransaction = immediate;
+        let committed = false;
+        try {
+          const result = await fn(tx);
+          conn.raw.exec("COMMIT");
+          committed = true;
+          conn.inTransaction = false;
+          // Write units remain durable before success; read snapshots never dirty it.
+          if (!readOnly) {
+            conn.markDirty();
+            await persistOrFail();
           }
+          return result;
+        } catch (err) {
+          conn.inTransaction = false;
+          // A committed write must never roll back after persistence fails.
+          if (!committed) {
+            try {
+              conn.raw.exec("ROLLBACK");
+            } catch {
+              // Keep the original failure if rollback also fails.
+            }
+          }
+          throw err;
         }
-        throw err;
+      } finally {
+        immediateTransaction = false;
+        if (readOnly && queryOnly === 0) conn.raw.exec("PRAGMA query_only = OFF");
       }
     });
   };
@@ -960,9 +1010,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // SAFETY: a port object exposes only documented members
     const entries = Object.entries(raw) as Array<[keyof StorePort, unknown]>;
     const wrapEntry = ([key, value]: readonly [keyof StorePort, unknown]): readonly [string, StorePort[keyof StorePort]] => {
-      if (key === "withTransaction") {
-        // SAFETY: withTransaction keeps its own serialization; no wrapper needed
-        return [key, value as StorePort["withTransaction"]];
+      if (key === "withTransaction" || key === "withReadTransaction") {
+        // SAFETY: both transaction methods keep their own serialization.
+        return [key, value as StorePort[typeof key]];
       }
       if (key === "withTransactionImmediate") {
         // SAFETY: same serialization contract as withTransaction; no wrapper needed
@@ -1040,6 +1090,33 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SQLite treats NULLs as distinct in a unique index, so email-less owner
       // rows do not collide while a repeated non-null email is refused.
       if (upgraded) conn.raw.exec("CREATE UNIQUE INDEX IF NOT EXISTS user_email_unique ON user(email)");
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      try {
+        conn.raw.exec("ROLLBACK");
+      } catch {
+        /* the unit never opened a write */
+      }
+      throw error;
+    }
+  };
+
+  /**
+   * Issue 408: snapshot the authenticated actor on new expenses. Existing rows
+   * stay null; setup must not guess who recorded them from unrelated activity.
+   */
+  const ensureExpenseActorColumns = (): void => {
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }.
+      const rows = conn.raw.query("PRAGMA table_info(expenses)").all() as Array<{ name: string }>;
+      if (rows.length === 0) {
+        conn.raw.exec("COMMIT"); // fresh database: SCHEMA_DDL creates both columns
+        return;
+      }
+      const names = new Set(rows.map((row) => row.name));
+      if (!names.has("actor_id")) conn.raw.exec("ALTER TABLE expenses ADD COLUMN actor_id TEXT");
+      if (!names.has("actor_name")) conn.raw.exec("ALTER TABLE expenses ADD COLUMN actor_name TEXT");
       conn.raw.exec("COMMIT");
     } catch (error) {
       try {
@@ -1381,6 +1458,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     assertSchemaVersionSupported(conn.raw);
     rebuildLegacyAuthTables();
     ensureUserAuthColumns();
+    ensureExpenseActorColumns();
     ensureItemsBarcodeColumn();
     ensureStockMovementsReturnMarkColumn();
     ensureSupplierAdjustmentDirectionColumn();
@@ -1705,6 +1783,55 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       .run();
   };
 
+  const readExpenseCorrection = async (correctionId: string): Promise<ExpenseCorrection | undefined> => {
+    const rows = await db.select(expenseCorrectionCols).from(expenseCorrections).where(eq(expenseCorrections.id, correctionId)).limit(1);
+    const row = rows[0];
+    return row === undefined ? undefined : toExpenseCorrection(row);
+  };
+
+  const readExpenseCorrectionHistory = async (expenseId: string): Promise<ExpenseCorrectionHistory | undefined> => {
+    const originals = await db.select(expenseCols).from(expenses).where(eq(expenses.id, expenseId)).limit(1);
+    const originalRow = originals[0];
+    if (originalRow === undefined) return undefined;
+
+    const storedCorrections = await db
+      .select(expenseCorrectionCols)
+      .from(expenseCorrections)
+      .where(eq(expenseCorrections.expenseId, expenseId))
+      .orderBy(sql`expense_corrections.rowid ASC`);
+    const corrections = storedCorrections.map(toExpenseCorrection);
+    const reversedBy = new Map(
+      corrections.flatMap((correction) =>
+        correction.reversesCorrectionId === null ? [] : [[correction.reversesCorrectionId, correction.id] as const],
+      ),
+    );
+    return {
+      original: toExpense(originalRow),
+      effectiveAmount: originalRow.amount + corrections.reduce((sum, correction) => sum + correction.difference, 0),
+      corrections: corrections.map((correction) => ({
+        ...correction,
+        reversedByCorrectionId: reversedBy.get(correction.id) ?? null,
+      })),
+    } satisfies ExpenseCorrectionHistory;
+  };
+
+  const readExpenseRefunds = async (expenseId: string) => {
+    const rows = await db.select().from(expenseRefunds).where(eq(expenseRefunds.expenseId, expenseId)).orderBy(sql`expense_refunds.rowid ASC`);
+    return rows.map(({ idempotencyKey: _key, ...refund }) => refund);
+  };
+
+  const readExpenseRefundHistory = async (expenseId: string): Promise<ExpenseRefundHistory | undefined> => {
+    const expense = await readExpenseCorrectionHistory(expenseId);
+    if (expense === undefined) return undefined;
+    const refunds = await readExpenseRefunds(expenseId);
+    const reversedBy = new Map(refunds.flatMap((refund) => refund.reversesRefundId === null ? [] : [[refund.reversesRefundId, refund.id] as const]));
+    return {
+      expense,
+      refundableAmount: expense.effectiveAmount + refunds.reduce((sum, refund) => sum + refund.difference, 0),
+      refunds: refunds.map((refund) => ({ ...refund, reversedByRefundId: reversedBy.get(refund.id) ?? null })),
+    };
+  };
+
   const store: StorePort = {
     setup,
 
@@ -1713,8 +1840,31 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return db.select(categoryCols).from(categories).orderBy(categories.name);
     },
     async createCategory(input) {
-      const row = firstRowOf(await db.insert(categories).values({ id: id(), name: input.name, createdAt: now(), updatedAt: now() }).returning());
+      const name = input.name.trim();
+      if (name.length === 0) throw new Error("CATEGORY_NAME_REQUIRED");
+      const key = normalizeTextKey(name);
+      if ((await this.listCategories()).some((category) => normalizeTextKey(category.name) === key)) {
+        throw new Error("CATEGORY_EXISTS");
+      }
+      const row = firstRowOf(await db.insert(categories).values({ id: id(), name, createdAt: now(), updatedAt: now() }).returning());
       return toCategory(row);
+    },
+    async renameCategory(categoryId, input) {
+      const name = input.name.trim();
+      if (name.length === 0) throw new Error("CATEGORY_NAME_REQUIRED");
+      const key = normalizeTextKey(name);
+      if ((await this.listCategories()).some((category) => category.id !== categoryId && normalizeTextKey(category.name) === key)) {
+        throw new Error("CATEGORY_EXISTS");
+      }
+      const rows = await db.update(categories).set({ name, updatedAt: now() }).where(eq(categories.id, categoryId)).returning(categoryCols);
+      return rows[0] === undefined ? undefined : toCategory(rows[0]);
+    },
+    async deleteCategory(categoryId) {
+      const rows = await db.delete(categories)
+        .where(and(eq(categories.id, categoryId), sql`NOT EXISTS (SELECT 1 FROM items WHERE items.category_id = ${categories.id})`))
+        .returning({ id: categories.id });
+      if (rows.length > 0) return { deleted: true, itemCount: 0 };
+      return { deleted: false, itemCount: await db.$count(items, eq(items.categoryId, categoryId)) };
     },
 
     // --- items ---------------------------------------------------------------
@@ -1830,6 +1980,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .orderBy(sql`rowid`);
       return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
     },
+    async listItemHistoryLines(itemId) {
+      const rows = await db.select({ line: invoiceLines, number: invoices.invoiceNumber, kind: invoices.kind })
+        .from(invoiceLines).innerJoin(invoices, eq(invoices.id, invoiceLines.invoiceId))
+        .where(eq(invoiceLines.itemId, itemId));
+      return rows.map((row) => ({ ...toInvoiceLine(row.line), invoiceNumber: row.number, invoiceKind: row.kind }));
+    },
     async countStockMovements(itemId) {
       return db.$count(stockMovements, eq(stockMovements.itemId, itemId));
     },
@@ -1878,10 +2034,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return toExpenseCategory(row);
     },
     async insertExpense(input) {
+      requireExpenseActorPair(input);
       const row = firstRowOf(
         await db
           .insert(expenses)
-          .values({ id: id(), categoryId: input.categoryId, amount: input.amount, note: input.note ?? null, occurredAt: input.occurredAt, createdAt: now() })
+          .values({
+            id: id(),
+            categoryId: input.categoryId,
+            amount: input.amount,
+            note: input.note ?? null,
+            occurredAt: input.occurredAt,
+            createdAt: now(),
+            actorId: input.actorId ?? null,
+            actorName: input.actorName ?? null,
+          })
           .returning(),
       );
       return toExpense(row);
@@ -1896,6 +2062,152 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const where = conds.length ? and(...conds) : undefined;
       const rows = await db.select(expenseCols).from(expenses).where(where);
       return rows.map((row) => toExpense(row));
+    },
+    async listExpenseListItems(filters) {
+      const conds: SQL[] = [];
+      if (filters.categoryIds !== undefined && filters.categoryIds.length > 0) {
+        conds.push(inArray(expenses.categoryId, filters.categoryIds));
+      }
+      if (filters.from !== undefined) conds.push(sql`${expenses.occurredAt} >= ${filters.from}`);
+      if (filters.to !== undefined) conds.push(sql`${expenses.occurredAt} <= ${filters.to}`);
+      const where = conds.length ? and(...conds) : undefined;
+      const correctionTotals = db
+        .select({
+          expenseId: expenseCorrections.expenseId,
+          delta: sql<number>`COALESCE(SUM(${expenseCorrections.difference}), 0)`.as("delta"),
+          correctionCount: sql<number>`COUNT(*)`.as("correction_count"),
+        })
+        .from(expenseCorrections)
+        .groupBy(expenseCorrections.expenseId)
+        .as("expense_correction_totals");
+      const rows = await db
+        .select({
+          ...expenseCols,
+          effectiveAmount: sql<number>`${expenses.amount} + COALESCE(${correctionTotals.delta}, 0)`,
+          correctionCount: sql<number>`COALESCE(${correctionTotals.correctionCount}, 0)`,
+        })
+        .from(expenses)
+        .leftJoin(correctionTotals, eq(correctionTotals.expenseId, expenses.id))
+        .where(where);
+      return rows.map((row) => ({ ...toExpense(row), effectiveAmount: row.effectiveAmount, correctionCount: row.correctionCount }) satisfies ExpenseListItem);
+    },
+    async getExpenseCorrectionHistory(expenseId) {
+      return readExpenseCorrectionHistory(expenseId);
+    },
+    async getExpenseCorrection(correctionId) {
+      return readExpenseCorrection(correctionId);
+    },
+    async findExpenseCorrectionByIdempotencyKey(expenseId, idempotencyKey) {
+      const rows = await db
+        .select(expenseCorrectionCols)
+        .from(expenseCorrections)
+        .where(and(eq(expenseCorrections.expenseId, expenseId), eq(expenseCorrections.idempotencyKey, idempotencyKey)))
+        .limit(1);
+      const row = rows[0];
+      return row === undefined ? undefined : toExpenseCorrection(row);
+    },
+    async insertExpenseCorrection(input) {
+      if (!conn.inTransaction || !immediateTransaction) throw new Error("expense correction writes require an immediate transaction");
+      requireExpenseActorPair(input);
+      if (
+        !Number.isSafeInteger(input.beforeAmount) ||
+        !Number.isSafeInteger(input.afterAmount) ||
+        input.beforeAmount < 1 ||
+        input.afterAmount < 1 ||
+        input.beforeAmount > MAX_EXPENSE_AMOUNT ||
+        input.afterAmount > MAX_EXPENSE_AMOUNT ||
+        input.difference === 0 ||
+        input.difference !== input.afterAmount - input.beforeAmount
+      ) {
+        throw new Error("invalid expense correction amount invariant");
+      }
+      const history = await readExpenseCorrectionHistory(input.expenseId);
+      if (history === undefined) throw new Error("expense correction references a missing expense");
+      if (input.beforeAmount !== history.effectiveAmount || input.effectiveAt !== history.original.occurredAt) {
+        throw new Error("expense correction does not match the current expense state");
+      }
+      const refunds = await readExpenseRefunds(input.expenseId);
+      if (input.afterAmount + refunds.reduce((sum, refund) => sum + refund.difference, 0) < 0) {
+        throw new Error("EXPENSE_CORRECTION_BELOW_REFUNDED");
+      }
+      if (input.reversesCorrectionId !== null) {
+        const target = await readExpenseCorrection(input.reversesCorrectionId);
+        const alreadyReversed = history.corrections.some((entry) => entry.reversesCorrectionId === input.reversesCorrectionId);
+        if (
+          target === undefined ||
+          target.expenseId !== input.expenseId ||
+          target.reversesCorrectionId !== null ||
+          alreadyReversed ||
+          input.difference !== -target.difference
+        ) {
+          throw new Error("invalid expense correction reversal link");
+        }
+      }
+      const row = firstRowOf(
+        await db
+          .insert(expenseCorrections)
+          .values({ id: id(), ...input })
+          .returning(),
+      );
+      return toExpenseCorrection(row);
+    },
+    async getExpenseRefundHistory(expenseId) {
+      return readExpenseRefundHistory(expenseId);
+    },
+    async getExpenseRefund(refundId) {
+      const row = (await db.select().from(expenseRefunds).where(eq(expenseRefunds.id, refundId)).limit(1))[0];
+      if (row === undefined) return undefined;
+      const { idempotencyKey: _key, ...refund } = row;
+      return refund;
+    },
+    async findExpenseRefundByIdempotencyKey(expenseId, key) {
+      const row = (await db.select().from(expenseRefunds).where(and(eq(expenseRefunds.expenseId, expenseId), eq(expenseRefunds.idempotencyKey, key))).limit(1))[0];
+      if (row === undefined) return undefined;
+      const { idempotencyKey: _key, ...refund } = row;
+      return refund;
+    },
+    async insertExpenseRefund(input) {
+      if (!conn.inTransaction || !immediateTransaction) throw new Error("expense refund writes require an immediate transaction");
+      expenseRefundSchema.omit({ id: true }).parse(input);
+      if (!Number.isSafeInteger(input.difference) || input.difference === 0 || Math.abs(input.difference) > MAX_EXPENSE_AMOUNT ||
+          !input.actorId) throw new Error("invalid expense refund invariant");
+      const history = await readExpenseRefundHistory(input.expenseId);
+      if (history === undefined) throw new Error("expense refund references a missing expense");
+      const after = history.refundableAmount + input.difference;
+      if (after < 0 || after > history.expense.effectiveAmount) throw new Error("EXPENSE_REFUND_EXCEEDS_BALANCE");
+      if (input.reversesRefundId === null) {
+        if (input.difference > 0) throw new Error("invalid expense refund sign");
+      } else {
+        const target = history.refunds.find((refund) => refund.id === input.reversesRefundId);
+        if (target === undefined || target.reversedByRefundId !== null || input.difference !== -target.difference ||
+            input.occurredAt !== target.occurredAt) throw new Error("invalid expense refund reversal link");
+      }
+      const row = firstRowOf(await db.insert(expenseRefunds).values({ id: id(), ...input }).returning());
+      const { idempotencyKey: _key, ...refund } = row;
+      return refund satisfies ExpenseRefund;
+    },
+    async listExpenseReportEntries(filters) {
+      const categoryFilter =
+        filters.categoryIds === undefined || filters.categoryIds.length === 0
+          ? sql``
+          : sql`AND e.category_id IN (${sql.join(filters.categoryIds.map((categoryId) => sql`${categoryId}`), sql`, `)})`;
+      // One report fact per original expense keeps counts independent of edits.
+      // Corrections share the original business date and only change its amount.
+      // SAFETY: fixed aliases match ExpenseReportEntry; all filter values are bound.
+      const rows = (await db.all(sql`
+        SELECT e.category_id AS categoryId,
+               e.amount + COALESCE((SELECT SUM(c.difference) FROM expense_corrections c WHERE c.expense_id = e.id), 0) AS amount,
+               e.occurred_at AS occurredAt, 1 AS expenseCount
+        FROM expenses e
+        WHERE e.occurred_at >= ${filters.from} AND e.occurred_at <= ${filters.to}
+        ${categoryFilter}
+        UNION ALL
+        SELECT e.category_id AS categoryId, r.difference AS amount, r.occurred_at AS occurredAt, 0 AS expenseCount
+        FROM expense_refunds r JOIN expenses e ON e.id = r.expense_id
+        WHERE r.occurred_at >= ${filters.from} AND r.occurred_at <= ${filters.to}
+        ${categoryFilter}
+      `)) as ExpenseReportEntry[];
+      return rows;
     },
     async listSaleLinesForProfit(from, to) {
       // raw line facts only: netTotal (revenue basis), cogsExact (exact COGS
@@ -2121,6 +2433,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // bun-sqlite transaction committed before awaited callbacks finished
     // (proven by the store transactions test), so units would lose atomicity.
     withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => runTransaction(false, fn),
+    withReadTransaction: <T>(fn: (tx: StoreReadPort) => Promise<T>): Promise<T> => runTransaction(false, fn, true),
     // Money paths (payments) acquire the WRITE lock BEFORE any read: a deferred
     // BEGIN can take a WAL read snapshot that a second process committed over,
     // and the later read-to-write upgrade then fails with SQLITE_BUSY_SNAPSHOT
@@ -2805,16 +3118,76 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (filters.toDate) conds.push(sql`${invoices.invoiceDate} <= ${filters.toDate}`);
       const where = conds.length ? and(...conds) : undefined;
 
+      const search = filters.search?.trim() ?? "";
+      const order = [desc(invoices.invoiceDate), desc(invoices.createdAt), desc(invoices.id)];
+      const hasNumberRange = filters.fromNumber !== undefined || filters.toNumber !== undefined;
+      if (search !== "" || hasNumberRange || filters.order !== undefined) {
+        // Keep the historical description. Only blank legacy names fall back to
+        // the linked item; barcodes have no line snapshot and use the current item.
+        const literalSearch = foldArabic(search) === "";
+        const loweredSearch = search.toLowerCase();
+        const matches = (text: string | null) => text !== null && (
+          literalSearch
+            ? text.toLowerCase().includes(loweredSearch)
+            : arabicIncludes(text, search)
+        );
+        const [rows, lines] = await Promise.all([
+          db.select(invoiceCols).from(invoices).where(where).orderBy(...order),
+          search === "" ? Promise.resolve([]) : db.select({
+            invoiceId: invoiceLines.invoiceId,
+            description: invoiceLines.description,
+            currentName: items.name,
+            barcode: items.barcode,
+          }).from(invoiceLines)
+            .innerJoin(invoices, eq(invoiceLines.invoiceId, invoices.id))
+            .leftJoin(items, eq(invoiceLines.itemId, items.id))
+            .where(where),
+        ]);
+        const matchedIds = new Set(lines.filter(line =>
+          matches(line.description.trim() === "" ? line.currentName : line.description) || matches(line.barcode),
+        ).map(line => line.invoiceId));
+        const fromSequence = invoiceNumberBoundSequence(filters.fromNumber ?? "");
+        const toSequence = invoiceNumberBoundSequence(filters.toNumber ?? "");
+        // Filter once per invoice (never once per joined line) before count/window.
+        const found = rows.filter(row => {
+          if (search !== "" && !matches(row.invoiceNumber) && !matchedIds.has(row.id)) return false;
+          if (!hasNumberRange) return true;
+          const sequence = invoiceSequenceForRange(row.invoiceNumber);
+          return sequence !== undefined && (fromSequence === undefined || sequence >= fromSequence) && (toSequence === undefined || sequence <= toSequence);
+        });
+        if (filters.order !== undefined) {
+          const direction = filters.order === "OLDEST" ? 1 : -1;
+          found.sort((a, b) => {
+            const date = a.invoiceDate.localeCompare(b.invoiceDate) * direction;
+            if (date !== 0) return date;
+            const aSequence = invoiceSequenceForRange(a.invoiceNumber);
+            const bSequence = invoiceSequenceForRange(b.invoiceNumber);
+            if (aSequence === undefined && bSequence !== undefined) return direction;
+            if (aSequence !== undefined && bSequence === undefined) return -direction;
+            if (aSequence !== undefined && bSequence !== undefined && aSequence !== bSequence) {
+              return (aSequence < bSequence ? -1 : 1) * direction;
+            }
+            const created = a.createdAt.localeCompare(b.createdAt) * direction;
+            return created !== 0 ? created : a.id.localeCompare(b.id) * direction;
+          });
+        }
+        const pagination = resolvePagination(filters);
+        const window = filters.limit === undefined && filters.offset === undefined
+          ? found
+          : found.slice(pagination.offset, pagination.offset + pagination.limit);
+        return { items: window.map(row => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: found.length };
+      }
+
       // no pagination keys = an internal full read (tests, aggregates); a
       // concrete limit/offset comes from resolvePagination at the router
       if (filters.limit === undefined && filters.offset === undefined) {
-        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt));
+        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(...order);
         return { items: rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: rows.length };
       }
       const { limit, offset } = resolvePagination(filters);
       const [total, itemsRows] = await Promise.all([
         db.$count(invoices, where),
-        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(limit).offset(offset),
+        db.select(invoiceCols).from(invoices).where(where).orderBy(...order).limit(limit).offset(offset),
       ]);
       return {
         items: itemsRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),

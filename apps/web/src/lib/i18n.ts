@@ -643,6 +643,7 @@ const resources = {
       saleLineTotal: "الإجمالي",
       removeRow: "حذف",
       saleTotalsTitle: "ملخص الفاتورة",
+      saleAddDiscount: "إضافة خصم",
       saleDiscountType: "نوع الخصم",
       saleNoDiscount: "بدون خصم",
       saleDiscountAmount: "مبلغ",

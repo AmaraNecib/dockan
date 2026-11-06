@@ -282,6 +282,184 @@ function writeLockRecord(
   );
 }
 
+type LockedExternalBackupHarness = {
+  source: string;
+  external: string;
+  manager: VaultManager;
+  lock: ReturnType<typeof acquireVaultLock>;
+  conn: ReturnType<typeof createEncryptedConnection>;
+  store: StorePort;
+};
+
+async function lockedExternalBackupHarness(): Promise<LockedExternalBackupHarness> {
+  const source = tempDir("dokan-backup-locked-source-");
+  const external = tempDir("dokan-backup-locked-external-");
+  const manager = new VaultManager({
+    dataDir: source,
+    legacyDbPath: path.join(source, "dokan.db"),
+    logger: new AppLogger(source),
+    kdf: FAST_KDF,
+  });
+  const { vaultId } = await manager.prepareSetup(PASSPHRASE);
+  const lock = acquireVaultLock(source, { onLost: () => undefined });
+  const conn = createEncryptedConnection({
+    vaultId,
+    masterKey: manager.setupMasterKey(),
+    snapshotPath: manager.snapshotPath,
+    headerPath: manager.headerPath,
+    fresh: true,
+    writeGuard: () => lock.assertHeld(),
+    writeStamp: () => lock.currentOwner().token,
+  });
+  const store = createDrizzleStore(conn);
+  await store.setup();
+  await manager.commitSetup();
+  await setExternalBackupDestination(source, external, () => lock.assertHeld());
+  return { source, external, manager, lock, conn, store };
+}
+
+async function closeLockedExternalBackupHarness(harness: LockedExternalBackupHarness): Promise<void> {
+  await harness.conn.close().catch(() => undefined);
+  harness.lock.release();
+  harness.manager.close();
+}
+
+describe("vault external backup lock fencing", () => {
+  it("refuses publication after the lock is replaced at the validated partial boundary", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const writeGuard = () => harness.lock.assertHeld();
+      const validate = harness.conn.validateSnapshotFile.bind(harness.conn);
+      const knownGood = await createExternalBackup({
+        store: harness.store,
+        dataDir: harness.source,
+        validate,
+        writeGuard,
+      });
+      expect(knownGood.lastError).toBeNull();
+      const knownGoodPath = knownGood.lastPath;
+      if (knownGoodPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodBytes = fs.readFileSync(knownGoodPath);
+      const savedSettings = fs.readFileSync(path.join(harness.source, "external-backup.json"));
+
+      let validations = 0;
+      const stealAfterPartialValidation = (filePath: string): boolean => {
+        const valid = validate(filePath);
+        validations += 1;
+        if (validations === 2) writeLockRecord(harness.source, { token: "publication-thief" });
+        return valid;
+      };
+      await expect(createExternalBackup({
+        store: harness.store,
+        dataDir: harness.source,
+        validate: stealAfterPartialValidation,
+        writeGuard,
+      })).rejects.toBeInstanceOf(VaultLockLostError);
+
+      expect(validations).toBe(2);
+      const attemptDirectories = fs.readdirSync(harness.external)
+        .filter((name) => path.join(harness.external, name) !== path.dirname(knownGoodPath));
+      expect(attemptDirectories).toHaveLength(1);
+      const attemptDirectoryName = attemptDirectories[0];
+      if (attemptDirectoryName === undefined) throw new Error("the interrupted attempt directory was not reserved");
+      const attemptDirectory = path.join(harness.external, attemptDirectoryName);
+      expect(fs.readdirSync(attemptDirectory)).toEqual(["dokan-backup.dknvbak.partial"]);
+      expect(fs.existsSync(path.join(attemptDirectory, "dokan-backup.dknvbak"))).toBe(false);
+      expect(fs.readFileSync(knownGoodPath).equals(knownGoodBytes)).toBe(true);
+      expect(fs.readFileSync(path.join(harness.source, "external-backup.json")).equals(savedSettings)).toBe(true);
+      expect(readExternalBackupStatus(harness.source)).toEqual(knownGood);
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("keeps the prior saved outcome when lock loss follows publication but precedes status persistence", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const validate = harness.conn.validateSnapshotFile.bind(harness.conn);
+      const writeGuard = () => harness.lock.assertHeld();
+      const knownGood = await createExternalBackup({
+        store: harness.store,
+        dataDir: harness.source,
+        validate,
+        writeGuard,
+      });
+      expect(knownGood.lastError).toBeNull();
+      if (knownGood.lastPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodPath = knownGood.lastPath;
+      if (knownGoodPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodBytes = fs.readFileSync(knownGoodPath);
+      const previousPaths = new Set(fs.readdirSync(harness.external)
+        .map((name) => path.join(harness.external, name, "dokan-backup.dknvbak")));
+      let theftInjected = false;
+      const guardAtPublicationStatusBoundary = () => {
+        const newBundle = fs.readdirSync(harness.external)
+          .map((name) => path.join(harness.external, name, "dokan-backup.dknvbak"))
+          .find((candidate) => !previousPaths.has(candidate) && fs.existsSync(candidate));
+        if (newBundle !== undefined && !theftInjected) {
+          theftInjected = true;
+          writeLockRecord(harness.source, { token: "status-thief" });
+        }
+        harness.lock.assertHeld();
+      };
+
+      await expect(createExternalBackup({
+        store: harness.store,
+        dataDir: harness.source,
+        validate,
+        writeGuard: guardAtPublicationStatusBoundary,
+      })).rejects.toBeInstanceOf(VaultLockLostError);
+
+      expect(theftInjected).toBe(true);
+      const publishedButUnattributed = fs.readdirSync(harness.external)
+        .map((name) => path.join(harness.external, name, "dokan-backup.dknvbak"))
+        .filter((candidate) => !previousPaths.has(candidate) && fs.existsSync(candidate));
+      expect(publishedButUnattributed).toHaveLength(1);
+      const unreportedPath = publishedButUnattributed[0];
+      if (unreportedPath === undefined) throw new Error("the new bundle was not published before loss detection");
+      expect(validate(unreportedPath)).toBe(true);
+      expect(fs.readFileSync(knownGoodPath).equals(knownGoodBytes)).toBe(true);
+      expect(readExternalBackupStatus(harness.source)).toEqual(knownGood);
+      expect(readExternalBackupStatus(harness.source).lastPath).toBe(knownGood.lastPath);
+      expect(fs.readdirSync(harness.source).filter((name) => name.startsWith("external-backup.json.partial."))).toEqual([]);
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("does not write a destination change after lock loss at the settings-file open boundary", async () => {
+    const harness = await lockedExternalBackupHarness();
+    const settingsPath = path.join(harness.source, "external-backup.json");
+    const previousSettings = fs.readFileSync(settingsPath);
+    const previousStatus = readExternalBackupStatus(harness.source);
+    const originalOpen = fs.promises.open.bind(fs.promises);
+    let openedPartial: string | undefined;
+    const openSpy = spyOn(fs.promises, "open").mockImplementation(async (file, flags, mode) => {
+      const handle = await originalOpen(file, flags, mode);
+      if (String(file).startsWith(`${settingsPath}.partial.`)) {
+        openedPartial = String(file);
+        writeLockRecord(harness.source, { token: "settings-thief" });
+      }
+      return handle;
+    });
+    try {
+      await expect(setExternalBackupDestination(
+        harness.source,
+        path.join(harness.external, "new-destination"),
+        () => harness.lock.assertHeld(),
+      )).rejects.toBeInstanceOf(VaultLockLostError);
+      expect(openedPartial).toBeDefined();
+      if (openedPartial === undefined) throw new Error("the settings partial was not opened");
+      expect(fs.statSync(openedPartial).size).toBe(0);
+      expect(fs.readFileSync(settingsPath).equals(previousSettings)).toBe(true);
+      expect(readExternalBackupStatus(harness.source)).toEqual(previousStatus);
+    } finally {
+      openSpy.mockRestore();
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+});
+
 /**
  * Restore while a second instance replaces `vault.lock` at the instant one of
  * the two writes lands. The steal point is that write's own rename, so the

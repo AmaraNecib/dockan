@@ -214,7 +214,11 @@ export async function createExternalBackup({ store, dataDir, validate, writeGuar
       writeGuard();
       next = { ...current, lastAttemptAt: at, lastSuccessAt: at, lastError: null, lastPath: finalPath };
     } catch (error) {
-      if (error instanceof VaultLockLostError || error instanceof SnapshotPersistenceError) throw error;
+      if (error instanceof VaultLockLostError || error instanceof SnapshotPersistenceError) {
+        // Cleanup would be another write after losing vault ownership. Leave
+        // only this attempt's partial namespace; never publish or persist success.
+        throw error;
+      }
       if (ownedDirectory !== undefined) {
         try {
           writeGuard();

@@ -2,6 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { comparePhysicalDevice, compareWindowsDiskNumbers } from "./backup-device";
 
 describe("physical-device comparison", () => {
+  for (const platform of ["linux", "darwin", "freebsd"] as const) {
+    it(`does not claim a physical-disk match from stat.dev on ${platform}`, async () => {
+      expect(await comparePhysicalDevice(process.cwd(), process.cwd(), platform)).toBe("unknown");
+    });
+  }
+
   it.skipIf(process.platform !== "win32")("queries the running Windows host and recognizes one physical disk", async () => {
     expect(await comparePhysicalDevice(process.cwd(), process.cwd())).toBe("same");
   });

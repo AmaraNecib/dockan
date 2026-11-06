@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { z } from "zod";
 
@@ -57,13 +56,7 @@ export async function comparePhysicalDevice(
       return "unknown";
     }
   }
-  if (platform === "linux" || platform === "darwin" || platform === "freebsd") {
-    try {
-      const [sourceStat, destinationStat] = await Promise.all([fs.stat(dataDir), fs.stat(destination)]);
-      return sourceStat.dev === destinationStat.dev ? "same" : "unknown";
-    } catch {
-      return "unknown";
-    }
-  }
+  // stat.dev identifies a filesystem device, not a physical disk. On non-Windows
+  // hosts it cannot prove the physical-drive warning shown by the UI.
   return "unknown";
 }

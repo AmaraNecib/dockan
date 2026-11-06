@@ -90,6 +90,7 @@ async function installRevealBridge(page: Page): Promise<void> {
 }
 
 test("external backup destination persists, cancels edits, reports media failure, and retries", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
   await signIn(page);
   let externalStatus: ExternalBackupStatus = {
     destination: "D:/existing-backups",
@@ -126,16 +127,19 @@ test("external backup destination persists, cancels edits, reports media failure
 
   await page.goto("/backups");
   const panel = page.getByTestId("external-backup-panel");
+  await page.waitForTimeout(1800);
   const destination = page.getByTestId("external-backup-destination");
   await expect(destination).toHaveValue("D:/existing-backups");
   await destination.fill("E:/unsaved");
   await panel.getByRole("button", { name: "إلغاء التعديل" }).click();
   await expect(destination).toHaveValue("D:/existing-backups");
+  await page.waitForTimeout(1800);
 
   await destination.fill("D:/shop-backups");
   await panel.getByRole("button", { name: "حفظ المجلد" }).click();
   await expect(destination).toHaveValue("D:/shop-backups");
   await expect(panel.getByRole("status")).toContainText("القرص الفعلي نفسه");
+  await page.waitForTimeout(2200);
   if (process.env.BACKUP_EVIDENCE === "before" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/before.png" });
   }
@@ -143,10 +147,24 @@ test("external backup destination persists, cancels edits, reports media failure
   await panel.getByRole("button", { name: "نسخ الآن" }).click();
   await expect(panel.getByRole("alert")).toContainText("القرص غير متصل");
   await expect(panel.getByRole("alert")).toBeVisible();
+  await page.waitForTimeout(2200);
 
   await panel.getByRole("button", { name: "نسخ الآن" }).click();
   await expect(page.getByTestId("external-backup-success")).toContainText("dokan-backup.dknvbak");
   await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(2200);
+  failNextCopy = true;
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(panel.getByRole("alert")).toContainText("القرص غير متصل");
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(2200);
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(2200);
+  await page.reload();
+  await expect(destination).toHaveValue("D:/shop-backups");
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(2200);
   if (process.env.BACKUP_EVIDENCE === "after" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/after.png" });
   }

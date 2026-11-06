@@ -65,7 +65,7 @@ export function BackupsPage() {
             onChange={(event) => { setDestination(event.currentTarget.value); setDestinationEdited(true); }}
             placeholder={t("backupsExternalDestinationHint")}
           />
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button type="submit" disabled={saveDestination.isPending}>{t("backupsExternalSave")}</Button>
             <Button type="button" variant="outline" disabled={!destinationEdited || saveDestination.isPending} onClick={() => { setDestination(externalStatus.data?.destination ?? ""); setDestinationEdited(false); }}>
               {t("backupsExternalCancel")}

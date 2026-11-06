@@ -1816,8 +1816,31 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return db.select(categoryCols).from(categories).orderBy(categories.name);
     },
     async createCategory(input) {
-      const row = firstRowOf(await db.insert(categories).values({ id: id(), name: input.name, createdAt: now(), updatedAt: now() }).returning());
+      const name = input.name.trim();
+      if (name.length === 0) throw new Error("CATEGORY_NAME_REQUIRED");
+      const key = normalizeTextKey(name);
+      if ((await this.listCategories()).some((category) => normalizeTextKey(category.name) === key)) {
+        throw new Error("CATEGORY_EXISTS");
+      }
+      const row = firstRowOf(await db.insert(categories).values({ id: id(), name, createdAt: now(), updatedAt: now() }).returning());
       return toCategory(row);
+    },
+    async renameCategory(categoryId, input) {
+      const name = input.name.trim();
+      if (name.length === 0) throw new Error("CATEGORY_NAME_REQUIRED");
+      const key = normalizeTextKey(name);
+      if ((await this.listCategories()).some((category) => category.id !== categoryId && normalizeTextKey(category.name) === key)) {
+        throw new Error("CATEGORY_EXISTS");
+      }
+      const rows = await db.update(categories).set({ name, updatedAt: now() }).where(eq(categories.id, categoryId)).returning(categoryCols);
+      return rows[0] === undefined ? undefined : toCategory(rows[0]);
+    },
+    async deleteCategory(categoryId) {
+      const rows = await db.delete(categories)
+        .where(and(eq(categories.id, categoryId), sql`NOT EXISTS (SELECT 1 FROM items WHERE items.category_id = ${categories.id})`))
+        .returning({ id: categories.id });
+      if (rows.length > 0) return { deleted: true, itemCount: 0 };
+      return { deleted: false, itemCount: await db.$count(items, eq(items.categoryId, categoryId)) };
     },
 
     // --- items ---------------------------------------------------------------

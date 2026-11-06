@@ -60,6 +60,36 @@ const removeTempDirRetry = (dir: string): void => {
   }
 };
 
+describe("category management (#389)", () => {
+  it("renames a category without changing its id or an assigned item's category", async () => {
+    const category = await store.createCategory({ name: `rename-${Date.now()}` });
+    const item = await store.createItem({ name: `rename-item-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
+
+    const renamed = await store.renameCategory(category.id, { name: "تصنيف مُعاد تسميته" });
+
+    expect(renamed).toMatchObject({ id: category.id, name: "تصنيف مُعاد تسميته" });
+    expect((await store.listItems()).items.find((row) => row.id === item.id)).toMatchObject({ categoryId: category.id, categoryName: "تصنيف مُعاد تسميته" });
+  });
+
+  it("refuses a normalized duplicate and a blank category rename", async () => {
+    const first = await store.createCategory({ name: `بطارية ${Date.now()}` });
+    const second = await store.createCategory({ name: `other-${Date.now()}` });
+    await expect(store.renameCategory(second.id, { name: first.name.replace("بطارية", "بَطّارية") })).rejects.toThrow();
+    await expect(store.renameCategory(second.id, { name: "   " })).rejects.toThrow();
+    expect((await store.listCategories()).find((row) => row.id === second.id)?.name).toBe(second.name);
+  });
+
+  it("deletes an unused category and refuses a used one with its item count", async () => {
+    const unused = await store.createCategory({ name: `unused-${Date.now()}` });
+    const used = await store.createCategory({ name: `used-${Date.now()}` });
+    await store.createItem({ name: `used-item-${Date.now()}`, categoryId: used.id, costPrice: 1, sellingPrice: 2 });
+    await expect(store.deleteCategory(unused.id)).resolves.toEqual({ deleted: true, itemCount: 0 });
+    await expect(store.deleteCategory(used.id)).resolves.toEqual({ deleted: false, itemCount: 1 });
+    expect((await store.listCategories()).some((row) => row.id === used.id)).toBe(true);
+    expect((await store.listItems()).items.some((row) => row.categoryId === used.id)).toBe(true);
+  });
+});
+
 describe("setup + seed", () => {
   it("creates tables and seeds the default category and settings", async () => {
     const cats = await store.listCategories();

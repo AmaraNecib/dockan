@@ -12,6 +12,9 @@ interface Category {
 
 let categories: Category[] = [];
 let created: Array<{ name: string }> = [];
+let categoryRenameFails = false;
+let categoryDeleteFails = false;
+let categoryUseCounts = new Map<string, number>();
 
 // NOTE: mock.module is process-global (see tests/router-mock.tsx); this file
 // owns the whole @/lib/rpc seam for its duration and exposes every member the
@@ -24,6 +27,34 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => ({ items: categories }),
       }),
       queryKey: () => ["categoriesList"],
+    },
+    itemsList: { queryKey: () => ["itemsList"] },
+    itemsAll: { queryKey: () => ["itemsAll"] },
+    categoriesRename: {
+      mutationOptions: (options: { onSuccess?: (category: Category) => void; onError?: (error: { message?: string }) => void }) => ({
+        mutationKey: ["categoriesRename"],
+        ...options,
+        mutationFn: async (input: { id: string; name: string }) => {
+          if (categoryRenameFails) throw new Error("CATEGORY_EXISTS");
+          const category = categories.find((row) => row.id === input.id);
+          if (category === undefined) throw new Error("CATEGORY_NOT_FOUND");
+          category.name = input.name.trim();
+          return category;
+        },
+      }),
+    },
+    categoriesDelete: {
+      mutationOptions: (options: { onSuccess?: (result: { deleted: boolean; itemCount: number }) => void; onError?: (error: { message?: string }) => void }) => ({
+        mutationKey: ["categoriesDelete"],
+        ...options,
+        mutationFn: async (input: { id: string }) => {
+          if (categoryDeleteFails) throw new Error("CATEGORY_NOT_FOUND");
+          const itemCount = categoryUseCounts.get(input.id) ?? 0;
+          if (itemCount > 0) return { deleted: false, itemCount };
+          categories = categories.filter((row) => row.id !== input.id);
+          return { deleted: true, itemCount: 0 };
+        },
+      }),
     },
     categoriesCreate: {
       mutationOptions: (options: { onSuccess?: () => void; onError?: (error: { message?: string }) => void }) => ({
@@ -51,6 +82,16 @@ function typeInto(input: HTMLInputElement, text: string): void {
   });
 }
 
+async function clickButton(container: HTMLElement, label: string): Promise<void> {
+  const button = [...container.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
+  if (button === undefined) throw new Error(`missing button: ${label}`);
+  await act(async () => button.click());
+}
+
+async function submitForm(form: HTMLFormElement): Promise<void> {
+  await act(async () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+}
+
 async function mount() {
   const page = await mountWithProviders(<CategoriesPage />);
   await page.poll(
@@ -63,12 +104,98 @@ async function mount() {
 beforeEach(() => {
   categories = [];
   created = [];
+  categoryRenameFails = false;
+  categoryDeleteFails = false;
+  categoryUseCounts = new Map();
   document.body.innerHTML = "";
 });
 
 afterEach(async () => {
   await unmountAllMountedPages();
   document.body.innerHTML = "";
+});
+
+describe("CategoriesPage management (#389)", () => {
+  it("renames a category with the same ID and keeps the edit available after a save failure", async () => {
+    categories = [{ id: "cat-stable", name: "قديم" }];
+    const page = await mount();
+    await clickButton(page.container, i18n.t("categoriesRename"));
+    const input = page.container.querySelector<HTMLInputElement>('input[aria-label="اسم التصنيف قديم"]')!;
+    typeInto(input, "جديد");
+    categoryRenameFails = true;
+    await submitForm(input.closest("form")!);
+
+    await page.poll(() => page.container.textContent?.includes(i18n.t("CATEGORY_EXISTS")) === true, "rename failure shown");
+    expect(categories).toEqual([{ id: "cat-stable", name: "قديم" }]);
+    expect(page.container.querySelector('input[aria-label="اسم التصنيف قديم"]')).not.toBeNull();
+
+    categoryRenameFails = false;
+    await submitForm(page.container.querySelector("li form")!);
+    await page.poll(() => page.container.textContent?.includes("جديد") === true, "renamed label shown");
+    expect(categories).toEqual([{ id: "cat-stable", name: "جديد" }]);
+  });
+
+  it("cancels an edit and a delete confirmation without changing the category", async () => {
+    categories = [{ id: "cat-stable", name: "قديم" }];
+    const page = await mount();
+    await clickButton(page.container, i18n.t("categoriesRename"));
+    typeInto(page.container.querySelector<HTMLInputElement>('input[aria-label="اسم التصنيف قديم"]')!, "مسودة");
+    await clickButton(page.container, i18n.t("categoriesCancel"));
+    expect(categories[0]?.name).toBe("قديم");
+
+    await clickButton(page.container, i18n.t("categoriesDelete"));
+    expect(page.container.textContent).toContain(i18n.t("categoriesConfirmDelete", { name: "قديم" }));
+    await clickButton(page.container, i18n.t("categoriesCancel"));
+    expect(categories).toEqual([{ id: "cat-stable", name: "قديم" }]);
+  });
+
+  it("keeps delete confirmation open after a failure and allows retry", async () => {
+    categories = [{ id: "cat-retry", name: "قابل للحذف" }];
+    const page = await mount();
+    await clickButton(page.container, i18n.t("categoriesDelete"));
+    categoryDeleteFails = true;
+    await clickButton(page.container, i18n.t("categoriesConfirm"));
+    await page.poll(() => page.container.querySelector('[role="alert"]') !== null, "delete failure shown");
+    expect(categories).toEqual([{ id: "cat-retry", name: "قابل للحذف" }]);
+    expect([...page.container.querySelectorAll("button")].some((button) => button.textContent === i18n.t("categoriesConfirm"))).toBe(true);
+
+    categoryDeleteFails = false;
+    await clickButton(page.container, i18n.t("categoriesConfirm"));
+    await page.poll(() => categories.length === 0, "delete retry succeeded");
+    expect(categories).toEqual([]);
+  });
+
+  it("shows the actual linked-item count and keeps a used category", async () => {
+    categories = [{ id: "cat-used", name: "مستخدم" }];
+    categoryUseCounts.set("cat-used", 4);
+    const page = await mount();
+    await clickButton(page.container, i18n.t("categoriesDelete"));
+    await clickButton(page.container, i18n.t("categoriesConfirm"));
+
+    expect(page.container.textContent).toContain(i18n.t("categoriesUsed", { count: 4 }));
+    expect(categories).toEqual([{ id: "cat-used", name: "مستخدم" }]);
+  });
+
+  it("shows a distinct no-results state for an unmatched search", async () => {
+    categories = [{ id: "cat-1", name: "بطاريات" }];
+    const page = await mount();
+    typeInto(page.container.querySelector<HTMLInputElement>('input[type="search"]')!, "غير موجود");
+
+    expect(page.container.textContent).toContain(i18n.t("categoriesNoMatches"));
+  });
+
+  it("searches categories from the complete category list", async () => {
+    categories = Array.from({ length: 35 }, (_, index) => ({ id: `cat-${index}`, name: `تصنيف ${index}` }));
+    categories.push({ id: "cat-last", name: "بطاريات خاصة" });
+    const page = await mount();
+
+    const search = page.container.querySelector<HTMLInputElement>('input[type="search"]');
+    expect(search).not.toBeNull();
+    typeInto(search!, "بطاريات خاصة");
+
+    expect(page.container.textContent).toContain("بطاريات خاصة");
+    expect(page.container.textContent).not.toContain("تصنيف 0");
+  });
 });
 
 describe("CategoriesPage empty state (issue #96)", () => {
@@ -103,7 +230,9 @@ describe("CategoriesPage empty state (issue #96)", () => {
     await act(async () => {
       form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
-    await page.poll(() => page.query("categories-empty") === null, "empty state cleared");
+    expect(created).toEqual([{ name: "بطاريات" }]);
+    expect(categories).toEqual([{ id: "cat-1", name: "بطاريات" }]);
+    await page.poll(() => page.container.textContent?.includes("بطاريات") === true, "created category shown");
 
     expect(page.query("categories-empty")).toBeNull();
     expect(page.container.textContent).toContain("بطاريات");

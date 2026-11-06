@@ -287,6 +287,9 @@ export interface StorePort {
 
   listCategories(): Promise<Category[]>;
   createCategory(input: { name: string }): Promise<Category>;
+  renameCategory(id: string, input: { name: string }): Promise<Category | undefined>;
+  /** Deletes only when no items reference the category; otherwise returns their count. */
+  deleteCategory(id: string): Promise<{ deleted: boolean; itemCount: number }>;
 
   listItems(pagination?: PaginationInput): Promise<{ items: ItemListItem[]; total: number }>;
   listLowStockItems(): Promise<Item[]>;

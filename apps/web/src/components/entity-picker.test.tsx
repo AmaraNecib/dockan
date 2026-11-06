@@ -16,40 +16,63 @@ const options: EntityOption[] = [
 
 const mounted: Array<{ root: Root; host: HTMLElement }> = [];
 
-function Harness({ onCreate }: { onCreate?: (query: string) => void }) {
-  const [value, setValue] = useState("first");
+function Harness({
+  onCreate,
+  pickerOptions = options,
+  autoSelectFirst = false,
+}: {
+  onCreate?: (query: string) => void;
+  pickerOptions?: EntityOption[];
+  autoSelectFirst?: boolean;
+}) {
+  const [value, setValue] = useState(autoSelectFirst ? "" : "first");
+  const selectedValue = autoSelectFirst ? value || pickerOptions[0]?.id || "" : value;
   return (
     <>
       <EntityPicker
         label="المنتج"
-        options={options}
-        value={value}
+        options={pickerOptions}
+        value={selectedValue}
         onChange={setValue}
         testId="entity"
         onCreate={onCreate}
         createLabel={(name) => `إنشاء ${name}`}
       />
-      <output data-testid="selected">{value}</output>
+      <output data-testid="selected">{selectedValue}</output>
     </>
   );
 }
 
-async function mount(onCreate?: (query: string) => void): Promise<HTMLElement> {
+async function mount(
+  onCreate?: (query: string) => void,
+  pickerOptions: EntityOption[] = options,
+  autoSelectFirst = false,
+): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   await act(async () => {
-    root.render(<Harness onCreate={onCreate} />);
+    root.render(<Harness onCreate={onCreate} pickerOptions={pickerOptions} autoSelectFirst={autoSelectFirst} />);
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   mounted.push({ root, host });
   return host;
 }
 
+async function updateOptions(host: HTMLElement, pickerOptions: EntityOption[], autoSelectFirst: boolean): Promise<void> {
+  const entry = mounted.find((candidate) => candidate.host === host);
+  if (entry === undefined) throw new Error("missing mounted picker");
+  await act(async () => {
+    entry.root.render(<Harness pickerOptions={pickerOptions} autoSelectFirst={autoSelectFirst} />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 async function type(host: HTMLElement, value: string): Promise<void> {
   const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
   if (!input) throw new Error("missing entity picker input");
   await act(async () => {
+    input.focus();
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     setter?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -80,6 +103,16 @@ describe("EntityPicker", () => {
 
     const optionsFound = [...host.querySelectorAll('[role="option"]')].map((option) => option.textContent);
     expect(optionsFound).toContain("السعيد");
+  });
+
+  it("keeps a typed search when options load and the default selection changes", async () => {
+    const host = await mount(undefined, [], true);
+    await type(host, "تصنيف متأخر");
+    await updateOptions(host, [{ id: "default", name: "تصنيف حالي" }, { id: "late", name: "تصنيف متأخر" }], true);
+
+    expect(host.querySelector<HTMLInputElement>('[data-testid="entity"]')?.value).toBe("تصنيف متأخر");
+    expect(host.querySelector('[role="option"]')?.textContent).toBe("تصنيف متأخر");
+    expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
 
   it("selects a typed match with arrow and Enter without changing it by typing alone", async () => {

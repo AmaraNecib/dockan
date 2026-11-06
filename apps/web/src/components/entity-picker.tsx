@@ -49,8 +49,8 @@ export function EntityPicker({
   const inputId = `${testId}-input`;
 
   useEffect(() => {
-    setQuery(selected?.name ?? "");
-  }, [selected?.id, selected?.name]);
+    if (!open) setQuery(selected?.name ?? "");
+  }, [open, selected?.id, selected?.name]);
 
   const matches = useMemo(() => {
     const trimmed = query.trim();

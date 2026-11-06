@@ -42,7 +42,7 @@ export function EntityPicker({
   const selected = options.find((option) => option.id === value);
   const [query, setQuery] = useState(selected?.name ?? "");
   const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const listId = `${testId}-list`;
@@ -59,36 +59,40 @@ export function EntityPicker({
   }, [options, query]);
   const trimmedQuery = query.trim();
   const canCreate = onCreate !== undefined && trimmedQuery !== "" && matches.length === 0;
-  const active = activeIndex === null ? undefined : matches[activeIndex];
+  const activeIndex = activeId === null ? null : matches.findIndex((option) => option.id === activeId);
+  const active = activeIndex === null || activeIndex < 0 ? undefined : matches[activeIndex];
 
   useEffect(() => {
-    if (activeIndex !== null) optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
+    if (activeIndex !== null && activeIndex >= 0) optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
   }, [activeIndex]);
 
   function pick(option: EntityOption) {
     onChange(option.id);
     setQuery(option.name);
     setOpen(false);
-    setActiveIndex(null);
+    setActiveId(null);
   }
 
   function keyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
       setQuery(selected?.name ?? "");
       setOpen(false);
-      setActiveIndex(null);
+      setActiveId(null);
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       if (!open || matches.length === 0) return;
       event.preventDefault();
       const delta = event.key === "ArrowDown" ? 1 : -1;
-      setActiveIndex((current) => current === null ? (delta === 1 ? 0 : matches.length - 1) : (current + delta + matches.length) % matches.length);
+      const nextIndex = activeIndex === null || activeIndex < 0
+        ? (delta === 1 ? 0 : matches.length - 1)
+        : (activeIndex + delta + matches.length) % matches.length;
+      setActiveId(matches[nextIndex]?.id ?? null);
       return;
     }
-    if (event.key === "Enter" && open && active !== undefined) {
+    if (event.key === "Enter" && open) {
       event.preventDefault();
-      pick(active);
+      if (active !== undefined) pick(active);
     }
   }
 
@@ -97,7 +101,7 @@ export function EntityPicker({
       if (event.relatedTarget !== null && event.currentTarget.contains(event.relatedTarget)) return;
       setOpen(false);
       setQuery(selected?.name ?? "");
-      setActiveIndex(null);
+      setActiveId(null);
     }}>
       <label htmlFor={inputId} className={hideLabel ? "sr-only" : undefined}>{label}</label>
       <input type="hidden" name={name} value={value} />
@@ -120,7 +124,7 @@ export function EntityPicker({
           onChange={(event) => {
             setQuery(event.target.value);
             setOpen(true);
-            setActiveIndex(null);
+            setActiveId(null);
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={keyDown}
@@ -159,7 +163,7 @@ export function EntityPicker({
                     const name = trimmedQuery;
                     setOpen(false);
                     setQuery(selected?.name ?? "");
-                    setActiveIndex(null);
+                    setActiveId(null);
                     onCreate?.(name);
                   }}
                   data-testid={`${testId}-create`}

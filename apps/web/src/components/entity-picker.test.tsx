@@ -26,9 +26,10 @@ function Harness({
   autoSelectFirst?: boolean;
 }) {
   const [value, setValue] = useState(autoSelectFirst ? "" : "first");
+  const [submits, setSubmits] = useState(0);
   const selectedValue = autoSelectFirst ? value || pickerOptions[0]?.id || "" : value;
   return (
-    <>
+    <form onSubmit={(event) => { event.preventDefault(); setSubmits((count) => count + 1); }}>
       <EntityPicker
         label="المنتج"
         options={pickerOptions}
@@ -39,7 +40,8 @@ function Harness({
         createLabel={(name) => `إنشاء ${name}`}
       />
       <output data-testid="selected">{selectedValue}</output>
-    </>
+      <output data-testid="submits">{submits}</output>
+    </form>
   );
 }
 
@@ -84,7 +86,11 @@ async function press(host: HTMLElement, key: string): Promise<void> {
   const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
   if (!input) throw new Error("missing entity picker input");
   await act(async () => {
-    input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+    // The browser's implicit form submission is the default Enter action. JSDOM
+    // does not synthesize it, so model that default only when the picker did not cancel it.
+    if (key === "Enter" && !event.defaultPrevented) input.form?.requestSubmit();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
@@ -113,6 +119,28 @@ describe("EntityPicker", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="entity"]')?.value).toBe("تصنيف متأخر");
     expect(host.querySelector('[role="option"]')?.textContent).toBe("تصنيف متأخر");
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
+  });
+
+  it("prevents Enter from submitting the caller form when no option is active", async () => {
+    const host = await mount();
+    await type(host, "missing category");
+    await press(host, "Enter");
+
+    expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("first");
+    expect(host.querySelector('[data-testid="submits"]')?.textContent).toBe("0");
+  });
+
+  it("does not select a different record when options reorder before Enter", async () => {
+    const host = await mount();
+    await type(host, "منتج");
+    await press(host, "ArrowDown");
+    await updateOptions(host, [
+      { id: "second", name: "منتج ثاني" },
+      { id: "first", name: "منتج أول" },
+    ], false);
+    await press(host, "Enter");
+
+    expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("first");
   });
 
   it("selects a typed match with arrow and Enter without changing it by typing alone", async () => {

@@ -220,6 +220,9 @@ mock.module("@/lib/rpc", () => ({
             // message is the code the web translates (#295)
             throw new Error(stockRefuses);
           }
+          const item = items.find((candidate) => candidate.id === input.itemId);
+          if (item === undefined || input.delta === undefined) throw new Error("invalid stock adjustment fixture");
+          item.stockOnHand += input.delta;
           return { id: "movement-1" };
         },
         ...opts,
@@ -1103,7 +1106,7 @@ describe("stock form prefill", () => {
       ...Array.from({ length: 55 }, (_, index) => baseItem({ id: `item-${index + 2}`, name: `منتج ${index + 2}` })),
       baseItem({ id: "item-late", name: "آلات التخزين", costPrice: 850, sellingPrice: 1250 }),
     ];
-    await mount();
+    const { queryClient } = await mount();
     await openAddTab();
     await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
 
@@ -1113,6 +1116,16 @@ describe("stock form prefill", () => {
 
     await waitFor(() => inputByTestId("stock-unit-cost").value === "850");
     expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("1,250");
+
+    setInput("stock-delta", "4");
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 1);
+    await waitFor(() => queryClient.getQueryData<{ items: FixtureItem[] }>(["itemsAll"])?.items.find((item) => item.id === "item-late")?.stockOnHand === 7);
+
+    const persistedItems = queryClient.getQueryData<{ items: FixtureItem[] }>(["itemsAll"])?.items ?? [];
+    expect(stockInputs[0]).toMatchObject({ itemId: "item-late", delta: 4, unitCost: 850 });
+    expect(persistedItems.find((item) => item.id === "item-late")?.stockOnHand).toBe(7);
+    expect(persistedItems.find((item) => item.id === "item-1")?.stockOnHand).toBe(3);
   });
 
   it("shows the selling price and prefills the cost from the selected item", async () => {

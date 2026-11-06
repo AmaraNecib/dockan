@@ -131,6 +131,7 @@ export function PurchasePage() {
   /** the line create that is open, or null (#257) */
   const [lineDraft, setLineDraft] = useState<LineCreateDraft | null>(null);
   const [lineError, setLineError] = useState<string | null>(null);
+  const [categoryCreateError, setCategoryCreateError] = useState<string | null>(null);
   /**
    * The category the last line create recorded. It seeds the next one, so one
    * pick serves several products — the same keep policy the page-level form
@@ -403,6 +404,19 @@ export function PurchasePage() {
     },
     setError,
   });
+  const categoryCreate = useMutation(
+    orpc.categoriesCreate.mutationOptions({
+      onSuccess: (category) => {
+        queryClient.setQueryData(orpc.categoriesList.queryKey(), (current: { items: typeof category[] } | undefined) => ({
+          items: [...(current?.items ?? []), category].sort((a, b) => a.name.localeCompare(b.name)),
+        }));
+        void queryClient.invalidateQueries({ queryKey: orpc.categoriesList.queryKey() });
+        void queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() });
+        setCategoryCreateError(null);
+      },
+      onError: (err) => setCategoryCreateError(tError(err.message)),
+    }),
+  );
 
   /**
    * #321 — what a navigation would throw away on this screen. The cart is the
@@ -702,10 +716,20 @@ export function PurchasePage() {
                     label={t("purchasesQuickCategory")}
                     options={[{ id: "", name: "—" }, ...(categories.data?.items ?? [])]}
                     value={quick.fields.categoryId}
-                    onChange={(value) => quick.setField("categoryId", value)}
+                    onChange={(value) => {
+                      setCategoryCreateError(null);
+                      quick.setField("categoryId", value);
+                    }}
+                    onCreate={(name) => {
+                      setCategoryCreateError(null);
+                      categoryCreate.mutate({ name }, { onSuccess: (category) => quick.setField("categoryId", category.id) });
+                    }}
+                    createLabel={(name) => t("categoriesCreateInline", { name })}
                     noMatchesLabel={t("categoriesNoMatches")}
+                    disabled={categoryCreate.isPending}
                     testId="purchase-quick-category"
                   />
+                  {categoryCreateError && <p className="col-span-2 text-sm text-destructive" role="alert" data-testid="purchase-quick-category-error">{categoryCreateError}</p>}
                   <label className="grid gap-1 text-sm font-medium">
                     {t("itemsSell")}
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quick.fields.sellPrice} onChange={(e) => quick.setField("sellPrice", e.target.value)} />
@@ -884,10 +908,20 @@ export function PurchasePage() {
                                     label={t("purchasesLineProductCategory")}
                                     options={[{ id: "", name: "—" }, ...(categories.data?.items ?? [])]}
                                     value={lineDraft.categoryId}
-                                    onChange={(value) => patchLineDraft({ categoryId: value })}
+                                    onChange={(value) => {
+                                      setCategoryCreateError(null);
+                                      patchLineDraft({ categoryId: value });
+                                    }}
+                                    onCreate={(name) => {
+                                      setCategoryCreateError(null);
+                                      categoryCreate.mutate({ name }, { onSuccess: (category) => patchLineDraft({ categoryId: category.id }) });
+                                    }}
+                                    createLabel={(name) => t("categoriesCreateInline", { name })}
                                     noMatchesLabel={t("categoriesNoMatches")}
+                                    disabled={categoryCreate.isPending}
                                     testId="purchase-line-category"
                                   />
+                                  {categoryCreateError && <p className="col-span-2 text-sm text-destructive" role="alert" data-testid="purchase-line-category-error">{categoryCreateError}</p>}
                                   <label className="grid gap-1 text-sm font-medium">
                                     {t("itemsSell")}
                                     <input

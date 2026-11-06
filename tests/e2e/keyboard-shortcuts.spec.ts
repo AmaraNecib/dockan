@@ -797,11 +797,11 @@ test("New Sale confirmation cannot navigate while an invoice save is pending", a
   }
 });
 
-test("a late invoice success cannot clear a new sale owner's draft after sidebar navigation", async ({ page }) => {
+test("sale save refuses sidebar navigation until its result is visible", async ({ page }) => {
   await signIn(page);
   const categoryId = await seedCategoryId(page, "تصنيف ملكية البيع");
   const name = `بيع-قديم-معلق-${Date.now()}`;
-  await callRpc<Item, object>(page, "itemsCreateWithStock", {
+  const item = await callRpc<Item, object>(page, "itemsCreateWithStock", {
     name, categoryId, costPrice: 400, sellingPrice: 1000, stockOnHand: 1,
   });
 
@@ -813,8 +813,10 @@ test("a late invoice success cannot clear a new sale owner's draft after sidebar
   const held = new Promise<void>((resolve) => { release = resolve; });
   let reached = () => {};
   const requested = new Promise<void>((resolve) => { reached = resolve; });
+  let invoiceWrites = 0;
   const routePattern = "**/api/rpc/invoicesCreate";
   await page.route(routePattern, async (route) => {
+    invoiceWrites++;
     reached();
     await held;
     const response = await route.fetch();
@@ -827,22 +829,35 @@ test("a late invoice success cannot clear a new sale owner's draft after sidebar
     void saved.catch(() => undefined);
     await requested;
 
-    // Sidebar navigation stays unguarded. This covers an old callback writing to a new owner.
+    const saleUrl = page.url();
     await page.getByRole("link", { name: "المشتريات" }).click();
-    await expect(page.getByTestId("purchase-form")).toBeVisible();
-    await page.getByRole("link", { name: "المبيعات" }).click();
+    await expect(page).toHaveURL(saleUrl);
     await expect(page.getByTestId("sale-form")).toBeVisible();
-    const customer = page.getByTestId("sale-customer");
-    await customer.fill("مسودة البيع الجديد");
+    await expect(page.getByTestId("sale-saved")).toHaveCount(0);
+
+    const popupPromise = page.waitForEvent("popup");
+    await page.getByRole("link", { name: "المشتريات" }).click({ modifiers: ["Control"] });
+    const popup = await popupPromise;
+    await expect(popup).toHaveURL(/\/purchases/);
+    await expect(page).toHaveURL(saleUrl);
+    await popup.close();
 
     release();
     const invoice = await saved;
     expect(invoice.kind).toBe("SALE");
     expect(invoice.totalAmount).toBe(1000);
-    await page.keyboard.press("Control+b");
-    await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(customer).toHaveValue("مسودة البيع الجديد");
+    await expect(page.getByTestId("sale-saved-number")).toContainText(invoice.invoiceNumber);
+    await expect(page).toHaveURL(saleUrl);
+    await expect(page.getByTestId("sale-form")).toHaveCount(0);
+    expect(invoiceWrites).toBe(1);
+    const persistedInvoice = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: invoice.id });
+    expect(persistedInvoice.id).toBe(invoice.id);
+    const stock = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(stock.items.find((row) => row.id === item.id)?.stockOnHand).toBe(0);
+
+    await page.getByRole("link", { name: "المشتريات" }).click();
+    await expect(page.getByTestId("purchase-form")).toBeVisible();
+
   } finally {
     release();
     await saved?.catch(() => undefined);
@@ -1115,13 +1130,14 @@ test("invoice success preserves quick-add edits and asks before New Sale or Ctrl
   }
 });
 
-test("a refused old invoice cannot clear a newer owner's pending quick-add", async ({ page }) => {
+test("a refused sale write keeps its draft after attempted sidebar navigation", async ({ page }) => {
   await signIn(page);
   const categoryId = await seedCategoryId(page, "تصنيف رفض البيع القديم");
   const itemName = `بيع-رفض-قديم-${Date.now()}`;
   const oldItem = await callRpc<Item, object>(page, "itemsCreateWithStock", {
     name: itemName, categoryId, costPrice: 400, sellingPrice: 1000, stockOnHand: 1,
   });
+  const invoicesBefore = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
 
   await page.keyboard.press("Control+n");
   await expect(page.getByTestId("sale-form")).toBeVisible();
@@ -1156,12 +1172,11 @@ test("a refused old invoice cannot clear a newer owner's pending quick-add", asy
   try {
     await page.getByTestId("sale-save").click();
     await requestedOld;
+    const saleUrl = page.url();
     await page.getByRole("link", { name: "المشتريات" }).click();
-    await expect(page.getByTestId("purchase-form")).toBeVisible();
-    await page.getByRole("link", { name: "المبيعات" }).click();
+    await expect(page).toHaveURL(saleUrl);
     await expect(page.getByTestId("sale-form")).toBeVisible();
-    const customer = page.getByTestId("sale-customer");
-    await customer.fill("مسودة مع طلب جديد معلق");
+    await expect(page.getByTestId("purchase-form")).toHaveCount(0);
 
     await page.getByTestId("sale-quick-add").click();
     const quick = page.getByTestId("sale-quick-form");
@@ -1182,11 +1197,12 @@ test("a refused old invoice cannot clear a newer owner's pending quick-add", asy
     expect(refusalResponse.ok()).toBe(false);
     const stockAfterRefusal = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
     expect(stockAfterRefusal.items.find((item) => item.id === oldItem.id)?.stockOnHand).toBe(1);
+    const invoicesAfterRefusal = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
+    expect(invoicesAfterRefusal.total).toBe(invoicesBefore.total);
 
     await expect(page.getByTestId("new-sale-button")).toBeDisabled();
-    await page.keyboard.press("Control+b");
-    await expect(page.getByTestId("sale-form")).toBeVisible();
-    await expect(page.getByTestId("purchase-form")).toHaveCount(0);
+    await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
+    await expect(page.getByTestId("sale-error")).toBeVisible();
 
     releaseNew();
     const createdItem = await created;
@@ -1199,7 +1215,7 @@ test("a refused old invoice cannot clear a newer owner's pending quick-add", asy
     await page.keyboard.press("Control+b");
     await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(customer).toHaveValue("مسودة مع طلب جديد معلق");
+    await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
   } finally {
     releaseOld();
     releaseNew();

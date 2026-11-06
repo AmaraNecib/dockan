@@ -39,6 +39,7 @@ test("searches all categories, preserves assignments on rename, and confirms saf
   await editRow.getByRole("button", { name: "تعديل الاسم" }).click();
   await page.getByRole("textbox", { name: `اسم التصنيف ${target}` }).fill(renamed);
   await page.getByRole("button", { name: "حفظ" }).click();
+  await page.getByRole("searchbox", { name: "ابحث في التصنيفات…" }).fill(renamed);
   await expect(page.getByText(renamed, { exact: true })).toBeVisible();
 
   await page.goto("/items");

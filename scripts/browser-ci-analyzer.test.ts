@@ -60,6 +60,50 @@ describe("offline browser CI evidence", () => {
     expect(result.passed).toBe(148);
   });
 
+  test("named-step prefixes preserve checkout, scope and summary evidence", () => {
+    const raw = `[command]git log -1 --format=%H\n${SHA_PR}\n${PIPELINE_LOG}`;
+    const log = raw.split("\n").map((line) => `playwright e2e\tRun Playwright e2e\t2026-11-05T20:13:28.183Z ${line}`).join("\n");
+    const result = parseBrowserLog({ runId: 2, attempt: 1, jobName: "playwright e2e", jobConclusion: "success", log });
+    expect(result.checkoutSha).toBe(SHA_PR);
+    expect(result.scope).toBe("full");
+    expect(result.passed).toBe(148);
+  });
+
+  test("separate summary lines retain failed and skipped counts", () => {
+    const log = PIPELINE_LOG.replace("148 passed (8.0m)", "2 failed\n  3 skipped\n  143 passed (8.0m)");
+    const result = parseBrowserLog({ runId: 3, attempt: 1, jobName: "playwright e2e", jobConclusion: "failure", log });
+    expect([result.passed, result.failed, result.skipped]).toEqual([143, 2, 3]);
+  });
+
+  test("a narrowed emitted Playwright command cannot establish full scope", () => {
+    const log = PIPELINE_LOG.replace("$ playwright test\n", "$ playwright test tests/e2e/foo.spec.ts\n");
+    const result = parseBrowserLog({ runId: 3, attempt: 1, jobName: "playwright e2e", jobConclusion: "success", log });
+    expect(result.scope).toBe("unknown");
+  });
+
+  test("conflicting runtime versions cannot establish a candidate", () => {
+    const log = PIPELINE_LOG.replace("Version: 20261101.186.1", "Version: 20261101.186.1\nVersion: 20261102.187.1");
+    const result = parseBrowserLog({ runId: 3, attempt: 1, jobName: "playwright e2e", jobConclusion: "success", log });
+    expect(result.evidenceErrors).toContain("runtime signals ambiguous");
+  });
+
+  test.each([
+    ["2026-11-05T20:08:26Z", "2026-11-05T20:00:00Z", null],
+    ["invalid", "2026-11-05T20:08:26Z", null],
+    ["2026-11-05T20:00:00Z", "2026-11-05T20:00:00Z", 0],
+  ] as const)("validates browser timestamps %s to %s", (startedAt, completedAt, expected) => {
+    const result = loadBrowserEvidence("owner/repo", 77, (args) => {
+      if (args.includes("--json")) return JSON.stringify({
+        databaseId: 77, attempt: 1, event: "pull_request", headSha: SHA_PR, status: "completed", conclusion: "success",
+        jobs: [{ databaseId: 88, name: "playwright e2e", conclusion: "success", startedAt, completedAt }],
+      });
+      if (args.includes("--log")) return `[command]git log -1 --format=%H\n${SHA_PR}\n${PIPELINE_LOG}`;
+      return JSON.stringify({ sha: SHA_PR, commit: { tree: { sha: TREE } } });
+    });
+    expect(result.wallSeconds).toBe(expected);
+    expect(classifyPair(result, evidence({ event: "push" })).classification).toBe(expected === null ? "unknown" : "candidate");
+  });
+
   test("does not mistake RPC text containing failed for a failing Playwright summary", () => {
     const result = parseBrowserLog({ runId: 3, attempt: 1, jobName: "playwright e2e", jobConclusion: "success", log: PIPELINE_LOG.replace("148 passed (8.0m)", "RPC_ERROR failed in app log") });
     expect(result.passed).toBeNull();

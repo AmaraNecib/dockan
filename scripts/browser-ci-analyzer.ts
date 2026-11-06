@@ -28,7 +28,7 @@ export type PairResult = {
 };
 
 function normalizeLogLine(line: string): string {
-  const withoutJobPrefix = line.replace(/^playwright e2e\tUNKNOWN STEP\t/u, "");
+  const withoutJobPrefix = line.replace(/^playwright e2e\t[^\t]*\t/u, "");
   const withoutTimestamp = withoutJobPrefix.replace(/^\uFEFF?\d{4}-\d{2}-\d{2}T[^\s]+Z\s*/u, "");
   // eslint-disable-next-line no-control-regex -- GitHub runner logs include terminal color escapes.
   return withoutTimestamp.replace(/\u001b\[[0-9;]*m/gu, "");
@@ -60,12 +60,20 @@ export function parseBrowserLog(input: {
   const checkoutSha = shaValues.length === 1 ? shaValues[0] ?? null : null;
   if (shaValues.length !== 1) errors.push(shaValues.length ? "ambiguous browser checkout SHA" : "browser checkout SHA missing");
 
-  const summaries = lines.flatMap((line) => {
-    const match = line.match(/^\s*(\d+) passed(?:\s*\(([^)]*)\))?(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/u);
-    return match ? [{ passed: Number(match[1]), duration: match[2] ?? null, failed: Number(match[3] ?? 0), skipped: Number(match[4] ?? 0) }] : [];
+  const countPattern = /^\s*(\d+) (passed|failed|skipped)(?:\s*\([^)]*\))?\s*$/u;
+  const counts = lines.flatMap((line) => {
+    const parts = line.split(",").map((part) => part.match(countPattern));
+    return parts.every((part) => part !== null) ? parts : [];
   });
-  const summary = summaries.length === 1 ? summaries[0] : null;
-  if (!summary) errors.push(summaries.length ? "ambiguous Playwright summary" : "Playwright summary missing");
+  const kinds = counts.map((count) => count[2]);
+  const summary = counts.length > 0 && new Set(kinds).size === kinds.length
+    ? {
+      passed: Number(counts.find((count) => count[2] === "passed")?.[1] ?? 0),
+      failed: Number(counts.find((count) => count[2] === "failed")?.[1] ?? 0),
+      skipped: Number(counts.find((count) => count[2] === "skipped")?.[1] ?? 0),
+    }
+    : null;
+  if (!summary) errors.push(counts.length ? "ambiguous Playwright summary" : "Playwright summary missing");
 
   const launch = lines.filter((line) => /^bun run test:e2e\s+\$E2E_SPECS/u.test(line.trim()));
   const envLines = lines.filter((line) => /^\s*E2E_SPECS:\s*/u.test(line));
@@ -73,7 +81,7 @@ export function parseBrowserLog(input: {
   let scope: BrowserEvidence["scope"] = "unknown";
   const envLine = envLines.length === 1 ? envLines[0] ?? "" : null;
   if (launch.length === 1 && executed.length === 1 && envLine !== null) {
-    if (/^\s*E2E_SPECS:\s*$/u.test(envLine)) scope = "full";
+    if (/^\s*E2E_SPECS:\s*$/u.test(envLine) && executed[0]?.trim() === "$ playwright test") scope = "full";
     else if (/^\s*E2E_SPECS:\s*\S+/u.test(envLine)) scope = "scoped";
   }
   if (scope === "unknown") errors.push("full-suite scope not proven");
@@ -86,7 +94,9 @@ export function parseBrowserLog(input: {
     return [image && `image=${image}`, imageVersion && `runnerImage=${imageVersion}`, bun && `bun=${bun}`, playwright && `playwright=${playwright}`].filter((value): value is string => Boolean(value));
   });
   const runtime = [...new Set(runtimeValues.filter((value) => !value.startsWith("bun=") || value.slice(4).includes("+") || !runtimeValues.some((candidate) => candidate.startsWith(`bun=${value.slice(4)}+`))))];
-  if (!["image=", "runnerImage=", "bun="].every((prefix) => runtime.some((signal) => signal.startsWith(prefix)))) errors.push("runtime signals incomplete");
+  const requiredSignals = ["image=", "runnerImage=", "bun="];
+  if (!requiredSignals.every((prefix) => runtime.some((signal) => signal.startsWith(prefix)))) errors.push("runtime signals incomplete");
+  if (requiredSignals.some((prefix) => runtime.filter((signal) => signal.startsWith(prefix)).length > 1)) errors.push("runtime signals ambiguous");
   const wallSeconds = Number.isFinite(input.wallSeconds) ? input.wallSeconds ?? null : null;
   return {
     runId: input.runId,
@@ -159,7 +169,11 @@ export function loadBrowserEvidence(repo: string, id: number, request: (args: st
     const jobs = info.jobs.filter((job) => JOB_MATCH.test(job.name));
     const job = jobs.length === 1 ? jobs[0] : undefined;
     if (!job) return emptyEvidence(id, info.attempt, jobs.length ? "ambiguous browser job" : "browser job missing");
-    const seconds = job.startedAt && job.completedAt ? Math.max(0, (Date.parse(job.completedAt) - Date.parse(job.startedAt)) / 1000) : null;
+    const started = Date.parse(job.startedAt);
+    const completed = Date.parse(job.completedAt);
+    const seconds = Number.isFinite(started) && Number.isFinite(completed) && completed >= started
+      ? (completed - started) / 1000
+      : null;
     const output = request(["run", "view", String(id), "--repo", repo, "--job", String(job.databaseId), "--attempt", String(info.attempt), "--log"]);
     const evidence = parseBrowserLog({ runId: id, attempt: info.attempt, event: info.event, jobName: job.name, jobConclusion: job.conclusion, log: output, wallSeconds: seconds });
     if (evidence.checkoutSha) {

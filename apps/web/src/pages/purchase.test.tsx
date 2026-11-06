@@ -443,8 +443,8 @@ describe("PurchasePage party picker (issue 120)", () => {
       if (quickCost !== null) setValue(quickCost, "100");
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    const categoryTrigger = quickForm.querySelector<HTMLElement>("button");
-    if (categoryTrigger === null) throw new Error("missing category trigger");
+    const categoryTrigger = quickForm.querySelector<HTMLInputElement>('[data-testid="purchase-quick-category"]');
+    if (categoryTrigger === null) throw new Error("missing category picker");
     await chooseOption(categoryTrigger, "تصنيف");
     await act(async () => {
       quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
@@ -495,7 +495,7 @@ describe("PurchasePage completion card (issue #159)", () => {
       setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, "100");
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
+    await chooseOption(quickForm.querySelector<HTMLElement>('[data-testid="purchase-quick-category"]')!, "تصنيف");
     await act(async () => {
       quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -622,7 +622,7 @@ describe("PurchasePage amount/percentage payment (#162/#171)", () => {
       setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, cost);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
+    await chooseOption(quickForm.querySelector<HTMLElement>('[data-testid="purchase-quick-category"]')!, "تصنيف");
     await act(async () => {
       quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -800,8 +800,8 @@ describe("PurchasePage quantity draft (#146)", () => {
   }
 
   const quickForm = (container: HTMLElement) => container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]');
-  /** the quick-add category control; its rendered label shows the current pick */
-  const categoryTrigger = (container: HTMLElement) => quickForm(container)?.querySelector<HTMLElement>('[data-slot="select-trigger"]') ?? null;
+  /** the quick-add category input shows the current pick. */
+  const categoryTrigger = (container: HTMLElement) => quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="purchase-quick-category"]') ?? null;
 
   /** open the inline create form */
   async function toggleQuick(container: HTMLElement) {
@@ -977,8 +977,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     // fails if the pick was dropped back to the «—» placeholder
     const trigger = categoryTrigger(container);
     expect(trigger).not.toBeNull();
-    expect(trigger?.textContent).toContain("تصنيف");
-    expect(trigger?.textContent).not.toContain("—");
+    expect(trigger?.value).toBe("تصنيف");
     // and the fields that must NOT survive are still cleared: the quantity is
     // back to its seed and the previous name is gone
     expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')?.value).toBe("1");
@@ -1095,7 +1094,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     const lineCost = (container: HTMLElement, itemId: string) => container.querySelector<HTMLInputElement>(`input[name="unitCost-${itemId}"]`);
     const createRow = (container: HTMLElement) => container.querySelector<HTMLTableRowElement>('[data-testid="purchase-line-create-row"]');
     const lineForm = (container: HTMLElement) => container.querySelector<HTMLFormElement>('[data-testid="purchase-line-product-form"]');
-    const lineCategoryTrigger = (container: HTMLElement) => lineForm(container)?.querySelector<HTMLElement>('[data-slot="select-trigger"]') ?? null;
+    const lineCategoryTrigger = (container: HTMLElement) => lineForm(container)?.querySelector<HTMLInputElement>('[data-testid="purchase-line-category"]') ?? null;
 
     /** forget the creates made so far, so a test's assertions see only its own */
     function forgetCreates() {
@@ -1977,8 +1976,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       await openCreate(container, "item-منتج ب");
       // the one category pick serves the next product: the trigger carries the
       // selected label, not the «—» placeholder
-      expect(lineCategoryTrigger(container)?.textContent).toContain("تصنيف");
-      expect(lineCategoryTrigger(container)?.textContent).not.toContain("—");
+      expect(lineCategoryTrigger(container)?.value).toBe("تصنيف");
       // …while the previous product's name does not follow the owner around
       expect(lineForm(container)?.querySelector<HTMLInputElement>('[data-testid="line-product-name"]')?.value).toBe("");
     });

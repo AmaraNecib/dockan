@@ -43,6 +43,12 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => ({ items: [{ id: "cat-1", name: "تصنيف" }] }),
       }),
     },
+    categoriesCreate: {
+      mutationOptions: (opts?: { onSuccess?: (category: { id: string; name: string }) => void }) => ({
+        mutationFn: async (input: { name: string }) => ({ id: "cat-2", name: input.name }),
+        ...opts,
+      }),
+    },
     catalogSearch: {
       queryOptions: () => ({
         queryKey: ["catalogSearch"],
@@ -229,8 +235,8 @@ describe("sale route reset (header New Sale action)", () => {
     await waitFor(() => document.querySelector('[data-testid="sale-quick-form"]') !== null);
     // the trigger must name the category it will save into, not merely render
     await waitFor(() => {
-      const category = document.querySelector('[data-testid="sale-quick-category"]');
-      return category !== null && category.textContent?.includes("تصنيف") === true;
+      const category = document.querySelector<HTMLInputElement>('[data-testid="sale-quick-category"]');
+      return category !== null && category.value.includes("تصنيف");
     });
 
     const quickInput = (name: string): HTMLInputElement => {

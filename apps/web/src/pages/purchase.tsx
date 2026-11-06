@@ -10,12 +10,12 @@ import { PackagePlus, X } from "lucide-react";
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
+import { EntityPicker } from "@/components/entity-picker";
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { draftBlank, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import { PURCHASE_QUICK, type PurchaseQuickFields } from "@/lib/purchase-quick";
@@ -698,29 +698,14 @@ export function PurchasePage() {
                     {t("purchasesQuickBarcode")}
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" dir="ltr" value={quick.fields.barcode} onChange={(e) => quick.setField("barcode", e.target.value)} />
                   </label>
-                  <label className="grid gap-1 text-sm font-medium">
-                    {t("purchasesQuickCategory")}
-                    <Select
-                      value={quick.fields.categoryId}
-                      onValueChange={(value) => quick.setField("categoryId", value ?? "")}
-                      items={[
-                        { value: "", label: "—" },
-                        ...(categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []),
-                      ]}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="—" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="">—</SelectItem>
-                        {categories.data?.items.map((category) => (
-                          <SelectItem key={category.id} value={category.id}>
-                            {category.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
+                  <EntityPicker
+                    label={t("purchasesQuickCategory")}
+                    options={[{ id: "", name: "—" }, ...(categories.data?.items ?? [])]}
+                    value={quick.fields.categoryId}
+                    onChange={(value) => quick.setField("categoryId", value)}
+                    noMatchesLabel={t("categoriesNoMatches")}
+                    testId="purchase-quick-category"
+                  />
                   <label className="grid gap-1 text-sm font-medium">
                     {t("itemsSell")}
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quick.fields.sellPrice} onChange={(e) => quick.setField("sellPrice", e.target.value)} />
@@ -895,29 +880,14 @@ export function PurchasePage() {
                                       data-testid="line-product-name"
                                     />
                                   </label>
-                                  <label className="grid gap-1 text-sm font-medium">
-                                    {t("purchasesLineProductCategory")}
-                                    <Select
-                                      value={lineDraft.categoryId}
-                                      onValueChange={(value) => patchLineDraft({ categoryId: value ?? "" })}
-                                      items={[
-                                        { value: "", label: "—" },
-                                        ...(categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []),
-                                      ]}
-                                    >
-                                      <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="—" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="">—</SelectItem>
-                                        {categories.data?.items.map((category) => (
-                                          <SelectItem key={category.id} value={category.id}>
-                                            {category.name}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
-                                  </label>
+                                  <EntityPicker
+                                    label={t("purchasesLineProductCategory")}
+                                    options={[{ id: "", name: "—" }, ...(categories.data?.items ?? [])]}
+                                    value={lineDraft.categoryId}
+                                    onChange={(value) => patchLineDraft({ categoryId: value })}
+                                    noMatchesLabel={t("categoriesNoMatches")}
+                                    testId="purchase-line-category"
+                                  />
                                   <label className="grid gap-1 text-sm font-medium">
                                     {t("itemsSell")}
                                     <input

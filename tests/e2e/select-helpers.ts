@@ -1,18 +1,25 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** Select an item from the themed Base UI Select popup by its visible label. */
+/** Select a visible option from either the themed Select or a searchable entity picker. */
 export async function chooseSelectOption(page: Page, trigger: Locator, name: string): Promise<void> {
-  await trigger.click();
-  const option = page.getByRole("option", { name });
+  const isCombobox = await trigger.getAttribute("role") === "combobox";
+  if (isCombobox) {
+    await trigger.fill(name);
+  } else {
+    await trigger.click();
+  }
+  const option = page.getByRole("option", { name, exact: true });
   await expect(option).toBeVisible();
   await option.click();
-  // the popup closes once the selection is committed
-  await expect(option).toBeHidden();
+  if (isCombobox) await expect(trigger).toHaveValue(name);
+  else await expect(option).toBeHidden();
 }
 
-/** Open a themed Select and wait for a lazily loaded option to appear. */
+/** Open a selector and wait for a lazily loaded option to appear. */
 export async function expectSelectOption(page: Page, trigger: Locator, name: string): Promise<void> {
-  await trigger.click();
-  await expect(page.getByRole("option", { name })).toBeVisible();
+  const isCombobox = await trigger.getAttribute("role") === "combobox";
+  if (isCombobox) await trigger.fill(name);
+  else await trigger.click();
+  await expect(page.getByRole("option", { name, exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
 }

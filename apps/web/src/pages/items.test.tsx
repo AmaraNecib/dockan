@@ -385,30 +385,6 @@ async function openAddTab(): Promise<void> {
   await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
 }
 
-/** Base UI arms selection on pointerdown, then commits on click; the async act
- * wraps the floating-positioner updates these dispatch. */
-async function openSelectPopup(trigger: HTMLElement) {
-  await act(async () => {
-    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-}
-
-async function chooseOption(label: string) {
-  await waitFor(() => Array.from(document.querySelectorAll("[role='option']")).some((option) => option.textContent?.includes(label)));
-  const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find((candidate) =>
-    candidate.textContent?.includes(label),
-  );
-  if (option === undefined) throw new Error(`option not found: ${label}`);
-  await act(async () => {
-    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
-    option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-}
-
 beforeEach(() => {
   items = [baseItem(), baseItem({ id: "item-2", name: "فلتر زيت", categoryId: "cat-2", categoryName: "فلاتر", costPrice: 200, sellingPrice: 300, stockOnHand: 0 })];
   createInputs.length = 0;
@@ -1121,6 +1097,24 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
 });
 
 describe("stock form prefill", () => {
+  it("searches items beyond the initial list and binds costs to the picked record", async () => {
+    items = [
+      baseItem(),
+      ...Array.from({ length: 25 }, (_, index) => baseItem({ id: `item-${index + 2}`, name: `منتج ${index + 2}` })),
+      baseItem({ id: "item-late", name: "آلات التخزين", costPrice: 850, sellingPrice: 1250 }),
+    ];
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+
+    setInput("stock-item", "الات التخزين");
+    await waitFor(() => document.querySelector('[data-testid="stock-item-option"]')?.textContent === "آلات التخزين");
+    click("stock-item-option");
+
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "850");
+    expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("1,250");
+  });
+
   it("shows the selling price and prefills the cost from the selected item", async () => {
     await mount();
     await openAddTab();
@@ -1128,8 +1122,9 @@ describe("stock form prefill", () => {
     await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
     expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("150");
 
-    await openSelectPopup(el<HTMLElement>('[data-testid="stock-item"]'));
-    await chooseOption("فلتر زيت");
+    setInput("stock-item", "فلتر زيت");
+    await waitFor(() => document.querySelector('[data-testid="stock-item-option"]') !== null);
+    click("stock-item-option");
 
     await waitFor(() => inputByTestId("stock-unit-cost").value === "200");
     expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("300");
@@ -1305,8 +1300,9 @@ describe("inline item edit", () => {
     setInput("edit-sell", "180");
     setInput("edit-threshold", "9");
 
-    await openSelectPopup(el<HTMLElement>('[data-testid="edit-category"]'));
-    await chooseOption("فلاتر");
+    setInput("edit-category", "فلاتر");
+    await waitFor(() => document.querySelector('[data-testid="edit-category-option"]') !== null);
+    click("edit-category-option");
 
     click("edit-save");
     await waitFor(() => updateInputs.length === 1);

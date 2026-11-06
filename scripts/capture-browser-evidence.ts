@@ -62,7 +62,7 @@ export async function assertPortFree(port: number): Promise<void> {
     server.listen(port, "127.0.0.1", () => server.close((error) => error ? reject(error) : resolve()));
   });
 }
-async function waitReady(url: string, child: ChildProcess, timeoutMs = 30_000): Promise<void> {
+export async function waitReady(url: string, child: ChildProcess, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "no response";
   while (Date.now() < deadline) {

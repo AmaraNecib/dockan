@@ -1,9 +1,10 @@
 import { expect, it } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertPortFree, capture, validateSource } from "./capture-browser-evidence";
+import { assertPortFree, capture, validateSource, waitReady } from "./capture-browser-evidence";
+import { spawnOwnedServer, stopOwnedServer } from "../tests/e2e/owned-server-process";
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", shell: false });
@@ -42,6 +43,13 @@ it("detects a port held by an unrelated listener instead of reusing it", async (
   try {
     await expect(assertPortFree(port)).rejects.toThrow(`Port ${port} is occupied`);
   } finally { await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())); }
+});
+
+it("fails readiness immediately when its owned server exits", async () => {
+  const node = execFileSync("node", ["-p", "process.execPath"], { encoding: "utf8" }).trim();
+  const child: ChildProcess = spawnOwnedServer(node, ["-e", "process.exit(7)"], { stdio: "ignore" });
+  await expect(waitReady("http://127.0.0.1:1/", child, 2_000)).rejects.toThrow("exited before readiness");
+  await stopOwnedServer(child).catch(() => undefined);
 });
 
 it("rejects invalid TCP port values and identical before/after revisions", async () => {

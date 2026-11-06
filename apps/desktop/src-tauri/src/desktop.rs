@@ -777,7 +777,9 @@ pub async fn backup_restore_choose(app: AppHandle, window: WebviewWindow, sessio
         let Some(path) = path else { return Ok(None); };
         let id = generate_boot_token();
         let name = path.file_name().ok_or(crate::backup_restore::FAILED)?.to_string_lossy().into_owned();
-        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection = Some(RestoreSelection { id: id.clone(), path, pid, session: session_token, sha256: None });
+        let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+        slot.restore_outcome = None;
+        slot.restore_selection = Some(RestoreSelection { id: id.clone(), path, pid, session: session_token, sha256: None });
         Ok(Some(serde_json::json!({"id":id,"name":name})))
     }).await
 }
@@ -824,6 +826,24 @@ pub struct RestoreConfirmation {
     confirmed: bool,
 }
 
+// A terminal journal from an earlier attempt is history, not this attempt's
+// verdict. The fresh sidecar must recover a pending intent before this is read.
+fn restore_completion(data_dir: &Path, previous: Option<&[u8]>, after: Option<&[u8]>) -> Result<serde_json::Value, String> {
+    use crate::backup_restore::FAILED;
+    let changed = after.is_some() && after != previous;
+    let intent = after.and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+    let status = if changed {
+        match intent.as_ref().and_then(|v| v.get("state")).and_then(|v| v.as_str()) {
+            Some("committed") => "restored",
+            Some("rolled-back") => "rolled-back",
+            _ => return Err(FAILED.to_string()),
+        }
+    } else { "refused" };
+    let safety_file = intent.as_ref().filter(|_| changed).and_then(|v| v.get("safetyFile")).and_then(|v| v.as_str())
+        .filter(|name| name.starts_with("restore-") && name.ends_with(".dknvbak") && !name.contains(['/', '\\']));
+    Ok(serde_json::json!({"status":status, "safetyDirectory":data_dir.join("vault"), "safetyPath":safety_file.map(|name| data_dir.join("vault").join(name)), "selectedUnchanged":true}))
+}
+
 #[tauri::command]
 pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, session_token: String, confirmation: RestoreConfirmation) -> Result<(), String> {
     run_broker_task(move || {
@@ -855,7 +875,7 @@ pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, ses
         }
         let intent_path = config.data_dir.join("vault/restore-intent.json");
         let previous_intent = std::fs::read(&intent_path).ok();
-        let result = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"install","path":path,"credential":credential,"currentCredential":current_credential,"expectedSha256":expected_sha256,"confirmed":true}), CLEANUP_REPLY_TIMEOUT);
+        let _result = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"install","path":path,"credential":credential,"currentCredential":current_credential,"expectedSha256":expected_sha256,"confirmed":true}), CLEANUP_REPLY_TIMEOUT);
         if shutdown_began() || !crate::backup_restore::worker_stopped() { return Err(FAILED.to_string()); }
         let sidecar = launch_verified_sidecar(&config)?;
         if !install_sidecar(&mut *state.0.lock().map_err(|_| FAILED)?, sidecar) { return Err(FAILED.to_string()); }
@@ -863,11 +883,7 @@ pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, ses
         // verdict AFTER fresh startup has recovered pending intents, never
         // infer that rollback happened merely because the pipe failed.
         let after = std::fs::read(&intent_path).ok();
-        let intent = after.as_ref().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
-        let new_intent = after != previous_intent;
-        let restored = result.is_ok() || new_intent && intent.as_ref().and_then(|v| v.get("state")).and_then(|v| v.as_str()) == Some("committed");
-        let safety_file = intent.as_ref().and_then(|v| v.get("safetyFile")).and_then(|v| v.as_str()).filter(|name| name.starts_with("restore-") && name.ends_with(".dknvbak") && !name.contains(['/', '\\']));
-        let outcome = serde_json::json!({"status":if restored {"restored"} else {"failed"}, "safetyDirectory":config.data_dir.join("vault"), "safetyPath":safety_file.map(|name| config.data_dir.join("vault").join(name)), "selectedUnchanged":true});
+        let outcome = restore_completion(&config.data_dir, previous_intent.as_deref(), after.as_deref())?;
         state.0.lock().map_err(|_| FAILED)?.restore_outcome = Some(outcome);
         if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
         window.navigate(setup_navigation_url(config.port, &config.boot_token).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
@@ -1897,6 +1913,22 @@ mod tests {
                 assert_eq!(commands.iter().any(|c| matches!(&c.context, ExecutionContext::Remote { url: p } if p.test(&url))), expected, "{name} {origin}");
             }
         }
+    }
+
+    #[test]
+    fn backup_restore_outcome_does_not_reuse_a_previous_rollback_for_a_refusal() {
+        let old = br#"{"state":"rolled-back","safetyFile":"restore-old.dknvbak"}"#;
+        let outcome = restore_completion(Path::new("C:/fixture"), Some(old), Some(old)).unwrap();
+        assert_eq!(outcome["status"], "refused");
+        assert_eq!(outcome["safetyPath"], serde_json::Value::Null);
+        let rolled = br#"{"state":"rolled-back","safetyFile":"restore-new.dknvbak"}"#;
+        let outcome = restore_completion(Path::new("C:/fixture"), Some(old), Some(rolled)).unwrap();
+        assert_eq!(outcome["status"], "rolled-back");
+        assert!(outcome["safetyPath"].as_str().unwrap().contains("restore-new.dknvbak"));
+        let committed = br#"{"state":"committed","safetyFile":"restore-new.dknvbak"}"#;
+        assert_eq!(restore_completion(Path::new("C:/fixture"), Some(old), Some(committed)).unwrap()["status"], "restored");
+        let pending = br#"{"state":"pending","safetyFile":"restore-new.dknvbak"}"#;
+        assert!(restore_completion(Path::new("C:/fixture"), Some(old), Some(pending)).is_err());
     }
 
     #[test]

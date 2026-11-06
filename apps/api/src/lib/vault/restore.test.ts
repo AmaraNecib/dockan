@@ -152,6 +152,30 @@ for (const step of ["safety", "intent", "snapshot", "header", "migrated", "verif
   }, 15000);
 }
 
+it("does not replay terminal rollback over records saved after recovery on later boots", async () => {
+  const current = temp();
+  await fixture(current, "Original record", CURRENT.passphrase);
+  const incoming = await fixture(temp(), "Replacement record", INCOMING.passphrase);
+  await expect(replaceVaultOffline({ dataDir: current, bundle: incoming.bundle, credential: INCOMING, currentCredential: CURRENT,
+    onProgress: (step) => { if (step === "header") throw new Error("injected install failure"); },
+  })).rejects.toThrow("injected install failure");
+  const journalPath = path.join(current, "vault/restore-intent.json");
+  const journal = fs.readFileSync(journalPath);
+  expect(JSON.parse(journal.toString()).state).toBe("rolled-back");
+  const manager = new VaultManager({ dataDir: current, legacyDbPath: path.join(current, "dokan.db"), logger: new AppLogger(current), kdf: KDF });
+  await manager.unlock(CURRENT.passphrase);
+  const conn = createEncryptedConnection({ vaultId: manager.metadata().vaultId, masterKey: manager.requireMasterKey(), snapshotPath: manager.snapshotPath });
+  try { await createDrizzleStore(conn).createCategory({ name: "Saved after rollback" }); }
+  finally { await conn.close(); manager.close(); }
+  const saved = readBundle(current);
+  for (let boot = 0; boot < 2; boot++) {
+    await bootAndStop(current);
+    expect(readBundle(current).equals(saved)).toBe(true);
+    expect(fs.readFileSync(journalPath).equals(journal)).toBe(true);
+    expect((await names(current, CURRENT.passphrase)).names).toContain("Saved after rollback");
+  }
+}, 15000);
+
 it("retains a retryable intent when rollback itself is interrupted between the encrypted pair", async () => {
   const current = temp();
   await fixture(current, "Original record", CURRENT.passphrase);

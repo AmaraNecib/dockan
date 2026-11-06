@@ -1,5 +1,6 @@
 // Opt-in driver for desktop::restore_webview_tests. Real WebView2, native
-// picker, registered IPC and the compiled sidecar; disposable fixtures only.
+// picker cancellation, registered IPC and the compiled sidecar. Selection
+// alone uses a test-only native adapter; disposable fixtures only.
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -20,9 +21,12 @@ corrupt[corrupt.length - 1] = (corrupt[corrupt.length - 1] ?? 0) ^ 1;
 fs.writeFileSync(path.join(fixture.root, "corrupt.dknvbak"), corrupt);
 async function command(args: string[]) {
   const child = Bun.spawn(args, { cwd: path.resolve(import.meta.dir, "../../.."), stdout: "pipe", stderr: "pipe" });
-  const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-  if (code !== 0) throw new Error(`${args[0]} exited ${code}: ${out} ${err}`);
-  return out;
+  const timeout = setTimeout(() => child.kill(), 30_000);
+  try {
+    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if (code !== 0) throw new Error(`${args[0]} exited ${code}: ${out} ${err}`);
+    return out;
+  } finally { clearTimeout(timeout); }
 }
 const deadline = Date.now() + 30_000;
 let browser;
@@ -58,7 +62,7 @@ try {
   await panel.screenshot({ path: path.join(evidence, "restore-after-idle.png") });
   await backupSection.screenshot({ path: path.join(evidence, "backups-after.png") });
   async function pick(file?: string) {
-    const helper = command(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "apps/desktop/tests/restore-picker.ps1", "-AppProcessId", String(fixture.pid), ...(file ? ["-SelectedPath", path.join(fixture.root, file)] : ["-Cancel"])]);
+    const helper = file ? Promise.resolve("") : command(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "apps/desktop/tests/restore-picker.ps1", "-AppProcessId", String(fixture.pid)]);
     await panel.getByRole("button", { name: "اختيار نسخة للاستعادة", exact: true }).click();
     try {
       await helper;
@@ -111,8 +115,10 @@ try {
   await expect(page.getByTestId("vault-passphrase")).toBeVisible();
   await expect(page.getByTestId("restore-outcome")).toContainText("لم تكتمل الاستعادة");
   await page.getByTestId("restore-outcome").screenshot({ path: path.join(evidence, "restore-after-rollback.png") });
+  console.log("CHECK original-credential unlock after rollback; navigation waits for the gate to finish");
   await page.getByTestId("vault-passphrase").fill(fixtureCredential);
   await page.getByTestId("vault-unlock-submit").click();
+  await expect(page.getByTestId("vault-passphrase")).not.toBeVisible();
   await page.goto(`${fixture.origin}/categories`);
   await expect(page.getByText("Original native record", { exact: true })).toBeVisible();
   console.log("PASS actual post-install migration failure, locked restart and original saved records");
@@ -132,13 +138,14 @@ try {
   await Bun.sleep(2000);
   await page.getByTestId("vault-passphrase").fill(incomingCredential);
   await page.getByTestId("vault-unlock-submit").click();
+  await expect(page.getByTestId("vault-passphrase")).not.toBeVisible();
   await page.goto(`${fixture.origin}/categories`);
   await expect(page.getByText("Restored native record", { exact: true })).toBeVisible();
   await expect(page.getByText("Original native record", { exact: true })).toHaveCount(0);
   await Bun.sleep(2000);
   await agent("record", "stop"); recording = false;
   expect(createHash("sha256").update(fs.readFileSync(chosen)).digest("hex")).toBe(selectedBefore);
-  fs.writeFileSync(path.join(evidence, "native-results.json"), JSON.stringify({ realWebview: true, realPicker: true, realRegisteredIpc: true, realCompiledSidecar: true, savedRecord: "Restored native record", independentSafetyRecord: "Original native record", selectedSha256: selectedBefore, safetyPath }, null, 2));
+  fs.writeFileSync(path.join(evidence, "native-results.json"), JSON.stringify({ realWebview: true, realPickerCancellation: true, pickerSelection: "test-only native fixture adapter; Open automation unsupported on harness desktop", realRegisteredIpc: true, realCompiledSidecar: true, savedRecord: "Restored native record", independentSafetyRecord: "Original native record", selectedSha256: selectedBefore, safetyPath }, null, 2));
   console.log("PASS real registered wrapper restore, fresh locked gate, incoming unlock, persisted records and independent encrypted safety reopen");
 } catch (error) {
   console.error("Final renderer state:", await page.locator("body").innerText());

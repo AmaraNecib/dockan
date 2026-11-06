@@ -18,7 +18,7 @@ const previewSchema = z.object({
   schemaVersion: z.number().int().nonnegative(), supportedSchemaVersion: z.number().int().nonnegative(),
   compatible: z.literal(true), sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
-const outcomeSchema = z.object({ status: z.enum(["restored", "failed"]), safetyDirectory: z.string(), safetyPath: z.string().nullish(), selectedUnchanged: z.literal(true) });
+const outcomeSchema = z.object({ status: z.enum(["restored", "rolled-back", "refused"]), safetyDirectory: z.string(), safetyPath: z.string().nullish(), selectedUnchanged: z.literal(true) });
 export type RestoreSelection = z.infer<typeof selectionSchema>;
 export type RestorePreview = z.infer<typeof previewSchema>;
 export type RestoreOutcome = z.infer<typeof outcomeSchema>;

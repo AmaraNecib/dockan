@@ -1,13 +1,41 @@
 //! Native file selection. No renderer-provided path reaches the restore worker.
 use std::path::PathBuf;
 
+pub fn choose(owner: isize) -> Result<Option<PathBuf>, String> {
+    #[cfg(all(test, feature = "native-restore-webview-test"))]
+    if let Some(Some(path)) = TEST_SELECTIONS.lock().unwrap().pop_front() {
+        return checked_selection(path).map(Some);
+    }
+    choose_native(owner)
+}
+
+// Only this lib-test build can replace selection. No runtime environment,
+// renderer command or production executable can enable the fixture adapter.
+#[cfg(all(test, feature = "native-restore-webview-test"))]
+static TEST_SELECTIONS: std::sync::Mutex<std::collections::VecDeque<Option<PathBuf>>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+#[cfg(all(test, feature = "native-restore-webview-test"))]
+pub(crate) fn fixture_selections(paths: Vec<Option<PathBuf>>) {
+    *TEST_SELECTIONS.lock().unwrap() = paths.into();
+}
+
+fn checked_selection(path: PathBuf) -> Result<PathBuf, String> {
+    if !path.is_absolute()
+        || !path.extension().is_some_and(|s| s.eq_ignore_ascii_case("dknvbak"))
+        || !path.is_file()
+    {
+        return Err(super::backup_restore::FAILED.to_string());
+    }
+    std::fs::canonicalize(path).map_err(|_| super::backup_restore::FAILED.to_string())
+}
+
 #[cfg(not(windows))]
-pub fn choose(_owner: isize) -> Result<Option<PathBuf>, String> {
+fn choose_native(_owner: isize) -> Result<Option<PathBuf>, String> {
     Err("VAULT_RESTORE_UNSUPPORTED".to_string())
 }
 
 #[cfg(windows)]
-pub fn choose(owner: isize) -> Result<Option<PathBuf>, String> {
+fn choose_native(owner: isize) -> Result<Option<PathBuf>, String> {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStringExt;
     #[repr(C)]
@@ -64,8 +92,5 @@ pub fn choose(owner: isize) -> Result<Option<PathBuf>, String> {
     }
     let end = file.iter().position(|c| *c == 0).ok_or(super::backup_restore::FAILED)?;
     let path = PathBuf::from(std::ffi::OsString::from_wide(&file[..end]));
-    if !path.is_absolute() || path.extension().and_then(|s| s.to_str()) != Some("dknvbak") || !path.is_file() {
-        return Err(super::backup_restore::FAILED.to_string());
-    }
-    Ok(Some(std::fs::canonicalize(path).map_err(|_| super::backup_restore::FAILED)?))
+    checked_selection(path).map(Some)
 }

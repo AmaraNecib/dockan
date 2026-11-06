@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import "../../lib/i18n";
-import { BackupRestore } from "./backup-restore";
+import { BackupRestore, BackupRestoreOutcome } from "./backup-restore";
 import { clearVaultSessionToken, storeVaultSessionToken } from "../../lib/vault-client";
 
 import type { NativeRestoreReply, RestoreInvokeArgs, RestorePreview } from "../../lib/backup-restore";
@@ -78,6 +78,20 @@ it("shows honest file time and schema, then cancels confirmation without replace
   await click("اختيار نسخة للاستعادة");
   expect(host.querySelector<HTMLInputElement>("#restore-backup-secret")?.value).toBe("");
 });
+it("hides the previous rollback notice during a new selected-file attempt", async () => {
+  bridge(async (command) => {
+    if (command === "backup_restore_outcome") return { status: "rolled-back", safetyDirectory: "C:/fixture/vault", selectedUnchanged: true };
+    if (command === "backup_restore_choose") return selected;
+    if (command === "backup_restore_preview") throw "VAULT_RESTORE_FAILED";
+    return null;
+  });
+  await act(async () => root.render(<BackupRestore key="outcome" />));
+  expect(host.querySelector('[data-testid="restore-outcome"]')).not.toBeNull();
+  await click("اختيار نسخة للاستعادة");
+  await input("restore-backup-secret", "wrong fixture"); await click("فحص النسخة");
+  expect(host.querySelector('[data-testid="restore-outcome"]') === null).toBe(true);
+  expect(host.querySelector('[role="alert"]')).not.toBeNull();
+});
 it("requires explicit confirmation and current credentials, submits only once while waiting", async () => {
   let finish: (() => void) | undefined;
   bridge(async (command, args) => {
@@ -101,6 +115,34 @@ it("requires explicit confirmation and current credentials, submits only once wh
   expect(host.textContent).toContain("لا تغلق التطبيق");
   await act(async () => finish?.());
 });
+it("associates a current-credential refusal and clears it when corrected", async () => {
+  bridge(async (command) => {
+    if (command === "backup_restore_choose") return selected;
+    if (command === "backup_restore_preview") return preview;
+    if (command === "backup_restore_confirmed") throw "VAULT_RESTORE_CURRENT_CREDENTIAL";
+    return null;
+  });
+  await click("اختيار نسخة للاستعادة");
+  await input("restore-backup-secret", "incoming fixture"); await click("فحص النسخة");
+  await input("restore-current-secret", "wrong current fixture");
+  await act(async () => host.querySelector<HTMLInputElement>("#restore-confirm")?.click());
+  await click("استبدال بيانات المتجر");
+  const field = host.querySelector<HTMLInputElement>("#restore-current-secret");
+  expect(field?.getAttribute("aria-invalid")).toBe("true");
+  expect(field?.getAttribute("aria-describedby")).toBe("restore-error");
+  expect(document.activeElement?.id).toBe("restore-current-secret");
+  expect(field?.value).toBe("");
+  expect(host.querySelector<HTMLInputElement>("#restore-confirm")?.checked).toBe(false);
+  await input("restore-current-secret", "correct current fixture");
+  expect(host.querySelector("#restore-error") === null).toBe(true);
+});
+for (const [status, message] of [["restored", "اكتملت الاستعادة"], ["rolled-back", "أُعيدت بيانات المتجر السابقة"], ["refused", "لم يبدأ الاستبدال"]] as const) {
+  it(`distinguishes the native ${status} outcome`, async () => {
+    bridge(async () => ({ status, safetyDirectory: "C:/fixture/vault", selectedUnchanged: true }));
+    await act(async () => root.render(<BackupRestoreOutcome />));
+    expect(host.querySelector('[role="status"]')?.textContent).toContain(message);
+  });
+}
 it("retains the selection after a refused credential and lets the owner retry", async () => {
   let attempts = 0;
   bridge(async (command, args) => {
@@ -112,6 +154,9 @@ it("retains the selection after a refused credential and lets the owner retry", 
   await click("اختيار نسخة للاستعادة"); await input("restore-backup-secret", "wrong fixture"); await click("فحص النسخة");
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("تحقّق");
   expect(host.textContent).toContain(selected.name);
+  expect(host.querySelector('#restore-backup-secret')?.getAttribute('aria-invalid')).toBe('true');
+  expect(host.querySelector('#restore-backup-secret')?.getAttribute('aria-describedby')).toBe('restore-error');
+  expect(document.activeElement?.id).toBe('restore-backup-secret');
   await input("restore-backup-secret", "incoming fixture"); await click("فحص النسخة");
   expect(host.querySelector("#restore-confirm")).not.toBeNull();
   expect(calls.filter(c => c.command === "backup_restore_choose")).toHaveLength(1);

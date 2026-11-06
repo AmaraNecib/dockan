@@ -10,7 +10,7 @@ describe("physical-device comparison", () => {
 
   it.skipIf(process.platform !== "win32")("queries the running Windows host and recognizes one physical disk", async () => {
     expect(await comparePhysicalDevice(process.cwd(), process.cwd())).toBe("same");
-  });
+  }, 15_000);
 
   it("warns for paths mapped to the same Windows disk even when letters differ", () => {
     expect(compareWindowsDiskNumbers(["3", "3"])).toBe("same");

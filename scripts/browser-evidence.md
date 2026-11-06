@@ -1,6 +1,6 @@
 # Browser evidence runner
 
-`capture-browser-evidence.ts` owns the Dokan API and web processes, gives them a private data directory and four distinct lane ports, waits for both listeners, then records a 1920×1080 journey. It captures locator screenshots and creates CRF 18 MP4 plus a palette GIF. It checks duration, stream dimensions and hashes, and writes a failure manifest for setup or capture errors. It never downloads tools or overwrites an output directory.
+`capture-browser-evidence.ts` owns the Dokan API and web processes, gives them a private data directory and four distinct lane ports, waits for both listeners, then records a 1920×1080 journey. It captures locator screenshots and creates CRF 18 MP4 plus a palette GIF. It checks duration, stream dimensions and hashes, records the journey module's digest, and writes a failure manifest for setup or capture errors. It never downloads tools or overwrites an output directory.
 
 ## Journey module
 
@@ -19,7 +19,7 @@ A journey module default-exports:
 
 `runtime.urls.api`, `runtime.urls.web`, and all four `runtime.ports` values are typed. The browser URLs use `dokan.localhost`, which Dokan uses for its cookie scope; readiness probes still use loopback. The example disables the encrypted vault because it captures ordinary product flows. Remove that setting for a vault journey and create or unlock the vault in `setup`. `setup` runs in an unrecorded browser context; use it for login or other setup. Keep business selectors and assertions inside `journey`. The runner owns process startup, safety environment, readiness, media and cleanup.
 
-Server commands use argument arrays and `shell: false`. `cwd` is relative to the exact source root and must resolve inside it. Server `env` cannot replace `DOKAN_DATA_DIR`, `DOKAN_PORT_ROOT`, or any allocated port. The runner assigns those after journey environment values.
+Server commands use argument arrays and `shell: false`. The manifest records the journey module's absolute path, SHA-256 and byte size, and the runner rejects a change during capture. `cwd` is relative to the exact source root and must resolve inside it. Server `env` cannot replace `DOKAN_DATA_DIR`, `DOKAN_PORT_ROOT`, or any allocated port. The runner assigns those after journey environment values.
 
 ## Capture a comparison pair
 

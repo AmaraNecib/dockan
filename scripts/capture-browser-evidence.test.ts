@@ -152,6 +152,7 @@ it("writes a failed manifest for journey contract errors and preserves an output
     const manifest = JSON.parse(fs.readFileSync(path.join(output, "manifest.json"), "utf8"));
     expect(manifest.status).toBe("failed");
     expect(manifest.artifacts["runner.log"].sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(manifest.journey).toEqual({ path: await fs.promises.realpath(journey), sha256: createHash("sha256").update(fs.readFileSync(journey)).digest("hex"), bytes: fs.statSync(journey).size });
     fs.mkdirSync(collision); fs.writeFileSync(path.join(collision, "marker"), "keep this evidence");
     await expect(capture({ ...options, output: collision })).rejects.toThrow("refusing to overwrite evidence");
     expect(fs.readFileSync(path.join(collision, "marker"), "utf8")).toBe("keep this evidence");

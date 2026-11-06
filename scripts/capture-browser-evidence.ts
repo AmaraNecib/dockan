@@ -163,6 +163,7 @@ export async function capture(options: Options): Promise<void> {
   let failure = "Capture did not complete";
   let preserveData = false;
   let recordedDuration: number | null = null;
+  let journeyIdentity: { path: string; sha256: string; bytes: number } | null = null;
   let logOut: number | undefined, logErr: number | undefined;
   try {
     logOut = fs.openSync(logs.server, "wx");
@@ -171,8 +172,11 @@ export async function capture(options: Options): Promise<void> {
     await preflightExecutables(source);
     browser = await chromium.launch({ headless: true });
     const runtime: EvidenceRuntime = { ports: options.ports, urls: runtimeUrls(options.ports) };
-    // SAFETY: imported journey code is repository-authored; the runtime contract is validated before servers start.
-    const journeyModule = await import(pathToFileURL(options.journey).href) as { default?: EvidenceJourney };
+    const canonicalJourney = await fs.promises.realpath(options.journey);
+    const journeyStat = await fs.promises.stat(canonicalJourney);
+    journeyIdentity = { path: canonicalJourney, sha256: await sha256(canonicalJourney), bytes: journeyStat.size };
+    // SAFETY: imported journey code is explicitly supplied by the operator and its initial digest is recorded and rechecked.
+    const journeyModule = await import(pathToFileURL(canonicalJourney).href) as { default?: EvidenceJourney };
     journey = journeyModule.default;
     if (!journey || !Array.isArray(journey.servers) || !journey.journey) throw new Error("Journey must export API and web servers plus journey(page, evidence, runtime)");
     validateServerContract(journey.servers, options.ports);
@@ -219,13 +223,17 @@ export async function capture(options: Options): Promise<void> {
     try {
       const final = await verifySourceSnapshot(source, head, initialTree).catch((error) => { status = "failed"; failure += `\n${String(error)}`; return { head: "unavailable", tree: "unavailable", clean: "unavailable" }; });
       const finalTree = final.tree, finalClean = final.clean;
+      if (journeyIdentity) {
+        try { if (await sha256(journeyIdentity.path) !== journeyIdentity.sha256) throw new Error("Journey module changed during capture"); }
+        catch (error) { status = "failed"; failure += `\n${String(error)}`; }
+      }
       await fs.promises.writeFile(logs.runner, `${failure || "Capture passed"}\n`, { flag: "wx" });
       for (const entry of await fs.promises.readdir(options.output, { withFileTypes: true })) {
         if (!entry.isFile() || !/[.](png|webm|mp4|gif|log)$/i.test(entry.name)) continue;
         const file = path.join(options.output, entry.name), stat = await fs.promises.stat(file);
         artifacts[entry.name] = { sha256: await sha256(file), bytes: stat.size };
       }
-      const manifest = { status, comparison: { id: comparisonId, revision: head, against: againstCommit, status: options.comparisonManifest ? "pair-member" : "single-capture", pairedManifest: options.comparisonManifest ?? null },  source: { root: source, revision: head, tree: finalTree, clean: finalClean === "" }, command: { invocation: process.argv, journey: options.journey, servers: journey?.servers ?? null, ports: options.ports }, startedAt, finishedAt: new Date().toISOString(), viewport: VIEWPORT, durationSeconds: recordedDuration, isolatedData: { path: dataDir, removed: !preserveData && !fs.existsSync(dataDir), preservedAfterCleanupFailure: preserveData }, artifacts, logs, failure };
+      const manifest = { status, comparison: { id: comparisonId, revision: head, against: againstCommit, status: options.comparisonManifest ? "pair-member" : "single-capture", pairedManifest: options.comparisonManifest ?? null },  source: { root: source, revision: head, tree: finalTree, clean: finalClean === "" }, journey: journeyIdentity, command: { invocation: process.argv, journey: options.journey, servers: journey?.servers ?? null, ports: options.ports }, startedAt, finishedAt: new Date().toISOString(), viewport: VIEWPORT, durationSeconds: recordedDuration, isolatedData: { path: dataDir, removed: !preserveData && !fs.existsSync(dataDir), preservedAfterCleanupFailure: preserveData }, artifacts, logs, failure };
       const manifestPath = path.join(options.output, "manifest.json");
       await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
       if (options.comparisonManifest && status === "passed") {

@@ -84,9 +84,11 @@ process.stdin.destroy();`);
           const log = fs.readFileSync(path.join(output, "runner.log"));
           expect(manifest.artifacts["runner.log"]).toEqual({ sha256: createHash("sha256").update(log).digest("hex"), bytes: log.length });
           for (const port of Object.values(ports)) await assertPortFree(port);
-          for (const name of ["api", "web"]) {
+          const expectedServers = stage === "launch" || stage === "late-close-failure" ? [] : stage === "readiness" ? ["api"] : ["api", "web"];
+          for (const name of expectedServers) {
             const file = `${pidFile}-${name}`;
-            if (fs.existsSync(file)) expect(() => process.kill(Number(fs.readFileSync(file, "utf8")), 0)).toThrow();
+            expect(fs.existsSync(file)).toBe(true);
+            expect(() => process.kill(Number(fs.readFileSync(file, "utf8")), 0)).toThrow();
           }
         } finally {
           if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }

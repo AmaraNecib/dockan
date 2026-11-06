@@ -5,12 +5,16 @@ import { signIn } from "./auth-helpers";
 import { callRpc, seedCategoryId } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
-test.use({ video: "on" });
+test.use({ video: "on", viewport: { width: 1920, height: 1080 } });
 
 type ItemCreate = { name: string; categoryId: string; costPrice: number; sellingPrice: number; lowStockThreshold: number };
 type InvoiceCreate = { kind: "PURCHASE"; invoiceDate: string; lines: Array<{ itemId: string; quantity: number; unitPrice: number }> };
 
 test("invoice list filters persisted ranges, sorts business dates, and clears defaults (#406)", async ({ page }) => {
+  test.setTimeout(60_000);
+  // These brief holds are only for readable evidence playback. Assertions below
+  // complete each UI transition before the hold; playback remains real-time.
+  const holdForEvidence = () => page.waitForTimeout(2_500);
   await signIn(page);
   const existingInvoices = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
   const stamp = Date.now().toString();
@@ -36,6 +40,12 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
   await page.goto("/invoices");
   const surface = page.getByTestId("invoices-page");
   await expect(surface).toBeVisible();
+  await holdForEvidence();
+  const evidence = path.resolve(process.cwd(), ".scratch/evidence/406");
+  fs.mkdirSync(evidence, { recursive: true });
+  await surface.screenshot({ path: path.join(evidence, "after-invoice-page-review-fix.png") });
+  await page.getByTestId("invoices-range-filters-toggle").click();
+  await expect(page.getByTestId("invoices-range-details")).toHaveAttribute("open", "");
   const fromDate = page.getByTestId("invoices-from-date");
   const toDate = page.getByTestId("invoices-to-date");
   const fromNumber = page.getByTestId("invoices-from-number");
@@ -50,6 +60,7 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
   await toNumber.fill(third.invoiceNumber);
   await expect(rows).toHaveCount(1);
   expect(await visibleNumbers()).toEqual([second.invoiceNumber]);
+  await holdForEvidence();
 
   await fromDate.fill("2090-01-01");
   await toDate.fill("2090-01-03");
@@ -60,23 +71,26 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
   await order.click();
   await page.getByRole("option", { name: "الأقدم أولاً" }).click();
   await expect.poll(visibleNumbers).toEqual([second.invoiceNumber, third.invoiceNumber]);
+  await holdForEvidence();
   await order.click();
   await page.getByRole("option", { name: "الأحدث أولاً" }).click();
   await expect.poll(visibleNumbers).toEqual([third.invoiceNumber, second.invoiceNumber]);
+  await holdForEvidence();
 
   await fromDate.fill("2090-01-03");
   await toDate.fill("2090-01-01");
   await expect(page.getByTestId("invoices-range-error")).toContainText("تاريخ البداية");
   await expect(rows).toHaveCount(0);
+  await holdForEvidence();
 
-  const evidence = path.resolve(process.cwd(), ".scratch/evidence/406");
-  fs.mkdirSync(evidence, { recursive: true });
   await page.getByTestId("invoices-filters-clear").click();
   await expect(rows).toHaveCount(Math.min(existingInvoices.total + 3, 500));
   await expect(page.getByTestId("invoices-range-error")).toHaveCount(0);
+  await holdForEvidence();
   await chooseSelectOption(page, page.getByTestId("invoices-kind-filter"), "المشتريات");
   await chooseSelectOption(page, page.getByTestId("invoices-status-filter"), "غير مدفوعة");
   await page.getByTestId("invoices-search").fill(`range item ${stamp}`);
   await expect(rows).toHaveCount(3);
-  await page.getByTestId("invoices-page").screenshot({ path: path.join(evidence, "after-invoice-page.png") });
+  await holdForEvidence();
+  await page.getByTestId("invoices-page").screenshot({ path: path.join(evidence, "after-invoice-page-review-fix-filtered.png") });
 });

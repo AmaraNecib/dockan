@@ -119,44 +119,7 @@ export function InvoicesPage() {
           }}>{t("invoicesSearchClear")}</Button>
         )}
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <label className="grid gap-1 text-sm">
-          {t("invoicesFromDate")}
-          <Input type="date" value={fromDate} data-testid="invoices-from-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setFromDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
-        </label>
-        <label className="grid gap-1 text-sm">
-          {t("invoicesToDate")}
-          <Input type="date" value={toDate} data-testid="invoices-to-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setToDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
-        </label>
-        <label className="grid gap-1 text-sm">
-          {t("invoicesFromNumber")}
-          <Input value={fromNumber} inputMode="text" data-testid="invoices-from-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setFromNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
-        </label>
-        <label className="grid gap-1 text-sm">
-          {t("invoicesToNumber")}
-          <Input value={toNumber} inputMode="text" data-testid="invoices-to-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setToNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
-        </label>
-        <p className="col-span-2 text-xs text-muted-foreground">{t("invoicesNumberRangeHint")}</p>
-        <label className="grid gap-1 text-sm">
-          {t("invoicesOrder")}
-          <Select value={order} onValueChange={(value) => {
-            // SAFETY: this select exposes only the declared NEWEST/OLDEST options.
-            setOrder((value ?? "NEWEST") as InvoiceOrder); lastFilterRef.current = "order"; pager.reset();
-          }} items={[
-            { value: "NEWEST", label: t("invoicesOrderNewest") },
-            { value: "OLDEST", label: t("invoicesOrderOldest") },
-          ]}>
-            <SelectTrigger className="w-full" data-testid="invoices-order-filter"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="NEWEST">{t("invoicesOrderNewest")}</SelectItem><SelectItem value="OLDEST">{t("invoicesOrderOldest")}</SelectItem></SelectContent>
-          </Select>
-        </label>
-        {hasFilters && <Button className="self-end" variant="outline" data-testid="invoices-filters-clear" onClick={() => {
-          setSearch(""); setDebouncedSearch(""); setKind(""); setStatus(""); setFromDate(""); setToDate(""); setFromNumber(""); setToNumber(""); setOrder("NEWEST"); pager.reset(); searchRef.current?.focus();
-        }}>{t("invoicesFiltersClear")}</Button>}
-      </div>
-      {rangeError !== "" && <p className="mt-2 text-sm text-destructive" role="alert" data-testid="invoices-range-error">{rangeError}</p>}
-
-      <div className="mt-4 grid grid-cols-2 gap-3">
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <label className="grid gap-1 text-sm">
           {t("invoiceKind")}
           <Select
@@ -165,7 +128,6 @@ export function InvoicesPage() {
               // SAFETY: the select renders only "" / SALE / PURCHASE options, so the value is in KindFilter
               setKind((value ?? "") as KindFilter);
               lastFilterRef.current = "kind";
-              // a filter change invalidates the old offset: back to page 1
               pager.reset();
             }}
             items={[
@@ -174,9 +136,7 @@ export function InvoicesPage() {
               { value: "PURCHASE", label: t("invoicesFilterPurchase") },
             ]}
           >
-            <SelectTrigger className="w-full" data-testid="invoices-kind-filter">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="w-full" data-testid="invoices-kind-filter"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="">{t("invoicesFilterAll")}</SelectItem>
               <SelectItem value="SALE">{t("invoicesFilterSale")}</SelectItem>
@@ -201,9 +161,7 @@ export function InvoicesPage() {
               { value: "PAID", label: t("invoicesStatusPaid") },
             ]}
           >
-            <SelectTrigger className="w-full" data-testid="invoices-status-filter">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="w-full" data-testid="invoices-status-filter"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="">{t("invoicesStatusAll")}</SelectItem>
               <SelectItem value="UNPAID">{t("invoicesStatusUnpaid")}</SelectItem>
@@ -212,7 +170,47 @@ export function InvoicesPage() {
             </SelectContent>
           </Select>
         </label>
+        <label className="grid gap-1 text-sm">
+          {t("invoicesOrder")}
+          <Select value={order} onValueChange={(value) => {
+            // SAFETY: this select exposes only the declared NEWEST/OLDEST options.
+            setOrder((value ?? "NEWEST") as InvoiceOrder); lastFilterRef.current = "order"; pager.reset();
+          }} items={[
+            { value: "NEWEST", label: t("invoicesOrderNewest") },
+            { value: "OLDEST", label: t("invoicesOrderOldest") },
+          ]}>
+            <SelectTrigger className="w-full" data-testid="invoices-order-filter"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="NEWEST">{t("invoicesOrderNewest")}</SelectItem><SelectItem value="OLDEST">{t("invoicesOrderOldest")}</SelectItem></SelectContent>
+          </Select>
+        </label>
+        {hasFilters && <Button className="col-span-2 justify-self-start sm:col-span-3 sm:justify-self-end" variant="outline" data-testid="invoices-filters-clear" onClick={() => {
+          setSearch(""); setDebouncedSearch(""); setKind(""); setStatus(""); setFromDate(""); setToDate(""); setFromNumber(""); setToNumber(""); setOrder("NEWEST"); pager.reset(); searchRef.current?.focus();
+        }}>{t("invoicesFiltersClear")}</Button>}
       </div>
+
+      <details className="mt-3 border-t pt-2" data-testid="invoices-range-details">
+        <summary className="w-fit cursor-pointer py-1 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="invoices-range-filters-toggle">{t("invoicesRangeFilters")}</summary>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <label className="grid gap-1 text-sm">
+            {t("invoicesFromDate")}
+            <Input type="date" value={fromDate} data-testid="invoices-from-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setFromDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+          </label>
+          <label className="grid gap-1 text-sm">
+            {t("invoicesToDate")}
+            <Input type="date" value={toDate} data-testid="invoices-to-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setToDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+          </label>
+          <label className="grid gap-1 text-sm">
+            {t("invoicesFromNumber")}
+            <Input value={fromNumber} inputMode="text" data-testid="invoices-from-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setFromNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+          </label>
+          <label className="grid gap-1 text-sm">
+            {t("invoicesToNumber")}
+            <Input value={toNumber} inputMode="text" data-testid="invoices-to-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setToNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+          </label>
+          <p className="col-span-2 text-xs text-muted-foreground">{t("invoicesNumberRangeHint")}</p>
+          {rangeError !== "" && <p className="col-span-2 text-sm text-destructive" role="alert" data-testid="invoices-range-error">{rangeError}</p>}
+        </div>
+      </details>
 
       {list.isFetching && !list.isPending && (
         <p className="mt-4 text-sm text-muted-foreground" role="status" aria-label={t("invoicesLoading")}>

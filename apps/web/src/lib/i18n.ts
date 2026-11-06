@@ -643,6 +643,7 @@ const resources = {
       invoicesSearch: "بحث الفواتير",
       invoicesSearchHint: "رقم الفاتورة أو اسم الصنف المسجّل في الفاتورة أو الباركود",
       invoicesSearchClear: "مسح البحث",
+      invoicesRangeFilters: "التصفية بالتاريخ ورقم الفاتورة",
       invoicesFromDate: "من التاريخ",
       invoicesToDate: "إلى التاريخ",
       invoicesFromNumber: "من رقم الفاتورة",

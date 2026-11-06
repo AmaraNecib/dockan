@@ -3115,7 +3115,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             if (date !== 0) return date;
             const aSequence = invoiceSequenceForRange(a.invoiceNumber);
             const bSequence = invoiceSequenceForRange(b.invoiceNumber);
-            if (aSequence !== undefined && bSequence !== undefined && aSequence !== bSequence) return (aSequence - bSequence) * direction;
+            if (aSequence === undefined && bSequence !== undefined) return direction;
+            if (aSequence !== undefined && bSequence === undefined) return -direction;
+            if (aSequence !== undefined && bSequence !== undefined && aSequence !== bSequence) {
+              return (aSequence < bSequence ? -1 : 1) * direction;
+            }
             const created = a.createdAt.localeCompare(b.createdAt) * direction;
             return created !== 0 ? created : a.id.localeCompare(b.id) * direction;
           });

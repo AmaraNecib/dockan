@@ -158,6 +158,8 @@ async function mountPage(waitForInitialData = true) {
     fromNumber: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-from-number']"),
     toNumber: () => container.querySelector<HTMLInputElement>("[data-testid='invoices-to-number']"),
     order: () => container.querySelector<HTMLElement>("[data-testid='invoices-order-filter']"),
+    rangeDetails: () => container.querySelector<HTMLDetailsElement>("[data-testid='invoices-range-details']"),
+    rangeToggle: () => container.querySelector<HTMLElement>("[data-testid='invoices-range-filters-toggle']"),
     clearFilters: () => container.querySelector<HTMLButtonElement>("[data-testid='invoices-filters-clear']"),
   };
 }
@@ -284,21 +286,40 @@ describe("InvoicesPage range filters and ordering (#406)", () => {
       counterpartyName: null, invoiceDate: "2026-07-01", totalAmount: 100, remainingAmount: 100,
     })));
     const page = await mountPage();
-    await act(async () => page.nextPage()?.click());
-    await waitFor(() => requests.at(-1)?.offset === 10);
-    await act(async () => setNativeValue(page.fromDate()!, "2026-08-01"));
-    await waitFor(() => requests.at(-1)?.fromDate === "2026-08-01");
+    expect(page.rangeDetails()?.open).toBe(false);
+    expect(page.rangeToggle()?.textContent).toBe(i18n.t("invoicesRangeFilters"));
+    await act(async () => page.rangeToggle()?.click());
+    expect(page.rangeDetails()?.open).toBe(true);
+    const advanceToSecondPage = async () => {
+      await act(async () => page.nextPage()?.click());
+      await waitFor(() => requests.at(-1)?.offset === 10);
+    };
+    await advanceToSecondPage();
+    await act(async () => setNativeValue(page.fromDate()!, "2026-07-01"));
+    await waitFor(() => requests.at(-1)?.fromDate === "2026-07-01");
     expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
     await act(async () => setNativeValue(page.toDate()!, "2026-08-02"));
     await waitFor(() => requests.at(-1)?.toDate === "2026-08-02");
+    expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
     await act(async () => setNativeValue(page.fromNumber()!, "1"));
     await waitFor(() => requests.at(-1)?.fromNumber === "1");
+    expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
     await act(async () => setNativeValue(page.toNumber()!, "SUP-120"));
     await waitFor(() => requests.at(-1)?.toNumber === "SUP-120");
+    expect(requests.at(-1)?.offset).toBe(0);
+
+    await advanceToSecondPage();
     await act(async () => chooseOption(page.order()!, i18n.t("invoicesOrderOldest")));
     await waitFor(() => requests.at(-1)?.order === "OLDEST");
-    expect(requests.at(-1)).toMatchObject({ fromDate: "2026-08-01", toDate: "2026-08-02", fromNumber: "1", toNumber: "SUP-120", order: "OLDEST", offset: 0 });
-    expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
+    expect(requests.at(-1)?.offset).toBe(0);
+    expect(requests.at(-1)).toMatchObject({ fromDate: "2026-07-01", toDate: "2026-08-02", fromNumber: "1", toNumber: "SUP-120", order: "OLDEST", offset: 0 });
+    expect(page.numbers()).toEqual(["INV-0010", "INV-0011", "INV-0012", "INV-0013", "INV-0014", "INV-0015", "INV-0016", "INV-0017", "INV-0018", "INV-0019"]);
   });
 
   it("rejects malformed and reversed number bounds without querying them", async () => {

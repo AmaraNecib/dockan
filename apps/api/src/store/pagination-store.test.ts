@@ -248,6 +248,45 @@ describe("store pagination (issue 163)", () => {
     expect(sameDateNewest.items.map(row => row.invoiceNumber)).toEqual(["SUP-00114", "SUP-00112"]);
   });
 
+  it("keeps explicit mixed legacy/numbered order transitive across pages (#406 review)", async () => {
+    const day = "2085-10-03";
+    const fixtures = [
+      { invoiceNumber: "INV-1", createdAt: `${day}T12:00:00` },
+      { invoiceNumber: "CUSTOM", createdAt: `${day}T11:00:00` },
+      { invoiceNumber: "SUP-10", createdAt: `${day}T10:00:00` },
+      { invoiceNumber: "INV-0002", createdAt: `${day}T08:00:00` },
+      { invoiceNumber: "SUP-0002", createdAt: `${day}T08:00:00` },
+    ];
+    const ids = new Map<string, string>();
+    for (const fixture of fixtures) {
+      const invoice = await store.insertInvoice({ invoiceNumber: fixture.invoiceNumber, kind: fixture.invoiceNumber.startsWith("SUP") ? "PURCHASE" : "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: day, totalAmount: 100, paidAmount: 100, remainingAmount: 0, notes: null });
+      conn.raw.prepare("UPDATE invoices SET created_at = ? WHERE id = ?").run(fixture.createdAt, invoice.id);
+      ids.set(fixture.invoiceNumber, invoice.id);
+    }
+    const equalSequenceIds = [ids.get("INV-0002")!, ids.get("SUP-0002")!].sort();
+    const expected = {
+      OLDEST: [ids.get("INV-1")!, ...equalSequenceIds, ids.get("SUP-10")!, ids.get("CUSTOM")!],
+      NEWEST: [ids.get("CUSTOM")!, ids.get("SUP-10")!, ...[...equalSequenceIds].reverse(), ids.get("INV-1")!],
+    };
+    const readAllPages = async (order: "OLDEST" | "NEWEST") => {
+      const seen: string[] = [];
+      for (let offset = 0; offset < fixtures.length; offset += 2) {
+        const page = await store.listInvoices({ fromDate: day, toDate: day, order, limit: 2, offset });
+        expect(page.total).toBe(fixtures.length);
+        seen.push(...page.items.map(row => row.id));
+      }
+      return seen;
+    };
+
+    for (const order of ["OLDEST", "NEWEST"] as const) {
+      const firstRead = await readAllPages(order);
+      expect(firstRead).toEqual(expected[order]);
+      expect(await readAllPages(order)).toEqual(firstRead);
+    }
+    // The unqualified UI default stays on the historical timestamp-first SQL order.
+    expect((await store.listInvoices({ fromDate: day, toDate: day })).items.slice(0, 3).map(row => row.invoiceNumber)).toEqual(["INV-1", "CUSTOM", "SUP-10"]);
+  });
+
   it("normalizes the literal-search mode once per request (#405)", async () => {
     const invoice = await makeInvoice(420);
     await store.insertInvoiceLine({ invoiceId: invoice, itemId: null, description: "ordinary line text", quantity: 1, unitPrice: 100, costAtSale: 0, total: 100 });

@@ -1468,6 +1468,18 @@ export const returnsGetInputSchema = z.object({
   returnId: idSchema,
 });
 
+const invoiceNumberBoundSchema = z.string().trim().min(1).max(40)
+  .regex(/^(?:(?:INV|SUP)-)?\d+$/iu, "expected a number or INV-/SUP-prefixed number")
+  .refine((value) => {
+    const digits = /(?:^|-)\d+$/u.exec(value)?.[0].replace(/^-/, "") ?? "";
+    return Number.isSafeInteger(Number(digits));
+  }, "invoice number sequence must be a safe integer");
+
+function invoiceNumberBoundSequence(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  return Number(/(?:^|-)\d+$/u.exec(value)?.[0].replace(/^-/, ""));
+}
+
 export const invoiceListInputSchema = paginationInputSchema.extend({
   search: z.string().trim().max(200).optional(),
   kind: invoiceKindSchema.optional(),
@@ -1475,6 +1487,20 @@ export const invoiceListInputSchema = paginationInputSchema.extend({
   status: z.enum(["UNPAID", "PARTIAL", "PAID"]).optional(),
   fromDate: localDateSchema.optional(),
   toDate: localDateSchema.optional(),
+  /** Inclusive numeric document sequence, independent of INV/SUP prefix. */
+  fromNumber: invoiceNumberBoundSchema.optional(),
+  toNumber: invoiceNumberBoundSchema.optional(),
+  /** Business-date order; absent preserves the historical newest-first default. */
+  order: z.enum(["OLDEST", "NEWEST"]).optional(),
+}).superRefine((filters, context) => {
+  if (filters.fromDate !== undefined && filters.toDate !== undefined && filters.fromDate > filters.toDate) {
+    context.addIssue({ code: "custom", path: ["toDate"], message: "toDate must be on or after fromDate" });
+  }
+  const from = invoiceNumberBoundSequence(filters.fromNumber);
+  const to = invoiceNumberBoundSequence(filters.toNumber);
+  if (from !== undefined && to !== undefined && from > to) {
+    context.addIssue({ code: "custom", path: ["toNumber"], message: "toNumber must be on or after fromNumber" });
+  }
 });
 
 export const activityListInputSchema = paginationInputSchema;

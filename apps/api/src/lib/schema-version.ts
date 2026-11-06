@@ -63,8 +63,12 @@ import type { Database } from "bun:sqlite";
  * The bump is still owed: the shape changed, so a version-6 build refuses a
  * version-7 file instead of provisioning owner rows into the old shape
  * (ADR-0008 §4.5).
+ *
+ * Version 8 (issue 400, migration slice): activities gain nullable `actor_id`
+ * and `actor_name` snapshots. Existing rows remain NULL because the actor
+ * cannot be reconstructed safely; a version-7 build must refuse this shape.
  */
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 
 /**
  * A database written by a newer app. The older build cannot know what the

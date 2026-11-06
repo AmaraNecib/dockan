@@ -358,7 +358,7 @@ const paymentCols = {
   paidAt: payments.paidAt,
   createdAt: payments.createdAt,
 };
-const activityCols = { id: activities.id, at: activities.at, type: activities.type, summary: activities.summary, ref: activities.ref };
+const activityCols = { id: activities.id, at: activities.at, type: activities.type, summary: activities.summary, ref: activities.ref, actorId: activities.actorId, actorName: activities.actorName };
 const expenseCategoryCols = {
   id: expenseCategories.id,
   name: expenseCategories.name,
@@ -1338,6 +1338,28 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
   };
 
   /**
+   * Issue 400 migration slice: add nullable actor snapshots without inventing
+   * an owner for historical or system events. The DDL and column probes share
+   * one write-locked transaction, so a failed ALTER rolls back and a later
+   * setup() retries the whole pair. Fresh databases already have both columns
+   * from SCHEMA_DDL; an interrupted migration is harmless to re-enter.
+   */
+  const ensureActivityActorColumns = (): void => {
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      // SAFETY: PRAGMA table_info returns one row per column with a string name.
+      const rows = conn.raw.query("PRAGMA table_info(activities)").all() as Array<{ name: string }>;
+      const names = new Set(rows.map((row) => row.name));
+      if (rows.length > 0 && !names.has("actor_id")) conn.raw.exec("ALTER TABLE activities ADD COLUMN actor_id TEXT");
+      if (rows.length > 0 && !names.has("actor_name")) conn.raw.exec("ALTER TABLE activities ADD COLUMN actor_name TEXT");
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      conn.raw.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
+  /**
    * Seed the default expense categories atomically with a durable marker, and
    * SELF-HEAL partial seeds left by a boot interrupted mid-seed (the pre-fix
    * loop committed row by row, so a crash between inserts left a marker-less
@@ -1362,6 +1384,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureSupplierAdjustmentDedupKeyColumn();
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
+    ensureActivityActorColumns();
     ensureSaleColumns();
     // issue 120: point legacy typed-name invoices at real party records (once).
     // Deliberately fail-loud like every other migration in this file: a failed

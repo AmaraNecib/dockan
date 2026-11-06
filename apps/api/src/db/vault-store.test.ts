@@ -58,6 +58,7 @@ describe("openVaultStore composes the connection and the store", () => {
       writeStamp: () => token,
     });
     await first.store.setup();
+    await first.store.insertActivity({ type: "SALE_CREATED", summary: "SALE_CREATED INV-0001", ref: "INV-0001" });
     await first.store.setSetting("composition-probe", "written-through-the-store");
     // flush, not persistIfDirty: the write is only real once it is on disk
     await first.conn.flush();
@@ -74,6 +75,8 @@ describe("openVaultStore composes the connection and the store", () => {
       headerPath: headerPath(),
     });
     expect(await second.store.getSetting("composition-probe")).toBe("written-through-the-store");
+    const activity = (await second.store.listActivities({ limit: 10 })).items[0];
+    expect(activity).toMatchObject({ type: "SALE_CREATED", actorId: null, actorName: null });
     await second.conn.close();
   });
 

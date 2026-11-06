@@ -14,7 +14,8 @@ import {
   type GitRunner,
   type Spawn,
 } from "./e2e-changed";
-import { specPaths, type Scope } from "./e2e-selection";
+import { type Discovery } from "./e2e-discovery";
+import { loadMap, selectSpecs, specPaths, type Scope } from "./e2e-selection";
 
 // The local twin of the CI selector. CI answers "which specs does this PR
 // reach" server-side; this answers the same question on the lane that is about
@@ -27,11 +28,15 @@ import { specPaths, type Scope } from "./e2e-selection";
 // returning 0 unconditionally from `main` left all 26 tests green.
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "scripts", "e2e-changed.ts");
+const CURATED_DISCOVERY: Discovery = {
+  ok: true,
+  specs: [...new Set(loadMap().features.flatMap((feature) => feature.specs))],
+};
 
 const affected = (specs: string[]): Scope => ({
   mode: "affected",
   specs,
-  reason: `${specs.length} spec(s) mapped from 1 file(s)`,
+  reason: `${specs.length} spec(s) selected from 1 file(s)`,
 });
 
 const full: Scope = { mode: "full", specs: [], reason: "critical path: package.json" };
@@ -257,7 +262,7 @@ describe("e2e-changed spawn", () => {
 
   test("the spawn is `bun run test:e2e <spec paths>` under this bun", () => {
     const { calls, run } = spawnDecision(0);
-    main(["--files", "apps/web/src/pages/backups.tsx"], ROOT, run);
+    main(["--files", "apps/web/src/pages/backups.tsx"], ROOT, run, { discovery: CURATED_DISCOVERY });
     expect(calls).toEqual([
       {
         command: process.execPath,
@@ -268,7 +273,7 @@ describe("e2e-changed spawn", () => {
 
   test("a full decision spawns the same command with no filters", () => {
     const { calls, run } = spawnDecision(0);
-    main(["--files", "package.json"], ROOT, run);
+    main(["--files", "package.json"], ROOT, run, { discovery: CURATED_DISCOVERY });
     expect(calls).toEqual([{ command: process.execPath, args: ["run", "test:e2e"] }]);
   });
 
@@ -276,29 +281,29 @@ describe("e2e-changed spawn", () => {
     // The whole point of the front door: a red suite must read as a red exit.
     // Returning 0 unconditionally left every other test in this file green.
     const { run } = spawnDecision(3);
-    expect(main(["--files", "apps/web/src/pages/backups.tsx"], ROOT, run)).toBe(3);
+    expect(main(["--files", "apps/web/src/pages/backups.tsx"], ROOT, run, { discovery: CURATED_DISCOVERY })).toBe(3);
   });
 
   test("zero stays zero, and no status at all is a failure", () => {
     // A signal leaves `status` null; that is not a pass.
-    expect(main(["--files", "package.json"], ROOT, spawnDecision(0).run)).toBe(0);
-    expect(main(["--files", "package.json"], ROOT, spawnDecision(null).run)).toBe(1);
+    expect(main(["--files", "package.json"], ROOT, spawnDecision(0).run, { discovery: CURATED_DISCOVERY })).toBe(0);
+    expect(main(["--files", "package.json"], ROOT, spawnDecision(null).run, { discovery: CURATED_DISCOVERY })).toBe(1);
   });
 
   test("a spawn error is 1 and says what could not start", () => {
     const run: Spawn = () => ({ error: { message: "ENOENT" }, status: null });
-    expect(main(["--files", "package.json"], ROOT, run)).toBe(1);
+    expect(main(["--files", "package.json"], ROOT, run, { discovery: CURATED_DISCOVERY })).toBe(1);
   });
 
   test("a skip decision never spawns", () => {
     const { calls, run } = spawnDecision(0);
-    expect(main(["--files", "docs/ci.md"], ROOT, run)).toBe(0);
+    expect(main(["--files", "docs/ci.md"], ROOT, run, { discovery: CURATED_DISCOVERY })).toBe(0);
     expect(calls).toEqual([]);
   });
 
   test("--dry-run never spawns either", () => {
     const { calls, run } = spawnDecision(0);
-    expect(main(["--dry-run", "--files", "package.json"], ROOT, run)).toBe(0);
+    expect(main(["--dry-run", "--files", "package.json"], ROOT, run, { discovery: CURATED_DISCOVERY })).toBe(0);
     expect(calls).toEqual([]);
   });
 });
@@ -389,6 +394,7 @@ describe("e2e-changed git", () => {
     // the stale committed set —
     // and `skip` exits 0, indistinguishable from a real decision.
     const decision = decide({ base: "origin/develop", files: null }, ROOT, {
+      discovery: CURATED_DISCOVERY,
       diff: () => ({ ok: true, files: ["apps/web/src/pages/backups.tsx"] }),
       dirty: () => ["apps/web/src/pages/backups.tsx"],
     });
@@ -399,7 +405,7 @@ describe("e2e-changed git", () => {
         mode: "affected",
         specs: ["backups.spec.ts"],
         reason:
-          "1 spec(s) mapped from 1 file(s) | 1 tracked file(s) have uncommitted edits this decision does not see (apps/web/src/pages/backups.tsx) — commit first, or pass --files",
+          "1 spec(s) selected from 1 file(s) | 1 tracked file(s) have uncommitted edits this decision does not see (apps/web/src/pages/backups.tsx) — commit first, or pass --files",
       },
       source: "dirty",
     });
@@ -407,6 +413,7 @@ describe("e2e-changed git", () => {
 
   test("a clean tree is a git decision with no caveat", () => {
     const decision = decide({ base: "origin/develop", files: null }, ROOT, {
+      discovery: CURATED_DISCOVERY,
       diff: () => ({ ok: true, files: ["apps/web/src/pages/backups.tsx"] }),
       dirty: () => [],
     });
@@ -419,13 +426,14 @@ describe("e2e-changed git", () => {
     // exactly like a real decision, and silently overrides an always_full
     // verdict. `source=files` is what makes a pasted contract say what it is.
     const decision = decide({ base: "origin/develop", files: ["apps/web/src/pages/backups.tsx"] }, ROOT, {
+      discovery: CURATED_DISCOVERY,
       diff: () => {
         throw new Error("--files must not read git");
       },
       dirty: () => [],
     });
     expect(decision).toEqual({
-      scope: { mode: "affected", specs: ["backups.spec.ts"], reason: "1 spec(s) mapped from 1 file(s)" },
+      scope: { mode: "affected", specs: ["backups.spec.ts"], reason: "1 spec(s) selected from 1 file(s)" },
       source: "files",
     });
   });
@@ -456,6 +464,7 @@ describe("e2e-changed git", () => {
     // whose status call failed got a narrowed or skip answer with no warning that
     // uncommitted edits were invisible to it.
     const decision = decide({ base: "origin/develop", files: null }, ROOT, {
+      discovery: CURATED_DISCOVERY,
       diff: () => ({ ok: true, files: ["apps/web/src/pages/backups.tsx"] }),
       dirty: () => null,
     });
@@ -466,7 +475,7 @@ describe("e2e-changed git", () => {
         mode: "affected",
         specs: ["backups.spec.ts"],
         reason:
-          "1 spec(s) mapped from 1 file(s) | git could not read the working tree, so whether tracked files have uncommitted edits this decision does not see is unknown — the answer covers HEAD only",
+          "1 spec(s) selected from 1 file(s) | git could not read the working tree, so whether tracked files have uncommitted edits this decision does not see is unknown — the answer covers HEAD only",
       },
       source: "git",
     });
@@ -531,15 +540,18 @@ describe("e2e-changed CLI", () => {
     }
   });
 
-  test("a mapped list stays short instead of widening to the suite", () => {
+  test("the CLI preserves the live selection without dropping discovered tests", () => {
     // `not.toContain("mode=full")` passed on empty stdout; the mode line is
     // asserted positively instead.
     const out = execFileSync(process.execPath, [CLI, "--dry-run", "--files", "apps/web/src/pages/backups.tsx"], {
       cwd: ROOT,
       encoding: "utf8",
     });
-    expect(out.split("\n")[0]).toBe("mode=affected");
-    expect(out).toContain("specs=tests/e2e/backups.spec.ts\n");
+    // The subprocess intentionally reads live discovery, unlike curated spawn
+    // unit cases. A new unregistered test must not invalidate this contract.
+    const liveScope = selectSpecs(["apps/web/src/pages/backups.tsx"]);
+    expect(out.split("\n")[0]).toBe(`mode=${liveScope.mode}`);
+    expect(out).toContain(`specs=${specPaths(liveScope).join(" ")}\n`);
   });
 
   test("a critical path forces full and emits an empty specs line", () => {

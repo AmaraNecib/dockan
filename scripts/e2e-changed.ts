@@ -5,10 +5,10 @@
 // reach"; until now only CI asked it, so a lane changing three files waited out
 // all 35 specs before every push. This is the same decision with a local front
 // end: it reuses `selectSpecs` and the checked-in map rather than growing a
-// second set of globs, and it hands the mapped paths to `bun run test:e2e`.
+// second set of path rules, and it hands selected paths to `bun run test:e2e`.
 //
 // Three outcomes, the same three the selector has:
-//   affected — spawn Playwright with the mapped paths as positional filters.
+//   affected — spawn Playwright with the selected paths as positional filters.
 //   full     — spawn Playwright with no filters, after saying why.
 //   skip     — spawn nothing and exit 0, because nothing in the diff can reach
 //              a browser.
@@ -37,6 +37,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { discoverE2eSpecs, type Discovery } from "./e2e-discovery";
 import { contractLines, selectSpecs, specPaths, type Scope } from "./e2e-selection";
 import { parseFlags, usageFailure, type FlagSpec } from "./lib/args";
 
@@ -154,7 +155,7 @@ export function dirtyTracked(cwd: string, run: GitRunner = spawnGit): string[] |
 }
 
 export type Decision = { scope: Scope; source: "git" | "files" | "dirty" };
-export type DecisionSources = { diff?: DiffReader; dirty?: DirtyReader };
+export type DecisionSources = { diff?: DiffReader; dirty?: DirtyReader; discovery?: Discovery };
 export type DiffReader = (base: string, cwd: string) => DiffResult;
 export type DirtyReader = (cwd: string) => string[] | null;
 
@@ -195,7 +196,8 @@ export function decide(
   cwd: string,
   sources: DecisionSources = {},
 ): Decision {
-  if (input.files) return { scope: selectSpecs(input.files), source: "files" };
+  const discovery = sources.discovery ?? discoverE2eSpecs();
+  if (input.files) return { scope: selectSpecs(input.files, undefined, discovery), source: "files" };
 
   const readDiff: DiffReader = sources.diff ?? ((base, dir) => changedFilesFromGit(base, dir));
   const readDirty: DirtyReader = sources.dirty ?? ((dir) => dirtyTracked(dir));
@@ -217,7 +219,7 @@ export function decide(
     };
   }
 
-  const scope = selectSpecs(diff.files);
+  const scope = selectSpecs(diff.files, undefined, discovery);
   if (!note) return { scope, source: "git" };
   return { scope: { ...scope, reason: `${scope.reason} | ${note}` }, source };
 }
@@ -240,7 +242,12 @@ export type Spawn = (command: string, args: string[], options: { cwd: string; st
 
 export const spawnProcess: Spawn = (command, args, options) => spawnSync(command, args, options);
 
-export function main(argv: string[], cwd = process.cwd(), spawn: Spawn = spawnProcess): number {
+export function main(
+  argv: string[],
+  cwd = process.cwd(),
+  spawn: Spawn = spawnProcess,
+  sources: DecisionSources = {},
+): number {
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(USAGE);
     return 0;
@@ -249,7 +256,7 @@ export function main(argv: string[], cwd = process.cwd(), spawn: Spawn = spawnPr
   const parsed = parseArgs(argv);
   if (!parsed.ok) return usageFailure(parsed.error, USAGE);
 
-  const decision = decide({ base: parsed.base, files: parsed.files }, cwd);
+  const decision = decide({ base: parsed.base, files: parsed.files }, cwd, sources);
   for (const line of contractLines(decision.scope)) console.log(line);
   console.log(`source=${decision.source}`);
   if (parsed.dryRun) return 0;

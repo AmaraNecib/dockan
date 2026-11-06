@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { defineConfig } from "@playwright/test";
+import { E2E_TEST_MATCH } from "./scripts/e2e-discovery";
 
 // #343 — the app is served from a loopback hostname of its own, so the vault
 // cookie is scoped to this app alone (a cookie for 127.0.0.1 is handed to
@@ -38,6 +39,10 @@ export default defineConfig({
     ? [["line"], ["./scripts/browser-ci-manifest-reporter.ts"]]
     : undefined,
   testDir: "./tests/e2e",
+  testMatch: E2E_TEST_MATCH,
+  // Explicit testDir disables Playwright's .gitignore default. Keep discovery
+  // semantics stable for untracked and ignored runnable candidates.
+  respectGitIgnore: false,
   timeout: 30_000,
   retries: 0,
   // every spec shares one sqlite database (wipe -> setup -> login), so spec

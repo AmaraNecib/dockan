@@ -33,7 +33,7 @@ async function until(check: () => boolean, child: ChildProcess): Promise<void> {
 // in an isolated child without letting Windows terminate it before cleanup can run.
 for (const delivery of ["portable", "os"] as const) {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    for (const stage of ["launch", "readiness", "setup", "journey"] as const) {
+    for (const stage of ["launch", "late-close-failure", "readiness", "setup", "journey"] as const) {
       const test = delivery === "os" && process.platform === "win32" ? it.skip : it;
       test(`cancels ${stage} with ${signal} (${delivery}) and certifies only failed cleanup`, async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "capture-cancel-"));
@@ -56,9 +56,9 @@ for (const delivery of ["portable", "os"] as const) {
 const baseline=['SIGINT','SIGTERM'].map(s=>process.listenerCount(s));
 process.stdin.on('data',()=>{process.emit(${JSON.stringify(signal)});process.emit(${JSON.stringify(signal)});});
 const context={newPage:async()=>({}),storageState:async()=>({cookies:[],origins:[]}),close:async()=>{}};
-const browser={newContext:async()=>context,close:async()=>{await new Promise(r=>setTimeout(r,80));fs.writeFileSync(${JSON.stringify(closed)},'closed');}};
-try { await capture(${JSON.stringify({ journey, source, revision, against, output, ports })},{preflight:async()=>{},launch:async()=>{${stage === "launch" ? `fs.writeFileSync(${JSON.stringify(marker)},'ready');await new Promise(r=>setTimeout(r,120));` : ""}return browser;}}); console.log('UNEXPECTED SUCCESS');process.exitCode=2; }
-catch(error){await new Promise(r=>setTimeout(r,200)); console.log(JSON.stringify({failure:String(error),listeners:['SIGINT','SIGTERM'].map(s=>process.listenerCount(s)),baseline}));}
+const browser={newContext:async()=>context,close:async()=>{await new Promise(r=>setTimeout(r,80));fs.writeFileSync(${JSON.stringify(closed)},'closed');${stage === "late-close-failure" ? "throw new Error('injected late disposal failed');" : ""}}};
+try { await capture(${JSON.stringify({ journey, source, revision, against, output, ports })},{preflight:async()=>{},launch:async()=>{${stage === "launch" || stage === "late-close-failure" ? `fs.writeFileSync(${JSON.stringify(marker)},'ready');await new Promise(r=>setTimeout(r,120));` : ""}return browser;}}); console.log('UNEXPECTED SUCCESS');process.exitCode=2; }
+catch(error){await new Promise(r=>setTimeout(r,200)); console.log(JSON.stringify({failure:error instanceof AggregateError ? error.errors.map(String).join('; ') : String(error),listeners:['SIGINT','SIGTERM'].map(s=>process.listenerCount(s)),baseline}));}
 process.stdin.destroy();`);
         const child = spawn(process.execPath, [fixture], { stdio: ["pipe", "pipe", "pipe"] });
         let transcript = ""; child.stdout?.on("data", (data) => { transcript += String(data); }); child.stderr?.on("data", (data) => { transcript += String(data); });
@@ -76,6 +76,7 @@ process.stdin.destroy();`);
           const manifest = JSON.parse(fs.readFileSync(path.join(output, "manifest.json"), "utf8"));
           expect(manifest.status).toBe("failed");
           expect(manifest.failure).toContain(signal);
+          if (stage === "late-close-failure") expect(manifest.failure).toContain("injected late disposal failed");
           expect(manifest.isolatedData.removed).toBe(true);
           expect(fs.existsSync(path.join(output, "comparison-pair.json"))).toBe(false);
           const log = fs.readFileSync(path.join(output, "runner.log"));

@@ -80,9 +80,24 @@ function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     work.then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
   });
 }
-async function acquireInterruptibly<T>(work: Promise<T>, signal: AbortSignal, dispose: (value: T) => Promise<void>): Promise<T> {
-  work.then((value) => { if (signal.aborted) void dispose(value).catch(() => {}); }, () => {});
+async function acquireInterruptibly<T>(work: Promise<T>, signal: AbortSignal, dispose: (value: T) => Promise<void>, pending: Set<Promise<void>>, errors: unknown[]): Promise<T> {
+  const settled = work.then(async (value) => {
+    if (signal.aborted) {
+      try { await dispose(value); } catch (error) { errors.push(error); }
+    }
+  }, () => {});
+  pending.add(settled);
+  void settled.then(() => pending.delete(settled));
   return interruptible(work, signal);
+}
+async function settleAcquisitions(pending: Set<Promise<void>>, errors: unknown[]): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.all(pending),
+      new Promise<void>((resolve) => { timer = setTimeout(() => { errors.push(new Error("Resource acquisition/disposal did not settle within 30 seconds; cleanup is unconfirmed")); resolve(); }, 30_000); }),
+    ]);
+  } finally { clearTimeout(timer); }
 }
 function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw signal.reason ?? new Error("Capture cancelled");
@@ -159,6 +174,10 @@ export async function writeComparisonPair(snapshot: ComparisonSnapshot, after: P
   await verifyComparisonUnchanged(snapshot);
   if (signal?.aborted) throw signal.reason ?? new Error("Capture cancelled");
   await fs.promises.writeFile(file, bytes, { flag: "wx" });
+  if (signal?.aborted) {
+    await fs.promises.unlink(file);
+    throw signal.reason ?? new Error("Capture cancelled");
+  }
 }
 export async function validateComparisonManifest(file: string, against: string, comparisonId: string, currentRoot: string): Promise<ComparisonSnapshot> {
   const canonicalFile = await fs.promises.realpath(file);
@@ -201,6 +220,7 @@ export async function capture(options: Options, dependencies: CaptureDependencie
   const children: ChildProcess[] = [];
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   const contexts = new Set<Awaited<ReturnType<Awaited<ReturnType<typeof chromium.launch>>["newContext"]>>>();
+  const pendingAcquisitions = new Set<Promise<void>>();
   let journey: EvidenceJourney | undefined;
   let primaryError: unknown;
   let cleanupErrors: unknown[] = [];
@@ -231,7 +251,7 @@ export async function capture(options: Options, dependencies: CaptureDependencie
     validateServerContract(journey.servers, options.ports);
     // Validate the supplied contract before requiring media tools or launching Chromium.
     await interruptible(dependencies.preflight(source, (command, args, cwd) => runFile(command, args, cwd, cancellation.signal)), cancellation.signal);
-    browser = await acquireInterruptibly(dependencies.launch({ headless: true }), cancellation.signal, (lateBrowser) => lateBrowser.close());
+    browser = await acquireInterruptibly(dependencies.launch({ headless: true }), cancellation.signal, (lateBrowser) => lateBrowser.close(), pendingAcquisitions, cleanupErrors);
     for (const port of Object.values(options.ports)) await assertPortFree(port);
     await fs.promises.mkdir(dataDir, { recursive: false });
     for (const server of journey.servers) {
@@ -244,14 +264,14 @@ export async function capture(options: Options, dependencies: CaptureDependencie
       await waitReady(readinessUrl, child, cancellation.signal);
     }
     await validateSource(source, head);
-    const setupContext = await acquireInterruptibly(browser.newContext({ viewport: VIEWPORT }), cancellation.signal, (lateContext) => lateContext.close());
+    const setupContext = await acquireInterruptibly(browser.newContext({ viewport: VIEWPORT }), cancellation.signal, (lateContext) => lateContext.close(), pendingAcquisitions, cleanupErrors);
     contexts.add(setupContext);
     const setupPage = await interruptible(setupContext.newPage(), cancellation.signal);
     if (journey.setup) await interruptible(journey.setup(setupPage, runtime), cancellation.signal);
     const storageState = await interruptible(setupContext.storageState(), cancellation.signal);
     await setupContext.close();
     contexts.delete(setupContext);
-    const context = await acquireInterruptibly(browser.newContext({ viewport: VIEWPORT, recordVideo: { dir: options.output, size: VIEWPORT }, storageState }), cancellation.signal, (lateContext) => lateContext.close());
+    const context = await acquireInterruptibly(browser.newContext({ viewport: VIEWPORT, recordVideo: { dir: options.output, size: VIEWPORT }, storageState }), cancellation.signal, (lateContext) => lateContext.close(), pendingAcquisitions, cleanupErrors);
     contexts.add(context);
     const page = await interruptible(context.newPage(), cancellation.signal);
     const screenshots: string[] = [];
@@ -277,6 +297,7 @@ export async function capture(options: Options, dependencies: CaptureDependencie
     try { await Promise.all([...contexts].map((context) => context.close())); contexts.clear(); } catch (error) { cleanupErrors.push(error); }
     try { await browser?.close(); } catch (error) { cleanupErrors.push(error); }
     try { await stopServersAndCleanData(children, dataDir); } catch (error) { cleanupErrors.push(error); preserveData = true; }
+    await settleAcquisitions(pendingAcquisitions, cleanupErrors);
     if (cleanupErrors.length) { status = "failed"; failure += `\nCleanup failed: ${cleanupErrors.map(String).join("; ")}`; }
     try {
       if (cancellation.signal.aborted) { status = "failed"; failure ||= String(cancellation.signal.reason ?? "Capture cancelled"); }

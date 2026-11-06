@@ -199,6 +199,17 @@ it("requires the exact other revision in a distinct clean capture root", async (
     fs.writeFileSync(gif, originalGif);
     await writeComparisonPair(snapshot, { manifest, sha256: "after-digest", root: after.root, revision: after.head, tree: "after-tree" }, comparisonId, pairFile);
     expect(JSON.parse(fs.readFileSync(pairFile, "utf8"))).toMatchObject({ status: "pair-verified", before: { sha256: snapshot.sha256, revision: before.head } });
+    const cancelledPair = path.join(evidence, "cancelled-pair.json");
+    const cancellation = new AbortController();
+    const writeFile = fs.promises.writeFile;
+    fs.promises.writeFile = async (...args: Parameters<typeof writeFile>) => {
+      await writeFile(...args);
+      if (args[0] === cancelledPair) cancellation.abort(new Error("cancelled during pair write"));
+    };
+    try {
+      await expect(writeComparisonPair(snapshot, { manifest, sha256: "after-digest", root: after.root, revision: after.head, tree: "after-tree" }, comparisonId, cancelledPair, cancellation.signal)).rejects.toThrow("cancelled during pair write");
+      expect(fs.existsSync(cancelledPair)).toBe(false);
+    } finally { fs.promises.writeFile = writeFile; }
     await expect(validateComparisonManifest(manifest, "f".repeat(40), comparisonId, after.root)).rejects.toThrow("exact --against revision");
     await expect(validateComparisonManifest(manifest, before.head, comparisonId, before.root)).rejects.toThrow("distinct source root");
   } finally { fs.rmSync(evidence, { recursive: true, force: true }); fs.rmSync(before.root, { recursive: true, force: true }); fs.rmSync(after.root, { recursive: true, force: true }); }

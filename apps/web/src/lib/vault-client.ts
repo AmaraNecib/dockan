@@ -168,6 +168,31 @@ let memorySessionGeneration: number | undefined;
 /** Where the broker path's token persists across a webview reload. */
 const BROKER_TOKEN_KEY = "dokan.vault.session";
 const BROKER_GENERATION_KEY = "dokan.vault.session-generation";
+const BROKER_EPOCH_KEY = "dokan.vault.session-epoch";
+let memoryResetEpoch: string | undefined;
+
+type SessionAdoptionEpoch = string | undefined;
+
+function currentSessionEpoch(): SessionAdoptionEpoch {
+  return readStore(BROKER_EPOCH_KEY) ?? memoryResetEpoch ?? readRestoreEpochFromHash();
+}
+
+/** Capture before async work; old replies must not adopt into a later reset epoch. */
+function captureSessionAdoptionEpoch(): SessionAdoptionEpoch {
+  return currentSessionEpoch();
+}
+
+/** Capture the epoch for async callers that may later clear shared credentials. */
+export function captureVaultSessionEpoch(): SessionAdoptionEpoch {
+  return captureSessionAdoptionEpoch();
+}
+
+function advanceSessionEpoch(epoch: string): void {
+  // Storage is shared across reload contexts when available; memory preserves the
+  // same-document fence when browser storage is blocked.
+  memoryResetEpoch = epoch;
+  writeStore(BROKER_EPOCH_KEY, epoch);
+}
 
 /**
  * The storage the broker path may use, or undefined on the browser path.
@@ -254,7 +279,8 @@ export function readVaultSessionToken(): string | undefined {
  * generation (the fragment handoff, or an older server) stores the token but
  * leaves the recorded generation untouched.
  */
-export function storeVaultSessionToken(token: string, generation?: number): void {
+export function storeVaultSessionToken(token: string, generation?: number, adoptionEpoch = captureSessionAdoptionEpoch()): void {
+  if (adoptionEpoch !== currentSessionEpoch()) return;
   if (generation !== undefined) {
     const known = knownGeneration();
     if (known !== undefined && generation < known) return;
@@ -271,12 +297,13 @@ export function storeVaultSessionToken(token: string, generation?: number): void
 }
 
 /** Adopt the session a minting response carried, when it carried one. */
-function adoptSession(response: { sessionToken?: string; sessionGeneration?: number }): void {
+function adoptSession(response: { sessionToken?: string; sessionGeneration?: number }, adoptionEpoch: SessionAdoptionEpoch): void {
   if (response.sessionToken === undefined) return;
-  storeVaultSessionToken(response.sessionToken, response.sessionGeneration);
+  storeVaultSessionToken(response.sessionToken, response.sessionGeneration, adoptionEpoch);
 }
 
-export function clearVaultSessionToken(): void {
+export function clearVaultSessionToken(expectedEpoch = captureSessionAdoptionEpoch()): void {
+  if (expectedEpoch !== currentSessionEpoch()) return;
   memorySessionToken = undefined;
   memorySessionGeneration = undefined;
   // a cleared session must not survive a reload on the broker path either
@@ -466,6 +493,7 @@ async function loadVaultStatus(verifySession: boolean): Promise<VaultBootStatus>
     try {
       const reply = await invokeBroker(brokerCommands.status, resetEpoch === undefined ? undefined : { resetEpoch });
       if (reply.sessionReset === true) {
+        if (resetEpoch !== undefined) advanceSessionEpoch(resetEpoch);
         clearVaultSessionToken();
         stripVaultFragment();
       }
@@ -521,10 +549,11 @@ export async function vaultSetup(
   setupToken?: string,
   broker = false,
 ): Promise<{ recoveryKey: string; plaintextRemaining: string[]; plaintextStatus: PlaintextCleanupStatus }> {
+  const adoptionEpoch = captureSessionAdoptionEpoch();
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.setup, { passphrase });
     if (!reply.ok || reply.sessionToken == null || reply.recoveryKey == null) throw brokerRefusal(reply);
-    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined }, adoptionEpoch);
     // the key reply deliberately carries no cleanup verdict: it follows on
     // vault_setup_warning, so until then the outcome is UNKNOWN (round-4)
     return {
@@ -541,7 +570,7 @@ export async function vaultSetup(
   );
   // the browser path's credential is the cookie the response set; nothing to
   // keep here (#319)
-  adoptSession(result);
+  adoptSession(result, adoptionEpoch);
   return {
     recoveryKey: result.recoveryKey,
     plaintextRemaining: result.plaintextRemaining ?? [],
@@ -684,21 +713,23 @@ export async function vaultRouteAbsent(): Promise<boolean> {
  * bridge and is kept in memory (#319).
  */
 export async function vaultUnlock(passphrase: string, broker = false): Promise<void> {
+  const adoptionEpoch = captureSessionAdoptionEpoch();
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.unlock, { passphrase });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
-    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined }, adoptionEpoch);
     return;
   }
   const result = await request("/api/vault/unlock", { method: "POST", body: JSON.stringify({ passphrase }) }, false, sessionResponseSchema);
-  adoptSession(result);
+  adoptSession(result, adoptionEpoch);
 }
 
 export async function vaultUnlockWithRecovery(recoveryKey: string, broker = false): Promise<void> {
+  const adoptionEpoch = captureSessionAdoptionEpoch();
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.recovery, { recoveryKey });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
-    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined }, adoptionEpoch);
     return;
   }
   const result = await request(
@@ -707,7 +738,7 @@ export async function vaultUnlockWithRecovery(recoveryKey: string, broker = fals
     false,
     sessionResponseSchema,
   );
-  adoptSession(result);
+  adoptSession(result, adoptionEpoch);
 }
 
 export async function listRecoveryKeys(): Promise<VaultRecoveryKey[]> {
@@ -735,12 +766,14 @@ export function isVaultPassphraseLongEnough(value: string): boolean {
 }
 
 export async function removeRecoveryKey(id: string): Promise<void> {
+  const adoptionEpoch = captureSessionAdoptionEpoch();
   // deleting a credential rotates the session: the fresh one rides the cookie
   const result = await request(`/api/vault/recovery-keys/${encodeURIComponent(id)}`, { method: "DELETE" }, true, removedOrChangedSchema);
-  adoptSession(result);
+  adoptSession(result, adoptionEpoch);
 }
 
 export async function changeVaultPassphrase(currentPassphrase: string, newPassphrase: string): Promise<void> {
+  const adoptionEpoch = captureSessionAdoptionEpoch();
   // the old passphrase is refused from now on, so the server rotates the
   // in-process token: the browser path's cookie is replaced, the broker
   // path's token is kept in memory
@@ -750,7 +783,7 @@ export async function changeVaultPassphrase(currentPassphrase: string, newPassph
     true,
     removedOrChangedSchema,
   );
-  adoptSession(result);
+  adoptSession(result, adoptionEpoch);
 }
 
 /**
@@ -760,10 +793,11 @@ export async function changeVaultPassphrase(currentPassphrase: string, newPassph
  * the HTTP route is refused there.
  */
 export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string, broker = false): Promise<void> {
+  const adoptionEpoch = captureSessionAdoptionEpoch();
   if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.reset, { recoveryKey, newPassphrase });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
-    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined }, adoptionEpoch);
     return;
   }
   const result = await request(
@@ -772,5 +806,5 @@ export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: s
     false,
     removedOrChangedSchema,
   );
-  adoptSession(result);
+  adoptSession(result, adoptionEpoch);
 }

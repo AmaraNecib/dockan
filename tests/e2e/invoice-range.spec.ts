@@ -5,7 +5,7 @@ import { signIn } from "./auth-helpers";
 import { callRpc, seedCategoryId } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
-test.use({ video: "on", viewport: { width: 1920, height: 1080 } });
+test.use({ video: "on", videoSize: { width: 1920, height: 1080 }, viewport: { width: 1920, height: 1080 } });
 
 type ItemCreate = { name: string; categoryId: string; costPrice: number; sellingPrice: number; lowStockThreshold: number };
 type InvoiceCreate = { kind: "PURCHASE"; invoiceDate: string; lines: Array<{ itemId: string; quantity: number; unitPrice: number }> };

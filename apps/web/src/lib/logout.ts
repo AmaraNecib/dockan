@@ -1,4 +1,4 @@
-import { clearVaultSessionToken, observedVaultModeNow, revokeVaultSession, vaultBuildMode } from "./vault-client";
+import { captureVaultSessionEpoch, clearVaultSessionToken, observedVaultModeNow, revokeVaultSession, vaultBuildMode } from "./vault-client";
 import { markSignedOut } from "./auth-refusal";
 import { publishSessionRefresh } from "./session-refresh";
 import { brokerAvailable, brokerCommands, invokeBrokerVoid } from "./vault-broker";
@@ -88,8 +88,9 @@ export async function logoutAndReload(
   signOut: () => Promise<SignOutResult>,
   options: { vaultEnabled: boolean } = { vaultEnabled: true },
 ): Promise<void> {
+  const sessionEpoch = captureVaultSessionEpoch();
   const revoked = await revokeOutcome(options.vaultEnabled);
-  clearVaultSessionToken();
+  clearVaultSessionToken(sessionEpoch);
   // Broker mode: the serving sidecar is one-shot, so replace it with a freshly
   // verified sibling before the reload; otherwise the reloaded gate could
   // never unlock again without restarting the app (round-2 finding 1). The

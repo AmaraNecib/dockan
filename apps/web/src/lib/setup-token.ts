@@ -1,6 +1,10 @@
 /** sessionStorage key for the shell-injected one-time setup token. */
 export const SETUP_TOKEN_STORAGE_KEY = "dokan.setupToken";
 
+// The native restore reset can consume the URL fragment before setup runs.
+// Keep the setup credential in this document if sessionStorage is unavailable.
+let setupTokenFallback: string | undefined;
+
 /**
  * Parse the shell's one-time setup token out of a URL fragment. The packaged
  * shell navigates the webview to `/#setup_token=<token>`; a fragment is never
@@ -25,13 +29,34 @@ export function parseSetupToken(hash: string): string | undefined {
  * from the visible URL. Returns undefined outside the packaged shell (dev/e2e
  * have no boot token).
  */
+export function preserveSetupTokenFromHash(): void {
+  const token = parseSetupToken(window.location.hash);
+  if (token === undefined) return;
+  try {
+    sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // The in-memory copy lets the existing setup caller use this document's token.
+    setupTokenFallback = token;
+  }
+}
+
 export function readSetupToken(): string | undefined {
   const fromHash = parseSetupToken(window.location.hash);
   if (fromHash !== undefined) {
-    sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, fromHash);
+    try {
+      sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, fromHash);
+    } catch {
+      // Keep the token available to the current document when storage is denied.
+      setupTokenFallback = fromHash;
+    }
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
     return fromHash;
   }
-  const stored = sessionStorage.getItem(SETUP_TOKEN_STORAGE_KEY);
-  return stored === null || stored === "" ? undefined : stored;
+  try {
+    const stored = sessionStorage.getItem(SETUP_TOKEN_STORAGE_KEY);
+    if (stored !== null && stored !== "") return stored;
+  } catch {
+    // Fall back to the value captured before the restore reset stripped the URL.
+  }
+  return setupTokenFallback;
 }

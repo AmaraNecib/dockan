@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
+import type { BrokerInvokeArgs } from "./vault-broker";
+
 import {
   changeVaultPassphrase,
+  captureVaultSessionEpoch,
   clearVaultSessionToken,
   fetchVaultStatus,
   isVaultPassphraseLongEnough,
@@ -16,6 +19,7 @@ import {
   vaultSetup,
   vaultUnlock,
   vaultUnlockWithRecovery,
+  verifyVaultSession,
 } from "./vault-client";
 
 /** The reply an unlock crosses the broker bridge with, as this test fakes it. */
@@ -33,7 +37,7 @@ const vaultStatusBody = {
   broker: false,
 } as const;
 
-let routes = new Map<string, (init: RequestInit | undefined) => Response>();
+let routes = new Map<string, (init: RequestInit | undefined) => Response | Promise<Response>>();
 const originalFetch = globalThis.fetch;
 const mockFetch: typeof fetch = Object.assign(
   async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -321,6 +325,120 @@ describe("the broker path keeps its token across a webview reload (#319 review P
       invoke: async () => null,
     };
   }
+
+  it("adopts generation one after the native restore restart and authenticates protected reads", async () => {
+    window.location.hash = "#setup_token=boot&session_reset_epoch=restore-epoch";
+    let resetPending = true;
+    let statusCalls = 0;
+    const seenHeaders: Array<string | null> = [];
+    // SAFETY: this test supplies the exact native status and unlock reply shapes consumed below.
+    // SAFETY: the native bridge receives the same resetEpoch payload used by this test.
+    (window as { __TAURI_INTERNALS__?: { invoke: (command: string, args?: BrokerInvokeArgs) => Promise<{ ok: boolean; sessionReset?: boolean; status?: typeof vaultStatusBody; sessionToken?: string; sessionGeneration?: number }> } }).__TAURI_INTERNALS__ = {
+      invoke: async (command, args) => {
+        if (command === "vault_status") {
+          expect(args).toEqual(statusCalls++ === 0 ? { resetEpoch: "restore-epoch" } : undefined);
+          const sessionReset = resetPending;
+          resetPending = false;
+          return { ok: true, sessionReset, status: vaultStatusBody };
+        }
+        if (command === "vault_unlock") return { ok: true, sessionToken: "fresh-generation-one", sessionGeneration: 1 };
+        throw new Error(`unexpected broker command ${command}`);
+      },
+    };
+    routes.set("/api/vault/status", (init) => {
+      seenHeaders.push(new Headers(init?.headers).get("x-vault-session"));
+      return Response.json(vaultStatusBody);
+    });
+    storeVaultSessionToken("stale-generation-seven", 7);
+    await verifyVaultSession();
+    expect(seenHeaders).toEqual([null]);
+    await vaultUnlock("current passphrase", true);
+    expect(readVaultSessionToken()).toBe("fresh-generation-one");
+    await verifyVaultSession();
+    expect(seenHeaders).toEqual([null, "fresh-generation-one"]);
+  });
+
+  it("rejects a retired token-bearing reply after reset, regardless of whether generation one already landed", async () => {
+    installBroker();
+    window.location.hash = "#session_reset_epoch=old-epoch";
+    storeVaultSessionToken("generation-seven", 7);
+    const oldEpoch = captureVaultSessionEpoch();
+    let finishRotation!: (response: Response) => void;
+    routes.set("/api/vault/status", () => Response.json(vaultStatusBody));
+    routes.set("/api/vault/change-passphrase", () => new Promise<Response>((resolve) => { finishRotation = resolve; }));
+    const rotation = changeVaultPassphrase("old passphrase", "new passphrase");
+
+    // Model a fresh document sharing sessionStorage with the retired context.
+    window.location.hash = "#session_reset_epoch=new-epoch";
+    let finishReset!: (reply: { ok: boolean; sessionReset: boolean; status: typeof vaultStatusBody }) => void;
+    let statusCalls = 0;
+    // SAFETY: the fake bridge returns only the status reset and unlock reply shapes exercised here.
+    (window as { __TAURI_INTERNALS__?: { invoke: (command: string, args?: BrokerInvokeArgs) => Promise<{ ok: boolean; sessionReset?: boolean; status?: typeof vaultStatusBody; sessionToken?: string; sessionGeneration?: number }> } }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "vault_unlock") return { ok: true, sessionToken: "fresh-generation-one", sessionGeneration: 1 };
+        if (statusCalls++ > 0) return { ok: true, sessionReset: false, status: vaultStatusBody };
+        return await new Promise((resolve) => { finishReset = resolve; });
+      },
+    };
+    const resetStatus = fetchVaultStatus();
+    finishReset({ ok: true, sessionReset: true, status: vaultStatusBody });
+    await resetStatus;
+    await vaultUnlock("current passphrase", true);
+    expect(readVaultSessionToken()).toBe("fresh-generation-one");
+
+    finishRotation(Response.json({ ok: true, sessionToken: "retired-generation-eight", sessionGeneration: 8 }));
+    await rotation;
+    expect(readVaultSessionToken()).toBe("fresh-generation-one");
+    clearVaultSessionToken(oldEpoch);
+    expect(readVaultSessionToken()).toBe("fresh-generation-one");
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBe("1");
+    await verifyVaultSession();
+
+    // Same scenario, but the late reply arrives before the fresh unlock.
+    clearVaultSessionToken();
+    window.location.hash = "#session_reset_epoch=older-epoch";
+    storeVaultSessionToken("generation-seven-again", 7);
+    let finishSecondRotation!: (response: Response) => void;
+    routes.set("/api/vault/change-passphrase", () => new Promise<Response>((resolve) => { finishSecondRotation = resolve; }));
+    const secondRotation = changeVaultPassphrase("old passphrase", "new passphrase");
+    window.location.hash = "#session_reset_epoch=second-new-epoch";
+    // SAFETY: the fake bridge returns only the status reset and unlock reply shapes exercised here.
+    (window as { __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<{ ok: boolean; sessionReset?: boolean; status?: typeof vaultStatusBody; sessionToken?: string; sessionGeneration?: number }> } }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => command === "vault_unlock"
+        ? { ok: true, sessionToken: "fresh-generation-one", sessionGeneration: 1 }
+        : { ok: true, sessionReset: true, status: vaultStatusBody },
+    };
+    await fetchVaultStatus();
+    finishSecondRotation(Response.json({ ok: true, sessionToken: "retired-generation-eight", sessionGeneration: 8 }));
+    await secondRotation;
+    expect(readVaultSessionToken()).toBeUndefined();
+    await vaultUnlock("current passphrase", true);
+    expect(readVaultSessionToken()).toBe("fresh-generation-one");
+  });
+
+  it("does not let a retired-page status reply consume the next page reset", async () => {
+    window.location.hash = "#session_reset_epoch=old-epoch";
+    let finishStatus!: (reply: { ok: boolean; sessionReset: boolean; status: typeof vaultStatusBody }) => void;
+    let receivedArgs: BrokerInvokeArgs | undefined;
+    // SAFETY: the delayed bridge echoes a valid status reply after capturing the request args.
+    (window as { __TAURI_INTERNALS__?: { invoke: (command: string, args?: BrokerInvokeArgs) => Promise<{ ok: boolean; sessionReset?: boolean; status?: typeof vaultStatusBody }> } }).__TAURI_INTERNALS__ = {
+      invoke: async (_command, args) => {
+        receivedArgs = args;
+        return await new Promise((resolve) => { finishStatus = resolve; });
+      },
+    };
+    routes.set("/api/vault/status", () => Response.json(vaultStatusBody));
+    storeVaultSessionToken("old-page-token", 7);
+
+    const oldPageRead = verifyVaultSession();
+    window.location.hash = "#session_reset_epoch=new-epoch";
+    finishStatus({ ok: true, sessionReset: false, status: vaultStatusBody });
+    await oldPageRead;
+
+    expect(receivedArgs).toEqual({ resetEpoch: "old-epoch" });
+    expect(readVaultSessionToken()).toBe("old-page-token");
+    expect(window.sessionStorage.getItem("dokan.vault.session-generation")).toBe("7");
+  });
 
   it("persists the token and its generation, so a reload does not demand the passphrase again", () => {
     installBroker();

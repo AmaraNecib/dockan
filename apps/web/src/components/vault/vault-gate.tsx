@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useTranslation } from "react-i18next";
 
 import { PasswordInput } from "@/components/ui/password-input";
+import { BackupRestoreOutcome } from "./backup-restore";
 import { useVaultSetupCeremony } from "./vault-setup-ceremony";
 import {
   VaultRequestError,
@@ -527,6 +528,7 @@ export function VaultGate({ status, onUnlocked, onSetupCreated, hideSetupKey = f
   const locked = lockedRemainingMs > 0;
   return (
     <VaultFrame>
+      <BackupRestoreOutcome />
       <h2 className="mt-6 font-semibold">{t("vaultUnlockTitle")}</h2>
       <form
         className="mt-4 grid gap-3"

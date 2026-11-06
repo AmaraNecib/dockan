@@ -25,7 +25,9 @@ let host: HTMLDivElement;
 
 function bridge(invoke: TestBridge["invoke"]): void {
   // SAFETY: tests substitute the same IPC global the desktop webview injects.
-  (window as { __TAURI_INTERNALS__?: TestBridge }).__TAURI_INTERNALS__ = { invoke };
+  (window as { __TAURI_INTERNALS__?: TestBridge }).__TAURI_INTERNALS__ = {
+    invoke: (command, args) => command === "backup_restore_outcome" ? Promise.resolve() : invoke(command, args),
+  };
 }
 
 function externalDestinationInput(): HTMLInputElement {

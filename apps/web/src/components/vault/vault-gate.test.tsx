@@ -348,7 +348,10 @@ describe("VaultGate", () => {
     setValue(host, "vault-passphrase", "correct horse battery");
     await submit(host, "vault-unlock-submit");
 
-    expect(calls[0]).toEqual({ command: "vault_unlock", args: { passphrase: "correct horse battery" } });
+    expect(calls).toEqual([
+      { command: "backup_restore_outcome", args: undefined },
+      { command: "vault_unlock", args: { passphrase: "correct horse battery" } },
+    ]);
     // The broker path's token still crosses the native bridge and is kept for
     // the page to sign its RPC calls with (issue #141, unchanged). It is
     // PERSISTED on this path now (#319 review P2): a webview reload used to

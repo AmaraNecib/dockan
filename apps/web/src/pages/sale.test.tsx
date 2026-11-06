@@ -924,7 +924,17 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("PERCENTAGE");
   });
 
-  it("searches the quick-add category selector and selects a normalized match with the keyboard", async () => {
+  it("searches beyond the first 50 quick-add categories and selects a normalized match with the keyboard", async () => {
+    categoryFixtures = [
+      categoryFixtures[0]!,
+      ...Array.from({ length: 60 }, (_, index) => ({
+        id: `cat-extra-${index}`,
+        name: `تصنيف إضافي ${index}`,
+        createdAt: "2026-10-03T00:00:00",
+        updatedAt: "2026-10-03T00:00:00",
+      })),
+      categoryFixtures[1]!,
+    ];
     const host = await mountSale();
     await act(async () => {
       host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

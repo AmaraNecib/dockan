@@ -1097,10 +1097,10 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
 });
 
 describe("stock form prefill", () => {
-  it("searches items beyond the initial list and binds costs to the picked record", async () => {
+  it("searches beyond the first 50 stock items and binds costs to the picked record", async () => {
     items = [
       baseItem(),
-      ...Array.from({ length: 25 }, (_, index) => baseItem({ id: `item-${index + 2}`, name: `منتج ${index + 2}` })),
+      ...Array.from({ length: 55 }, (_, index) => baseItem({ id: `item-${index + 2}`, name: `منتج ${index + 2}` })),
       baseItem({ id: "item-late", name: "آلات التخزين", costPrice: 850, sellingPrice: 1250 }),
     ];
     await mount();

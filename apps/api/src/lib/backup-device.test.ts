@@ -23,7 +23,10 @@ describe("physical-device comparison", () => {
       const junction = path.join(root, "junction");
       fs.mkdirSync(target);
       fs.symlinkSync(target, junction, process.platform === "win32" ? "junction" : "dir");
-      expect(resolvePhysicalDevicePaths(root, junction)[1]).toBe(fs.realpathSync.native(target));
+      expect(resolvePhysicalDevicePaths(root, junction)).toEqual([
+        fs.realpathSync.native(root),
+        fs.realpathSync.native(target),
+      ]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -31,8 +34,8 @@ describe("physical-device comparison", () => {
 
   it("inserts path text literally into the PowerShell source", () => {
     const script = windowsDiskQueryForPaths("C:/vault/$'__DESTINATION_PATH__", "D:/backup/$'__SOURCE_PATH__");
-    expect(script).toContain("'C:/vault/$''__DESTINATION_PATH__'");
-    expect(script).toContain("'D:/backup/$''__SOURCE_PATH__'");
+    expect(script).toEqual(expect.stringContaining("'C:/vault/$''__DESTINATION_PATH__'"));
+    expect(script).toEqual(expect.stringContaining("'D:/backup/$''__SOURCE_PATH__'"));
   });
 
   it("queries the running host without guessing physical disk identity", async () => {

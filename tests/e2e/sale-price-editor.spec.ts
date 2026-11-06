@@ -19,6 +19,23 @@ async function scan(page: Page, barcode: string) {
   await page.keyboard.press("Enter");
 }
 
+async function expectDiscountControlsCollapsed(page: Page): Promise<void> {
+  await expect(page.getByRole("button", { name: "إضافة خصم", exact: true })).toBeVisible();
+  await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
+  await expect(page.getByTestId("sale-discount-value")).toHaveCount(0);
+}
+
+async function openDiscountControls(page: Page): Promise<void> {
+  const discountType = page.getByTestId("sale-discount-type");
+  if (!(await discountType.isVisible())) {
+    const addDiscount = page.getByRole("button", { name: "إضافة خصم", exact: true });
+    await expect(addDiscount).toBeVisible();
+    await addDiscount.click();
+  }
+  await expect(discountType).toBeVisible();
+  await expect(page.getByTestId("sale-discount-value")).toBeVisible();
+}
+
 async function fixture(page: Page, sellingPrice = 333) {
   const categoryId = await seedCategoryId(page, "أسعار البيع");
   const barcode = freshBarcode();
@@ -26,6 +43,7 @@ async function fixture(page: Page, sellingPrice = 333) {
   await page.goto("/sale");
   await scan(page, barcode);
   await expect(page.getByTestId("sale-lines")).toContainText(item.name);
+  await expectDiscountControlsCollapsed(page);
   return { item, barcode };
 }
 
@@ -65,6 +83,7 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
     await expect(page.getByTestId("sale-saved")).toHaveCount(0);
   }
   await value.fill("80");
+  await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
   await page.getByTestId("sale-discount-value").fill("10");
   await lines.getByLabel(`${item.name}: الكمية`).fill("21");
@@ -86,6 +105,7 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   // Only the mode survives navigation. This customer's transaction value never does.
   await page.goto("/sale");
   await scan(page, barcode);
+  await expectDiscountControlsCollapsed(page);
   await expect(value).toHaveValue("100");
   await expect(lines.getByTestId("sale-price-meaning")).toContainText("500");
   await value.fill("50");
@@ -143,6 +163,7 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   await page.getByTestId("new-sale-discard-confirm").click();
   await expect(page.getByTestId("sale-empty")).toBeVisible();
   await scan(page, barcode);
+  await expectDiscountControlsCollapsed(page);
   await expect(value).toHaveValue("1000");
   await value.fill("900");
   // A scan on the mode trigger adds quantity without changing the edited price or saving.
@@ -155,6 +176,7 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   await expect(value).toHaveValue("900");
   await expect(page.getByTestId("sale-saved")).toHaveCount(0);
   await callRpc(page, "itemsUpdate", { id: item.id, sellingPrice: 1200 });
+  await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   await page.getByTestId("sale-discount-value").fill("100");
   const saved = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
@@ -196,6 +218,7 @@ if (evidence) test("price editor user journey at reading pace (#397 evidence)", 
   await pause();
   await chooseSelectOption(page, mode, "مبلغ");
   await value.fill("900");
+  await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   await page.getByTestId("sale-discount-value").fill("100");
   await expect(page.getByTestId("sale-total")).toContainText("800");

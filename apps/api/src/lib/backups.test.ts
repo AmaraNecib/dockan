@@ -155,6 +155,22 @@ describe("additional external backup", () => {
     expect(readExternalBackupStatus(dataDir)).toEqual(failed);
   });
 
+  it("records an unwritable destination without publishing an artifact", async () => {
+    const dataDir = freshDataDir();
+    const external = freshDataDir();
+    await setExternalBackupDestination(dataDir, external);
+    const deniedStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async () => { throw Object.assign(new Error("write denied"), { code: "EACCES" }); },
+    };
+    const failed = await createExternalBackup({ store: deniedStore, dataDir, validate: () => true });
+    expect(failed.lastError).toBe("unwritable");
+    expect(failed.lastPath).toBeNull();
+    expect(fs.readdirSync(external)).toEqual([]);
+    expect(fs.readdirSync(dataDir).some((entry) => entry.endsWith(".partial"))).toBe(false);
+    expect(readExternalBackupStatus(dataDir)).toEqual(failed);
+  });
+
   it("resetting a destination clears its attributed outcome without deleting old backup sets", async () => {
     const dataDir = freshDataDir();
     const destination = freshDataDir();

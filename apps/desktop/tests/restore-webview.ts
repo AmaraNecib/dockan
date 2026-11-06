@@ -9,6 +9,7 @@ import { z } from "zod";
 const fixtureFile = process.argv[2];
 if (!fixtureFile) throw new Error("native fixture manifest required");
 const fixture = z.object({ root: z.string(), origin: z.string().url(), cdpPort: z.number(), pid: z.number() }).parse(JSON.parse(fs.readFileSync(fixtureFile, "utf8")));
+fixture.root = fixture.root.replace(/^\\\\\\?\\/, "");
 const evidence = path.dirname(fixtureFile);
 const fixtureCredential = "native fixture passphrase";
 const incomingCredential = "incoming native fixture passphrase";
@@ -59,7 +60,11 @@ try {
   async function pick(file?: string) {
     const helper = command(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "apps/desktop/tests/restore-picker.ps1", "-AppProcessId", String(fixture.pid), ...(file ? ["-SelectedPath", path.join(fixture.root, file)] : ["-Cancel"])]);
     await panel.getByRole("button", { name: "اختيار نسخة للاستعادة", exact: true }).click();
-    try { await helper; }
+    try {
+      await helper;
+      if (file) await expect(panel.locator("#restore-backup-secret")).toBeVisible();
+      else await expect(panel.getByRole("button", { name: "اختيار نسخة للاستعادة", exact: true })).toBeEnabled();
+    }
     catch (error) {
       await panel.screenshot({ path: path.join(evidence, "restore-picker-failure.png") });
       console.error("Picker renderer state:", await panel.innerText());
@@ -135,6 +140,10 @@ try {
   expect(createHash("sha256").update(fs.readFileSync(chosen)).digest("hex")).toBe(selectedBefore);
   fs.writeFileSync(path.join(evidence, "native-results.json"), JSON.stringify({ realWebview: true, realPicker: true, realRegisteredIpc: true, realCompiledSidecar: true, savedRecord: "Restored native record", independentSafetyRecord: "Original native record", selectedSha256: selectedBefore, safetyPath }, null, 2));
   console.log("PASS real registered wrapper restore, fresh locked gate, incoming unlock, persisted records and independent encrypted safety reopen");
+} catch (error) {
+  console.error("Final renderer state:", await page.locator("body").innerText());
+  await page.locator("main").screenshot({ path: path.join(evidence, "restore-native-failure.png") }).catch(() => {});
+  throw error;
 } finally {
   if (recording) await agent("record", "stop").catch(() => {});
   // Disconnect the observer; the fixture owns and closes the native process.

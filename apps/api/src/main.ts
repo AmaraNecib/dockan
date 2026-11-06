@@ -392,12 +392,10 @@ let vaultStoreForBackup: StorePort | undefined;
 
 /** The first daily backup needs the committed header, so it runs post-commit. */
 function startExternalBackup(store: StorePort, conn: Connection): void {
-  const validate = conn.validateSnapshotBytes?.bind(conn);
-  if (validate === undefined || readyHandlerFor(lockLost) !== "live") return;
+  if (conn.writeBackupTo === undefined || readyHandlerFor(lockLost) !== "live") return;
   void createExternalBackup({
     store,
     dataDir: config.dataDir,
-    validate,
     writeGuard: requireHeldLock(vaultLock),
   }).then((result) => {
     if (result.lastError !== null) logger.warn("SERVER_ERROR", `external backup failed: ${result.lastError}`);
@@ -534,7 +532,7 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
       logger,
       store,
       auth,
-      externalBackupValidator: conn.validateSnapshotBytes?.bind(conn),
+      externalBackupEnabled: conn.writeBackupTo !== undefined,
       externalBackupWriteGuard: requireHeldLock(vaultLock),
       afterManualBackup: () => startExternalBackup(store, conn),
       vault: {

@@ -9,6 +9,10 @@ import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
 import { backupRevealAvailable, BackupRevealError, revealBackup } from "../lib/backup-reveal";
 
+function externalOutcomeKey(status: { lastAttemptAt: string | null; lastSuccessAt: string | null; lastError: string | null; lastPath: string | null } | undefined): string {
+  return JSON.stringify([status?.lastAttemptAt, status?.lastSuccessAt, status?.lastError, status?.lastPath]);
+}
+
 /**
  * Backups (ticket 13): one manual export button — a checkpoint+copy of the
  * shop's database the owner can move to a USB stick. The daily copy happens
@@ -20,25 +24,23 @@ export function BackupsPage() {
   const { t } = useTranslation();
   const [awaitingExternalOutcome, setAwaitingExternalOutcome] = useState(false);
   const externalAttemptBaseline = useRef<string | null>(null);
-  const externalPollStartedAt = useRef(0);
   const externalStatus = useQuery({
     ...orpc.externalBackupStatus.queryOptions(),
     refetchInterval: (query) => awaitingExternalOutcome
-      && query.state.data?.lastAttemptAt === externalAttemptBaseline.current
-      && Date.now() - externalPollStartedAt.current < 30_000
-      ? 1_000
+      && externalOutcomeKey(query.state.data) === externalAttemptBaseline.current
+      ? 5_000
       : false,
   });
+  const currentExternalOutcomeKey = externalOutcomeKey(externalStatus.data);
   useEffect(() => {
-    if (awaitingExternalOutcome && externalStatus.data?.lastAttemptAt !== externalAttemptBaseline.current) {
+    if (awaitingExternalOutcome && currentExternalOutcomeKey !== externalAttemptBaseline.current) {
       setAwaitingExternalOutcome(false);
     }
-  }, [awaitingExternalOutcome, externalStatus.data?.lastAttemptAt]);
+  }, [awaitingExternalOutcome, currentExternalOutcomeKey]);
   const backup = useMutation(orpc.backupManual.mutationOptions({
     onSuccess: () => {
       if (externalStatus.data?.destination) {
-        externalAttemptBaseline.current = externalStatus.data.lastAttemptAt;
-        externalPollStartedAt.current = Date.now();
+        externalAttemptBaseline.current = externalOutcomeKey(externalStatus.data);
         setAwaitingExternalOutcome(true);
         void externalStatus.refetch();
       }

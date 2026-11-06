@@ -732,6 +732,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         connectionStamp,
         "refusing to bundle a snapshot that is not this holder's",
       );
+      const header = parseVaultHeader(headerText);
+      if (header.vaultId !== vaultId) throw new Error("backup header does not belong to this vault");
       await writeFileAtomic(destPath, createVaultBackupBundle(headerText, snapshot));
     },
   };

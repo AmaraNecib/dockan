@@ -147,7 +147,7 @@ describe("additional external backup", () => {
         throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
       },
     };
-    const failed = await createExternalBackup({ store: failingStore, dataDir, validate: () => true });
+    const failed = await createExternalBackup({ store: failingStore, dataDir });
     expect(failed.lastError).toBe("full");
     expect(failed.lastPath).toBeNull();
     expect(fs.readdirSync(external)).toEqual([]);
@@ -163,7 +163,7 @@ describe("additional external backup", () => {
       ...store,
       copyDatabaseTo: async () => { throw Object.assign(new Error("write denied"), { code: "EACCES" }); },
     };
-    const failed = await createExternalBackup({ store: deniedStore, dataDir, validate: () => true });
+    const failed = await createExternalBackup({ store: deniedStore, dataDir });
     expect(failed.lastError).toBe("unwritable");
     expect(failed.lastPath).toBeNull();
     expect(fs.readdirSync(external)).toEqual([]);

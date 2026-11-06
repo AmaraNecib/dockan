@@ -32,6 +32,18 @@ function freshConnection(key: Uint8Array = masterKey) {
 }
 
 describe("encrypted connection", () => {
+  it("refuses to export a backup when the current header is malformed", async () => {
+    const headerPath = path.join(dir, "vault.json");
+    const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), headerPath, fresh: true });
+    conn.raw.exec("CREATE TABLE t(a TEXT)");
+    conn.markDirty();
+    await conn.persistIfDirty();
+    fs.writeFileSync(headerPath, "{}");
+    await expect(conn.writeBackupTo(path.join(dir, "bad.dknvbak"))).rejects.toThrow();
+    expect(fs.existsSync(path.join(dir, "bad.dknvbak"))).toBe(false);
+    await conn.close();
+  });
+
   it("persists an encrypted snapshot and reopens it with the master key", async () => {
     const first = freshConnection();
     first.raw.exec("CREATE TABLE t(a TEXT)");

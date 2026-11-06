@@ -155,16 +155,19 @@ it("keeps destination edits locked until the save response arrives", async () =>
   await settle(() => expect(externalDestinationInput().value).toBe("E:/new"), "destination save completed");
 });
 
-it("refreshes external outcome after a background copy finishes", async () => {
+it("refreshes a background outcome after 30 seconds without relying on a focus change", async () => {
   let statusRequests = 0;
   let localBackupFinished = false;
+  let now = 1_800_000_000_000;
+  const dateNow = Date.now;
+  Date.now = () => now;
   globalThis.fetch = Object.assign(async (request: RequestInfo | URL) => {
     const url = request instanceof Request ? request.url : String(request);
     if (url.includes("externalBackupStatus")) {
       statusRequests++;
-      const status: ExternalBackupStatus = localBackupFinished && statusRequests >= 3
+      const status: ExternalBackupStatus = localBackupFinished && statusRequests >= 5 && now >= 1_800_000_031_000
         ? { destination: "D:/backup", lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/backup/set/dokan-backup.dknvbak" }
-        : { destination: "D:/backup", lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastPath: null };
+        : { destination: "D:/backup", lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/backup/previous/dokan-backup.dknvbak" };
       return Response.json({ json: status });
     }
     if (url.includes("backupManual")) {
@@ -175,10 +178,16 @@ it("refreshes external outcome after a background copy finishes", async () => {
   }, { preconnect: originalFetch.preconnect });
   await rerenderPage();
   await settle(() => expect(externalDestinationInput().value).toBe("D:/backup"), "external destination load");
-  await click("إنشاء نسخة احتياطية الآن", () => {
-    expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
-  }, "manual backup and background external attempt");
-  await settle(() => expect(host.querySelector('[data-testid="external-backup-success"]')?.textContent).toContain("10:00:01"), "background external copy outcome refresh", 5_000);
+  try {
+    await click("إنشاء نسخة احتياطية الآن", () => {
+      expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
+    }, "manual backup and background external attempt");
+    await settle(() => expect(statusRequests).toBeGreaterThanOrEqual(2), "first pending status refresh");
+    now += 31_000;
+    await settle(() => expect(host.querySelector('[data-testid="external-backup-success"]')?.textContent).toContain("10:00:01"), "background external copy outcome refresh after simulated 31 seconds", 8_000);
+  } finally {
+    Date.now = dateNow;
+  }
 });
 
 it("saves a destination, shows the successful copy path, and resets without deleting backup files", async () => {

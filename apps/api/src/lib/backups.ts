@@ -173,17 +173,17 @@ function classifyExternalBackupError(error: ExternalBackupFailure): ExternalBack
  * exclusively reserved with mkdir; publication is a same-directory rename to
  * a fixed filename that no prior backup set can contain.
  */
-export async function createExternalBackup({ store, dataDir, validate, writeGuard = () => undefined }: {
+export async function createExternalBackup({ store, dataDir, writeGuard = () => undefined }: {
   store: StorePort;
   dataDir: string;
-  validate: BackupFileValidator;
   writeGuard?: () => void;
 }): Promise<ExternalBackupStatus> {
   return serializeExternalBackup(dataDir, async () => {
     writeGuard();
     const current = readExternalBackupStatus(dataDir);
     if (!current.destination) return current;
-    const at = localDateTime();
+    let at = localDateTime();
+    if (at === current.lastAttemptAt) at = `${at}.001`;
     let ownedDirectory: string | undefined;
     let externalPartial: string | undefined;
     const staging = path.join(dataDir, `.external-backup-${process.pid}-${crypto.randomBytes(8).toString("hex")}.partial`);
@@ -196,7 +196,7 @@ export async function createExternalBackup({ store, dataDir, validate, writeGuar
       writeGuard();
       const stagedBytes = await fs.promises.readFile(staging);
       const encryptedBundle = readVaultBackupBundle(stagedBytes);
-      if (encryptedBundle === undefined || !validate(stagedBytes)) throw new Error("BACKUP_INVALID");
+      if (encryptedBundle === undefined) throw new Error("BACKUP_INVALID");
       ownedDirectory = await reserveExternalBackupDirectory(targetDir);
       writeGuard();
       const partial = path.join(ownedDirectory, "dokan-backup.dknvbak.partial");
@@ -208,7 +208,12 @@ export async function createExternalBackup({ store, dataDir, validate, writeGuar
       try { await partialFile.sync(); } finally { await partialFile.close(); }
       writeGuard();
       const externalBytes = await fs.promises.readFile(partial);
-      if (readVaultBackupBundle(externalBytes) === undefined || !validate(externalBytes)) {
+      if (externalBytes.byteLength !== stagedBytes.byteLength) throw new Error("BACKUP_INVALID");
+      const [stagedDigest, externalDigest] = await Promise.all([
+        crypto.subtle.digest("SHA-256", stagedBytes),
+        crypto.subtle.digest("SHA-256", externalBytes),
+      ]);
+      if (!crypto.timingSafeEqual(Buffer.from(stagedDigest), Buffer.from(externalDigest))) {
         throw new Error("BACKUP_INVALID");
       }
       writeGuard();
@@ -245,13 +250,7 @@ export async function createExternalBackup({ store, dataDir, validate, writeGuar
   });
 }
 
-/**
- * How a backup file is checked before it is trusted as today's copy. The
- * legacy database is a SQLite file (`isValidSqliteBackup`); an encrypted
- * snapshot is an AEAD container and is validated by the vault connection.
- * main.ts injects the vault validator in vault mode.
- */
-export type BackupFileValidator = (bytes: Uint8Array) => boolean;
+/** A filesystem path validator for plaintext legacy database backups. */
 export type BackupPathValidator = (path: string) => boolean;
 
 /**

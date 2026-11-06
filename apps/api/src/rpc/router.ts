@@ -20,7 +20,7 @@ import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
-import { createBackup, createExternalBackup, readExternalBackupStatus, setExternalBackupDestination, type BackupFileValidator } from "../lib/backups";
+import { createBackup, createExternalBackup, readExternalBackupStatus, setExternalBackupDestination } from "../lib/backups";
 import { comparePhysicalDevice, type PhysicalDeviceRelation } from "../lib/backup-device";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { resolveVaultCredential } from "../lib/vault/session";
@@ -76,7 +76,7 @@ type RpcDeps = {
    * itself is untouched, so employee logins can be added later without
    * changing the vault.
    */
-  externalBackupValidator?: BackupFileValidator;
+  externalBackupEnabled?: boolean;
   externalBackupWriteGuard?: () => void;
   afterManualBackup?: () => void;
   vault?: {
@@ -2611,7 +2611,7 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     externalBackupRun: os.externalBackupRun.handler(
       guarded(async () => {
-        if (deps.externalBackupValidator === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
+        if (!deps.externalBackupEnabled) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
         if (deps.externalBackupWriteGuard === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
         const local = await createBackup({ store: deps.store, dataDir: deps.config.dataDir });
         await deps.store.insertActivity({
@@ -2622,7 +2622,6 @@ export function createRpcRouter(deps: RpcDeps) {
         return createExternalBackup({
           store: deps.store,
           dataDir: deps.config.dataDir,
-          validate: deps.externalBackupValidator,
           writeGuard: deps.externalBackupWriteGuard,
         });
       }),

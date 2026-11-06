@@ -150,7 +150,6 @@ describe("vault backup bundle", () => {
       outcome = await createExternalBackup({
         store,
         dataDir: source,
-        validate: conn.validateSnapshotBytes.bind(conn),
       });
     } finally {
       randomSpy.mockRestore();
@@ -177,7 +176,6 @@ describe("vault backup bundle", () => {
     const disconnected = await createExternalBackup({
       store: unpluggedStore,
       dataDir: source,
-      validate: conn.validateSnapshotBytes.bind(conn),
     });
     expect(disconnected.lastError).toBe("disconnected");
     expect(disconnected.lastPath).toBe(bundlePath);
@@ -191,7 +189,6 @@ describe("vault backup bundle", () => {
     const invalid = await createExternalBackup({
       store: corruptStore,
       dataDir: source,
-      validate: conn.validateSnapshotBytes.bind(conn),
     });
     expect(invalid.lastError).toBe("invalid");
     expect(invalid.lastPath).toBe(bundlePath);
@@ -213,7 +210,7 @@ describe("vault backup bundle", () => {
       return readFile(file);
     }) as typeof fs.promises.readFile);
     try {
-      const pendingCopy = createExternalBackup({ store, dataDir: source, validate: conn.validateSnapshotBytes.bind(conn) });
+      const pendingCopy = createExternalBackup({ store, dataDir: source });
       await Promise.race([readStarted, Bun.sleep(3_000).then(() => { throw new Error("external async read did not start"); })]);
       expect((await store.listCategories()).some((category) => category.name === "رحلة")).toBe(true);
       releaseExternalRead();
@@ -237,7 +234,7 @@ describe("vault backup bundle", () => {
         await store.copyDatabaseTo(target);
       },
     };
-    const copyPromise = createExternalBackup({ store: copyStore, dataDir: source, validate: conn.validateSnapshotBytes.bind(conn) });
+    const copyPromise = createExternalBackup({ store: copyStore, dataDir: source });
     await copyStarted;
     let destinationChangeFinished = false;
     const destinationChange = setExternalBackupDestination(source, nextExternalDir).then((value) => {
@@ -350,15 +347,62 @@ async function closeLockedExternalBackupHarness(harness: LockedExternalBackupHar
 }
 
 describe("vault external backup lock fencing", () => {
+  it("assigns a distinct attempt marker when two attempts share a local second", async () => {
+    const harness = await lockedExternalBackupHarness();
+    const fixedClock = spyOn(Date.prototype, "toLocaleString").mockReturnValue("2026-11-05, 10:00:01");
+    try {
+      const first = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      const second = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      expect(first.lastAttemptAt).toBe("2026-11-05T10:00:01");
+      expect(second.lastAttemptAt).toBe("2026-11-05T10:00:01.001");
+    } finally {
+      fixedClock.mockRestore();
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
+  it("rejects equal-length ciphertext changes in the external copy and retains the known-good outcome", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const knownGood = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      const knownGoodPath = knownGood.lastPath;
+      if (knownGoodPath === null) throw new Error("the baseline external backup was not published");
+      const knownGoodBytes = fs.readFileSync(knownGoodPath);
+      // SAFETY: bind preserves the exact copyFile overload used below.
+      const realCopyFile = fs.promises.copyFile.bind(fs.promises) as typeof fs.promises.copyFile;
+      // SAFETY: the spy preserves copyFile's overload and delegates with its original arguments.
+      const copySpy = spyOn(fs.promises, "copyFile").mockImplementation((async (source, destination, mode) => {
+        await realCopyFile(source, destination, mode);
+        if (String(destination).endsWith(".partial")) {
+          const corrupted = await fs.promises.readFile(destination);
+          const middle = Math.floor(corrupted.length / 2);
+          const byte = corrupted[middle];
+          if (byte === undefined) throw new Error("ciphertext fixture is unexpectedly empty");
+          corrupted[middle] = byte ^ 1;
+          await fs.promises.writeFile(destination, corrupted);
+        }
+      }) as typeof fs.promises.copyFile);
+      try {
+        const failed = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+        expect(failed.lastError).toBe("invalid");
+        expect(failed.lastPath).toBe(knownGoodPath);
+        expect(failed.lastSuccessAt).toBe(knownGood.lastSuccessAt);
+        expect(fs.readFileSync(knownGoodPath).equals(knownGoodBytes)).toBe(true);
+      } finally {
+        copySpy.mockRestore();
+      }
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
   it("refuses publication after the lock is replaced at the validated partial boundary", async () => {
     const harness = await lockedExternalBackupHarness();
     try {
       const writeGuard = () => harness.lock.assertHeld();
-      const validate = harness.conn.validateSnapshotBytes.bind(harness.conn);
       const knownGood = await createExternalBackup({
         store: harness.store,
         dataDir: harness.source,
-        validate,
         writeGuard,
       });
       expect(knownGood.lastError).toBeNull();
@@ -367,21 +411,19 @@ describe("vault external backup lock fencing", () => {
       const knownGoodBytes = fs.readFileSync(knownGoodPath);
       const savedSettings = fs.readFileSync(path.join(harness.source, "external-backup.json"));
 
-      let validations = 0;
-      const stealAfterPartialValidation = (bytes: Uint8Array): boolean => {
-        const valid = validate(bytes);
-        validations += 1;
-        if (validations === 2) writeLockRecord(harness.source, { token: "publication-thief" });
-        return valid;
+      let guardChecks = 0;
+      const stealAfterPartialValidation = () => {
+        guardChecks++;
+        if (guardChecks === 5) writeLockRecord(harness.source, { token: "publication-thief" });
+        writeGuard();
       };
       await expect(createExternalBackup({
         store: harness.store,
         dataDir: harness.source,
-        validate: stealAfterPartialValidation,
-        writeGuard,
+        writeGuard: stealAfterPartialValidation,
       })).rejects.toBeInstanceOf(VaultLockLostError);
 
-      expect(validations).toBe(2);
+      expect(guardChecks).toBeGreaterThanOrEqual(5);
       const attemptDirectories = fs.readdirSync(harness.external)
         .filter((name) => path.join(harness.external, name) !== path.dirname(knownGoodPath));
       expect(attemptDirectories).toHaveLength(1);
@@ -406,7 +448,6 @@ describe("vault external backup lock fencing", () => {
       const knownGood = await createExternalBackup({
         store: harness.store,
         dataDir: harness.source,
-        validate,
         writeGuard,
       });
       expect(knownGood.lastError).toBeNull();
@@ -431,7 +472,6 @@ describe("vault external backup lock fencing", () => {
       await expect(createExternalBackup({
         store: harness.store,
         dataDir: harness.source,
-        validate,
         writeGuard: guardAtPublicationStatusBoundary,
       })).rejects.toBeInstanceOf(VaultLockLostError);
 

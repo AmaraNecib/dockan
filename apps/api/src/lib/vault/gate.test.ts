@@ -160,7 +160,7 @@ function harness(
       logger,
       store,
       auth,
-      externalBackupValidator: options.externalBackup ? connection.validateSnapshotBytes?.bind(connection) : undefined,
+      externalBackupEnabled: options.externalBackup,
       externalBackupWriteGuard: options.externalBackup ? () => undefined : undefined,
       vault: {
         sessionMatches: (token) => manager.sessionMatches(token),

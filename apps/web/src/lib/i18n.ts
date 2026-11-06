@@ -203,6 +203,10 @@ const resources = {
       dashboardCategoriesCount: "عدد التصنيفات",
       dashboardLowStock: "منتجات على وشك النفاد",
       dashboardLowStockEmpty: "لا توجد منتجات منخفضة حالياً",
+      dashboardStockOnHand: "المخزون الحالي",
+      dashboardStockThreshold: "حد التنبيه",
+      dashboardStockOutOfStock: "نفد المخزون",
+      dashboardStockLow: "مخزون منخفض",
       // issue #118 — a pending return is invisible money until accepted
       dashboardPendingReturns: "مرتجعات قيد المراجعة",
       dashboardPendingReturnsHint: "يوجد {{count}} مرجوع قيد المراجعة لا يؤثر على الأرصدة حتى قبوله.",

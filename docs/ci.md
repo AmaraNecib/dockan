@@ -79,10 +79,18 @@ diff, a critical path (the router and entry points, `store/**`, `rpc/**`,
 whole suite. The selector never reads free text; the only overrule is the
 `e2e:full` PR label, and it is recorded on the PR.
 
-`scripts/e2e-selection.test.ts` runs inside `bun run test` (`turbo test` then
-`bun test ./scripts/`) and fails when a spec on disk is unreachable from every
-feature rule, when a rule names a spec that does not exist, or when a pattern
-matches nothing. A stale map therefore costs minutes, never coverage.
+`scripts/e2e-selection.test.ts` runs inside `bun run test` and rejects stale
+mapped references or patterns that match nothing. New runnable files do not
+need map entries. `scripts/e2e-discovery.ts` walks the configured test directory
+without Git ignore filtering, then adds every unclassified candidate to an
+`affected` selection. An explicit inert/docs-only diff still skips. Changes to
+runnable E2E files and to discovery/configuration stay `full`.
+
+`playwright.config.ts` imports the shared test-match expression and sets
+`respectGitIgnore: false`, which keeps runner collection aligned with the
+changes job's dependency-free file walk. The scripts tests compare discovery
+with `playwright test --list`; that check runs after dependency installation and
+never starts the browser servers.
 
 Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
 
@@ -158,8 +166,8 @@ Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
   the `scripts/**` row, a PR whose diff was only under `scripts/` selected `full`,
   because at least one of its files matched nothing and the map fails closed. It
   now selects `skip`: no spec renders differently because a lane's own tooling
-  changed, and the `checks` job — which does run `bun test ./scripts/` and the
-  gate's suite — is where that diff is judged. Two rows that were listed
+  changed, and the `checks` job — which does run `bun test ./scripts/ tools/`
+  and the gate's suite — is where that diff is judged. Two rows that were listed
   individually above `scripts/**` (`scripts/sync-claude-skills.ts` and its test)
   are gone: `skip_e2e` is OR'd, so the pattern row already covered them and the
   two entries were dead.

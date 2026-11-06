@@ -187,11 +187,12 @@ export function planAffected(
   sources: PlanSources = {},
 ): Plan {
   const turbo = ["turbo", "run", "test", "--concurrency=2"];
-  const scripts = ["bun", "test", "./scripts/"];
+  // Root-level suites are not Turbo packages, so both remain unconditional.
+  const scriptsAndTools = ["bun", "test", "./scripts/", "tools/"];
   const select = sources.select ?? enumeratePackages;
   const probeRef = sources.hasRef ?? hasRef;
   const readMergeBase = sources.mergeBase ?? mergeBaseOf;
-  const wide = (note: string): Plan => ({ steps: [turbo, scripts], scope: "full", note });
+  const wide = (note: string): Plan => ({ steps: [turbo, scriptsAndTools], scope: "full", note });
 
   if (!probeRef(base, cwd)) {
     return wide(
@@ -211,7 +212,7 @@ export function planAffected(
     );
   }
   const decision = turboArgs(changed, mergeBase, base);
-  const steps: Step[] = [[...turbo, ...decision.args], scripts];
+  const steps: Step[] = [[...turbo, ...decision.args], scriptsAndTools];
   if (decision.scope !== "filtered") {
     return { steps, scope: "full", note: decision.reason };
   }
@@ -341,7 +342,7 @@ export type StepRunner = (step: Step, cwd: string) => Promise<number>;
  * Both steps run under this bun — the one this script is already executing —
  * rather than a `bun` looked up on PATH. A PATH lookup cannot prove the runner
  * exists; `process.execPath` is the runner, so it cannot fail for that reason.
- * `bun <shim> ...` for turbo, `bun test ...` for the scripts suite: no shell, so
+ * `bun <shim> ...` for turbo, `bun test ...` for scripts and tools: no shell, so
  * no quoting to get wrong per platform.
  *
  * `Bun.spawn` rather than `spawnSync`: the two steps have nothing in common, so
@@ -371,8 +372,8 @@ async function runStepAsync(step: Step, cwd: string): Promise<number> {
  * Both steps, at once, with one exit code.
  *
  * A short-circuit is the failure mode this replaces: returning the first step's
- * status stopped the second from running, so a red package suite was masked by a
- * green scripts suite whenever the plan put the scripts suite last — and the
+ * status stopped the second from running, so a red package suite was masked by
+ * green scripts and tools whenever that step ran last — and the
  * fail-fast branch itself had no test that could tell it from a pass. Every step
  * starts, every step is awaited, and the code is the first failure in plan order
  * so it does not depend on which child finished first.

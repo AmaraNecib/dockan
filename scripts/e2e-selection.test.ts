@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { discoverE2eSpecs } from "./e2e-discovery";
 import { contractLines, globToRegExp, loadMap, selectSpecs, specPaths } from "./e2e-selection";
 
 // This file is the reason the map can be trusted. It is cheap (no browser, no
@@ -14,12 +15,12 @@ import { contractLines, globToRegExp, loadMap, selectSpecs, specPaths } from "./
 // could not catch its own removal when the command that runs it was removed too
 // (#231).
 const ROOT = join(import.meta.dir, "..");
-const SPEC_DIR = join(ROOT, "tests", "e2e");
 const CLI = join(ROOT, "scripts", "e2e-selection.ts");
 
 const map = loadMap();
-const isSpec = (f: string) => f.endsWith(".spec.ts");
-const onDisk = readdirSync(SPEC_DIR).filter(isSpec).sort();
+const discovery = discoverE2eSpecs(ROOT);
+if (!discovery.ok) throw new Error(discovery.reason);
+const onDisk = discovery.specs;
 // `--cached` is the committed tree; `--others --exclude-standard` adds a new
 // file that is not committed yet, so a pattern for a file this change adds is
 // already live when the guard runs pre-commit. Ignored trees (node_modules,
@@ -85,12 +86,10 @@ describe("e2e-selection map", () => {
     }
   });
 
-  test("every spec on disk is reachable from at least one feature rule", () => {
-    const reachable = new Set(map.features.flatMap((f) => f.specs));
-    const orphans = onDisk.filter((s) => !reachable.has(s));
-    // An orphan spec would never run on a PR again: it would only ever fire in
-    // the full suite. Either wire it up or delete the spec.
-    expect(orphans).toEqual([]);
+  test("every mapped spec exists on disk; new specs need no map registration", () => {
+    const mapped = [...new Set(map.features.flatMap((f) => f.specs))];
+    const missing = mapped.filter((s) => !onDisk.includes(s));
+    expect(missing).toEqual([]);
   });
 
   test("auth changes select the cross-tab session journey", () => {
@@ -177,6 +176,14 @@ describe("e2e-selection behaviour", () => {
     expect(scope.reason).toContain("unmapped");
   });
 
+  test("a failed discovery cannot produce an affected or skip result", () => {
+    for (const changed of [[], ["docs/ci.md"], ["apps/web/src/pages/backups.tsx"]]) {
+      const scope = selectSpecs(changed, map, { ok: false, reason: "missing discovery config" });
+      expect(scope.mode).toBe("full");
+      expect(scope.reason).toContain("discovery");
+    }
+  });
+
   test("fail-closed on an empty diff", () => {
     expect(selectSpecs([], map).mode).toBe("full");
   });
@@ -187,31 +194,49 @@ describe("e2e-selection behaviour", () => {
     expect(scope.reason).toContain("empty diff");
   });
 
-  test("docs-only diff skips e2e", () => {
-    expect(selectSpecs(["docs/ci.md", "README.md"], map).mode).toBe("skip");
+  test("docs-only diff stays skipped when an unclassified runnable spec exists", () => {
+    const scope = selectSpecs(["docs/ci.md", "README.md"], map, {
+      ok: true,
+      specs: ["unregistered/new.spec.ts"],
+    });
+    expect(scope).toEqual({ mode: "skip", specs: [], reason: "no browser-reachable path changed" });
   });
 
   test("a .github-only diff skips e2e", () => {
     expect(selectSpecs([".github/workflows/ci.yml"], map).mode).toBe("skip");
   });
 
-  test("an edit to a spec forces the full suite", () => {
-    // You cannot edit the tests and then claim they are unaffected.
-    expect(selectSpecs(["tests/e2e/debts.spec.ts"], map).mode).toBe("full");
+  test("added, changed, removed, and renamed runnable files force the full suite", () => {
+    // The no-renames diff supplies both paths for a move. Either side is a
+    // changed runnable test, so neither can be narrowed to a feature subset.
+    for (const file of [
+      "tests/e2e/new/nested-flow.test.tsx",
+      "tests/e2e/debts.spec.ts",
+      "tests/e2e/removed.spec.ts",
+      "tests/e2e/renamed.spec.ts",
+    ]) {
+      expect(selectSpecs([file], map).mode).toBe("full");
+    }
   });
 
   test("a critical path beats a skip rule for the same file", () => {
     expect(selectSpecs(["tests/e2e/README.md"], map).mode).toBe("full");
   });
 
-  test("a feature diff selects exactly its mapped specs", () => {
-    const scope = selectSpecs(["apps/web/src/pages/backups.tsx"], map);
+  test("a feature diff unions discovered unclassified specs with mapped specs", () => {
+    const scope = selectSpecs(["apps/web/src/pages/backups.tsx"], map, {
+      ok: true,
+      specs: ["backups.spec.ts", "nested/new-flow.test.ts", "nested/new-flow.test.ts"],
+    });
     expect(scope.mode).toBe("affected");
-    expect(scope.specs).toEqual(["backups.spec.ts"]);
+    expect(scope.specs).toEqual(["backups.spec.ts", "nested/new-flow.test.ts"]);
   });
 
   test("two features union their specs without duplicates", () => {
-    const scope = selectSpecs(["apps/web/src/pages/debts.tsx", "apps/web/src/pages/activity.tsx"], map);
+    const scope = selectSpecs(["apps/web/src/pages/debts.tsx", "apps/web/src/pages/activity.tsx"], map, {
+      ok: true,
+      specs: [],
+    });
     expect(scope.specs).toEqual([
       "activity.spec.ts",
       "backups.spec.ts",
@@ -368,12 +393,12 @@ describe("e2e-selection behaviour", () => {
     expect(scope.specs).toContain("rpc-helpers.spec.ts");
   });
 
-  test("the CI selector is critical: it decides which specs CI runs", () => {
-    // `scripts/e2e-selection.ts` is what `ci.yml` runs, so a change there can
-    // mis-select the PR's coverage. Whole suite.
-    const scope = selectSpecs(["scripts/e2e-selection.ts"], map);
-    expect(scope.mode).toBe("full");
-    expect(scope.reason).toContain("critical path");
+  test("the selector and discovery module are critical: they decide which specs CI runs", () => {
+    for (const file of ["scripts/e2e-selection.ts", "scripts/e2e-discovery.ts"]) {
+      const scope = selectSpecs([file], map);
+      expect(scope.mode).toBe("full");
+      expect(scope.reason).toContain("critical path");
+    }
   });
 
   test("the local driver cannot move CI's coverage, so it is not critical", () => {

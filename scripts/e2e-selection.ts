@@ -7,12 +7,14 @@
 //   affected — run only the mapped specs.
 //   skip     — nothing in the diff can reach a browser.
 //
-// The point of this file is that no model and no human "judges" a diff. The
-// diff is an input; the map is a checked-in artifact; a missing map entry
-// costs minutes, never coverage.
+// The diff and checked-in map classify changed paths. A shared dependency-free
+// walk supplies new runnable test candidates, so missing per-file registration
+// no longer makes a new spec invisible.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { discoverE2eSpecs, type Discovery } from "./e2e-discovery";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const MAP_PATH = join(HERE, "..", "tests", "e2e-selection.map.json");
@@ -78,7 +80,14 @@ export function loadMap(path = MAP_PATH): SelectionMap {
   return parsed as SelectionMap;
 }
 
-export function selectSpecs(changed: string[], map: SelectionMap = loadMap()): Scope {
+export function selectSpecs(
+  changed: string[],
+  map: SelectionMap = loadMap(),
+  discovery: Discovery = discoverE2eSpecs(),
+): Scope {
+  if (!discovery.ok) {
+    return { mode: "full", specs: [], reason: `discovery failed: ${discovery.reason}` };
+  }
   const full = commented(map.always_full).map(globToRegExp);
   const skip = commented(map.skip_e2e).map(globToRegExp);
   const features = map.features.map((f) => ({ match: f.match.map(globToRegExp), specs: f.specs }));
@@ -110,9 +119,16 @@ export function selectSpecs(changed: string[], map: SelectionMap = loadMap()): S
     return { mode: "full", specs: [], reason: `unmapped path: ${file}` };
   }
 
+  if (picked.size === 0) return { mode: "skip", specs: [], reason: "no browser-reachable path changed" };
+
+  // Mapped lists remain the curated baseline. Discovery supplies every runnable
+  // candidate not yet classified, without requiring a map edit for a new file.
+  const mapped = new Set(map.features.flatMap((feature) => feature.specs));
+  for (const spec of discovery.specs) {
+    if (!mapped.has(spec)) picked.add(spec);
+  }
   const specs = [...picked].sort();
-  if (specs.length === 0) return { mode: "skip", specs: [], reason: "no browser-reachable path changed" };
-  return { mode: "affected", specs, reason: `${specs.length} spec(s) mapped from ${files.length} file(s)` };
+  return { mode: "affected", specs, reason: `${specs.length} spec(s) selected from ${files.length} file(s)` };
 }
 
 // One builder for the Playwright path shape, used by both the selector's

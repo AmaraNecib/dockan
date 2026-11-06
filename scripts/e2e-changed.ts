@@ -5,10 +5,10 @@
 // reach"; until now only CI asked it, so a lane changing three files waited out
 // all 35 specs before every push. This is the same decision with a local front
 // end: it reuses `selectSpecs` and the checked-in map rather than growing a
-// second set of globs, and it hands the mapped paths to `bun run test:e2e`.
+// second set of path rules, and it hands selected paths to `bun run test:e2e`.
 //
 // Three outcomes, the same three the selector has:
-//   affected — spawn Playwright with the mapped paths as positional filters.
+//   affected — spawn Playwright with the selected paths as positional filters.
 //   full     — spawn Playwright with no filters, after saying why.
 //   skip     — spawn nothing and exit 0, because nothing in the diff can reach
 //              a browser.

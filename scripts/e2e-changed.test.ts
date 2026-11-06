@@ -31,7 +31,7 @@ const CLI = join(ROOT, "scripts", "e2e-changed.ts");
 const affected = (specs: string[]): Scope => ({
   mode: "affected",
   specs,
-  reason: `${specs.length} spec(s) mapped from 1 file(s)`,
+  reason: `${specs.length} spec(s) selected from 1 file(s)`,
 });
 
 const full: Scope = { mode: "full", specs: [], reason: "critical path: package.json" };
@@ -399,7 +399,7 @@ describe("e2e-changed git", () => {
         mode: "affected",
         specs: ["backups.spec.ts"],
         reason:
-          "1 spec(s) mapped from 1 file(s) | 1 tracked file(s) have uncommitted edits this decision does not see (apps/web/src/pages/backups.tsx) — commit first, or pass --files",
+          "1 spec(s) selected from 1 file(s) | 1 tracked file(s) have uncommitted edits this decision does not see (apps/web/src/pages/backups.tsx) — commit first, or pass --files",
       },
       source: "dirty",
     });
@@ -425,7 +425,7 @@ describe("e2e-changed git", () => {
       dirty: () => [],
     });
     expect(decision).toEqual({
-      scope: { mode: "affected", specs: ["backups.spec.ts"], reason: "1 spec(s) mapped from 1 file(s)" },
+      scope: { mode: "affected", specs: ["backups.spec.ts"], reason: "1 spec(s) selected from 1 file(s)" },
       source: "files",
     });
   });
@@ -466,7 +466,7 @@ describe("e2e-changed git", () => {
         mode: "affected",
         specs: ["backups.spec.ts"],
         reason:
-          "1 spec(s) mapped from 1 file(s) | git could not read the working tree, so whether tracked files have uncommitted edits this decision does not see is unknown — the answer covers HEAD only",
+          "1 spec(s) selected from 1 file(s) | git could not read the working tree, so whether tracked files have uncommitted edits this decision does not see is unknown — the answer covers HEAD only",
       },
       source: "git",
     });

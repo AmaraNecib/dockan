@@ -145,6 +145,7 @@
         "invoice-payments.spec.ts",
         "party-navigation.spec.ts",
         "invoice-search.spec.ts",
+        "invoice-range.spec.ts",
         "invoice-print-a4.spec.ts",
         "pagination.spec.ts",
         "purchase-intake.spec.ts",

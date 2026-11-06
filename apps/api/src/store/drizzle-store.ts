@@ -51,7 +51,7 @@ import type { Connection } from "../db/connection";
 import { SnapshotPersistenceError } from "../db/encrypted-connection";
 import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
-import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
+import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberBoundSequence, invoiceNumberFor, invoiceNumberPrefixFor, invoiceSequenceForRange, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
@@ -3073,7 +3073,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
 
       const search = filters.search?.trim() ?? "";
       const order = [desc(invoices.invoiceDate), desc(invoices.createdAt), desc(invoices.id)];
-      if (search !== "") {
+      const hasNumberRange = filters.fromNumber !== undefined || filters.toNumber !== undefined;
+      if (search !== "" || hasNumberRange || filters.order !== undefined) {
         // Keep the historical description. Only blank legacy names fall back to
         // the linked item; barcodes have no line snapshot and use the current item.
         const literalSearch = foldArabic(search) === "";
@@ -3085,7 +3086,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         );
         const [rows, lines] = await Promise.all([
           db.select(invoiceCols).from(invoices).where(where).orderBy(...order),
-          db.select({
+          search === "" ? Promise.resolve([]) : db.select({
             invoiceId: invoiceLines.invoiceId,
             description: invoiceLines.description,
             currentName: items.name,
@@ -3098,8 +3099,31 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         const matchedIds = new Set(lines.filter(line =>
           matches(line.description.trim() === "" ? line.currentName : line.description) || matches(line.barcode),
         ).map(line => line.invoiceId));
-        // Filter once per invoice, not once per joined line, before count/window.
-        const found = rows.filter(row => matches(row.invoiceNumber) || matchedIds.has(row.id));
+        const fromSequence = invoiceNumberBoundSequence(filters.fromNumber ?? "");
+        const toSequence = invoiceNumberBoundSequence(filters.toNumber ?? "");
+        // Filter once per invoice (never once per joined line) before count/window.
+        const found = rows.filter(row => {
+          if (search !== "" && !matches(row.invoiceNumber) && !matchedIds.has(row.id)) return false;
+          if (!hasNumberRange) return true;
+          const sequence = invoiceSequenceForRange(row.invoiceNumber);
+          return sequence !== undefined && (fromSequence === undefined || sequence >= fromSequence) && (toSequence === undefined || sequence <= toSequence);
+        });
+        if (filters.order !== undefined) {
+          const direction = filters.order === "OLDEST" ? 1 : -1;
+          found.sort((a, b) => {
+            const date = a.invoiceDate.localeCompare(b.invoiceDate) * direction;
+            if (date !== 0) return date;
+            const aSequence = invoiceSequenceForRange(a.invoiceNumber);
+            const bSequence = invoiceSequenceForRange(b.invoiceNumber);
+            if (aSequence === undefined && bSequence !== undefined) return direction;
+            if (aSequence !== undefined && bSequence === undefined) return -direction;
+            if (aSequence !== undefined && bSequence !== undefined && aSequence !== bSequence) {
+              return (aSequence < bSequence ? -1 : 1) * direction;
+            }
+            const created = a.createdAt.localeCompare(b.createdAt) * direction;
+            return created !== 0 ? created : a.id.localeCompare(b.id) * direction;
+          });
+        }
         const pagination = resolvePagination(filters);
         const window = filters.limit === undefined && filters.offset === undefined
           ? found

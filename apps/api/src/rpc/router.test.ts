@@ -5812,6 +5812,21 @@ describe("item history 399", () => {
 });
 
 describe("invoice list search contract", () => {
+  it("accepts safe bare/prefixed number bounds and rejects malformed or reversed bounds", () => {
+    expect(invoiceListInputSchema.parse({ fromNumber: "111", toNumber: "SUP-120", order: "OLDEST" })).toMatchObject({ fromNumber: "111", toNumber: "SUP-120", order: "OLDEST" });
+    expect(invoiceListInputSchema.safeParse({ fromNumber: "INV-9007199254740992" }).success).toBe(false);
+    expect(invoiceListInputSchema.safeParse({ fromNumber: "INV-LEGACY" }).success).toBe(false);
+    expect(invoiceListInputSchema.safeParse({ fromNumber: "SUP-120", toNumber: "INV-111" }).success).toBe(false);
+    expect(invoiceListInputSchema.safeParse({ fromDate: "2086-01-03", toDate: "2086-01-01" }).success).toBe(false);
+  });
+
+  it("rejects malformed ranges at the authenticated RPC seam", async () => {
+    // SAFETY: the cast intentionally sends invalid runtime input past static typing to verify RPC validation.
+    await expect(client.invoicesList({ fromNumber: "INV-LEGACY" } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    // SAFETY: reversed dates are runtime-invalid input for the same validation contract.
+    await expect(client.invoicesList({ fromDate: "2086-01-03", toDate: "2086-01-01" } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
   it("accepts 200 characters and rejects 201 using the exported input schema", () => {
     expect(invoiceListInputSchema.safeParse({ search: "x".repeat(200) }).success).toBe(true);
     expect(invoiceListInputSchema.safeParse({ search: "x".repeat(201) }).success).toBe(false);

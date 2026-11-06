@@ -835,8 +835,9 @@ test("sale save refuses sidebar navigation until its result is visible", async (
     await expect(page.getByTestId("sale-form")).toBeVisible();
     await expect(page.getByTestId("sale-saved")).toHaveCount(0);
 
-    const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "المشتريات" }).click({ modifiers: ["Control"] });
+    const popupPromise = page.context().waitForEvent("page", { timeout: 10_000 });
+    void popupPromise.catch(() => undefined);
+    await page.getByRole("link", { name: "المشتريات" }).click({ modifiers: ["ControlOrMeta"] });
     const popup = await popupPromise;
     await expect(popup).toHaveURL(/\/purchases/);
     await expect(page).toHaveURL(saleUrl);
@@ -1178,6 +1179,23 @@ test("a refused sale write keeps its draft after attempted sidebar navigation", 
     await expect(page.getByTestId("sale-form")).toBeVisible();
     await expect(page.getByTestId("purchase-form")).toHaveCount(0);
 
+    releaseOld();
+    const refusalResponse = await refusal;
+    const refusalBody = await refusalResponse.json();
+    console.log(`[issue-395-stale-refusal-raw] ${JSON.stringify({ status: refusalResponse.status(), body: refusalBody })}`);
+    expect(refusalResponse.ok()).toBe(false);
+    const stockAfterRefusal = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(stockAfterRefusal.items.find((item) => item.id === oldItem.id)?.stockOnHand).toBe(1);
+    const invoicesAfterRefusal = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
+    expect(invoicesAfterRefusal.total).toBe(invoicesBefore.total);
+
+    await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
+    await expect(page.getByTestId("sale-error")).toBeVisible();
+
+    await page.getByRole("link", { name: "المشتريات" }).click();
+    await expect(page).toHaveURL(saleUrl);
+    await expect(page.getByTestId("sale-form")).toBeVisible();
+
     await page.getByTestId("sale-quick-add").click();
     const quick = page.getByTestId("sale-quick-form");
     const quickName = quick.getByTestId("sale-quick-name");
@@ -1189,20 +1207,7 @@ test("a refused sale write keeps its draft after attempted sidebar navigation", 
     void created.catch(() => undefined);
     await requestedNew;
     await expect(page.getByTestId("new-sale-button")).toBeDisabled();
-
-    releaseOld();
-    const refusalResponse = await refusal;
-    const refusalBody = await refusalResponse.json();
-    console.log(`[issue-395-stale-refusal-raw] ${JSON.stringify({ status: refusalResponse.status(), body: refusalBody })}`);
-    expect(refusalResponse.ok()).toBe(false);
-    const stockAfterRefusal = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
-    expect(stockAfterRefusal.items.find((item) => item.id === oldItem.id)?.stockOnHand).toBe(1);
-    const invoicesAfterRefusal = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
-    expect(invoicesAfterRefusal.total).toBe(invoicesBefore.total);
-
-    await expect(page.getByTestId("new-sale-button")).toBeDisabled();
-    await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
-    await expect(page.getByTestId("sale-error")).toBeVisible();
+    await expect(page.getByTestId("sale-quick-name")).toBeDisabled();
 
     releaseNew();
     const createdItem = await created;

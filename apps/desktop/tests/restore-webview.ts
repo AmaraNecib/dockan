@@ -9,7 +9,7 @@ import { z } from "zod";
 const fixtureFile = process.argv[2];
 if (!fixtureFile) throw new Error("native fixture manifest required");
 const fixture = z.object({ root: z.string(), origin: z.string().url(), cdpPort: z.number(), pid: z.number() }).parse(JSON.parse(fs.readFileSync(fixtureFile, "utf8")));
-fixture.root = fixture.root.replace(/^\\\\\\?\\/, "");
+if (fixture.root.charCodeAt(0) === 92 && fixture.root.charCodeAt(1) === 92 && fixture.root.charAt(2) === "?") fixture.root = fixture.root.slice(4);
 const evidence = path.dirname(fixtureFile);
 const fixtureCredential = "native fixture passphrase";
 const incomingCredential = "incoming native fixture passphrase";

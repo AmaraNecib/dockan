@@ -335,6 +335,26 @@ describe("InvoicesPage range filters and ordering (#406)", () => {
     expect(requests).toHaveLength(requestCount + 1);
   });
 
+  it.each(["fromNumber", "toNumber"] as const)("rejects an overlong %s locally and accepts the 40-character boundary", async (field) => {
+    const page = await mountPage();
+    await act(async () => page.rangeToggle()?.click());
+    const input = page[field]()!;
+    const requestCount = requests.length;
+    const oversized = `INV-${"0".repeat(36)}1`;
+    await act(async () => setNativeValue(input, oversized));
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(document.querySelector("[data-testid='invoices-range-error']")?.textContent).toBe(i18n.t("invoicesNumberRangeInvalid"));
+    expect(requests).toHaveLength(requestCount);
+    expect(document.querySelector("[data-testid='invoices-error']")).toBeNull();
+
+    const accepted = `INV-${"0".repeat(35)}1`;
+    await act(async () => setNativeValue(input, ` ${accepted} `));
+    await waitFor(() => requests.at(-1)?.[field] === accepted);
+    expect(input.getAttribute("aria-invalid")).toBe("false");
+    expect(document.querySelector("[data-testid='invoices-range-error']")).toBeNull();
+    expect(input.maxLength).toBe(40);
+  });
+
   it("shows a reversed-date error without issuing an invalid query and clears to defaults", async () => {
     const page = await mountPage();
     const requestCount = requests.length;

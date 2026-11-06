@@ -22,7 +22,9 @@ type StatusFilter = "" | "UNPAID" | "PARTIAL" | "PAID";
 type InvoiceOrder = "OLDEST" | "NEWEST";
 
 function invoiceNumberSequence(value: string): number | undefined {
-  const match = /^(?:(?:INV|SUP)-)?(\d+)$/iu.exec(value.trim());
+  const trimmed = value.trim();
+  if (trimmed.length > 40) return undefined;
+  const match = /^(?:(?:INV|SUP)-)?(\d+)$/iu.exec(trimmed);
   if (match === null) return undefined;
   const sequence = Number(match[1]);
   return Number.isSafeInteger(sequence) ? sequence : undefined;
@@ -203,11 +205,11 @@ export function InvoicesPage() {
           </label>
           <label className="grid gap-1 text-sm">
             {t("invoicesFromNumber")}
-            <Input value={fromNumber} inputMode="text" data-testid="invoices-from-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setFromNumber(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-from-number"; pager.reset(); }} />
+            <Input value={fromNumber} maxLength={40} inputMode="text" data-testid="invoices-from-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setFromNumber(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-from-number"; pager.reset(); }} />
           </label>
           <label className="grid gap-1 text-sm">
             {t("invoicesToNumber")}
-            <Input value={toNumber} inputMode="text" data-testid="invoices-to-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setToNumber(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-to-number"; pager.reset(); }} />
+            <Input value={toNumber} maxLength={40} inputMode="text" data-testid="invoices-to-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setToNumber(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-to-number"; pager.reset(); }} />
           </label>
           <p className="col-span-2 text-xs text-muted-foreground">{t("invoicesNumberRangeHint")}</p>
           {rangeError !== "" && <p className="col-span-2 text-sm text-destructive" role="alert" data-testid="invoices-range-error">{rangeError}</p>}

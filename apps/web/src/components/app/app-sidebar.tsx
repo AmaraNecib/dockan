@@ -60,6 +60,11 @@ export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pe
   const { t } = useTranslation();
   const systemHasActive = activeKey !== null && COLLAPSIBLE_GROUP_ITEMS.some((item) => item.key === activeKey);
   const [systemOpen, setSystemOpen] = useState(systemHasActive);
+  let accountLabel = t("accountLoading");
+  if (accountBlocked) accountLabel = t("accountBlocked");
+  else if (accountFailed) accountLabel = t("accountUnavailable");
+  if (user) accountLabel = `${displayName(user)} — ${t("accountOwner")}`;
+  const collapsedAccountLabel = `${accountLabel} — ${t("sidebarExpand")}`;
 
   // Never hide the current page's link (and aria-current) behind the collapsed
   // group: open it whenever the active route lives inside, including on load.
@@ -147,9 +152,9 @@ export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pe
             type="button"
             data-testid={user ? "sidebar-owner-identity" : undefined}
             onClick={onExpand}
-            title={user ? `${displayName(user)} — ${t("accountOwner")} — ${t("sidebarExpand")}` : `${t("shellUser")} — ${t("sidebarExpand")}`}
+            title={collapsedAccountLabel}
             className="mx-auto grid size-8 place-items-center rounded-full bg-primary text-primary-foreground text-xs font-semibold"
-            aria-label={user ? `${displayName(user)} — ${t("accountOwner")} — ${t("sidebarExpand")}` : `${t("shellUser")} — ${t("sidebarExpand")}`}
+            aria-label={collapsedAccountLabel}
           >
             <AvatarGlyph user={user} />
           </button>

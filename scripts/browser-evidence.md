@@ -1,34 +1,62 @@
 # Browser evidence runner
 
-Use `capture-browser-evidence.ts` for browser evidence. It checks a clean, exact source revision, starts one server with explicit argv (no shell), waits for HTTP readiness, records at 1920×1080, captures element screenshots, converts to MP4/GIF and validates duration and dimensions. The output directory must not exist. It writes a manifest with the revision, command, hashes and result. It never uploads files or installs tools.
+`capture-browser-evidence.ts` owns the Dokan API and web processes, gives them a private data directory and four distinct lane ports, waits for both listeners, then records a 1920×1080 journey. It captures locator screenshots and creates CRF 18 MP4 plus a palette GIF. It checks duration, stream dimensions and hashes, and writes a failure manifest for setup or capture errors. It never downloads tools or overwrites an output directory.
 
-## Journey contract
+## Journey module
 
-A journey module default-exports `EvidenceJourney`:
+A journey module default-exports:
 
 ```ts
 {
-  server: { command, args, cwd, readinessUrl, env? },
-  journey(page, { screenshotElement(name, selector) })
+  servers: [
+    { name: "api", command: "bun", args: ["src/main.ts"], cwd: "apps/api", readinessUrl: "http://127.0.0.1:{port}/api/vault/status" },
+    { name: "web", command: "bun", args: ["run", "dev"], cwd: "apps/web", readinessUrl: "http://127.0.0.1:{port}/" }
+  ],
+  setup?(page, runtime),
+  journey(page, { screenshotElement }, runtime)
 }
 ```
 
-`cwd` is relative to the pinned source root. Set `readinessUrl` to include `{port}` and use the supplied port in server configuration. Journey code owns only application actions and assertions. Capture setup/login before the useful segment where possible. The recorded useful journey must naturally last 30–45 seconds. Add visible actions and reading pauses; do not pad with idle waits, change playback speed or accept an invalid duration.
+`runtime.urls.api`, `runtime.urls.web`, and all four `runtime.ports` values are typed. `setup` runs in an unrecorded browser context; use it for login or other setup. Keep business selectors and assertions inside `journey`. The runner owns process startup, safety environment, readiness, media and cleanup.
 
-## Capture exact before and after sources
+Server commands use argument arrays and `shell: false`. `cwd` is relative to the exact source root and must resolve inside it. Server `env` cannot replace `DOKAN_DATA_DIR`, `DOKAN_PORT_ROOT`, or any allocated port. The runner assigns those after journey environment values.
 
-Provide two already-existing clean source roots. Each root must have the exact expected commit checked out. `--against` names the other capture's full commit SHA, and the runner rejects identical revisions. The parent creates and validates these roots using the supported worktree mechanism; do not create shell worktrees or copy private application data. Keep each root immutable while its server runs. Run each capture separately with a fresh output directory and distinct port:
+## Capture a comparison pair
+
+Use two existing, clean source roots checked out at distinct exact commits. The root paths and revisions must differ. The parent supplies these roots through the supported worktree mechanism; do not create a checkout in the shell, copy application data, or point either run at a mutable working tree. Keep both pinned roots unchanged for both captures. A concurrent edit is detected by the runner's final HEAD/tree/cleanliness check, but a transient edit that is changed back between checks cannot be ruled out.
+
+The first capture is a **single capture**, not a verified pair. Record the second capture from a distinct root and pass its first manifest with `--comparison-manifest`; it must prove the exact other revision, clean source root, matching pair ID, and successful capture. The second capture remains a `pair-member`; only its `comparison-pair.json` reports `status: pair-verified`. That index hashes and names both manifests, roots, revisions and source trees. Pair ID alone is not evidence.
+
+Example API and web commands are real Dokan commands. Add the project-specific actions and assertions to a copied journey file; use `runtime.urls` rather than hard-coded ports:
+
+```js
+export default {
+  servers: [
+    { name: "api", command: "bun", args: ["src/main.ts"], cwd: "apps/api", readinessUrl: "http://127.0.0.1:{port}/api/vault/status" },
+    { name: "web", command: "bun", args: ["run", "dev"], cwd: "apps/web", readinessUrl: "http://127.0.0.1:{port}/" },
+  ],
+  async setup(page, runtime) {
+    await page.goto(runtime.urls.web);
+    // Perform login or other setup here. This context is not recorded.
+  },
+  async journey(page, evidence, runtime) {
+    await page.goto(runtime.urls.web);
+    // Put actual product actions and assertions here. Do not add idle waits.
+    await evidence.screenshotElement("dokan-screen", "main");
+  },
+};
+```
+
+Run with four explicit distinct ports and a new output path:
 
 ```sh
 bun scripts/capture-browser-evidence.ts \
-  --journey /absolute/path/to/source/scripts/my-journey.mjs \
+  --journey /absolute/path/to/journey.mjs \
   --source /absolute/path/to/clean-source-root \
   --revision <full-commit-sha> \
   --against <other-full-commit-sha> \
   --output /absolute/path/to/new-evidence-directory \
-  --port 4617
+  --api-port 4617 --web-port 4618 --vault-port 4619 --vault-web-port 4620
 ```
 
-The runner refuses a dirty or mismatched source, occupied port and existing output path. Install dependencies only with the frozen lockfile before capturing. `bun`, the installed Playwright Chromium and machine `ffmpeg`/`ffprobe` must already be available. A missing tool is a capture failure, not permission to install it.
-
-See [`browser-evidence-example.mjs`](browser-evidence-example.mjs) for the small journey shape. Before/after labels and pairing belong in the capture handoff; the runner never claims two captures are comparable unless their revisions differ.
+For the second capture, add `--comparison-manifest /absolute/path/to/first/manifest.json`. `bun`, installed Playwright Chromium, `ffmpeg`, and `ffprobe` must already exist. The runner preflights them before starting servers. Install project dependencies only with `bun install --frozen-lockfile` before capture; do not install a browser or media tool from this runner. If server shutdown fails, the private fixture data stays in the output directory for diagnosis. Existing output is never replaced.

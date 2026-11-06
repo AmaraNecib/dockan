@@ -72,7 +72,11 @@ export function validateReadinessUrl(value: string, port: number): string {
   return url.href;
 }
 function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
+  if (signal.aborted) {
+    // The caller already started this work; observe rejection even when cancellation won.
+    void work.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
   return new Promise<T>((resolve, reject) => {
     const cleanup = () => signal.removeEventListener("abort", abort);
     const abort = () => { cleanup(); reject(signal.reason); };

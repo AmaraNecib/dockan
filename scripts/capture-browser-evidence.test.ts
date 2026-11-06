@@ -43,7 +43,7 @@ it("passes argv literally and keeps cwd when spaces and shell metacharacters are
   const value = `literal & echo injected > ${marker}`;
   try {
     const output = await runFile(process.execPath, ["-e", "process.stdout.write(JSON.stringify({arg:process.argv[1],cwd:process.cwd()}))", value], root);
-    expect(JSON.parse(output)).toEqual({ arg: value, cwd: root });
+    expect(output).toBe(JSON.stringify({ arg: value, cwd: root }));
     expect(fs.existsSync(marker)).toBe(false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

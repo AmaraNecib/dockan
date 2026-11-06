@@ -1,5 +1,6 @@
 import { MIN_VAULT_PASSPHRASE_LENGTH, type PlaintextCleanupStatus } from "@dokan/contracts";
 import { z } from "zod";
+import { preserveSetupTokenFromHash } from "./setup-token";
 
 import { tError } from "./i18n";
 import { brokerAvailable, brokerCommands, invokeBroker, invokeBrokerVoid, type BrokerInvokeArgs, type BrokerReply } from "./vault-broker";
@@ -494,6 +495,7 @@ async function loadVaultStatus(verifySession: boolean): Promise<VaultBootStatus>
       const reply = await invokeBroker(brokerCommands.status, resetEpoch === undefined ? undefined : { resetEpoch });
       if (reply.sessionReset === true) {
         if (resetEpoch !== undefined) advanceSessionEpoch(resetEpoch);
+        preserveSetupTokenFromHash();
         clearVaultSessionToken();
         stripVaultFragment();
       }

@@ -9,12 +9,13 @@ import { useMutation } from "./lib/scoped-mutation";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
-import { clearVaultSessionToken, storeVaultSessionToken } from "./lib/vault-client";
+import { clearVaultSessionToken, fetchVaultStatus, storeVaultSessionToken, vaultUnlock } from "./lib/vault-client";
 import { clearAuthLost, markAuthLost, markSignedOut, SIGNED_OUT_STORAGE_KEY } from "./lib/auth-refusal";
 import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 import { useRpc } from "./lib/rpc-context";
 import type { CredentialLease } from "./lib/credential-lease";
+import type { BrokerInvokeArgs } from "./lib/vault-broker";
 
 let needsSetup = false;
 let setupBlocked = false;
@@ -1213,6 +1214,40 @@ describe("ownerless non-empty database (ADR-0008 §4.1)", () => {
 });
 
 describe("setup token (ADR-0008 ownership race)", () => {
+  it("preserves the boot token through native restore reset and forwards it after fresh unlock", async () => {
+    needsSetup = true;
+    window.location.hash = "#setup_token=boot-token&session_reset_epoch=restore-epoch";
+    let resetPending = true;
+    // SAFETY: this bridge models only the native status-reset and fresh unlock replies used here.
+    (window as { __TAURI_INTERNALS__?: { invoke: (command: string, args?: BrokerInvokeArgs) => Promise<{ ok: boolean; sessionReset?: boolean; status?: { mode: string; state: string; legacyDatabase: boolean; recoveryKeyCount: number; lockedForMs: number; unlocked: boolean; session: boolean; broker: boolean }; sessionToken?: string; sessionGeneration?: number }> } }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "vault_status") {
+          const sessionReset = resetPending;
+          resetPending = false;
+          return { ok: true, sessionReset, status: { mode: "vault", state: "locked", legacyDatabase: false, recoveryKeyCount: 0, lockedForMs: 0, unlocked: false, session: false, broker: true } };
+        }
+        if (command === "vault_unlock") return { ok: true, sessionToken: "fresh-generation-one", sessionGeneration: 1 };
+        throw new Error(`unexpected broker command ${command}`);
+      },
+    };
+    expect(window.sessionStorage.getItem(SETUP_TOKEN_STORAGE_KEY)).toBeNull();
+
+    await fetchVaultStatus();
+    expect(window.location.hash).toBe("");
+    expect(window.sessionStorage.getItem(SETUP_TOKEN_STORAGE_KEY)).toBe("boot-token");
+    await vaultUnlock("current passphrase", true);
+
+    const host = await mountAuthGate();
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    expect(firstTimeSetupCalls).toBe(1);
+    expect(firstTimeSetupArgs?.setupToken).toBe("boot-token");
+  });
+
   it("forwards the shell's one-time token to the api", async () => {
     needsSetup = true;
     window.sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, "shell-token");

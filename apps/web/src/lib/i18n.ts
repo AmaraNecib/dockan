@@ -251,6 +251,7 @@ const resources = {
       itemsEdit: "تعديل",
       itemsCancel: "إلغاء",
       itemsNameRequired: "أدخل اسم المنتج",
+      itemsSavedName: "تم حفظ {{name}} — يمكنك إدخال المنتج التالي",
       itemsStockInvalid: "أدخل مخزوناً افتتاحياً صحيحاً (أرقام فقط)",
       itemsNoChanges: "لا توجد تغييرات لحفظها",
       itemsStock: "المخزون",

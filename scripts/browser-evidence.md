@@ -17,7 +17,7 @@ A journey module default-exports:
 }
 ```
 
-`runtime.urls.api`, `runtime.urls.web`, and all four `runtime.ports` values are typed. `setup` runs in an unrecorded browser context; use it for login or other setup. Keep business selectors and assertions inside `journey`. The runner owns process startup, safety environment, readiness, media and cleanup.
+`runtime.urls.api`, `runtime.urls.web`, and all four `runtime.ports` values are typed. The browser URLs use `dokan.localhost`, which Dokan uses for its cookie scope; readiness probes still use loopback. `setup` runs in an unrecorded browser context; use it for login or other setup. Keep business selectors and assertions inside `journey`. The runner owns process startup, safety environment, readiness, media and cleanup.
 
 Server commands use argument arrays and `shell: false`. `cwd` is relative to the exact source root and must resolve inside it. Server `env` cannot replace `DOKAN_DATA_DIR`, `DOKAN_PORT_ROOT`, or any allocated port. The runner assigns those after journey environment values.
 

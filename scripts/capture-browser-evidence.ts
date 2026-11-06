@@ -97,6 +97,9 @@ export async function convertAndValidateMedia(webm: string, output: string, cwd:
   if (!Number.isFinite(mp4Duration) || mp4Duration < MIN_SECONDS || mp4Duration > MAX_SECONDS || mp4Info !== "video,1920,1080" || gifInfo !== "video,960,540") throw new Error(`Converted evidence validation failed: duration=${mp4Duration}s, mp4=${mp4Info}, gif=${gifInfo}`);
   return { mp4, gif, duration };
 }
+export function runtimeUrls(ports: EvidenceRuntime["ports"]): EvidenceRuntime["urls"] {
+  return { api: `http://dokan.localhost:${ports.api}`, web: `http://dokan.localhost:${ports.web}` };
+}
 export function validatePorts(ports: EvidenceRuntime["ports"]): void {
   const values = Object.values(ports);
   if (values.length !== 4 || values.some((p) => !Number.isInteger(p) || p < 1 || p > 65535) || new Set(values).size !== 4) throw new Error("All four lane ports must be distinct valid TCP ports");
@@ -167,7 +170,7 @@ export async function capture(options: Options): Promise<void> {
     // Preflight all external executables/browser before starting the useful recording.
     await preflightExecutables(source);
     browser = await chromium.launch({ headless: true });
-    const runtime: EvidenceRuntime = { ports: options.ports, urls: { api: `http://127.0.0.1:${options.ports.api}`, web: `http://127.0.0.1:${options.ports.web}` } };
+    const runtime: EvidenceRuntime = { ports: options.ports, urls: runtimeUrls(options.ports) };
     // SAFETY: imported journey code is repository-authored; the runtime contract is validated before servers start.
     const journeyModule = await import(pathToFileURL(options.journey).href) as { default?: EvidenceJourney };
     journey = journeyModule.default;

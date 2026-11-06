@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertPortFree, capture, convertAndValidateMedia, preflightExecutables, resolveServerCwd, runnerEnvironment, runFile, stopServersAndCleanData, validateComparisonManifest, validatePorts, validateReadinessUrl, validateServerContract, validateSource, verifySourceSnapshot } from "./capture-browser-evidence";
+import { assertPortFree, capture, convertAndValidateMedia, preflightExecutables, resolveServerCwd, runnerEnvironment, runFile, stopServersAndCleanData, validateComparisonManifest, validatePorts, validateReadinessUrl, validateServerContract, validateSource, runtimeUrls, verifySourceSnapshot } from "./capture-browser-evidence";
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", shell: false });
@@ -46,6 +46,10 @@ it("passes argv literally and keeps cwd when spaces and shell metacharacters are
     expect(JSON.parse(output)).toEqual({ arg: value, cwd: root });
     expect(fs.existsSync(marker)).toBe(false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it("uses Dokan's cookie-scoped host while retaining the allocated API and web ports", () => {
+  expect(runtimeUrls({ api: 4617, web: 4618, vault: 4619, vaultWeb: 4620 })).toEqual({ api: "http://dokan.localhost:4617", web: "http://dokan.localhost:4618" });
 });
 
 it("requires an API and web process with readiness on each allocated listener", () => {

@@ -28,9 +28,12 @@ function parameterAnnotation(parameter: Parameter): ESTree.TSTypeAnnotation | nu
 }
 
 function parameterName(parameter: Parameter, sourceCode: SourceCode): string {
-	return parameter.type === "Identifier"
-		? parameter.name
-		: sourceCode.getText(parameter).replace(/\s*:\s*object\s*$/u, "");
+	if (parameter.type === "Identifier") return parameter.name;
+
+	const text = sourceCode.getText(parameter);
+	const colon = text.lastIndexOf(":");
+	if (colon === -1 || text.slice(colon + 1).trim() !== "object") return text;
+	return text.slice(0, colon).trimEnd();
 }
 
 /** Ban the broad object type on function inputs, including local aliases to object. */

@@ -1,5 +1,5 @@
 {
-  "$comment": "Path -> Playwright spec map for the CI e2e selector. Read by scripts/e2e-selection.ts. FAIL CLOSED: a changed file that matches neither always_full, a feature rule, nor skip_e2e forces a full e2e run. Adding a spec without wiring it here fails scripts/e2e-selection.test.ts. Precedence per file is always_full -> features -> skip_e2e -> full.",
+  "$comment": "Path -> Playwright spec map for the CI e2e selector. Read by scripts/e2e-selection.ts. FAIL CLOSED: a changed file that matches neither always_full, a feature rule, nor skip_e2e forces a full e2e run. New runnable specs are discovered automatically; mapped references still fail scripts/e2e-selection.test.ts when stale. Precedence per file is always_full -> features -> skip_e2e -> full.",
 
   "always_full": [
     "$comment: the Playwright setup and its helpers; a change here changes how every spec runs",
@@ -7,6 +7,7 @@
     "tests/e2e/**",
     "tests/e2e-selection.map.json",
     "scripts/e2e-selection.ts",
+    "scripts/e2e-discovery.ts",
     "scripts/wipe-e2e.mjs",
     "scripts/reset-e2e-preferences.mjs",
     "scripts/reset-e2e-records.mjs",

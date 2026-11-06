@@ -167,9 +167,9 @@ describe("test:affected plan", () => {
     expect(plan).toEqual({
       steps: [
         ["turbo", "run", "test", "--concurrency=2", `--filter=...[${MERGE_BASE}]`],
-        // The scripts suite holds the e2e map's drift guard; it is cheap and it
-        // is the suite a narrowed run must not lose.
-        ["bun", "test", "./scripts/"],
+        // Scripts holds the e2e map guard; tools also runs on every plan.
+        // Neither root-level suite is selected by Turbo.
+        ["bun", "test", "./scripts/", "tools/"],
       ],
       scope: "filtered",
       note: `packages changed since origin/develop (merge-base ${MERGE_BASE}), plus the packages that depend on them`,
@@ -183,7 +183,7 @@ describe("test:affected plan", () => {
     // #369: the whole Plan; on the parent's hollow stand-in this is
     // `expect(undefined).toEqual(...)` reding as an AssertionError.
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "package.json is outside every workspace package (apps/<name>/, packages/<name>/), and turbo's root `//` package declares no test task — an impacted filter would run nothing and exit 0, so every package runs",
@@ -198,7 +198,7 @@ describe("test:affected plan", () => {
     // #369: the whole Plan; on the parent's hollow stand-in this is
     // `expect(undefined).toEqual(...)` reding as an AssertionError.
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "origin/not-a-ref does not resolve in this checkout, so every package runs (an impacted filter needs the ref)",
@@ -210,19 +210,19 @@ describe("test:affected plan", () => {
     // #369: the whole Plan; on the parent's hollow stand-in this is
     // `expect(undefined).toEqual(...)` reding as an AssertionError.
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "cannot read the diff against origin/develop, so every package runs (an impacted filter would select nothing and exit 0)",
     });
   });
 
-  test("the fallback keeps the scripts suite", () => {
-    // The same fallback as the row above, seen whole: the scripts suite is what
-    // a narrowed run must not lose. #369: on the parent's hollow stand-in this
+  test("the fallback keeps scripts and tools", () => {
+    // The same fallback as the row above, seen whole: scripts and tools must
+    // remain in every plan. #369: on the parent's hollow stand-in this
     // is `expect(undefined).toEqual(...)` reding as an AssertionError.
     expect(planAffected("origin/not-a-ref", ROOT, inScope, { select: SELECTS_WEB })).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "origin/not-a-ref does not resolve in this checkout, so every package runs (an impacted filter needs the ref)",
@@ -250,7 +250,7 @@ describe("test:affected plan", () => {
     // #369: the whole Plan; on the parent's hollow stand-in this is
     // `expect(undefined).toEqual(...)` reding as an AssertionError.
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       // The FILTER IS GONE from the argv, not merely labelled unfiltered: the
       // widened plan has to be the one that runs every package.
       scope: "full",
@@ -264,7 +264,7 @@ describe("test:affected plan", () => {
     // #369: the whole Plan; on the parent's hollow stand-in this is
     // `expect(undefined).toEqual(...)` reding as an AssertionError.
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "the impacted filter against origin/develop selects no package (nothing), which turbo would run as zero tasks and exit 0, so every package runs",
@@ -281,7 +281,7 @@ describe("test:affected plan", () => {
     // `expect(undefined).toEqual(...)` reding as an AssertionError, and the
     // note is what carries the refusal the module chose.
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "origin/develop would narrow to a package set, but turbo could not confirm it (turbo's dry run exited 1) — an unproven selection is not a narrowing, so every package runs",
@@ -298,7 +298,7 @@ describe("test:affected plan", () => {
     expect(plan).toEqual({
       steps: [
         ["turbo", "run", "test", "--concurrency=2", `--filter=...[${MERGE_BASE}]`],
-        ["bun", "test", "./scripts/"],
+        ["bun", "test", "./scripts/", "tools/"],
       ],
       scope: "filtered",
       note: `packages changed since origin/develop (merge-base ${MERGE_BASE}), plus the packages that depend on them`,
@@ -338,7 +338,7 @@ describe("test:affected plan", () => {
     // #369: the whole Plan; on the parent's hollow stand-in this is
     // `expect(undefined).toEqual(...)` reding as an AssertionError.
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "cannot find the merge-base of origin/develop and HEAD, so every package runs (an impacted filter needs a commit both sides share)",
@@ -438,7 +438,7 @@ describe("the impacted filter, live against turbo", () => {
     // vouched. Its note is deterministic, so it is pinned string-exact.
     const plan = planAffected(BASE_REF, ROOT, () => ["package.json"]);
     expect(plan).toEqual({
-      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/"]],
+      steps: [["turbo", "run", "test", "--concurrency=2"], ["bun", "test", "./scripts/", "tools/"]],
       scope: "full",
       note:
         "package.json is outside every workspace package (apps/<name>/, packages/<name>/), and turbo's root `//` package declares no test task — an impacted filter would run nothing and exit 0, so every package runs",
@@ -512,7 +512,7 @@ describe("the impacted filter, live against turbo", () => {
     expect(plan).toEqual({
       steps: [
         expect.arrayContaining(["turbo", "run", "test", "--concurrency=2"]),
-        ["bun", "test", "./scripts/"],
+        ["bun", "test", "./scripts/", "tools/"],
       ],
       scope: expect.stringMatching(/^(filtered|full)$/u),
       note: expect.any(String),
@@ -604,7 +604,7 @@ describe("tier 1 runs both steps at once, and either red reddens the exit", () =
   // every test green while a red package suite was masked by a green scripts run.
   const STEPS: Step[] = [
     ["turbo", "run", "test", "--concurrency=2"],
-    ["bun", "test", "./scripts/"],
+    ["bun", "test", "./scripts/", "tools/"],
   ];
 
   test("both steps start, and two green steps exit 0", async () => {
@@ -627,13 +627,13 @@ describe("tier 1 runs both steps at once, and either red reddens the exit", () =
     ).toEqual({
       results: [
         { step: ["turbo", "run", "test", "--concurrency=2"], status: 1 },
-        { step: ["bun", "test", "./scripts/"], status: 0 },
+        { step: ["bun", "test", "./scripts/", "tools/"], status: 0 },
       ],
       status: 1,
     });
   });
 
-  test("a red second step reddens the combined exit when the first was green", async () => {
+  test("a red scripts/tools step reddens the combined exit when the first was green", async () => {
     // The fail-fast shape returned the first step's status before the second ran,
     // so this case could not exist: a green first step ended the run at 0.
     // #369: whole StepsOutcome, as above.
@@ -642,7 +642,7 @@ describe("tier 1 runs both steps at once, and either red reddens the exit", () =
     ).toEqual({
       results: [
         { step: ["turbo", "run", "test", "--concurrency=2"], status: 0 },
-        { step: ["bun", "test", "./scripts/"], status: 1 },
+        { step: ["bun", "test", "./scripts/", "tools/"], status: 1 },
       ],
       status: 1,
     });
@@ -675,7 +675,7 @@ describe("tier 1 runs both steps at once, and either red reddens the exit", () =
     expect(result).toEqual({
       results: [
         { step: ["turbo", "run", "test", "--concurrency=2"], status: 2 },
-        { step: ["bun", "test", "./scripts/"], status: 3 },
+        { step: ["bun", "test", "./scripts/", "tools/"], status: 3 },
       ],
       status: 2,
     });
@@ -734,7 +734,7 @@ describe("test:affected main", () => {
   const PLAN: Plan = {
     steps: [
       ["turbo", "run", "test", "--concurrency=2"],
-      ["bun", "test", "./scripts/"],
+      ["bun", "test", "./scripts/", "tools/"],
     ],
     scope: "full",
     note: "injected plan for the main tests",
@@ -743,6 +743,24 @@ describe("test:affected main", () => {
     seen.push(base);
     return PLAN;
   };
+
+  test("full and filtered plans always include scripts and tools", () => {
+    const full = planAffected("origin/not-a-ref", ROOT, inScope, {
+      select: () => ({ packages: ["@dokan/web"], refusal: null }),
+    });
+    const filtered = planAffected("origin/develop", ROOT, inScope, {
+      select: () => ({ packages: ["@dokan/web"], refusal: null }),
+      mergeBase: () => "abc123def456",
+    });
+    expect(full.steps).toEqual([
+      ["turbo", "run", "test", "--concurrency=2"],
+      ["bun", "test", "./scripts/", "tools/"],
+    ]);
+    expect(filtered.steps).toEqual([
+      ["turbo", "run", "test", "--concurrency=2", "--filter=...[abc123def456]"],
+      ["bun", "test", "./scripts/", "tools/"],
+    ]);
+  });
 
   test("the plan's exit code is main's exit code", async () => {
     expect(await main([], ROOT, { plan: () => PLAN, run: async () => 0 })).toBe(0);
@@ -785,7 +803,7 @@ describe("test:affected main", () => {
       "scope=full",
       "reason=injected plan for the main tests",
       "step=turbo run test --concurrency=2",
-      "step=bun test ./scripts/",
+      "step=bun test ./scripts/ tools/",
     ]);
   });
 

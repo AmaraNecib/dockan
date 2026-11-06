@@ -1038,6 +1038,7 @@ const resources = {
       accountUnavailable: "تعذّر تحميل الحساب. أعد المحاولة.",
       accountBlocked: "الحساب غير متاح.",
       sidebarToggle: "توسيع / طي الشريط الجانبي",
+      sidebarExpand: "توسيع الشريط الجانبي",
       themeLabel: "المظهر",
       themeLight: "فاتح",
       themeDark: "داكن",

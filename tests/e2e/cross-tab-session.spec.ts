@@ -8,8 +8,7 @@ import { resolveVaultPorts } from "../../packages/e2e-support/src/vault-ports";
 import { resolveAppHost } from "../../packages/contracts/src/app-host";
 
 async function logout(page: Page) {
-  await page.getByTestId("account-menu-trigger").click();
-  await page.getByRole("menuitem", { name: "خروج" }).click();
+  await page.locator("header").getByRole("button", { name: "خروج" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "خروج", exact: true }).click();
 }
 
@@ -18,7 +17,7 @@ test("cross-tab plaintext sign-out masks a dirty sale and identity before fresh 
   await signIn(page);
   const receiver = await context.newPage();
   await receiver.goto("/sale");
-  await expect(receiver.getByTestId("account-menu-trigger")).toBeVisible();
+  await expect(receiver.getByTestId("sidebar-owner-identity")).toBeVisible();
   await receiver.getByTestId("sale-quick-add").click();
   await receiver.getByTestId("sale-quick-name").fill("Private unsaved draft");
   let release!: () => void;
@@ -35,7 +34,7 @@ test("cross-tab plaintext sign-out masks a dirty sale and identity before fresh 
   try {
     await logout(page);
     await expect(receiver.getByTestId("sale-form")).toHaveCount(0);
-    await expect(receiver.getByTestId("account-menu-trigger")).toHaveCount(0);
+    await expect(receiver.getByTestId("sidebar-owner-identity")).toHaveCount(0);
     await expect(receiver.getByRole("dialog")).toHaveCount(0);
     await expect.poll(() => checks).toBeGreaterThan(0);
     expect(rpcCalls).toBe(0);
@@ -94,10 +93,10 @@ test.describe("cross-tab vault credentials", () => {
     await page.getByLabel("اسم المتجر").fill("متجر الاختبار");
     await page.getByLabel("رقم الهاتف").fill("0550123123");
     await page.getByRole("button", { name: "إنشاء الحساب" }).click();
-    await expect(page.getByTestId("account-menu-trigger")).toBeVisible();
+    await expect(page.getByTestId("sidebar-owner-identity")).toBeVisible();
     const receiver = await context.newPage();
     await receiver.goto(vaultUrl);
-    await expect(receiver.getByTestId("account-menu-trigger")).toBeVisible();
+    await expect(receiver.getByTestId("sidebar-owner-identity")).toBeVisible();
     await page.route("**/api/vault/logout", (route) => route.fulfill({ status: 503, json: { error: { code: "VAULT_UNREACHABLE" } } }));
     await page.route("**/api/auth/sign-out", (route) => route.abort());
     let release!: () => void;
@@ -113,21 +112,21 @@ test.describe("cross-tab vault credentials", () => {
     try {
       await logout(page);
       await expect(page.getByTestId("vault-passphrase")).toBeVisible();
-      await expect(receiver.getByTestId("account-menu-trigger")).toHaveCount(0);
+      await expect(receiver.getByTestId("sidebar-owner-identity")).toHaveCount(0);
       await expect(receiver.getByTestId("dashboard-page")).toHaveCount(0);
       await expect.poll(() => statusChecks).toBeGreaterThan(0);
       release();
-      await expect(receiver.getByTestId("account-menu-trigger")).toBeVisible();
+      await expect(receiver.getByTestId("sidebar-owner-identity")).toBeVisible();
       expect(plaintextChecks).toBe(0);
       await page.reload();
       await expect(page.getByTestId("vault-passphrase")).toBeVisible();
-      await expect(page.getByTestId("account-menu-trigger")).toHaveCount(0);
+      await expect(page.getByTestId("sidebar-owner-identity")).toHaveCount(0);
       const sibling = await context.newPage();
       try {
         await sibling.goto(vaultUrl);
-        await expect(sibling.getByTestId("account-menu-trigger")).toBeVisible();
+        await expect(sibling.getByTestId("sidebar-owner-identity")).toBeVisible();
         await logout(receiver);
-        await expect(sibling.getByTestId("account-menu-trigger")).toHaveCount(0);
+        await expect(sibling.getByTestId("sidebar-owner-identity")).toHaveCount(0);
         await expect(sibling.getByTestId("dashboard-page")).toHaveCount(0);
         await expect(sibling.getByTestId("vault-passphrase")).toBeVisible();
       } finally { await sibling.close(); }

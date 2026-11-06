@@ -12,6 +12,29 @@ public static class RestorePickerWindow {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SetDlgItemText(IntPtr window, int id, string text);
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window, int id);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumWindow callback, IntPtr data);
+  [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr window);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SetWindowText(IntPtr window, string text);
+  public static IntPtr FileEdit(IntPtr dialog) {
+    IntPtr found = IntPtr.Zero;
+    EnumChildWindows(GetDlgItem(dialog, 1148), (window, data) => {
+      var name = new StringBuilder(256); GetClassName(window, name, name.Capacity);
+      if (name.ToString() == "Edit") found = window;
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+  public static string Describe(IntPtr dialog) {
+    var result = new StringBuilder();
+    EnumChildWindows(dialog, (window, data) => {
+      var name = new StringBuilder(256); var text = new StringBuilder(1024);
+      GetClassName(window, name, name.Capacity); GetWindowText(window, text, text.Capacity);
+      result.AppendLine(GetDlgCtrlID(window) + " " + name.ToString() + " " + text.ToString());
+      return true;
+    }, IntPtr.Zero);
+    return result.ToString();
+  }
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
   public static IntPtr Find(int pid) {
     var process = System.Diagnostics.Process.GetProcessById(pid);
@@ -41,10 +64,16 @@ if ($handle -eq [IntPtr]::Zero) { throw 'Native file dialog did not appear for t
 if ($Cancel) {
   [void][RestorePickerWindow]::PostMessage($handle, 0x0111, [IntPtr]2, [IntPtr]::Zero)
 } else {
-  if ([RestorePickerWindow]::GetDlgItem($handle, 1148) -eq [IntPtr]::Zero) { throw 'Native filename control was not found' }
-  if (![RestorePickerWindow]::SetDlgItemText($handle, 1148, $SelectedPath)) { throw 'Native filename control could not be filled' }
-  [void][RestorePickerWindow]::PostMessage($handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+  $edit = [IntPtr]::Zero
+  $deadline = [DateTime]::UtcNow.AddSeconds(5)
+  while ($edit -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) {
+    $edit = [RestorePickerWindow]::FileEdit($handle)
+    if ($edit -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100 }
+  }
+  if ($edit -eq [IntPtr]::Zero) { throw ('Native filename Edit was not found: ' + [RestorePickerWindow]::Describe($handle)) }
+  if (![RestorePickerWindow]::SetWindowText($edit, $SelectedPath)) { throw 'Native filename control could not be filled' }
+  [void][RestorePickerWindow]::PostMessage([RestorePickerWindow]::GetDlgItem($handle, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
 }
 $deadline = [DateTime]::UtcNow.AddSeconds(10)
 while ([RestorePickerWindow]::IsWindow($handle) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
-if ([RestorePickerWindow]::IsWindow($handle)) { throw "Native dialog did not close after the fixture action" }
+if ([RestorePickerWindow]::IsWindow($handle)) { throw ('Native dialog did not close after the fixture action: ' + [RestorePickerWindow]::Describe($handle)) }

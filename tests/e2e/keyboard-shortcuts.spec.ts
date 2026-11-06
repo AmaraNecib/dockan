@@ -554,6 +554,82 @@ test("Ctrl+B in the sale-save click task cannot interrupt the pending sale", asy
   }
 });
 
+test("same-task Save and sidebar activation keep the saved sale visible", async ({ page }) => {
+  await signIn(page);
+  const categoryId = await seedCategoryId(page, "تصنيف حفظ وتنقل متزامن");
+  const itemName = `بيع-تنقل-متزامن-${Date.now()}`;
+  const item = await callRpc<Item, object>(page, "itemsCreateWithStock", {
+    name: itemName, categoryId, costPrice: 400, sellingPrice: 1000, stockOnHand: 2,
+  });
+  const invoicesBefore = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", {
+    limit: 1, offset: 0,
+  });
+
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await pick(page, itemName, "sale");
+  const saleUrl = page.url();
+  const save = page.getByTestId("sale-save");
+  await expect(save).toBeEnabled();
+  await expect(page.getByRole("link", { name: "المشتريات" })).toBeVisible();
+
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reached = () => {};
+  const requested = new Promise<void>((resolve) => { reached = resolve; });
+  let invoiceWrites = 0;
+  const routePattern = "**/api/rpc/invoicesCreate";
+  await page.route(routePattern, async (route) => {
+    invoiceWrites++;
+    reached();
+    await held;
+    const response = await route.fetch();
+    await route.fulfill({ response });
+  });
+
+  let saved: Promise<InvoiceDetail> | undefined;
+  try {
+    saved = actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.evaluate(() => {
+      const saveButton = document.querySelector<HTMLButtonElement>('[data-testid="sale-save"]');
+      const purchaseLink = Array.from(document.querySelectorAll<HTMLAnchorElement>("aside a"))
+        .find((link) => new URL(link.href).pathname === "/purchase");
+      if (saveButton === null) throw new Error("sale-save is missing");
+      if (purchaseLink === undefined) throw new Error("sidebar purchase link is missing");
+      // Both real controls are resolved before either click. No await or event-loop
+      // yield separates Save from same-tab router activation.
+      saveButton.click();
+      purchaseLink.click();
+    }));
+    void saved.catch(() => undefined);
+    await expect(page.getByTestId("sale-error")).toHaveCount(0);
+    await requested;
+
+    // Release and consume the real server response before checking settled UI.
+    release();
+    const invoice = await saved;
+    expect(invoice.kind).toBe("SALE");
+    expect(invoice.totalAmount).toBe(1000);
+    expect(invoiceWrites).toBe(1);
+    const persistedInvoice = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: invoice.id });
+    expect(persistedInvoice.id).toBe(invoice.id);
+    expect(persistedInvoice.totalAmount).toBe(1000);
+    const invoicesAfter = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", {
+      limit: 1, offset: 0,
+    });
+    expect(invoicesAfter.total).toBe(invoicesBefore.total + 1);
+    const stock = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(stock.items.find((row) => row.id === item.id)?.stockOnHand).toBe(1);
+
+    await expect(page).toHaveURL(saleUrl);
+    await expect(page.getByTestId("sale-saved")).toBeVisible();
+    await expect(page.getByTestId("sale-saved-number")).toContainText(invoice.invoiceNumber);
+  } finally {
+    release();
+    await saved?.catch(() => undefined);
+    await page.unroute(routePattern);
+  }
+});
+
 test("picker search does not mark an empty sale dirty", async ({ page }) => {
   await signIn(page);
   await page.keyboard.press("Control+n");
@@ -797,11 +873,11 @@ test("New Sale confirmation cannot navigate while an invoice save is pending", a
   }
 });
 
-test("a late invoice success cannot clear a new sale owner's draft after sidebar navigation", async ({ page }) => {
+test("sale save refuses sidebar navigation until its result is visible", async ({ page }) => {
   await signIn(page);
   const categoryId = await seedCategoryId(page, "تصنيف ملكية البيع");
   const name = `بيع-قديم-معلق-${Date.now()}`;
-  await callRpc<Item, object>(page, "itemsCreateWithStock", {
+  const item = await callRpc<Item, object>(page, "itemsCreateWithStock", {
     name, categoryId, costPrice: 400, sellingPrice: 1000, stockOnHand: 1,
   });
 
@@ -813,8 +889,10 @@ test("a late invoice success cannot clear a new sale owner's draft after sidebar
   const held = new Promise<void>((resolve) => { release = resolve; });
   let reached = () => {};
   const requested = new Promise<void>((resolve) => { reached = resolve; });
+  let invoiceWrites = 0;
   const routePattern = "**/api/rpc/invoicesCreate";
   await page.route(routePattern, async (route) => {
+    invoiceWrites++;
     reached();
     await held;
     const response = await route.fetch();
@@ -827,22 +905,37 @@ test("a late invoice success cannot clear a new sale owner's draft after sidebar
     void saved.catch(() => undefined);
     await requested;
 
-    // Sidebar navigation stays unguarded. This covers an old callback writing to a new owner.
+    const saleUrl = page.url();
     await page.getByRole("link", { name: "المشتريات" }).click();
-    await expect(page.getByTestId("purchase-form")).toBeVisible();
-    await page.getByRole("link", { name: "المبيعات" }).click();
+    await expect(page).toHaveURL(saleUrl);
     await expect(page.getByTestId("sale-form")).toBeVisible();
-    const customer = page.getByTestId("sale-customer");
-    await customer.fill("مسودة البيع الجديد");
+    await expect(page.getByTestId("sale-saved")).toHaveCount(0);
+
+    const popupPromise = page.context().waitForEvent("page", { timeout: 10_000 });
+    void popupPromise.catch(() => undefined);
+    await page.getByRole("link", { name: "المشتريات" }).click({ modifiers: ["ControlOrMeta"] });
+    const popup = await popupPromise;
+    await popup.waitForURL(/\/purchase(?:[/?#]|$)/, { waitUntil: "domcontentloaded" });
+    await expect(popup).toHaveURL(/\/purchase(?:[/?#]|$)/);
+    await expect(page).toHaveURL(saleUrl);
+    await popup.close();
 
     release();
     const invoice = await saved;
     expect(invoice.kind).toBe("SALE");
     expect(invoice.totalAmount).toBe(1000);
-    await page.keyboard.press("Control+b");
-    await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(customer).toHaveValue("مسودة البيع الجديد");
+    await expect(page.getByTestId("sale-saved-number")).toContainText(invoice.invoiceNumber);
+    await expect(page).toHaveURL(saleUrl);
+    await expect(page.getByTestId("sale-form")).toHaveCount(0);
+    expect(invoiceWrites).toBe(1);
+    const persistedInvoice = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: invoice.id });
+    expect(persistedInvoice.id).toBe(invoice.id);
+    const stock = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(stock.items.find((row) => row.id === item.id)?.stockOnHand).toBe(0);
+
+    await page.getByRole("link", { name: "المشتريات" }).click();
+    await expect(page.getByTestId("purchase-form")).toBeVisible();
+
   } finally {
     release();
     await saved?.catch(() => undefined);
@@ -1115,13 +1208,14 @@ test("invoice success preserves quick-add edits and asks before New Sale or Ctrl
   }
 });
 
-test("a refused old invoice cannot clear a newer owner's pending quick-add", async ({ page }) => {
+test("a refused sale write keeps its draft after attempted sidebar navigation", async ({ page }) => {
   await signIn(page);
   const categoryId = await seedCategoryId(page, "تصنيف رفض البيع القديم");
   const itemName = `بيع-رفض-قديم-${Date.now()}`;
   const oldItem = await callRpc<Item, object>(page, "itemsCreateWithStock", {
     name: itemName, categoryId, costPrice: 400, sellingPrice: 1000, stockOnHand: 1,
   });
+  const invoicesBefore = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
 
   await page.keyboard.press("Control+n");
   await expect(page.getByTestId("sale-form")).toBeVisible();
@@ -1156,12 +1250,25 @@ test("a refused old invoice cannot clear a newer owner's pending quick-add", asy
   try {
     await page.getByTestId("sale-save").click();
     await requestedOld;
+    const saleUrl = page.url();
     await page.getByRole("link", { name: "المشتريات" }).click();
-    await expect(page.getByTestId("purchase-form")).toBeVisible();
-    await page.getByRole("link", { name: "المبيعات" }).click();
+    await expect(page).toHaveURL(saleUrl);
     await expect(page.getByTestId("sale-form")).toBeVisible();
-    const customer = page.getByTestId("sale-customer");
-    await customer.fill("مسودة مع طلب جديد معلق");
+    await expect(page.getByTestId("purchase-form")).toHaveCount(0);
+
+    releaseOld();
+    const refusalResponse = await refusal;
+    const refusalBody = await refusalResponse.json();
+    console.log(`[issue-395-stale-refusal-raw] ${JSON.stringify({ status: refusalResponse.status(), body: refusalBody })}`);
+    expect(refusalResponse.status()).toBe(400);
+    expect(refusalBody.json).toMatchObject({ code: "BAD_REQUEST", message: "STOCK_NEGATIVE" });
+    const stockAfterRefusal = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(stockAfterRefusal.items.find((item) => item.id === oldItem.id)?.stockOnHand).toBe(1);
+    const invoicesAfterRefusal = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });
+    expect(invoicesAfterRefusal.total).toBe(invoicesBefore.total);
+
+    await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
+    await expect(page.getByTestId("sale-error")).toBeVisible();
 
     await page.getByTestId("sale-quick-add").click();
     const quick = page.getByTestId("sale-quick-form");
@@ -1174,19 +1281,7 @@ test("a refused old invoice cannot clear a newer owner's pending quick-add", asy
     void created.catch(() => undefined);
     await requestedNew;
     await expect(page.getByTestId("new-sale-button")).toBeDisabled();
-
-    releaseOld();
-    const refusalResponse = await refusal;
-    const refusalBody = await refusalResponse.json();
-    console.log(`[issue-395-stale-refusal-raw] ${JSON.stringify({ status: refusalResponse.status(), body: refusalBody })}`);
-    expect(refusalResponse.ok()).toBe(false);
-    const stockAfterRefusal = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
-    expect(stockAfterRefusal.items.find((item) => item.id === oldItem.id)?.stockOnHand).toBe(1);
-
-    await expect(page.getByTestId("new-sale-button")).toBeDisabled();
-    await page.keyboard.press("Control+b");
-    await expect(page.getByTestId("sale-form")).toBeVisible();
-    await expect(page.getByTestId("purchase-form")).toHaveCount(0);
+    await expect(page.getByTestId("sale-quick-name")).toBeDisabled();
 
     releaseNew();
     const createdItem = await created;
@@ -1199,7 +1294,9 @@ test("a refused old invoice cannot clear a newer owner's pending quick-add", asy
     await page.keyboard.press("Control+b");
     await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(customer).toHaveValue("مسودة مع طلب جديد معلق");
+    await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
+    await page.getByRole("link", { name: "المشتريات" }).click();
+    await expect(page.getByTestId("purchase-form")).toBeVisible();
   } finally {
     releaseOld();
     releaseNew();

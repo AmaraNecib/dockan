@@ -60,6 +60,126 @@ const removeTempDirRetry = (dir: string): void => {
   }
 };
 
+describe("category management (#389)", () => {
+  it("renames a category without changing its id or an assigned item's category", async () => {
+    const category = await store.createCategory({ name: `rename-${Date.now()}` });
+    const item = await store.createItem({ name: `rename-item-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
+
+    const renamed = await store.renameCategory(category.id, { name: "تصنيف مُعاد تسميته" });
+
+    expect(renamed).toMatchObject({ id: category.id, name: "تصنيف مُعاد تسميته" });
+    expect((await store.listItems()).items.find((row) => row.id === item.id)).toMatchObject({ categoryId: category.id, categoryName: "تصنيف مُعاد تسميته" });
+  });
+
+  it("refuses a normalized duplicate and a blank category rename", async () => {
+    const first = await store.createCategory({ name: `بطارية ${Date.now()}` });
+    const second = await store.createCategory({ name: `other-${Date.now()}` });
+    await expect(store.renameCategory(second.id, { name: first.name.replace("بطارية", "بَطّارية") })).rejects.toThrow();
+    await expect(store.renameCategory(second.id, { name: "   " })).rejects.toThrow();
+    expect((await store.listCategories()).find((row) => row.id === second.id)?.name).toBe(second.name);
+  });
+
+  it("deletes an unused category and refuses a used one with its item count", async () => {
+    const unused = await store.createCategory({ name: `unused-${Date.now()}` });
+    const used = await store.createCategory({ name: `used-${Date.now()}` });
+    await store.createItem({ name: `used-item-${Date.now()}`, categoryId: used.id, costPrice: 1, sellingPrice: 2 });
+    await expect(store.deleteCategory(unused.id)).resolves.toEqual({ deleted: true, itemCount: 0 });
+    await expect(store.deleteCategory(used.id)).resolves.toEqual({ deleted: false, itemCount: 1 });
+    expect((await store.listCategories()).some((row) => row.id === used.id)).toBe(true);
+    expect((await store.listItems()).items.some((row) => row.categoryId === used.id)).toBe(true);
+  });
+
+  it("serializes category deletion before a competing item creation", async () => {
+    const category = await store.createCategory({ name: `delete-first-${Date.now()}` });
+    let release!: () => void;
+    let entered!: () => void;
+    let inspect!: () => void;
+    let inspected!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const transactionStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const inspectRequested = new Promise<void>((resolve) => { inspect = resolve; });
+    const inspectionDone = new Promise<void>((resolve) => { inspected = resolve; });
+    const holdQueue = store.withTransaction(async (tx) => {
+      entered();
+      await inspectRequested;
+      try {
+        expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
+        expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+      } finally {
+        inspected();
+        await gate;
+      }
+    });
+    const heldOutcome = Promise.allSettled([holdQueue]);
+
+    await transactionStarted;
+    const deletion = store.deleteCategory(category.id);
+    const creation = store.createItem({ name: `after-delete-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
+    const outcomes = Promise.allSettled([deletion, creation]);
+    try {
+      inspect();
+      await inspectionDone;
+    } finally {
+      release();
+    }
+
+    const [held] = await heldOutcome;
+    const [deleted, created] = await outcomes;
+    if (held.status === "rejected") throw held.reason;
+    expect(deleted).toEqual({ status: "fulfilled", value: { deleted: true, itemCount: 0 } });
+    expect(created.status).toBe("rejected");
+    expect((await store.listCategories()).some((row) => row.id === category.id)).toBe(false);
+    expect((await store.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+  });
+
+  it("preserves an item created before a competing category deletion", async () => {
+    const category = await store.createCategory({ name: `create-first-${Date.now()}` });
+    let release!: () => void;
+    let entered!: () => void;
+    let inspect!: () => void;
+    let inspected!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const transactionStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const inspectRequested = new Promise<void>((resolve) => { inspect = resolve; });
+    const inspectionDone = new Promise<void>((resolve) => { inspected = resolve; });
+    const holdQueue = store.withTransaction(async (tx) => {
+      entered();
+      await inspectRequested;
+      try {
+        expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
+        expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+      } finally {
+        inspected();
+        await gate;
+      }
+    });
+    const heldOutcome = Promise.allSettled([holdQueue]);
+
+    await transactionStarted;
+    const creation = store.createItem({ name: `before-delete-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
+    const deletion = store.deleteCategory(category.id);
+    const outcomes = Promise.allSettled([creation, deletion]);
+    try {
+      inspect();
+      await inspectionDone;
+    } finally {
+      release();
+    }
+
+    const [held] = await heldOutcome;
+    const [createdOutcome, deletedOutcome] = await outcomes;
+    if (held.status === "rejected") throw held.reason;
+    if (createdOutcome.status === "rejected") throw createdOutcome.reason;
+    if (deletedOutcome.status === "rejected") throw deletedOutcome.reason;
+    const created = createdOutcome.value;
+    const deleted = deletedOutcome.value;
+    expect(created.categoryId).toBe(category.id);
+    expect(deleted).toEqual({ deleted: false, itemCount: 1 });
+    expect((await store.listCategories()).some((row) => row.id === category.id)).toBe(true);
+    expect((await store.listItems()).items.some((row) => row.id === created.id && row.categoryId === category.id)).toBe(true);
+  });
+});
+
 describe("setup + seed", () => {
   it("creates tables and seeds the default category and settings", async () => {
     const cats = await store.listCategories();

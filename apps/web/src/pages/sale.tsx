@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
+import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { cn } from "@/lib/utils";
 import { anyTyped } from "@/lib/invoice-draft";
 import { draftBlank, parseGroupedAmount, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
@@ -249,6 +250,12 @@ export function SalePage() {
   const draftDirty = draftDirtyWithoutQuickCategory || quickCategoryDirty;
   const quickCreatePending = createItem.isPending || createWithStock.isPending;
   const savePending = createInvoice.isPending || quickCreatePending;
+  // A write cannot be cancelled when its screen unmounts. Refuse new same-tab
+  // navigation attempts during the pending window; do not hold a destination.
+  const discardGuard = useDiscardNavigationGuard({ dirty: false, lineCount: 0, pending: savePending, pendingRef: commitRef });
+  useEffect(() => {
+    if (discardGuard.blocked) setPickerOpen(false);
+  }, [discardGuard.blocked]);
 
   useInvoiceEntryShortcut("sale", () => {
     if (savePending) return;

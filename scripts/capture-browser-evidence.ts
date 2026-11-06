@@ -33,9 +33,9 @@ function parseArgs(args: string[]): Options {
   const comparisonManifest = values.get("--comparison-manifest");
   return { journey: path.resolve(required("--journey")), source: path.resolve(required("--source")), revision: required("--revision"), against: required("--against"), output: path.resolve(required("--output")), ports, comparisonManifest: comparisonManifest ? path.resolve(comparisonManifest) : undefined };
 }
-export function runFile(command: string, args: string[], cwd: string): Promise<string> {
+export function runFile(command: string, args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { cwd, shell: false, windowsHide: true, signal, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
@@ -80,7 +80,7 @@ function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     work.then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
   });
 }
-async function acquireInterruptibly<T>(work: Promise<T>, signal: AbortSignal, dispose: (value: T) => Promise<unknown>): Promise<T> {
+async function acquireInterruptibly<T>(work: Promise<T>, signal: AbortSignal, dispose: (value: T) => Promise<void>): Promise<T> {
   work.then((value) => { if (signal.aborted) void dispose(value).catch(() => {}); }, () => {});
   return interruptible(work, signal);
 }
@@ -180,7 +180,8 @@ export async function validateComparisonManifest(file: string, against: string, 
   await verifyComparisonUnchanged(snapshot);
   return snapshot;
 }
-export async function capture(options: Options): Promise<void> {
+export type CaptureDependencies = { preflight: typeof preflightExecutables; launch: typeof chromium.launch };
+export async function capture(options: Options, dependencies: CaptureDependencies = { preflight: preflightExecutables, launch: chromium.launch.bind(chromium) }): Promise<void> {
   if (!/^[0-9a-f]{40}$/i.test(options.revision) || !/^[0-9a-f]{40}$/i.test(options.against)) throw new Error("--revision and --against must be full 40-character commit SHAs");
   if (options.revision === options.against) throw new Error("Before/after source revisions must be distinct");
   validatePorts(options.ports);
@@ -229,8 +230,8 @@ export async function capture(options: Options): Promise<void> {
     if (!journey || !Array.isArray(journey.servers) || !journey.journey) throw new Error("Journey must export API and web servers plus journey(page, evidence, runtime)");
     validateServerContract(journey.servers, options.ports);
     // Validate the supplied contract before requiring media tools or launching Chromium.
-    await interruptible(preflightExecutables(source), cancellation.signal);
-    browser = await acquireInterruptibly(chromium.launch({ headless: true }), cancellation.signal, (lateBrowser) => lateBrowser.close());
+    await interruptible(dependencies.preflight(source, (command, args, cwd) => runFile(command, args, cwd, cancellation.signal)), cancellation.signal);
+    browser = await acquireInterruptibly(dependencies.launch({ headless: true }), cancellation.signal, (lateBrowser) => lateBrowser.close());
     for (const port of Object.values(options.ports)) await assertPortFree(port);
     await fs.promises.mkdir(dataDir, { recursive: false });
     for (const server of journey.servers) {
@@ -265,7 +266,7 @@ export async function capture(options: Options): Promise<void> {
     await interruptible(validateSource(source, head), cancellation.signal);
     if (!video) throw new Error("Playwright did not create a video recording");
     const webm = await video.path();
-    const { mp4, gif, duration } = await interruptible(convertAndValidateMedia(webm, options.output, source), cancellation.signal);
+    const { mp4, gif, duration } = await interruptible(convertAndValidateMedia(webm, options.output, source, (command, args, cwd) => runFile(command, args, cwd, cancellation.signal)), cancellation.signal);
     recordedDuration = duration;
     await fs.promises.rm(webm, { force: true });
     for (const file of [mp4, gif, ...screenshots]) artifacts[path.basename(file)] = { sha256: await sha256(file), bytes: (await fs.promises.stat(file)).size };
@@ -305,6 +306,7 @@ export async function capture(options: Options): Promise<void> {
         manifest.status = status;
         manifest.failure = failure;
         await fs.promises.writeFile(logs.runner, `${failure}\n`);
+        artifacts["runner.log"] = { sha256: await sha256(logs.runner), bytes: (await fs.promises.stat(logs.runner)).size };
         await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       }
       if (comparisonSnapshot && status === "passed") {

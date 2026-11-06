@@ -19,6 +19,8 @@ export interface DiscardNavigationGuardOptions {
   lineCount: number;
   /** A submitted write cannot be discarded or navigated away from. */
   pending?: boolean;
+  /** A synchronous write flag for attempts made before React commits the next render. */
+  pendingRef?: Readonly<{ current: boolean }>;
 }
 
 /**
@@ -44,13 +46,13 @@ export interface DiscardNavigationGuardOptions {
  * already current before the browser can deliver the click or the popstate that
  * starts a navigation (the same rule as #204's write gates).
  */
-export function useDiscardNavigationGuard({ dirty, lineCount, pending = false }: DiscardNavigationGuardOptions): DiscardNavigationGuard {
+export function useDiscardNavigationGuard({ dirty, lineCount, pending = false, pendingRef }: DiscardNavigationGuardOptions): DiscardNavigationGuard {
   const live = useRef({ dirty, lineCount, pending });
   useLayoutEffect(() => {
     live.current = { dirty, lineCount, pending };
   }, [dirty, lineCount, pending]);
 
-  const shouldBlock = useCallback(() => live.current.dirty || live.current.pending, []);
+  const shouldBlock = useCallback(() => live.current.dirty || live.current.pending || pendingRef?.current === true, [pendingRef]);
 
   const resolver = useBlocker({
     shouldBlockFn: shouldBlock,

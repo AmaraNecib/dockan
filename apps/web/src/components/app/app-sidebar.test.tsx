@@ -225,6 +225,22 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
   });
 });
 
+describe("AppSidebar owner identity", () => {
+  it("keeps the verified name and role visible when expanded", async () => {
+    const host = await mountSidebar(false);
+    const footer = host.querySelector("aside > div:last-child");
+    expect(footer?.textContent).toContain("مالك");
+    expect(footer?.textContent).toContain(i18n.t("accountOwner"));
+  });
+
+  it("keeps the verified name and role in the collapsed avatar's accessible name", async () => {
+    const host = await mountSidebar(true);
+    const avatar = host.querySelector<HTMLButtonElement>("aside > div:last-child button");
+    expect(avatar?.getAttribute("aria-label")).toBe(`مالك — ${i18n.t("accountOwner")} — ${i18n.t("sidebarExpand")}`);
+    expect(avatar?.getAttribute("title")).toBe(`مالك — ${i18n.t("accountOwner")} — ${i18n.t("sidebarExpand")}`);
+  });
+});
+
 describe("AppSidebar accessible names (issue #94)", () => {
   it("expanded: every nav link shows its Arabic label as text", async () => {
     const host = await mountSidebar(false);

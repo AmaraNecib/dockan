@@ -51,9 +51,12 @@ interface AppSidebarProps {
   /** true when the count read failed; the badge must read as unknown, not zero */
   pendingReturnsError: boolean;
   onExpand: () => void;
+  accountFailed?: boolean;
+  accountBlocked?: boolean;
+  retryAccount?: () => void;
 }
 
-export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pendingReturnsError, onExpand }: AppSidebarProps) {
+export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pendingReturnsError, onExpand, accountFailed = false, accountBlocked = false, retryAccount }: AppSidebarProps) {
   const { t } = useTranslation();
   const systemHasActive = activeKey !== null && COLLAPSIBLE_GROUP_ITEMS.some((item) => item.key === activeKey);
   const [systemOpen, setSystemOpen] = useState(systemHasActive);
@@ -142,23 +145,35 @@ export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pe
         {collapsed ? (
           <button
             type="button"
+            data-testid={user ? "sidebar-owner-identity" : undefined}
             onClick={onExpand}
-            title={displayName(user) || t("shellUser")}
+            title={user ? `${displayName(user)} — ${t("accountOwner")} — ${t("sidebarExpand")}` : `${t("shellUser")} — ${t("sidebarExpand")}`}
             className="mx-auto grid size-8 place-items-center rounded-full bg-primary text-primary-foreground text-xs font-semibold"
-            aria-label={displayName(user) || t("shellUser")}
+            aria-label={user ? `${displayName(user)} — ${t("accountOwner")} — ${t("sidebarExpand")}` : `${t("shellUser")} — ${t("sidebarExpand")}`}
           >
             <AvatarGlyph user={user} />
           </button>
         ) : (
-          <div className="flex items-center gap-3">
+          <div data-testid={user ? "sidebar-owner-identity" : undefined} className="flex items-center gap-3">
             <div className="grid size-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-xs font-semibold">
               <AvatarGlyph user={user} />
             </div>
             <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{displayName(user) || t("shellUser")}</div>
-              {user?.phone ? (
-                <div className="truncate text-xs text-muted-foreground">{user.phone}</div>
-              ) : null}
+              {user ? (
+                <>
+                  <bdi className="block truncate text-sm font-medium" title={displayName(user)}>{displayName(user)}</bdi>
+                  <div className="truncate text-xs text-muted-foreground">{t("accountOwner")}</div>
+                  {user.phone ? <div className="truncate text-xs text-muted-foreground">{user.phone}</div> : null}
+                </>
+              ) : accountBlocked ? (
+                <span role="status" className="text-xs text-muted-foreground">{t("accountBlocked")}</span>
+              ) : accountFailed ? (
+                <button type="button" onClick={retryAccount} className="text-start text-xs text-destructive" title={t("accountUnavailable")}>
+                  {t("accountUnavailable")}
+                </button>
+              ) : (
+                <span role="status" className="text-xs text-muted-foreground">{t("accountLoading")}</span>
+              )}
             </div>
           </div>
         )}

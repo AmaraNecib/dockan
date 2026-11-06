@@ -48,9 +48,10 @@ async function sha256(file: string): Promise<string> {
   return createHash("sha256").update(await fs.promises.readFile(file)).digest("hex");
 }
 export async function validateSource(source: string, revision: string): Promise<string> {
-  const head = await runFile("git", ["rev-parse", "HEAD"], source);
+  const canonicalSource = await fs.promises.realpath(source);
+  const head = await runFile("git", ["rev-parse", "HEAD"], canonicalSource);
   if (head !== revision) throw new Error(`Source revision mismatch: expected ${revision}, found ${head}`);
-  const dirty = await runFile("git", ["status", "--porcelain"], source);
+  const dirty = await runFile("git", ["status", "--porcelain"], canonicalSource);
   if (dirty) throw new Error(`Source tree is dirty; refusing evidence capture:\n${dirty}`);
   return head;
 }
@@ -61,6 +62,15 @@ export async function assertPortFree(port: number): Promise<void> {
     server.once("error", () => reject(new Error(`Port ${port} is occupied; runner will not reuse a listener`)));
     server.listen(port, "127.0.0.1", () => server.close((error) => error ? reject(error) : resolve()));
   });
+}
+export function validateReadinessUrl(value: string, port: number): string {
+  let url: URL;
+  try { url = new URL(value.replaceAll("{port}", String(port))); }
+  catch { throw new Error(`Invalid readiness URL: ${value}`); }
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || Number(url.port) !== port) {
+    throw new Error(`Readiness URL must use loopback and the allocated port ${port}: ${url.href}`);
+  }
+  return url.href;
 }
 export async function waitReady(url: string, child: ChildProcess, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -83,7 +93,8 @@ function artifactName(name: string): string {
 export async function capture(options: Options): Promise<void> {
   if (!/^[0-9a-f]{40}$/i.test(options.revision) || !/^[0-9a-f]{40}$/i.test(options.against)) throw new Error("--revision and --against must be full 40-character commit SHAs");
   if (options.revision === options.against) throw new Error("Before/after source revisions must be distinct");
-  const head = await validateSource(options.source, options.revision);
+  const source = await fs.promises.realpath(options.source);
+  const head = await validateSource(source, options.revision);
   if (fs.existsSync(options.output)) throw new Error(`Output already exists; refusing to overwrite evidence: ${options.output}`);
   await fs.promises.mkdir(options.output, { recursive: false });
   await assertPortFree(options.port);
@@ -91,8 +102,9 @@ export async function capture(options: Options): Promise<void> {
   const journeyModule = await import(pathToFileURL(options.journey).href) as { default?: EvidenceJourney };
   const journey = journeyModule.default;
   if (!journey || journey.journey === undefined || !journey.server?.command || !Array.isArray(journey.server.args)) throw new Error("Journey module must default-export { server: { command, args, cwd, readinessUrl }, journey(page, evidence) }");
-  const serverCwd = path.resolve(options.source, journey.server.cwd);
-  if (!serverCwd.startsWith(`${options.source}${path.sep}`) && serverCwd !== options.source) throw new Error("Server cwd must stay inside the pinned source root");
+  const serverCwd = await fs.promises.realpath(path.resolve(source, journey.server.cwd));
+  if (!serverCwd.startsWith(`${source}${path.sep}`) && serverCwd !== source) throw new Error("Server cwd must stay inside the pinned source root");
+  const readinessUrl = validateReadinessUrl(journey.server.readinessUrl, options.port);
   const logs = { server: path.join(options.output, "server.log"), runner: path.join(options.output, "runner.log") };
   let child: ChildProcess | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -102,11 +114,13 @@ export async function capture(options: Options): Promise<void> {
   const start = new Date().toISOString();
   try {
     child = spawnOwnedServer(journey.server.command, journey.server.args, { cwd: serverCwd, env: { ...process.env, ...journey.server.env, PORT: String(options.port) }, stdio: ["ignore", fs.openSync(logs.server, "w"), fs.openSync(logs.server, "a")] });
-    await waitReady(journey.server.readinessUrl.replaceAll("{port}", String(options.port)), child);
+    await waitReady(readinessUrl, child);
+    await validateSource(source, options.revision);
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: VIEWPORT, recordVideo: { dir: options.output, size: VIEWPORT } });
     const page = await context.newPage();
     const screenshots: string[] = [];
+    await validateSource(source, options.revision);
     await journey.journey(page, { screenshotElement: async (name, selector) => {
       const file = path.join(options.output, `${artifactName(name)}.png`);
       if (fs.existsSync(file)) throw new Error(`Screenshot already exists: ${file}`);
@@ -116,6 +130,7 @@ export async function capture(options: Options): Promise<void> {
     } });
     const video = page.video();
     await context.close();
+    await validateSource(source, options.revision);
     if (video) {
       const webm = await video.path();
       const durationText = await runFile("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", webm], options.source);

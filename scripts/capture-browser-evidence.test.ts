@@ -3,7 +3,7 @@ import { execFileSync, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertPortFree, capture, validateSource, waitReady } from "./capture-browser-evidence";
+import { assertPortFree, capture, validateReadinessUrl, validateSource, waitReady } from "./capture-browser-evidence";
 import { spawnOwnedServer, stopOwnedServer } from "../tests/e2e/owned-server-process";
 
 function git(cwd: string, ...args: string[]): string {
@@ -30,6 +30,12 @@ it("accepts only the exact clean source revision", async () => {
     fs.writeFileSync(path.join(fixture.root, "dirty.txt"), "uncommitted");
     await expect(validateSource(fixture.root, fixture.head)).rejects.toThrow("Source tree is dirty");
   } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+it("accepts readiness only on loopback at the allocated port", () => {
+  expect(validateReadinessUrl("http://127.0.0.1:{port}/health", 4617)).toBe("http://127.0.0.1:4617/health");
+  expect(() => validateReadinessUrl("http://127.0.0.1:4618/health", 4617)).toThrow("allocated port 4617");
+  expect(() => validateReadinessUrl("http://example.com:4617/health", 4617)).toThrow("loopback");
 });
 
 it("detects a port held by an unrelated listener instead of reusing it", async () => {

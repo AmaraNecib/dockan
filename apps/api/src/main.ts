@@ -27,6 +27,7 @@ import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypt
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
+import { recoverVaultReplacement } from "./lib/vault/restore";
 import { ReclaimRetry } from "./lib/vault/reclaim-retry";
 import { answerReclaimRetry } from "./lib/vault/refused-request";
 import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
@@ -955,6 +956,10 @@ function publishOwnedRegistryEntry(port: number): void {
  * writes nothing into it (#277 acceptance criterion 3).
  */
 function openVaultManager(): VaultManager {
+  // Startup and successful lock reclaim share this gate. Recovery must precede
+  // manager/setup/broker/cleanup and every connection that could checkpoint.
+  if (vaultLock === undefined) throw new Error("vault recovery requires the folder lock");
+  recoverVaultReplacement(config.dataDir, vaultLock);
   const manager = new VaultManager({
     dataDir: config.dataDir,
     legacyDbPath: config.db.path,

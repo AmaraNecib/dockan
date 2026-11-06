@@ -88,6 +88,50 @@ async function freshVault(): Promise<FreshVault> {
 }
 
 describe("vault-mode store", () => {
+  itHeavy("persists a direct category rename before acknowledging success (#389)", async () => {
+    const { vault, conn, store } = await freshVault();
+    try {
+      const category = await store.createCategory({ name: "before-rename-389" });
+      const item = await store.createItem({ name: "assigned-389", categoryId: category.id, costPrice: 1, sellingPrice: 2 });
+      await store.renameCategory(category.id, { name: "after-rename-389" });
+      // Reopen before close or flush can hide a missing durable-write hook.
+      const reopened = createEncryptedConnection({
+        vaultId: vault.metadata().vaultId,
+        masterKey: vault.requireMasterKey(),
+        snapshotPath: vault.snapshotPath,
+      });
+      try {
+        const saved = createDrizzleStore(reopened);
+        expect((await saved.listCategories()).find((row) => row.id === category.id)?.name).toBe("after-rename-389");
+        expect((await saved.listItems()).items.find((row) => row.id === item.id)).toMatchObject({ categoryId: category.id, categoryName: "after-rename-389" });
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await conn.close();
+    }
+  });
+
+  itHeavy("persists a direct category deletion before acknowledging success (#389)", async () => {
+    const { vault, conn, store } = await freshVault();
+    try {
+      const category = await store.createCategory({ name: "delete-durable-389" });
+      expect(await store.deleteCategory(category.id)).toEqual({ deleted: true, itemCount: 0 });
+      const reopened = createEncryptedConnection({
+        vaultId: vault.metadata().vaultId,
+        masterKey: vault.requireMasterKey(),
+        snapshotPath: vault.snapshotPath,
+      });
+      try {
+        expect((await createDrizzleStore(reopened).listCategories()).some((row) => row.id === category.id)).toBe(false);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await conn.close();
+    }
+  });
+
   itHeavy("399 history reads leave encrypted snapshot bytes unchanged and later writes durable", async () => {
     const { vault, vaultId, conn, store } = await freshVault();
     try {

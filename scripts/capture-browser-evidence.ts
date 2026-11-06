@@ -74,10 +74,18 @@ export function validateReadinessUrl(value: string, port: number): string {
 function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(signal.reason);
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => { cleanup(); reject(signal.reason); };
     signal.addEventListener("abort", abort, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    work.then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
   });
+}
+async function acquireInterruptibly<T>(work: Promise<T>, signal: AbortSignal, dispose: (value: T) => Promise<unknown>): Promise<T> {
+  work.then((value) => { if (signal.aborted) void dispose(value).catch(() => {}); }, () => {});
+  return interruptible(work, signal);
+}
+function throwIfCancelled(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason ?? new Error("Capture cancelled");
 }
 async function waitReady(url: string, child: ChildProcess, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + 30_000;
@@ -146,9 +154,10 @@ export async function verifyComparisonUnchanged(snapshot: ComparisonSnapshot): P
   }
 }
 type PairMember = { manifest: string; sha256: string; root: string; revision: string; tree: string };
-export async function writeComparisonPair(snapshot: ComparisonSnapshot, after: PairMember, comparisonId: string, file: string): Promise<void> {
+export async function writeComparisonPair(snapshot: ComparisonSnapshot, after: PairMember, comparisonId: string, file: string, signal?: AbortSignal): Promise<void> {
   const bytes = `${JSON.stringify({ status: "pair-verified", id: comparisonId, before: { manifest: snapshot.path, sha256: snapshot.sha256, ...snapshot.source }, after }, null, 2)}\n`;
   await verifyComparisonUnchanged(snapshot);
+  if (signal?.aborted) throw signal.reason ?? new Error("Capture cancelled");
   await fs.promises.writeFile(file, bytes, { flag: "wx" });
 }
 export async function validateComparisonManifest(file: string, against: string, comparisonId: string, currentRoot: string): Promise<ComparisonSnapshot> {
@@ -190,6 +199,7 @@ export async function capture(options: Options): Promise<void> {
   const artifacts: Record<string, { sha256: string; bytes: number }> = {};
   const children: ChildProcess[] = [];
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  const contexts = new Set<Awaited<ReturnType<Awaited<ReturnType<typeof chromium.launch>>["newContext"]>>>();
   let journey: EvidenceJourney | undefined;
   let primaryError: unknown;
   let cleanupErrors: unknown[] = [];
@@ -200,12 +210,12 @@ export async function capture(options: Options): Promise<void> {
   let journeyIdentity: { path: string; sha256: string; bytes: number } | null = null;
   let logOut: number | undefined, logErr: number | undefined;
   const cancellation = new AbortController();
-  const onInterrupt = () => cancellation.abort(new Error("Capture cancelled by SIGINT"));
-  const onTerminate = () => cancellation.abort(new Error("Capture cancelled by SIGTERM"));
+  const onInterrupt = () => { if (!cancellation.signal.aborted) cancellation.abort(new Error("Capture cancelled by SIGINT")); };
+  const onTerminate = () => { if (!cancellation.signal.aborted) cancellation.abort(new Error("Capture cancelled by SIGTERM")); };
   // SAFETY: Node's process object is an EventEmitter; SIGINT and SIGTERM are runtime event names.
   const signals = process as NodeJS.EventEmitter;
-  signals.once("SIGINT", onInterrupt);
-  signals.once("SIGTERM", onTerminate);
+  signals.on("SIGINT", onInterrupt);
+  signals.on("SIGTERM", onTerminate);
   try {
     logOut = fs.openSync(logs.server, "wx");
     logErr = fs.openSync(logs.server, "a");
@@ -220,7 +230,7 @@ export async function capture(options: Options): Promise<void> {
     validateServerContract(journey.servers, options.ports);
     // Validate the supplied contract before requiring media tools or launching Chromium.
     await interruptible(preflightExecutables(source), cancellation.signal);
-    browser = await interruptible(chromium.launch({ headless: true }), cancellation.signal);
+    browser = await acquireInterruptibly(chromium.launch({ headless: true }), cancellation.signal, (lateBrowser) => lateBrowser.close());
     for (const port of Object.values(options.ports)) await assertPortFree(port);
     await fs.promises.mkdir(dataDir, { recursive: false });
     for (const server of journey.servers) {
@@ -233,13 +243,16 @@ export async function capture(options: Options): Promise<void> {
       await waitReady(readinessUrl, child, cancellation.signal);
     }
     await validateSource(source, head);
-    const setupContext = await browser.newContext({ viewport: VIEWPORT });
-    const setupPage = await setupContext.newPage();
+    const setupContext = await acquireInterruptibly(browser.newContext({ viewport: VIEWPORT }), cancellation.signal, (lateContext) => lateContext.close());
+    contexts.add(setupContext);
+    const setupPage = await interruptible(setupContext.newPage(), cancellation.signal);
     if (journey.setup) await interruptible(journey.setup(setupPage, runtime), cancellation.signal);
-    const storageState = await setupContext.storageState();
+    const storageState = await interruptible(setupContext.storageState(), cancellation.signal);
     await setupContext.close();
-    const context = await browser.newContext({ viewport: VIEWPORT, recordVideo: { dir: options.output, size: VIEWPORT }, storageState });
-    const page = await context.newPage();
+    contexts.delete(setupContext);
+    const context = await acquireInterruptibly(browser.newContext({ viewport: VIEWPORT, recordVideo: { dir: options.output, size: VIEWPORT }, storageState }), cancellation.signal, (lateContext) => lateContext.close());
+    contexts.add(context);
+    const page = await interruptible(context.newPage(), cancellation.signal);
     const screenshots: string[] = [];
     await interruptible(journey.journey(page, { screenshotElement: async (name, selector) => {
       const file = path.join(options.output, `${artifactName(name)}.png`);
@@ -247,21 +260,25 @@ export async function capture(options: Options): Promise<void> {
       await page.locator(selector).screenshot({ path: file }); screenshots.push(file); return file;
     } }, runtime), cancellation.signal);
     const video = page.video();
-    await context.close();
-    await validateSource(source, head);
+    await interruptible(context.close(), cancellation.signal);
+    contexts.delete(context);
+    await interruptible(validateSource(source, head), cancellation.signal);
     if (!video) throw new Error("Playwright did not create a video recording");
     const webm = await video.path();
-    const { mp4, gif, duration } = await convertAndValidateMedia(webm, options.output, source);
+    const { mp4, gif, duration } = await interruptible(convertAndValidateMedia(webm, options.output, source), cancellation.signal);
     recordedDuration = duration;
     await fs.promises.rm(webm, { force: true });
     for (const file of [mp4, gif, ...screenshots]) artifacts[path.basename(file)] = { sha256: await sha256(file), bytes: (await fs.promises.stat(file)).size };
+    throwIfCancelled(cancellation.signal);
     status = "passed"; failure = "";
   } catch (error) { primaryError = error; failure = error instanceof Error ? error.stack ?? error.message : String(error); }
   {
+    try { await Promise.all([...contexts].map((context) => context.close())); contexts.clear(); } catch (error) { cleanupErrors.push(error); }
     try { await browser?.close(); } catch (error) { cleanupErrors.push(error); }
     try { await stopServersAndCleanData(children, dataDir); } catch (error) { cleanupErrors.push(error); preserveData = true; }
     if (cleanupErrors.length) { status = "failed"; failure += `\nCleanup failed: ${cleanupErrors.map(String).join("; ")}`; }
     try {
+      if (cancellation.signal.aborted) { status = "failed"; failure ||= String(cancellation.signal.reason ?? "Capture cancelled"); }
       const final = await verifySourceSnapshot(source, head, initialTree).catch((error) => { status = "failed"; failure += `\n${String(error)}`; return { head: "unavailable", tree: "unavailable", clean: "unavailable" }; });
       const finalTree = final.tree, finalClean = final.clean;
       if (journeyIdentity) {
@@ -272,6 +289,7 @@ export async function capture(options: Options): Promise<void> {
         try { await verifyComparisonUnchanged(comparisonSnapshot); }
         catch (error) { status = "failed"; failure += `\n${String(error)}`; }
       }
+      if (cancellation.signal.aborted) { status = "failed"; failure ||= String(cancellation.signal.reason ?? "Capture cancelled"); }
       await fs.promises.writeFile(logs.runner, `${failure || "Capture passed"}\n`, { flag: "wx" });
       for (const entry of await fs.promises.readdir(options.output, { withFileTypes: true })) {
         if (!entry.isFile() || !/[.](png|webm|mp4|gif|log)$/i.test(entry.name)) continue;
@@ -281,9 +299,17 @@ export async function capture(options: Options): Promise<void> {
       const manifest = { status, comparison: { id: comparisonId, revision: head, against: againstCommit, status: options.comparisonManifest ? "pair-member" : "single-capture", pairedManifest: options.comparisonManifest ?? null },  source: { root: source, revision: head, tree: finalTree, clean: finalClean === "" }, journey: journeyIdentity, command: { invocation: process.argv, journey: options.journey, servers: journey?.servers ?? null, ports: options.ports }, startedAt, finishedAt: new Date().toISOString(), viewport: VIEWPORT, durationSeconds: recordedDuration, isolatedData: { path: dataDir, removed: !preserveData && !fs.existsSync(dataDir), preservedAfterCleanupFailure: preserveData }, artifacts, logs, failure };
       const manifestPath = path.join(options.output, "manifest.json");
       await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
+      if (cancellation.signal.aborted) {
+        status = "failed";
+        failure ||= String(cancellation.signal.reason ?? "Capture cancelled");
+        manifest.status = status;
+        manifest.failure = failure;
+        await fs.promises.writeFile(logs.runner, `${failure}\n`);
+        await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      }
       if (comparisonSnapshot && status === "passed") {
         try {
-          await writeComparisonPair(comparisonSnapshot, { manifest: manifestPath, sha256: await sha256(manifestPath), root: source, revision: head, tree: finalTree }, comparisonId, path.join(options.output, "comparison-pair.json"));
+          await writeComparisonPair(comparisonSnapshot, { manifest: manifestPath, sha256: await sha256(manifestPath), root: source, revision: head, tree: finalTree }, comparisonId, path.join(options.output, "comparison-pair.json"), cancellation.signal);
         } catch (error) {
           status = "failed";
           failure += `\nPair certification failed: ${String(error)}`;

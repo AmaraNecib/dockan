@@ -120,7 +120,7 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(agents).toContain("docs/agent-delegation-template.md");
     const template = read("docs/agent-delegation-template.md");
     for (const field of ["Goal", "Worktree", "Base and head", "Required reading", "Scope and authority", "Verification mode", "Concrete proof", "Completion report"]) {
-      expect(template).toContain(`\n${field}\n`);
+      expect(template).toMatch(new RegExp(`\\r?\\n${field}\\r?\\n`));
     }
     expect(template).toContain("reviewer is read-only on the source tree");
     expect(template).toContain("raw task input");
@@ -163,6 +163,25 @@ describe("the verification rule is discoverable (#259)", () => {
     }
     expect(read("docs/engineering-workflow.md")).toContain("A pending CI check does not block local implementation, review or publication");
     expect(read("docs/agent-delegation-template.md")).toContain("ordinary failing-first focused test");
+  });
+
+  test("UI issue lifecycle routes through impeccable before the first UI edit", () => {
+    const feature = read(".agents/skills/feature-implement/SKILL.md");
+    const qualityStart = feature.indexOf("| If the change touches...");
+    const qualityEnd = feature.indexOf("\n\nCommit the complete reviewable scope", qualityStart);
+    const quality = feature.slice(qualityStart, qualityEnd);
+    expect(quality).toContain("| UI components, pages, or visual design | `impeccable` |");
+    expect(quality).not.toContain("frontend-design");
+    expect(quality).not.toContain("web-design-guidelines");
+    expect(quality).not.toContain("redesign-existing-projects");
+    const critique = feature.indexOf("critique the incumbent surface before the first UI edit");
+    const implementation = feature.indexOf("Load `implement` skill");
+    expect(critique).toBeGreaterThan(-1);
+    expect(critique).toBeLessThan(implementation);
+    expect(feature).toContain("Operate mode");
+    expect(feature).toContain("ask the owner before a broader redesign");
+    expect(feature).toContain("documented direct-context fallback");
+    expect(feature).toContain("Keep keyboard, RTL, relevant states");
   });
 
   test("delegation template keeps task input readable and bounded", () => {

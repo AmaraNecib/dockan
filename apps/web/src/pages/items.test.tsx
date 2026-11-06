@@ -91,6 +91,7 @@ const updateInputs: CapturedUpdateInput[] = [];
 const stockInputs: CapturedStockInput[] = [];
 /** makes the category read reject, so the items empty state cannot offer the add form */
 let categoriesListFails = false;
+let createRefuses: string | null = null;
 /** knobs the edit tests drive: reject, or hold the mutation open */
 let updateFails = false;
 let updateDeferred = false;
@@ -157,6 +158,7 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: MutationOptions) => ({
         mutationFn: async (input: CapturedCreateInput) => {
           createInputs.push(input);
+          if (createRefuses !== null) throw new Error(createRefuses);
           return { id: "created" };
         },
         ...opts,
@@ -414,6 +416,7 @@ beforeEach(() => {
   updateInputs.length = 0;
   stockInputs.length = 0;
   categoriesListFails = false;
+  createRefuses = null;
   updateFails = false;
   updateDeferred = false;
   resolveUpdate = null;
@@ -641,6 +644,118 @@ describe("items page tabs", () => {
     click("items-tab-add");
     await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
     expect(inputByTestId("item-name").value).toBe("مسودة-محفوظة");
+  });
+});
+
+describe("item creation keyboard lifecycle #391", () => {
+  it("saves explicit zero prices, announces the saved name and focuses the cleared name", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "منتج مجاني");
+    setInput("item-cost", "0");
+    setInput("item-sell", "0");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "منتج مجاني", costPrice: 0, sellingPrice: 0 });
+    await waitFor(() => inputByTestId("item-name").value === "");
+    expect(document.activeElement === inputByTestId("item-name")).toBe(true);
+    expect(el<HTMLElement>('[data-testid="item-saved"]').textContent).toContain("منتج مجاني");
+    expect(el<HTMLElement>('[data-testid="item-saved"]').getAttribute("role")).toBe("status");
+  });
+
+  it("retains a blank-cost draft and focuses its unresolved cost instead of creating zero", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "تكلفة مجهولة");
+    setInput("item-cost", " ");
+    setInput("item-sell", "10");
+    click("item-save");
+    await flush();
+    expect(createInputs).toHaveLength(0);
+    expect(inputByTestId("item-name").value).toBe("تكلفة مجهولة");
+    expect(document.activeElement === inputByTestId("item-cost")).toBe(true);
+  });
+
+  it("focuses invalid selling price without clearing the draft", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "سعر غير صالح");
+    setInput("item-cost", "0");
+    setInput("item-sell", "-1");
+    click("item-save");
+    await flush();
+    expect(createInputs).toHaveLength(0);
+    expect(document.activeElement === inputByTestId("item-sell")).toBe(true);
+    expect(inputByTestId("item-name").value).toBe("سعر غير صالح");
+  });
+
+  it("serializes same-tick submission before React has rendered pending state", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "مرة واحدة");
+    setInput("item-cost", "0");
+    setInput("item-sell", "10");
+    act(() => {
+      const form = el<HTMLFormElement>('[data-testid="item-form"]');
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(createInputs).toHaveLength(1);
+  });
+
+  it("does not steal focus from the catalogue after a delayed successful save", async () => {
+    createWithStockDeferred = true;
+    await mount();
+    await openAddTab();
+    setInput("item-name", "حفظ مؤجل");
+    setInput("item-cost", "0");
+    setInput("item-sell", "10");
+    setInput("initial-stock", "2");
+    click("item-save");
+    await waitFor(() => resolveCreateWithStock !== null);
+    click("items-tab-products");
+    const products = el<HTMLButtonElement>('[data-testid="items-tab-products"]');
+    act(() => { products.focus(); });
+    await act(async () => { resolveCreateWithStock?.(); await settle(); });
+    await waitFor(() => inputByTestId("item-name").value === "");
+    expect(document.activeElement === products).toBe(true);
+  });
+
+  it("retains the draft and focuses the category after a server category refusal", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "تصنيف محذوف");
+    setInput("item-cost", "0");
+    setInput("item-sell", "10");
+    setInput("item-barcode", "39100001");
+    createRefuses = "CATEGORY_NOT_FOUND";
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    const category = el<HTMLElement>('[data-testid="item-form"] [role="combobox"]');
+    await waitFor(() => document.activeElement === category);
+    expect(el<HTMLButtonElement>('[data-testid="item-save"]').disabled).toBe(false);
+    expect(inputByTestId("item-name").value).toBe("تصنيف محذوف");
+    expect(inputByTestId("item-cost").value).toBe("0");
+    expect(inputByTestId("item-sell").value).toBe("10");
+    expect(inputByTestId("item-barcode").value).toBe("39100001");
+    expect(el<HTMLElement>('[data-testid="form-error"]').textContent).toContain(i18n.t("CATEGORY_NOT_FOUND"));
+  });
+
+  it("consumes barcode Enter without submitting an incomplete or complete draft", async () => {
+    await mount();
+    await openAddTab();
+    for (const complete of [false, true]) {
+      if (complete) {
+        setInput("item-name", "باركود يدوي");
+        setInput("item-cost", "0");
+        setInput("item-sell", "10");
+      }
+      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      act(() => { inputByTestId("item-barcode").dispatchEvent(enter); });
+      expect(enter.defaultPrevented).toBe(true);
+    }
+    expect(createInputs).toHaveLength(0);
   });
 });
 

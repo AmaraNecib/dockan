@@ -11,21 +11,33 @@ describe("physical-device comparison", () => {
     });
   }
 
-  it("resolves a redirected destination before comparing physical devices", () => {
-    const paths = resolvePhysicalDevicePaths("D:/vault", "E:/backup", (value) => value === "E:/backup" ? "C:/backup-target" : value);
+  it("resolves a redirected destination before comparing physical devices", async () => {
+    const paths = await resolvePhysicalDevicePaths("D:/vault", "E:/backup", async (value) => value === "E:/backup" ? "C:/backup-target" : value);
     expect(paths).toEqual(["D:/vault", "C:/backup-target"]);
   });
 
-  it("resolves a junction to its target path before device lookup", () => {
+  it("keeps event-loop work moving while canonical path I/O is delayed", async () => {
+    let release!: (value: string) => void;
+    const delayedPath = new Promise<string>((resolve) => { release = resolve; });
+    let apiWorkCompleted = false;
+    const resolution = resolvePhysicalDevicePaths("D:/vault", "E:/backup", (value) =>
+      value === "E:/backup" ? delayedPath : Promise.resolve(value));
+    await Promise.resolve().then(() => { apiWorkCompleted = true; });
+    expect(apiWorkCompleted).toBe(true);
+    release("E:/resolved-backup");
+    expect(await resolution).toEqual(["D:/vault", "E:/resolved-backup"]);
+  });
+
+  it("resolves a junction to its target path before device lookup", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "backup-device-junction-"));
     try {
       const target = path.join(root, "target");
       const junction = path.join(root, "junction");
       fs.mkdirSync(target);
       fs.symlinkSync(target, junction, process.platform === "win32" ? "junction" : "dir");
-      expect(resolvePhysicalDevicePaths(root, junction)).toEqual([
-        fs.realpathSync.native(root),
-        fs.realpathSync.native(target),
+      expect(await resolvePhysicalDevicePaths(root, junction)).toEqual([
+        await fs.promises.realpath(root),
+        await fs.promises.realpath(target),
       ]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

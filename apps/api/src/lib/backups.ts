@@ -111,9 +111,11 @@ async function persistExternalBackupStatus(
   }
 }
 
-function ensureExternalDestinationIsSeparate(dataDir: string, destination: string): string {
-  const resolvedData = fs.realpathSync(dataDir);
-  const resolvedDestination = fs.realpathSync(destination);
+async function ensureExternalDestinationIsSeparate(dataDir: string, destination: string): Promise<string> {
+  const [resolvedData, resolvedDestination] = await Promise.all([
+    fs.promises.realpath(dataDir),
+    fs.promises.realpath(destination),
+  ]);
   const relative = path.relative(resolvedData, resolvedDestination);
   if (relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) {
     throw new Error("BACKUP_DESTINATION_INSIDE_DATA");
@@ -187,14 +189,14 @@ export async function createExternalBackup({ store, dataDir, writeGuard = () => 
     const clockMs = Date.parse(`${at}Z`);
     if (Number.isFinite(previousAttemptMs) && previousAttemptMs >= clockMs) {
       // Treat the local timestamp as a sortable wall-clock label, not UTC time.
-      at = new Date(previousAttemptMs + 1).toISOString().replace(/Z$/, "");
+      at = new Date(Math.floor(previousAttemptMs / 1000) * 1000 + 1000).toISOString().replace(/\.000Z$/, "").replace(/Z$/, "");
     }
     let ownedDirectory: string | undefined;
     let externalPartial: string | undefined;
     const staging = path.join(dataDir, `.external-backup-${process.pid}-${crypto.randomBytes(8).toString("hex")}.partial`);
     let next: ExternalBackupStatus;
     try {
-      const targetDir = ensureExternalDestinationIsSeparate(dataDir, current.destination);
+      const targetDir = await ensureExternalDestinationIsSeparate(dataDir, current.destination);
       await fs.promises.access(targetDir, fs.constants.W_OK);
       writeGuard();
       await store.copyDatabaseTo(staging);

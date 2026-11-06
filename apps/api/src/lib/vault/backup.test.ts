@@ -367,8 +367,8 @@ describe("vault external backup lock fencing", () => {
       const second = await createExternalBackup({ store: harness.store, dataDir: harness.source });
       const third = await createExternalBackup({ store: harness.store, dataDir: harness.source });
       expect(first.lastAttemptAt).toBe("2026-11-05T10:00:01");
-      expect(second.lastAttemptAt).toBe("2026-11-05T10:00:01.001");
-      expect(third.lastAttemptAt).toBe("2026-11-05T10:00:01.002");
+      expect(second.lastAttemptAt).toBe("2026-11-05T10:00:02");
+      expect(third.lastAttemptAt).toBe("2026-11-05T10:00:03");
       for (const status of [first, second, third]) {
         expect(status.lastError).toBe("disconnected");
         expect(status.lastSuccessAt).toBeNull();
@@ -415,6 +415,35 @@ describe("vault external backup lock fencing", () => {
     }
   });
 
+  it("rebuilds a trusted external backup from live data when the unchanged snapshot ciphertext is damaged", async () => {
+    const harness = await lockedExternalBackupHarness();
+    try {
+      const snapshot = fs.readFileSync(harness.manager.snapshotPath);
+      const corrupted = Buffer.from(snapshot);
+      const changedByte = Math.floor(corrupted.length / 2);
+      const originalByte = corrupted[changedByte];
+      if (originalByte === undefined) throw new Error("snapshot fixture is unexpectedly empty");
+      corrupted[changedByte] = originalByte ^ 1;
+      fs.writeFileSync(harness.manager.snapshotPath, corrupted);
+      expect(harness.conn.validateSnapshotBytes(corrupted)).toBe(false);
+
+      const outcome = await createExternalBackup({ store: harness.store, dataDir: harness.source });
+      expect(outcome).toEqual({
+        destination: harness.external,
+        lastAttemptAt: expect.any(String),
+        lastSuccessAt: expect.any(String),
+        lastError: null,
+        lastPath: expect.any(String),
+      });
+      if (outcome.lastPath === null) throw new Error("the rebuilt encrypted backup was not published");
+      const backupBytes = fs.readFileSync(outcome.lastPath);
+      expect(harness.conn.validateSnapshotBytes(backupBytes)).toBe(true);
+      expect(harness.conn.validateSnapshotBytes(fs.readFileSync(harness.manager.snapshotPath))).toBe(true);
+    } finally {
+      await closeLockedExternalBackupHarness(harness);
+    }
+  });
+
   it("refuses publication after the lock is replaced at the validated partial boundary", async () => {
     const harness = await lockedExternalBackupHarness();
     try {
@@ -430,19 +459,29 @@ describe("vault external backup lock fencing", () => {
       const knownGoodBytes = fs.readFileSync(knownGoodPath);
       const savedSettings = fs.readFileSync(path.join(harness.source, "external-backup.json"));
 
-      let guardChecks = 0;
-      const stealAfterPartialValidation = () => {
-        guardChecks++;
-        if (guardChecks === 5) writeLockRecord(harness.source, { token: "publication-thief" });
-        writeGuard();
-      };
-      await expect(createExternalBackup({
-        store: harness.store,
-        dataDir: harness.source,
-        writeGuard: stealAfterPartialValidation,
-      })).rejects.toBeInstanceOf(VaultLockLostError);
+      const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+      let completedDigests = 0;
+      let digestsFinished = false;
+      const digestSpy = spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+        const digest = await realDigest(algorithm, data);
+        completedDigests += 1;
+        if (completedDigests === 2) {
+          digestsFinished = true;
+          writeLockRecord(harness.source, { token: "publication-thief" });
+        }
+        return digest;
+      });
+      try {
+        await expect(createExternalBackup({
+          store: harness.store,
+          dataDir: harness.source,
+          writeGuard,
+        })).rejects.toBeInstanceOf(VaultLockLostError);
+      } finally {
+        digestSpy.mockRestore();
+      }
 
-      expect(guardChecks).toBeGreaterThanOrEqual(5);
+      expect(digestsFinished).toBe(true);
       const attemptDirectories = fs.readdirSync(harness.external)
         .filter((name) => path.join(harness.external, name) !== path.dirname(knownGoodPath));
       expect(attemptDirectories).toHaveLength(1);

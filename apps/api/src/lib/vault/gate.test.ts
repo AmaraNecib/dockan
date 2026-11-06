@@ -367,9 +367,26 @@ describe("vault HTTP gate", () => {
     await owner.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
     fs.mkdirSync(path.join(h.dir, "backups"), { recursive: true });
 
-    const outcome = await owner.externalBackupRun();
-    expect(outcome.lastError).toBe("disconnected");
-    expect(outcome.lastSuccessAt).toBeNull();
+    const firstOutcome = await owner.externalBackupRun();
+    expect(firstOutcome).toEqual({
+      destination: missingDrive,
+      lastAttemptAt: expect.any(String),
+      lastSuccessAt: null,
+      lastError: "disconnected",
+      lastPath: null,
+    });
+    const secondOutcome = await owner.externalBackupRun();
+    const thirdOutcome = await owner.externalBackupRun();
+    for (const outcome of [firstOutcome, secondOutcome, thirdOutcome, await owner.externalBackupStatus()]) {
+      expect(outcome).toEqual({
+        destination: missingDrive,
+        lastAttemptAt: expect.any(String),
+        lastSuccessAt: null,
+        lastError: "disconnected",
+        lastPath: null,
+      });
+    }
+    expect(new Set([firstOutcome.lastAttemptAt, secondOutcome.lastAttemptAt, thirdOutcome.lastAttemptAt]).size).toBe(3);
     expect(fs.readdirSync(path.join(h.dir, "backups")).some((name) => /^dokan-.*\.db$/u.test(name))).toBe(true);
     const sale = await owner.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
     expect(sale.kind).toBe("SALE");

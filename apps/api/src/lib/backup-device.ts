@@ -23,12 +23,12 @@ foreach ($target in $paths) {
 }
 ConvertTo-Json -InputObject $numbers -Compress
 `;
-export function resolvePhysicalDevicePaths(
+export async function resolvePhysicalDevicePaths(
   dataDir: string,
   destination: string,
-  resolvePath: (value: string) => string = (value) => fs.realpathSync.native(value),
-): [string, string] {
-  return [resolvePath(dataDir), resolvePath(destination)];
+  resolvePath: (value: string) => Promise<string> = (value) => fs.promises.realpath(value),
+): Promise<[string, string]> {
+  return Promise.all([resolvePath(dataDir), resolvePath(destination)]);
 }
 
 export function windowsDiskQueryForPaths(dataDir: string, destination: string): string {
@@ -58,7 +58,7 @@ export async function comparePhysicalDevice(
     try {
       // Junctions and symlinks must be compared by their target volumes, not
       // by the path text the owner entered.
-      const [resolvedDataDir, resolvedDestination] = resolvePhysicalDevicePaths(dataDir, destination);
+      const [resolvedDataDir, resolvedDestination] = await resolvePhysicalDevicePaths(dataDir, destination);
       const script = windowsDiskQueryForPaths(resolvedDataDir, resolvedDestination);
       const encodedScript = Buffer.from(script, "utf16le").toString("base64");
       const result = await execFileAsync(

@@ -715,7 +715,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       }
     },
     async writeBackupTo(destPath: string): Promise<void> {
-      connection.checkpoint();
+      // A backup must be rebuilt from the live database even when the on-disk
+      // snapshot's fence matches: the fence proves ownership, not ciphertext integrity.
+      await connection.flush();
       if (headerPath === undefined) throw new Error("this vault connection has no header path; cannot build a backup");
       const headerText = fs.readFileSync(headerPath, "utf8");
       // The bytes that are actually bundled, not the ones checkpoint() just

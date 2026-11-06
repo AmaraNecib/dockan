@@ -554,6 +554,82 @@ test("Ctrl+B in the sale-save click task cannot interrupt the pending sale", asy
   }
 });
 
+test("same-task Save and sidebar activation keep the saved sale visible", async ({ page }) => {
+  await signIn(page);
+  const categoryId = await seedCategoryId(page, "تصنيف حفظ وتنقل متزامن");
+  const itemName = `بيع-تنقل-متزامن-${Date.now()}`;
+  const item = await callRpc<Item, object>(page, "itemsCreateWithStock", {
+    name: itemName, categoryId, costPrice: 400, sellingPrice: 1000, stockOnHand: 2,
+  });
+  const invoicesBefore = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", {
+    limit: 1, offset: 0,
+  });
+
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await pick(page, itemName, "sale");
+  const saleUrl = page.url();
+  const save = page.getByTestId("sale-save");
+  await expect(save).toBeEnabled();
+  await expect(page.getByRole("link", { name: "المشتريات" })).toBeVisible();
+
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reached = () => {};
+  const requested = new Promise<void>((resolve) => { reached = resolve; });
+  let invoiceWrites = 0;
+  const routePattern = "**/api/rpc/invoicesCreate";
+  await page.route(routePattern, async (route) => {
+    invoiceWrites++;
+    reached();
+    await held;
+    const response = await route.fetch();
+    await route.fulfill({ response });
+  });
+
+  let saved: Promise<InvoiceDetail> | undefined;
+  try {
+    saved = actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.evaluate(() => {
+      const saveButton = document.querySelector<HTMLButtonElement>('[data-testid="sale-save"]');
+      const purchaseLink = Array.from(document.querySelectorAll<HTMLAnchorElement>("aside a"))
+        .find((link) => new URL(link.href).pathname === "/purchase");
+      if (saveButton === null) throw new Error("sale-save is missing");
+      if (purchaseLink === undefined) throw new Error("sidebar purchase link is missing");
+      // Both real controls are resolved before either click. No await or event-loop
+      // yield separates Save from same-tab router activation.
+      saveButton.click();
+      purchaseLink.click();
+    }));
+    void saved.catch(() => undefined);
+    await expect(page.getByTestId("sale-error")).toHaveCount(0);
+    await requested;
+
+    // Release and consume the real server response before checking settled UI.
+    release();
+    const invoice = await saved;
+    expect(invoice.kind).toBe("SALE");
+    expect(invoice.totalAmount).toBe(1000);
+    expect(invoiceWrites).toBe(1);
+    const persistedInvoice = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: invoice.id });
+    expect(persistedInvoice.id).toBe(invoice.id);
+    expect(persistedInvoice.totalAmount).toBe(1000);
+    const invoicesAfter = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", {
+      limit: 1, offset: 0,
+    });
+    expect(invoicesAfter.total).toBe(invoicesBefore.total + 1);
+    const stock = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+    expect(stock.items.find((row) => row.id === item.id)?.stockOnHand).toBe(1);
+
+    await expect(page).toHaveURL(saleUrl);
+    await expect(page.getByTestId("sale-saved")).toBeVisible();
+    await expect(page.getByTestId("sale-saved-number")).toContainText(invoice.invoiceNumber);
+  } finally {
+    release();
+    await saved?.catch(() => undefined);
+    await page.unroute(routePattern);
+  }
+});
+
 test("picker search does not mark an empty sale dirty", async ({ page }) => {
   await signIn(page);
   await page.keyboard.press("Control+n");

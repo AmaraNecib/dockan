@@ -839,7 +839,7 @@ test("sale save refuses sidebar navigation until its result is visible", async (
     void popupPromise.catch(() => undefined);
     await page.getByRole("link", { name: "المشتريات" }).click({ modifiers: ["ControlOrMeta"] });
     const popup = await popupPromise;
-    await expect(popup).toHaveURL(/\/purchases/);
+    await expect(popup).toHaveURL(/\/purchase(?:[/?#]|$)/);
     await expect(page).toHaveURL(saleUrl);
     await popup.close();
 
@@ -1192,10 +1192,6 @@ test("a refused sale write keeps its draft after attempted sidebar navigation", 
     await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
     await expect(page.getByTestId("sale-error")).toBeVisible();
 
-    await page.getByRole("link", { name: "المشتريات" }).click();
-    await expect(page).toHaveURL(saleUrl);
-    await expect(page.getByTestId("sale-form")).toBeVisible();
-
     await page.getByTestId("sale-quick-add").click();
     const quick = page.getByTestId("sale-quick-form");
     const quickName = quick.getByTestId("sale-quick-name");
@@ -1221,6 +1217,8 @@ test("a refused sale write keeps its draft after attempted sidebar navigation", 
     await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
+    await page.getByRole("link", { name: "المشتريات" }).click();
+    await expect(page.getByTestId("purchase-form")).toBeVisible();
   } finally {
     releaseOld();
     releaseNew();

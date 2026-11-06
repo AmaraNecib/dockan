@@ -826,29 +826,11 @@ pub struct RestoreConfirmation {
     confirmed: bool,
 }
 
-// A terminal journal from an earlier attempt is history, not this attempt's
-// verdict. The fresh sidecar must recover a pending intent before this is read.
-fn restore_completion(data_dir: &Path, previous: Option<&[u8]>, after: Option<&[u8]>) -> Result<serde_json::Value, String> {
-    use crate::backup_restore::FAILED;
-    let changed = after.is_some() && after != previous;
-    let intent = after.and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
-    let status = if changed {
-        match intent.as_ref().and_then(|v| v.get("state")).and_then(|v| v.as_str()) {
-            Some("committed") => "restored",
-            Some("rolled-back") => "rolled-back",
-            _ => return Err(FAILED.to_string()),
-        }
-    } else { "refused" };
-    let safety_file = intent.as_ref().filter(|_| changed).and_then(|v| v.get("safetyFile")).and_then(|v| v.as_str())
-        .filter(|name| name.starts_with("restore-") && name.ends_with(".dknvbak") && !name.contains(['/', '\\']));
-    Ok(serde_json::json!({"status":status, "safetyDirectory":data_dir.join("vault"), "safetyPath":safety_file.map(|name| data_dir.join("vault").join(name)), "selectedUnchanged":true}))
-}
-
 #[tauri::command]
 pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, session_token: String, confirmation: RestoreConfirmation) -> Result<(), String> {
     run_broker_task(move || {
         let RestoreConfirmation { selection_id, expected_sha256, credential, current_credential, confirmed } = confirmation;
-        use crate::backup_restore::{quiesce, run_worker, stop_child, FAILED};
+        use crate::backup_restore::{capture_restore_baseline, quiesce, run_restore_lifecycle_from_baseline, run_worker, stop_child, FAILED};
         let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
         let (config, pid) = restore_live(&app, &window, None)?;
         restore_authenticate(&config, &session_token)?;
@@ -859,31 +841,37 @@ pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, ses
         if preview.pointer("/preview/sha256") != Some(&serde_json::json!(expected_sha256)) { return Err("VAULT_BACKUP_CHANGED".to_string()); }
         run_worker(restore_worker_command(&config), &serde_json::json!({"action":"current","credential":current_credential}), CLEANUP_REPLY_TIMEOUT).map_err(|_| "VAULT_RESTORE_CURRENT_CREDENTIAL".to_string())?;
         restore_live(&app, &window, Some(pid))?;
+        let restore_baseline = capture_restore_baseline(&config.data_dir)?;
         // Never kill a process whose drain was not acknowledged. A timeout
         // can still have admitted work in flight; replacement must fail closed.
         quiesce(config.port, &config.boot_token, &session_token, CLEANUP_REPLY_TIMEOUT).map_err(|_| "VAULT_RESTORE_DRAIN_UNCONFIRMED".to_string())?;
         restore_live(&app, &window, Some(pid))?;
         state.0.lock().map_err(|_| FAILED)?.restore_selection = None;
-        let mut old = {
-            let mut slot = state.0.lock().map_err(|_| FAILED)?;
-            capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), Some(pid)).map_err(|_| FAILED)?;
-            slot.sidecar.take().ok_or(FAILED)?
-        };
-        if let Err(error) = stop_child(&mut old.child) {
-            install_sidecar(&mut state.0.lock().unwrap_or_else(|p| p.into_inner()), old);
-            return Err(error);
-        }
-        let intent_path = config.data_dir.join("vault/restore-intent.json");
-        let previous_intent = std::fs::read(&intent_path).ok();
-        let _result = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"install","path":path,"credential":credential,"currentCredential":current_credential,"expectedSha256":expected_sha256,"confirmed":true}), CLEANUP_REPLY_TIMEOUT);
-        if shutdown_began() || !crate::backup_restore::worker_stopped() { return Err(FAILED.to_string()); }
-        let sidecar = launch_verified_sidecar(&config)?;
-        if !install_sidecar(&mut *state.0.lock().map_err(|_| FAILED)?, sidecar) { return Err(FAILED.to_string()); }
-        // A helper may commit just before its reply is lost. Read the durable
-        // verdict AFTER fresh startup has recovered pending intents, never
-        // infer that rollback happened merely because the pipe failed.
-        let after = std::fs::read(&intent_path).ok();
-        let outcome = restore_completion(&config.data_dir, previous_intent.as_deref(), after.as_deref())?;
+        let ((), outcome) = run_restore_lifecycle_from_baseline(
+            &config.data_dir,
+            restore_baseline,
+            || {
+                let mut old = {
+                    let mut slot = state.0.lock().map_err(|_| FAILED)?;
+                    capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), Some(pid)).map_err(|_| FAILED)?;
+                    slot.sidecar.take().ok_or(FAILED)?
+                };
+                if let Err(error) = stop_child(&mut old.child) {
+                    install_sidecar(&mut state.0.lock().unwrap_or_else(|p| p.into_inner()), old);
+                    return Err(error);
+                }
+                Ok(())
+            },
+            || {
+                let _ = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"install","path":path,"credential":credential,"currentCredential":current_credential,"expectedSha256":expected_sha256,"confirmed":true}), CLEANUP_REPLY_TIMEOUT);
+            },
+            || {
+                if shutdown_began() || !crate::backup_restore::worker_stopped() { return Err(FAILED.to_string()); }
+                let sidecar = launch_verified_sidecar(&config)?;
+                if !install_sidecar(&mut *state.0.lock().map_err(|_| FAILED)?, sidecar) { return Err(FAILED.to_string()); }
+                Ok(())
+            },
+        )?;
         state.0.lock().map_err(|_| FAILED)?.restore_outcome = Some(outcome);
         if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
         window.navigate(setup_navigation_url(config.port, &config.boot_token).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
@@ -1129,9 +1117,10 @@ fn build_command(sidecar: &Path) -> Command {
  * plaintext database and skip the vault gate (the API also refuses the
  * opt-out when DOKAN_WEB_DIST is set; this is the first line of defence).
  */
-fn child_environment(data_dir: &Path, port_root: &Path, web_dist: &Path, port: u16, boot_token: &str) -> Vec<(String, String)> {
+pub(crate) fn child_environment(data_dir: &Path, port_root: &Path, web_dist: &Path, port: u16, boot_token: &str) -> Vec<(String, String)> {
     vec![
         ("DOKAN_DATA_DIR".to_string(), data_dir.to_string_lossy().into_owned()),
+        ("DOKAN_DB_PATH".to_string(), data_dir.join("dokan.db").to_string_lossy().into_owned()),
         ("DOKAN_PORT_ROOT".to_string(), port_root.to_string_lossy().into_owned()),
         ("DOKAN_WEB_DIST".to_string(), web_dist.to_string_lossy().into_owned()),
         ("DOKAN_PORT".to_string(), port.to_string()),
@@ -1296,6 +1285,7 @@ mod tests {
         );
         // a packaged child can never be told to skip the gate
         assert!(env.contains(&("DOKAN_VAULT".to_string(), "on".to_string())));
+        assert!(env.contains(&("DOKAN_DB_PATH".to_string(), Path::new("C:\\data").join("dokan.db").to_string_lossy().into_owned())));
         assert!(env.contains(&("DOKAN_PORT".to_string(), "4318".to_string())));
         // issue #141: the shell owns the credential prompt over the child's pipe
         assert!(env.contains(&("DOKAN_VAULT_STDIN".to_string(), "1".to_string())));
@@ -1918,17 +1908,17 @@ mod tests {
     #[test]
     fn backup_restore_outcome_does_not_reuse_a_previous_rollback_for_a_refusal() {
         let old = br#"{"state":"rolled-back","safetyFile":"restore-old.dknvbak"}"#;
-        let outcome = restore_completion(Path::new("C:/fixture"), Some(old), Some(old)).unwrap();
+        let outcome = crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(old)).unwrap();
         assert_eq!(outcome["status"], "refused");
         assert_eq!(outcome["safetyPath"], serde_json::Value::Null);
         let rolled = br#"{"state":"rolled-back","safetyFile":"restore-new.dknvbak"}"#;
-        let outcome = restore_completion(Path::new("C:/fixture"), Some(old), Some(rolled)).unwrap();
+        let outcome = crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(rolled)).unwrap();
         assert_eq!(outcome["status"], "rolled-back");
         assert!(outcome["safetyPath"].as_str().unwrap().contains("restore-new.dknvbak"));
         let committed = br#"{"state":"committed","safetyFile":"restore-new.dknvbak"}"#;
-        assert_eq!(restore_completion(Path::new("C:/fixture"), Some(old), Some(committed)).unwrap()["status"], "restored");
+        assert_eq!(crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(committed)).unwrap()["status"], "restored");
         let pending = br#"{"state":"pending","safetyFile":"restore-new.dknvbak"}"#;
-        assert!(restore_completion(Path::new("C:/fixture"), Some(old), Some(pending)).is_err());
+        assert!(crate::backup_restore::restore_completion(Path::new("C:/fixture"), Some(old), Some(pending)).is_err());
     }
 
     #[test]

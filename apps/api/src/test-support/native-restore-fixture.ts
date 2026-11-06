@@ -53,8 +53,9 @@ if (action === "create" || action === "create-webview") {
     if (safety === undefined) throw new Error("safety path required");
     await extractVaultBackup(fs.readFileSync(safety), dir);
   }
+  const credential = process.argv[action === "safety" ? 5 : 4] ?? passphrase;
   const vault = manager(dir);
-  await vault.unlock(passphrase);
+  await vault.unlock(credential);
   const conn = createEncryptedConnection({ vaultId: vault.metadata().vaultId, masterKey: vault.requireMasterKey(), snapshotPath: vault.snapshotPath });
   try {
     const store = createDrizzleStore(conn);

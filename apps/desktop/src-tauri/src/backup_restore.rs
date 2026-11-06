@@ -130,6 +130,64 @@ pub fn run_worker(
     result
 }
 
+/// Capture the durable journal state before quiescing or stopping the sidecar.
+/// A missing journal is a valid empty baseline; every other read error fails closed.
+pub fn capture_restore_baseline(data_dir: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
+    read_restore_baseline(data_dir, |path| std::fs::read(path))
+}
+
+fn read_restore_baseline(
+    data_dir: &std::path::Path,
+    read_journal: impl FnOnce(&std::path::Path) -> std::io::Result<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, String> {
+    match read_journal(&data_dir.join("vault/restore-intent.json")) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(FAILED.to_string()),
+    }
+}
+
+/// Run the production journal/stop/install/restart lifecycle from the command handler
+/// and non-UI process tests using the exact baseline captured before quiescence.
+pub fn run_restore_lifecycle_from_baseline<T>(
+    data_dir: &std::path::Path,
+    previous: Option<Vec<u8>>,
+    stop_current: impl FnOnce() -> Result<(), String>,
+    install: impl FnOnce(),
+    restart: impl FnOnce() -> Result<T, String>,
+) -> Result<(T, serde_json::Value), String> {
+    let path = data_dir.join("vault/restore-intent.json");
+    stop_current()?;
+    install();
+    let restarted = restart()?;
+    let after = match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(FAILED.to_string()),
+    };
+    let outcome = restore_completion(data_dir, previous.as_deref(), after.as_deref())?;
+    Ok((restarted, outcome))
+}
+
+pub fn restore_completion(
+    data_dir: &std::path::Path,
+    previous: Option<&[u8]>,
+    after: Option<&[u8]>,
+) -> Result<serde_json::Value, String> {
+    let changed = after.is_some() && after != previous;
+    let intent = after.and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+    let status = if changed {
+        match intent.as_ref().and_then(|v| v.get("state")).and_then(|v| v.as_str()) {
+            Some("committed") => "restored",
+            Some("rolled-back") => "rolled-back",
+            _ => return Err(FAILED.to_string()),
+        }
+    } else { "refused" };
+    let safety_file = intent.as_ref().filter(|_| changed).and_then(|v| v.get("safetyFile")).and_then(|v| v.as_str())
+        .filter(|name| name.starts_with("restore-") && name.ends_with(".dknvbak") && !name.contains(['/', '\\']));
+    Ok(serde_json::json!({"status":status, "safetyDirectory":data_dir.join("vault"), "safetyPath":safety_file.map(|name| data_dir.join("vault").join(name)), "selectedUnchanged":true}))
+}
+
 /// Drain only the exact native launch and its live authenticated session.
 pub fn quiesce(
     port: u16,
@@ -236,12 +294,23 @@ mod tests {
                 std::env::consts::EXE_SUFFIX
             ));
         let mut cmd = Command::new(binary);
+        let malicious_external_path = data.parent().unwrap().join("external-legacy.db");
         cmd.current_dir(api_root())
             .env("DOKAN_DATA_DIR", data)
-            .env("DOKAN_VAULT", "on");
+            .env("DOKAN_VAULT", "on")
+            .env("DOKAN_DB_PATH", &malicious_external_path);
+        let pinned = crate::desktop::child_environment(data, &data.join("run"), Path::new(""), 0, &"a".repeat(64));
+        for (key, value) in pinned {
+            if key == "DOKAN_DB_PATH" {
+                cmd.env(key, value);
+            }
+        }
         cmd
     }
     fn fixture_command(root: &Path, action: &str, extra: Option<&str>) -> serde_json::Value {
+        fixture_command_with_credential(root, action, extra, None)
+    }
+    fn fixture_command_with_credential(root: &Path, action: &str, extra: Option<&str>, credential: Option<&str>) -> serde_json::Value {
         let mut cmd = Command::new("bun");
         cmd.current_dir(api_root())
             .arg("src/test-support/native-restore-fixture.ts")
@@ -249,6 +318,9 @@ mod tests {
             .arg(action);
         if let Some(extra) = extra {
             cmd.arg(extra);
+        }
+        if let Some(credential) = credential {
+            cmd.arg(credential);
         }
         let out = cmd.output().unwrap();
         assert!(
@@ -259,6 +331,9 @@ mod tests {
         serde_json::from_slice(&out.stdout).unwrap()
     }
     fn served(data: &Path, port: u16) -> (LiveChild, String) {
+        served_as(data, port, "native fixture passphrase")
+    }
+    fn served_as(data: &Path, port: u16, passphrase: &str) -> (LiveChild, String) {
         let mut cmd = api_command(data);
         cmd.env("DOKAN_PORT", port.to_string())
             .env("DOKAN_PORT_ROOT", data.join("run"))
@@ -268,21 +343,48 @@ mod tests {
             .stdout(Stdio::piped());
         let mut child = LiveChild(cmd.spawn().unwrap());
         let mut input = child.0.stdin.take().unwrap();
-        input
-            .write_all(b"{\"action\":\"unlock\",\"passphrase\":\"native fixture passphrase\"}\n")
-            .unwrap();
-        input.flush().unwrap();
         let output = child.0.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let mut line = String::new();
-            let _ = BufReader::new(output).read_line(&mut line);
-            let _ = tx.send(line);
+            let mut reader = BufReader::new(output);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 { break; }
+                if tx.send(line).is_err() { break; }
+            }
         });
-        let line = rx.recv_timeout(Duration::from_secs(20)).unwrap();
-        let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+        input.write_all(b"{\"action\":\"status\"}\n").unwrap();
+        input.flush().unwrap();
+        let locked: serde_json::Value = serde_json::from_str(&rx.recv_timeout(Duration::from_secs(20)).unwrap()).unwrap();
+        assert_eq!(locked["status"]["unlocked"], false, "fresh sidecar must start locked: {locked}");
+        let request = serde_json::json!({"action":"unlock","passphrase":passphrase}).to_string() + "\n";
+        input.write_all(request.as_bytes()).unwrap();
+        input.flush().unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&rx.recv_timeout(Duration::from_secs(20)).unwrap()).unwrap();
         assert_eq!(reply["ok"], true, "{reply}");
         (child, reply["sessionToken"].as_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn unreadable_prior_journal_fails_before_stop_and_never_classifies_old_terminal_state() {
+        let old_terminal = br#"{"state":"committed","safetyFile":"restore-old.dknvbak"}"#;
+        let stopped = std::cell::Cell::new(false);
+        let installed = std::cell::Cell::new(false);
+        let restarted = std::cell::Cell::new(false);
+        let result = read_restore_baseline(Path::new("C:/fixture"), |_| {
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(old_terminal).unwrap()["state"], "committed");
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fixture unreadable"))
+        }).and_then(|baseline| run_restore_lifecycle_from_baseline(
+            Path::new("C:/fixture"), baseline,
+            || { stopped.set(true); Ok(()) },
+            || installed.set(true),
+            || { restarted.set(true); Ok(()) },
+        ));
+        assert!(result.is_err(), "an unreadable baseline must not emit a restore verdict");
+        assert!(!stopped.get(), "the current sidecar must remain live when its journal baseline is untrusted");
+        assert!(!installed.get(), "a refused attempt must not run the installer");
+        assert!(!restarted.get(), "a refused attempt must not replace the live sidecar");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(old_terminal).unwrap()["state"], "committed");
     }
 
     #[test]
@@ -300,6 +402,12 @@ mod tests {
         fixture_command(&root.0, "create", None);
         let data = root.0.join("current");
         let chosen = root.0.join("selected.dknvbak");
+        let external_db = root.0.join("external-legacy.db");
+        let external_wal = root.0.join("external-legacy.db-wal");
+        let external_shm = root.0.join("external-legacy.db-shm");
+        std::fs::write(&external_db, b"external database sentinel").unwrap();
+        std::fs::write(&external_wal, b"external wal sentinel").unwrap();
+        std::fs::write(&external_shm, b"external shm sentinel").unwrap();
         let credential = serde_json::json!({"passphrase":"native fixture passphrase"});
         let preview = run_worker(
             api_command(&data),
@@ -344,6 +452,76 @@ mod tests {
             quiesce(port, &"a".repeat(64), &old_session, Duration::from_secs(5)).is_err(),
             "stale session must be refused after restart"
         );
+        assert_eq!(std::fs::read(&external_db).unwrap(), b"external database sentinel");
+        assert_eq!(std::fs::read(&external_wal).unwrap(), b"external wal sentinel");
+        assert_eq!(std::fs::read(&external_shm).unwrap(), b"external shm sentinel");
+    }
+
+    #[test]
+    fn shared_restore_lifecycle_reopens_success_and_migration_rollback_with_pinned_db_path() {
+        let _test = TEST_GATE.lock().unwrap();
+        let root = Fixture(std::env::temp_dir().join(format!(
+            "dokan-native-lifecycle-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        std::fs::create_dir_all(&root.0).unwrap();
+        fixture_command(&root.0, "create-webview", None);
+        let data = root.0.join("current");
+        let external_db = root.0.join("external-legacy.db");
+        let external_wal = root.0.join("external-legacy.db-wal");
+        let external_shm = root.0.join("external-legacy.db-shm");
+        std::fs::write(&external_db, b"external database sentinel").unwrap();
+        std::fs::write(&external_wal, b"external wal sentinel").unwrap();
+        std::fs::write(&external_shm, b"external shm sentinel").unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let (mut old, old_session) = served(&data, port);
+        let original_credential = serde_json::json!({"passphrase":"native fixture passphrase"});
+        let incoming_credential = serde_json::json!({"passphrase":"incoming native fixture passphrase"});
+        let selected = root.0.join("selected.dknvbak");
+        let success_preview = run_worker(api_command(&data), &serde_json::json!({"action":"preview","path":selected,"credential":incoming_credential}), Duration::from_secs(20)).unwrap();
+        let success_request = serde_json::json!({"action":"install","path":selected,"credential":incoming_credential,"currentCredential":original_credential,"confirmed":true,"expectedSha256":success_preview["preview"]["sha256"]});
+        let success_worker_ok = std::cell::Cell::new(false);
+        let ((mut restored_sidecar, restored_session), restored) = run_restore_lifecycle_from_baseline(
+            &data,
+            capture_restore_baseline(&data).unwrap(),
+            || { quiesce(port, &"a".repeat(64), &old_session, Duration::from_secs(20))?; stop_child(&mut old.0) },
+            || success_worker_ok.set(run_worker(api_command(&data), &success_request, Duration::from_secs(20)).is_ok()),
+            || Ok(served_as(&data, port, "incoming native fixture passphrase")),
+        ).unwrap();
+        assert!(success_worker_ok.get(), "the committed replacement must be accepted by the real sidecar worker");
+        assert_eq!(restored["status"], "restored");
+        let restored_records = fixture_command_with_credential(&root.0, "records", None, Some("incoming native fixture passphrase"));
+        assert!(restored_records["names"].as_array().unwrap().contains(&serde_json::json!("Restored native record")));
+        assert!(!restored_records["names"].as_array().unwrap().contains(&serde_json::json!("Original native record")));
+        let restored_safety = fixture_command(&root.0, "safety", restored["safetyPath"].as_str());
+        assert!(restored_safety["names"].as_array().unwrap().contains(&serde_json::json!("Original native record")));
+        assert_eq!(std::fs::read(&external_db).unwrap(), b"external database sentinel");
+        assert_eq!(std::fs::read(&external_wal).unwrap(), b"external wal sentinel");
+        assert_eq!(std::fs::read(&external_shm).unwrap(), b"external shm sentinel");
+        assert!(quiesce(port, &"a".repeat(64), &old_session, Duration::from_secs(3)).is_err(), "old session must not operate after success restart");
+
+        let broken = root.0.join("broken.dknvbak");
+        let failure_preview = run_worker(api_command(&data), &serde_json::json!({"action":"preview","path":broken,"credential":incoming_credential}), Duration::from_secs(20)).unwrap();
+        let failure_request = serde_json::json!({"action":"install","path":broken,"credential":incoming_credential,"currentCredential":incoming_credential,"confirmed":true,"expectedSha256":failure_preview["preview"]["sha256"]});
+        let failure_worker_ok = std::cell::Cell::new(true);
+        let ((rolled_back_sidecar, _), rolled_back) = run_restore_lifecycle_from_baseline(
+            &data,
+            capture_restore_baseline(&data).unwrap(),
+            || { quiesce(port, &"a".repeat(64), &restored_session, Duration::from_secs(20))?; stop_child(&mut restored_sidecar.0) },
+            || failure_worker_ok.set(run_worker(api_command(&data), &failure_request, Duration::from_secs(20)).is_ok()),
+            || Ok(served_as(&data, port, "incoming native fixture passphrase")),
+        ).unwrap();
+        assert!(!failure_worker_ok.get(), "the broken incoming schema must fail its real migration");
+        assert_eq!(rolled_back["status"], "rolled-back");
+        let original_after_failure = fixture_command_with_credential(&root.0, "records", None, Some("incoming native fixture passphrase"));
+        assert!(original_after_failure["names"].as_array().unwrap().contains(&serde_json::json!("Restored native record")));
+        let failure_safety = fixture_command_with_credential(&root.0, "safety", rolled_back["safetyPath"].as_str(), Some("incoming native fixture passphrase"));
+        assert!(failure_safety["names"].as_array().unwrap().contains(&serde_json::json!("Restored native record")));
+        assert_eq!(std::fs::read(&external_db).unwrap(), b"external database sentinel");
+        assert_eq!(std::fs::read(&external_wal).unwrap(), b"external wal sentinel");
+        assert_eq!(std::fs::read(&external_shm).unwrap(), b"external shm sentinel");
+        drop(rolled_back_sidecar);
     }
 
     #[test]

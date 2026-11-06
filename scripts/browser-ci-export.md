@@ -7,8 +7,10 @@ bun scripts/browser-ci-export.ts \
   --repo AmaraNecib/dockan \
   --archive "$HOME/.local/share/dokan/browser-ci/runs.jsonl" \
   --scope full \
-  --run 42246263388
+  --run 42246263388 --attempt 1
 ```
+
+Use `--attempt NUMBER` to export an earlier attempt; both browser job metadata and the artifact name use that attempt. Without it, the latest attempt is selected. When several `--run` arguments are provided, the selected attempt applies to each. Repository names are compared case-insensitively and stored lowercase in archive keys.
 
 Choose an explicit absolute archive path. The command uses existing `gh` authentication to read run metadata and download the exact `playwright-e2e-manifest-<run-id>-<attempt>` artifact. It does not start Actions or upload data. Scope is caller supplied. Use `selected` with repeated `--selected-file tests/e2e/example.spec.ts` only when the exact file list is known; otherwise use `unknown`. Never infer full scope from counts or a green job.
 

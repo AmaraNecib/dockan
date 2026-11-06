@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createExportRecord, mergeArchive, writeArchiveSafely, type ExportRecord } from "./browser-ci-export";
+import { createExportRecord, mergeArchive, readRunAttempt, writeArchiveSafely, type ExportRecord } from "./browser-ci-export";
 
 const tmp: string[] = [];
 afterEach(() => { for (const dir of tmp.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -21,6 +21,20 @@ describe("browser CI durable export", () => {
   test("binds the manifest to repository, run and attempt; mismatch is unavailable", () => {
     expect(() => record(manifest({ provenance: { ...manifest().provenance, attempt: 1 } }))).toThrow(/attempt/i);
     expect(() => record(manifest({ provenance: { ...manifest().provenance, repository: "other/repo" } }))).toThrow(/repository/i);
+  });
+  test("normalizes repository capitalization for binding and archive identity", () => {
+    const canonical = record(manifest({ provenance: { ...manifest().provenance, repository: "OWNER/Repo" } }));
+    expect(canonical).toMatchObject({ repository: "owner/repo", complete: true });
+    expect(mergeArchive([{ ...canonical, repository: "Owner/REPO" }], [canonical])).toEqual([canonical]);
+  });
+  test("selects an earlier attempt for metadata and artifact identity", () => {
+    const calls: string[][] = [];
+    const metadata = { databaseId: 12, attempt: 1, event: "pull_request", headSha: "a".repeat(40), status: "completed", conclusion: "success", jobs: [] };
+    const earlier = readRunAttempt("owner/repo", 12, 1, (args) => { calls.push(args); return JSON.stringify(metadata); });
+    expect(earlier).toMatchObject({ attempt: 1, databaseId: 12 });
+    expect(calls).toEqual([["run", "view", "12", "--repo", "owner/repo", "--attempt", "1", "--json", "databaseId,attempt,event,headSha,status,conclusion,jobs"]]);
+    expect(() => readRunAttempt("owner/repo", 12, 2, () => JSON.stringify(metadata))).toThrow(/attempt/u);
+    expect(() => readRunAttempt("owner/repo", 12, 0, () => JSON.stringify(metadata))).toThrow(/attempt/u);
   });
   test("keeps incomplete evidence explicit with null measurements", () => {
     const value = record(manifest({ complete: false, phase: "interrupted" }));

@@ -49,7 +49,7 @@ export function createExportRecord(input: CreateInput): ExportRecord {
   const manifest = parsed.data;
   if (String(manifest.provenance.runId) !== String(input.runId)) throw new Error("manifest run ID mismatch");
   if (String(manifest.provenance.attempt) !== String(input.attempt)) throw new Error("manifest attempt mismatch");
-  if (manifest.provenance.repository !== input.repository) throw new Error("manifest repository mismatch");
+  if (manifest.provenance.repository.toLowerCase() !== input.repository.toLowerCase()) throw new Error("manifest repository mismatch");
   const inventory = manifest.inventory;
   if (inventory.some((item) => !safeFile(item.file))) throw new Error("manifest contains unsafe or invalid file path");
   if (input.scope === "selected" && (input.selectedFiles.length === 0 || input.selectedFiles.some((file) => !safeFile(file)))) throw new Error("selected scope requires a safe file set");
@@ -80,7 +80,7 @@ export function createExportRecord(input: CreateInput): ExportRecord {
   const duration = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs ? (endMs - startMs) / 1000 : null;
   const p = manifest.provenance;
   return {
-    schemaVersion: 1, repository: input.repository, runId: input.runId, attempt: input.attempt, browserJobId: input.jobId, event: input.event,
+    schemaVersion: 1, repository: input.repository.toLowerCase(), runId: input.runId, attempt: input.attempt, browserJobId: input.jobId, event: input.event,
     workflowHeadSha: sha(input.workflowHeadSha), checkoutSha: sha(p.checkoutSha), checkoutTree: sha(p.checkoutTree), jobConclusion: input.jobConclusion,
     jobStartedAt: Number.isFinite(startMs) ? input.startedAt : null, jobCompletedAt: Number.isFinite(endMs) ? input.completedAt : null, jobDurationSeconds: duration,
     scope: input.scope, selectedFiles: input.scope === "selected" ? [...new Set(input.selectedFiles)].sort() : [], evidence: complete ? "complete" : "unavailable",
@@ -91,7 +91,7 @@ export function createExportRecord(input: CreateInput): ExportRecord {
     artifactDigest: input.artifactDigest.toLowerCase(), exportedAt: input.exportedAt,
   };
 }
-function key(row: ExportRecord): string { return JSON.stringify([row.repository, row.runId, row.attempt, row.browserJobId]); }
+function key(row: ExportRecord): string { return JSON.stringify([row.repository.toLowerCase(), row.runId, row.attempt, row.browserJobId]); }
 export function mergeArchive(existing: ExportRecord[], incoming: ExportRecord[]): ExportRecord[] {
   const rows = new Map(existing.map((row) => [key(row), row]));
   for (const row of incoming) {
@@ -99,7 +99,7 @@ export function mergeArchive(existing: ExportRecord[], incoming: ExportRecord[])
     if (old && old.artifactDigest !== row.artifactDigest) throw new Error(`artifact digest conflict for ${key(row)}`);
     if (!old) rows.set(key(row), row);
   }
-  return [...rows.values()].sort((a, b) => key(a).localeCompare(key(b)));
+  return [...rows.values()].map((row) => ({ ...row, repository: row.repository.toLowerCase() })).sort((a, b) => key(a).localeCompare(key(b)));
 }
 function assertSafePath(file: string): void {
   const absolute = path.resolve(file); const parsed = path.parse(absolute); const segments = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
@@ -140,9 +140,16 @@ function gh(args: string[]): string {
   if (result.error || result.status !== 0) throw new Error("GitHub read failed or timed out; no archive was changed");
   return result.stdout;
 }
-function exportRun(repo: string, runId: number, archive: string, scope: "full" | "selected" | "unknown", selectedFiles: string[]): void {
-  const info = z.object({ databaseId: z.number().int(), attempt: z.number().int().positive(), event: z.string(), headSha: z.string(), status: z.string(), conclusion: z.string().nullable(), jobs: z.array(z.object({ databaseId: z.number().int(), name: z.string(), conclusion: z.string().nullable(), startedAt: z.string(), completedAt: z.string() })) }).parse(JSON.parse(gh(["run", "view", String(runId), "--repo", repo, "--json", "databaseId,attempt,event,headSha,status,conclusion,jobs"])));
+export function readRunAttempt(repo: string, runId: number, attempt?: number, read: (args: string[]) => string = gh) {
+  if (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt < 1)) throw new Error("attempt must be a positive integer");
+  const args = ["run", "view", String(runId), "--repo", repo, ...(attempt === undefined ? [] : ["--attempt", String(attempt)]), "--json", "databaseId,attempt,event,headSha,status,conclusion,jobs"];
+  const info = z.object({ databaseId: z.number().int(), attempt: z.number().int().positive(), event: z.string(), headSha: z.string(), status: z.string(), conclusion: z.string().nullable(), jobs: z.array(z.object({ databaseId: z.number().int(), name: z.string(), conclusion: z.string().nullable(), startedAt: z.string(), completedAt: z.string() })) }).parse(JSON.parse(read(args)));
   if (info.databaseId !== runId) throw new Error("run metadata did not match requested run");
+  if (attempt !== undefined && info.attempt !== attempt) throw new Error("run metadata did not match requested attempt");
+  return info;
+}
+function exportRun(repo: string, runId: number, archive: string, scope: "full" | "selected" | "unknown", selectedFiles: string[], attempt?: number): void {
+  const info = readRunAttempt(repo, runId, attempt);
   const jobs = info.jobs.filter((job) => /^playwright e2e$/iu.test(job.name));
   if (jobs.length !== 1) throw new Error("browser job missing or ambiguous; no archive was changed");
   const job = jobs[0]; if (!job) throw new Error("browser job missing; no archive was changed"); const artifact = `playwright-e2e-manifest-${runId}-${info.attempt}`;
@@ -163,12 +170,12 @@ function exportRun(repo: string, runId: number, archive: string, scope: "full" |
 }
 function main(): void {
   const argv = process.argv.slice(2);
-  if (argv.includes("--help")) { console.log("Usage: bun scripts/browser-ci-export.ts --repo owner/name --archive /explicit/path.jsonl --scope full|selected|unknown [--selected-file PATH ...] --run ID [--run ID ...]\nManual export only. Missed exports are unrecoverable after five-day artifact expiry. No automatic coverage claim."); return; }
-  let repo = ""; let archive = ""; let scope: "full" | "selected" | "unknown" = "unknown"; const selectedFiles: string[] = []; const runs: number[] = [];
-  for (let i = 0; i < argv.length; i++) { const option = argv[i]; const value = argv[++i]; if (!value) throw new Error("missing option value"); if (option === "--repo") repo = value; else if (option === "--archive") archive = value; else if (option === "--run") runs.push(Number(value)); else if (option === "--scope") { const parsedScope = z.enum(["full", "selected", "unknown"]).safeParse(value); if (!parsedScope.success) throw new Error("scope must be full, selected or unknown"); scope = parsedScope.data; } else if (option === "--selected-file") selectedFiles.push(value); else throw new Error(`unknown option or invalid value ${option}`); }
+  if (argv.includes("--help")) { console.log("Usage: bun scripts/browser-ci-export.ts --repo owner/name --archive /explicit/path.jsonl --scope full|selected|unknown [--selected-file PATH ...] --run ID [--run ID ...] [--attempt NUMBER]\nManual export only. Missed exports are unrecoverable after five-day artifact expiry. No automatic coverage claim."); return; }
+  let repo = ""; let archive = ""; let scope: "full" | "selected" | "unknown" = "unknown"; let attempt: number | undefined; const selectedFiles: string[] = []; const runs: number[] = [];
+  for (let i = 0; i < argv.length; i++) { const option = argv[i]; const value = argv[++i]; if (!value) throw new Error("missing option value"); if (option === "--repo") repo = value; else if (option === "--archive") archive = value; else if (option === "--run") runs.push(Number(value)); else if (option === "--attempt") { if (attempt !== undefined) throw new Error("provide --attempt only once"); attempt = Number(value); if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error("attempt must be a positive integer"); } else if (option === "--scope") { const parsedScope = z.enum(["full", "selected", "unknown"]).safeParse(value); if (!parsedScope.success) throw new Error("scope must be full, selected or unknown"); scope = parsedScope.data; } else if (option === "--selected-file") selectedFiles.push(value); else throw new Error(`unknown option or invalid value ${option}`); }
   if (!safeRepo(repo) || !path.isAbsolute(archive) || !runs.length || runs.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("provide --repo owner/name, an explicit absolute --archive path and positive --run IDs");
   const requestedScope = z.enum(["full", "selected", "unknown"]).parse(scope);
   if ((requestedScope === "selected") !== (selectedFiles.length > 0) || (requestedScope !== "selected" && selectedFiles.length)) throw new Error("selected scope requires one or more --selected-file values; other scopes forbid them");
-  for (const run of runs) exportRun(repo, run, archive, requestedScope, selectedFiles);
+  for (const run of runs) exportRun(repo, run, archive, requestedScope, selectedFiles, attempt);
 }
 if (import.meta.main) { try { main(); } catch (error) { console.error(String(error)); process.exitCode = 1; } }

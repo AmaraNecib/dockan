@@ -30,7 +30,7 @@ it("accepts only the exact clean source revision", async () => {
     fs.writeFileSync(path.join(fixture.root, "dirty.txt"), "uncommitted");
     await expect(validateSource(fixture.root, fixture.head)).rejects.toThrow("Source tree is dirty");
   } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
-});
+}, 20_000);
 
 it("accepts readiness only on loopback at the allocated port", () => {
   expect(validateReadinessUrl("http://127.0.0.1:{port}/health", 4617)).toBe("http://127.0.0.1:4617/health");

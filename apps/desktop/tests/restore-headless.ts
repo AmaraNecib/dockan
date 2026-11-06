@@ -7,7 +7,8 @@ import { chromium, expect, type BrowserContextOptions } from "@playwright/test";
 import { z } from "zod";
 import type { NativeRestoreReply, RestoreInvokeArgs } from "../../web/src/lib/backup-restore";
 import type { BrokerReply, BrokerInvokeArgs } from "../../web/src/lib/vault-broker";
-import { createServer } from "vite";
+// Vite belongs to the web workspace, not the desktop workspace.
+import { createServer } from "../../web/node_modules/vite/dist/node/index.js";
 
 const repo = path.resolve(import.meta.dir, "../../..");
 if (process.cwd() !== repo) throw new Error("Run from the assigned repository root");

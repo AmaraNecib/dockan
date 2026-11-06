@@ -6,7 +6,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, buildEncryptedSnapshot, createEncryptedConnection, readLegacyDatabaseImage } from "./encrypted-connection";
-import { MAX_SNAPSHOT_STAMP_BYTES, VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, readSnapshotFence } from "../lib/vault/format";
+import { MAX_SNAPSHOT_STAMP_BYTES, VAULT_SNAPSHOT_LEGACY_VERSION, VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, parseVaultHeader, readSnapshotFence } from "../lib/vault/format";
+import { VaultCore } from "../lib/vault/core";
+import { extractVaultBackup, readVaultBackupBundle } from "../lib/vault/backup";
 
 // Every test opens an encrypted connection and writes a snapshot.
 setHeavyDefaultTimeout();
@@ -32,6 +34,54 @@ function freshConnection(key: Uint8Array = masterKey) {
 }
 
 describe("encrypted connection", () => {
+  it("exports and reopens the first backup before any snapshot exists", async () => {
+    const headerPath = path.join(dir, "vault.json");
+    let headerText: string | undefined;
+    const { core, masterKey: createdKey } = await VaultCore.create(
+      {
+        read: () => headerText,
+        write: async (text) => {
+          headerText = text;
+          fs.writeFileSync(headerPath, text);
+        },
+      },
+      "correct horse battery",
+      { kdf: { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 } },
+    );
+    const conn = createEncryptedConnection({
+      vaultId: core.metadata().vaultId,
+      masterKey: createdKey,
+      snapshotPath: snapshotPath(),
+      headerPath,
+      fresh: true,
+    });
+    conn.raw.exec("CREATE TABLE first_export(value TEXT); INSERT INTO first_export VALUES ('first-run-data')");
+    conn.markDirty();
+    const backupPath = path.join(dir, "first.dknvbak");
+
+    await conn.writeBackupTo(backupPath);
+
+    const bundleBytes = fs.readFileSync(backupPath);
+    expect(readVaultBackupBundle(bundleBytes)).toBeDefined();
+    const restoredDir = path.join(dir, "restored");
+    const restored = await extractVaultBackup(bundleBytes, restoredDir);
+    const restoredHeader = VaultCore.open({
+      read: () => fs.readFileSync(restored.headerPath, "utf8"),
+      write: async () => { throw new Error("read-only restored header"); },
+    });
+    if (restoredHeader === undefined) throw new Error("backup did not contain a vault header");
+    const restoredKey = restoredHeader.unlockPassphrase("correct horse battery");
+    const reopened = createEncryptedConnection({
+      vaultId: parseVaultHeader(fs.readFileSync(restored.headerPath, "utf8")).vaultId,
+      masterKey: restoredKey,
+      snapshotPath: restored.snapshotPath,
+      headerPath: restored.headerPath,
+    });
+    expect(reopened.raw.query("SELECT value FROM first_export").all()).toEqual([{ value: "first-run-data" }]);
+    await reopened.close();
+    await conn.close();
+  });
+
   it("refuses to export a backup when the current header is malformed", async () => {
     const headerPath = path.join(dir, "vault.json");
     const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), headerPath, fresh: true });
@@ -1056,6 +1106,31 @@ describe("snapshot fence (#280)", () => {
       spy.mockRestore();
     }
     await conn.close();
+  });
+
+  it("does not overwrite a foreign fence that appears after absent-snapshot preflight", async () => {
+    const foreign = buildEncryptedSnapshot(masterKey, vaultId, serializedImage(["other holder"]), tokenA);
+    const connection = createEncryptedConnection({
+      vaultId,
+      masterKey,
+      snapshotPath: snapshotPath(),
+      headerPath: path.join(dir, "vault.json"),
+      fresh: true,
+      writeStamp: () => tokenB,
+      writeGuard: () => {
+        fs.writeFileSync(snapshotPath(), foreign);
+        throw new GuardRefusedError("the lock was lost before the snapshot write");
+      },
+    });
+    connection.raw.exec("CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('mine')");
+    connection.markDirty();
+
+    await expect(connection.writeBackupTo(path.join(dir, "raced.dknvbak"))).rejects.toThrow(GuardRefusedError);
+
+    expect(fs.readFileSync(snapshotPath()).equals(foreign)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "raced.dknvbak"))).toBe(false);
+    await expect(connection.close()).rejects.toThrow(GuardRefusedError);
+    expect(fs.readFileSync(snapshotPath()).equals(foreign)).toBe(true);
   });
 
   it("refuses to bundle a fenced snapshot when this connection has no stamp to check it against (#307)", async () => {

@@ -9,6 +9,7 @@ import * as schema from "./schema";
 import {
   SnapshotPersistenceError,
   readVerifiedSnapshot,
+  readVerifiedSnapshotIfPresent,
   sealSnapshot,
   sleepSync,
   writeSnapshot,
@@ -717,7 +718,7 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     async writeBackupTo(destPath: string): Promise<void> {
       // Refuse a fenced snapshot we cannot prove we own before flush can replace
       // it with this connection's unstamped legacy envelope.
-      readVerifiedSnapshot(
+      readVerifiedSnapshotIfPresent(
         snapshotPath,
         connectionStamp,
         "refusing to bundle a snapshot that is not this holder's",

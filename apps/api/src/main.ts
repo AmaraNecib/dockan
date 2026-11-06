@@ -28,6 +28,9 @@ import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { readyHandlerFor } from "./lib/vault/boot-loss";
 import { recoverVaultReplacement } from "./lib/vault/restore";
+import { runRestoreWorker } from "./lib/vault/restore-worker";
+import { VaultWriterDrain } from "./lib/vault/writer-drain";
+import { tokenMatches } from "./lib/boot-token";
 import { ReclaimRetry } from "./lib/vault/reclaim-retry";
 import { answerReclaimRetry } from "./lib/vault/refused-request";
 import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, holderToken, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnreadableError, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
@@ -50,6 +53,14 @@ import type { StorePort } from "./store/port";
 
 
 const config = createAppConfig();
+
+// A native-owned one-shot process, before logger/manager/port/server creation.
+// Preview is read-only; install acquires its own lock after the old child stops.
+if (process.argv.includes("--vault-restore-worker")) {
+  process.exit(await runRestoreWorker(config.dataDir));
+}
+const writerDrain = new VaultWriterDrain();
+let brokerActive = false;
 
 // A fresh install's app-data folder does not exist yet. Nothing else creates
 // it (backup copy targets <dataDir>/backups, the logger makes <dataDir>/logs),
@@ -393,12 +404,12 @@ let vaultStoreForBackup: StorePort | undefined;
 
 /** The first daily backup needs the committed header, so it runs post-commit. */
 function startExternalBackup(store: StorePort, conn: Connection): void {
-  if (conn.writeBackupTo === undefined || readyHandlerFor(lockLost) !== "live") return;
-  void createExternalBackup({
+  if (conn.writeBackupTo === undefined || readyHandlerFor(lockLost) !== "live" || writerDrain.closed) return;
+  void writerDrain.run(() => createExternalBackup({
     store,
     dataDir: config.dataDir,
     writeGuard: requireHeldLock(vaultLock),
-  }).then((result) => {
+  })).then((result) => {
     if (result.lastError !== null) logger.warn("SERVER_ERROR", `external backup failed: ${result.lastError}`);
   }).catch((error) => {
     if (error instanceof SnapshotPersistenceError) {
@@ -981,6 +992,34 @@ function openVaultManager(): VaultManager {
   return manager;
 }
 
+const serveTrackedRequest: RequestHandler = async (request, env) => {
+  if (new URL(request.url).pathname === "/api/vault/quiesce" && request.method === "POST") {
+    // Native-only, authenticated and tied to this exact launched process. A
+    // renderer session alone must not stop another launch or a development API.
+    if (!config.vaultBroker || config.bootToken === undefined
+      || !tokenMatches(request.headers.get("x-dokan-boot-token"), config.bootToken)
+      || !vaultManager?.sessionMatches(request.headers.get("x-vault-session"))) {
+      return Response.json({ ok: false }, { status: 401 });
+    }
+    // A broker bootstrap/cleanup must finish before draining: it can create a
+    // connection or header after an HTTP request has already returned.
+    if (brokerActive || !appReady || lockLost) return Response.json({ ok: false }, { status: 409 });
+    try {
+      await writerDrain.stop(async () => {
+        requireHeldLock(vaultLock)();
+        await activeConnection?.close();
+        vaultManager?.close();
+        requireHeldLock(vaultLock)();
+      });
+      return Response.json({ ok: true });
+    } catch {
+      return Response.json({ ok: false }, { status: 500 });
+    }
+  }
+  if (writerDrain.closed) return Response.json({ error: { code: "VAULT_STOPPING" } }, { status: 503 });
+  return writerDrain.run(() => activeHandler(request, env));
+};
+
 function startServer(): void {
   // The ONE place the canonical port record goes out (#277). It waits for the
   // two facts it needs — this instance may be pointed at, and the listener is
@@ -992,7 +1031,7 @@ function startServer(): void {
   // about.
   void publication.run(publishOwnedPort);
   server = serve(
-    { fetch: (request, env) => activeHandler(request, env), port, hostname: config.host },
+    { fetch: serveTrackedRequest, port, hostname: config.host },
     async (info) => {
       // the listener is up: the canonical record may go out now, if this
       // instance may be pointed at (Greptile issue 1)
@@ -1180,7 +1219,8 @@ if (config.vault === "on") {
   }
   const manager = vaultManager;
   if (config.vaultBroker && manager !== undefined) {
-    await runVaultBroker(manager);
+    brokerActive = true;
+    try { await runVaultBroker(manager); } finally { brokerActive = false; }
   }
 } else {
   logger.warn(

@@ -35,6 +35,7 @@ async function fixture(dir: string, name: string, passphrase: string, oldSchema 
   conn.raw.exec(`INSERT INTO user (id, name, created_at, updated_at) VALUES ('owner', 'Fixture owner', 1, 1);
     INSERT INTO session (id, expiresAt, token, created_at, updated_at, userId) VALUES ('session', 9999999999999, 'stale-token', 1, 1, 'owner')`);
   conn.markDirty();
+  await store.setSetting("adminUserId", "owner");
   if (oldSchema) {
     conn.raw.exec("PRAGMA user_version = 0");
     conn.markDirty();
@@ -106,8 +107,8 @@ async function interrupt(current: string, bundle: Buffer, step: RestoreStep) {
   const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   expect({ exit, stderr }).toEqual({ exit: 77, stderr: "" });
 }
-async function bootAndStop(dir: string) {
-  const port = await new Promise<number>((resolve) => {
+async function freePort() {
+  return await new Promise<number>((resolve) => {
     const server = net.createServer();
     server.listen(0, "127.0.0.1", () => {
       // SAFETY: listening on a TCP port returns AddressInfo, not a pipe name.
@@ -115,6 +116,9 @@ async function bootAndStop(dir: string) {
       server.close(() => resolve(address.port));
     });
   });
+}
+async function bootAndStop(dir: string) {
+  const port = await freePort();
   const child = Bun.spawn([process.execPath, "src/main.ts"], {
     cwd: path.resolve(import.meta.dir, "../../.."),
     env: { ...process.env, DOKAN_DATA_DIR: dir, DOKAN_PORT_ROOT: path.join(dir, "run"), DOKAN_PORT: String(port), DOKAN_VAULT: "on", DOKAN_VAULT_STDIN: "1" },
@@ -167,6 +171,121 @@ it("retains a retryable intent when rollback itself is interrupted between the e
   }
   await bootAndStop(current);
   expect((await names(current, CURRENT.passphrase)).names).toContain("Original record");
+}, 15000);
+
+it("native quiescence refuses unauthorized stops, closes the served vault, and refuses stale writers", async () => {
+  const current = temp();
+  await fixture(current, "Original record", CURRENT.passphrase);
+  const incoming = await fixture(temp(), "Replacement record", INCOMING.passphrase);
+  const port = await freePort();
+  const bootToken = "a".repeat(64);
+  const child = Bun.spawn([process.execPath, "src/main.ts"], {
+    cwd: path.resolve(import.meta.dir, "../../.."),
+    env: { ...process.env, DOKAN_DATA_DIR: current, DOKAN_PORT_ROOT: path.join(current, "run"), DOKAN_PORT: String(port), DOKAN_VAULT: "on", DOKAN_VAULT_STDIN: "1", DOKAN_BOOT_TOKEN: bootToken },
+    stdin: "pipe", stdout: "pipe", stderr: "pipe",
+  });
+  const timer = setTimeout(() => child.kill(), 12000);
+  try {
+    const reader = child.stdout.getReader();
+    child.stdin.write(`${JSON.stringify({ action: "unlock", passphrase: CURRENT.passphrase })}\n`);
+    const first = await reader.read();
+    const reply = JSON.parse(new TextDecoder().decode(first.value));
+    expect(reply.ok).toBe(true);
+    const url = `http://127.0.0.1:${port}`;
+    const stop = (token: string, boot: string) => fetch(`${url}/api/vault/quiesce`, { method: "POST", headers: { "x-vault-session": token, "x-dokan-boot-token": boot } });
+    expect((await stop(reply.sessionToken, "wrong-launch")).status).toBe(401);
+    expect((await stop("stale-session", bootToken)).status).toBe(401);
+    await expect(replaceVaultOffline({ dataDir: current, bundle: incoming.bundle, credential: INCOMING, currentCredential: CURRENT })).rejects.toBeInstanceOf(VaultAlreadyLockedError);
+    // Hold a real RPC body in flight. Node emits 100 Continue before awaiting
+    // the body, so the request is admitted before native quiescence arrives.
+    const body = JSON.stringify({ json: { name: "Drained business record" } });
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    let response = "";
+    let continued = () => {};
+    const admitted = new Promise<void>((resolve) => { continued = resolve; });
+    const completed = new Promise<string>((resolve, reject) => {
+      socket.on("data", (chunk) => { response += chunk.toString(); if (response.includes("100 Continue")) continued(); });
+      socket.on("end", () => resolve(response));
+      socket.on("error", reject);
+    });
+    socket.write(`POST /api/rpc/categoriesCreate HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nx-vault-session: ${reply.sessionToken}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n`);
+    await admitted;
+    const stopping = stop(reply.sessionToken, bootToken).catch((error: Error) => error);
+    // Wait until admission is closed without completing the held request.
+    for (;;) {
+      const probe = await fetch(`${url}/api/vault/status`);
+      if (probe.status === 503) break;
+      await Bun.sleep(1);
+    }
+    socket.write(body);
+    expect(await completed).toContain("200 OK");
+    const stopped = await stopping;
+    if (stopped instanceof Error) throw stopped;
+    expect(stopped.status).toBe(200);
+    for (const route of ["/api/rpc/categoriesCreate", "/api/vault/change-passphrase", "/api/vault/setup", "/api/vault/unlock"]) {
+      expect((await fetch(`${url}${route}`, { method: "POST", headers: { "x-vault-session": reply.sessionToken, "content-type": "application/json" }, body: "{}" })).status).toBe(503);
+    }
+    // Quiescence retains the lock until the native process has reaped this child.
+    await expect(replaceVaultOffline({ dataDir: current, bundle: incoming.bundle, credential: INCOMING, currentCredential: CURRENT })).rejects.toBeInstanceOf(VaultAlreadyLockedError);
+    child.kill();
+    await child.exited;
+    const installed = await replaceVaultOffline({ dataDir: current, bundle: incoming.bundle, credential: INCOMING, currentCredential: CURRENT });
+    const safetyDir = temp();
+    await extractVaultBackup(fs.readFileSync(installed.safetyPath), safetyDir);
+    expect((await names(safetyDir, CURRENT.passphrase)).names).toContain("Drained business record");
+    expect((await names(current, INCOMING.passphrase)).names).toContain("Replacement record");
+    const manager = new VaultManager({ dataDir: current, legacyDbPath: path.join(current, "dokan.db"), logger: new AppLogger(current), kdf: KDF });
+    try {
+      await manager.unlock(INCOMING.passphrase);
+      expect(manager.sessionMatches(reply.sessionToken)).toBe(false);
+    } finally { manager.close(); }
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode !== null && child.exitCode !== 0) {
+      const logDir = path.join(current, "logs");
+      for (const file of fs.readdirSync(logDir)) console.error(fs.readFileSync(path.join(logDir, file), "utf8"));
+    }
+    child.kill();
+    await child.exited;
+    const stderr = await new Response(child.stderr).text();
+    if (stderr !== "") console.error(stderr);
+  }
+}, 15000);
+
+type NativeWorkerRequest = {
+  action: string; path: string; credential: { passphrase: string };
+  currentCredential?: { passphrase: string }; expectedSha256?: string; confirmed?: boolean;
+};
+async function nativeWorker(dir: string, request: NativeWorkerRequest) {
+  const child = Bun.spawn([process.execPath, "src/main.ts", "--vault-restore-worker"], {
+    cwd: path.resolve(import.meta.dir, "../../.."), env: { ...process.env, DOKAN_DATA_DIR: dir },
+    stdin: new Blob([JSON.stringify(request)]), stdout: "pipe", stderr: "pipe",
+  });
+  const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  return { exit, body: JSON.parse(stdout), stderr };
+}
+
+it("pins native confirmation to authenticated preview bytes and installs through the one-shot process", async () => {
+  const current = temp();
+  await fixture(current, "Original record", CURRENT.passphrase);
+  const incoming = await fixture(temp(), "Replacement record", INCOMING.passphrase, true);
+  const selected = path.join(temp(), "chosen.dknvbak");
+  fs.writeFileSync(selected, incoming.bundle);
+  const preview = await nativeWorker(current, { action: "preview", path: selected, credential: INCOMING });
+  expect(preview.exit).toBe(0);
+  expect(preview.body.preview).toMatchObject({ schemaVersion: 0, compatible: true });
+  expect(preview.body.preview.fileModifiedAt).toBe(fs.statSync(selected).mtime.toISOString());
+  const before = readBundle(current);
+  const request = { action: "install", path: selected, credential: INCOMING, currentCredential: CURRENT, expectedSha256: preview.body.preview.sha256 };
+  expect((await nativeWorker(current, request)).exit).toBe(1);
+  const changed = Buffer.from(incoming.bundle);
+  changed[changed.length - 1] = 0;
+  fs.writeFileSync(selected, changed);
+  expect((await nativeWorker(current, { ...request, confirmed: true })).exit).toBe(1);
+  expect(readBundle(current).equals(before)).toBe(true);
+  fs.writeFileSync(selected, incoming.bundle);
+  expect((await nativeWorker(current, { ...request, confirmed: true })).exit).toBe(0);
+  expect((await names(current, INCOMING.passphrase)).names).toContain("Replacement record");
 }, 15000);
 
 it("restores the original after a real post-install migration error", async () => {

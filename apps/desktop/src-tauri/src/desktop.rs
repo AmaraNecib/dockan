@@ -191,6 +191,7 @@ pub fn kill_sidecar(app: &AppHandle) {
     // the flag goes up BEFORE taking the lock: a launch in flight (holding no
     // lock while it verifies) re-checks it and kills whatever it started
     SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::backup_restore::shutdown();
     let state = app.state::<SidecarState>();
     let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(sidecar) = guard.sidecar.take() {
@@ -662,6 +663,55 @@ fn capture_live_reveal_launch(
         return Err(crate::backup_reveal::FAILED);
     }
     Ok((config, pid))
+}
+
+/// Native restore implementation is deliberately NOT registered as an IPC
+/// command. Selection/confirmation UI and its evidence must land before exposure.
+#[allow(dead_code)]
+pub fn backup_restore_confirmed(app: &AppHandle, window: &WebviewWindow, session: &str, request: serde_json::Value) -> Result<serde_json::Value, String> {
+    use crate::backup_restore::{quiesce, run_worker, stop_child, FAILED};
+    let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    let state = app.state::<SidecarState>();
+    let (config, pid) = {
+        let mut slot = state.0.lock().map_err(|_| FAILED)?;
+        capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), None).map_err(|_| FAILED)?
+    };
+    if request.get("action") != Some(&serde_json::json!("install")) || request.get("confirmed") != Some(&serde_json::json!(true)) {
+        return Err(FAILED.to_string());
+    }
+    let worker_command = || {
+        let mut command = build_command(&config.binary);
+        for (key, value) in child_environment(&config.data_dir, &config.port_root, &config.web_dist, config.port, &config.boot_token) { command.env(key, value); }
+        command
+    };
+    let preview = run_worker(worker_command(), &serde_json::json!({"action":"preview", "path":request.get("path"), "credential":request.get("credential")}), CLEANUP_REPLY_TIMEOUT)?;
+    if preview.pointer("/preview/sha256") != request.get("expectedSha256") { return Err(FAILED.to_string()); }
+    quiesce(config.port, &config.boot_token, session, CLEANUP_REPLY_TIMEOUT)?;
+    let mut old = {
+        let mut slot = state.0.lock().map_err(|_| FAILED)?;
+        capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), Some(pid)).map_err(|_| FAILED)?;
+        slot.sidecar.take().ok_or(FAILED)?
+    };
+    if let Err(error) = stop_child(&mut old.child) {
+        let mut slot = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        install_sidecar(&mut slot, old);
+        return Err(error);
+    }
+    // No old process can checkpoint after this point. The offline helper owns
+    // the folder lock, including migrations and rollback. Always reap it before
+    // restart, including timeout/failure; fresh startup recovers pending intents.
+    let result = run_worker(worker_command(), &request, CLEANUP_REPLY_TIMEOUT);
+    if shutdown_began() || !crate::backup_restore::worker_stopped() { return Err(FAILED.to_string()); }
+    let sidecar = launch_verified_sidecar(&config)?;
+    {
+        let mut slot = state.0.lock().map_err(|_| FAILED)?;
+        if !install_sidecar(&mut slot, sidecar) { return Err(FAILED.to_string()); }
+    }
+    if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
+    // Reload the gate against the new LOCKED process, never keep old stores,
+    // routers, owner sessions or cached views alive after replacement/rollback.
+    window.navigate(setup_navigation_url(config.port, &config.boot_token).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
+    result
 }
 
 const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;

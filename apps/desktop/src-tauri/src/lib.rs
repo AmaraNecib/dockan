@@ -1,4 +1,5 @@
 mod backup_reveal;
+mod backup_restore;
 mod desktop;
 
 // The sidecar freshness/stamp logic is exercised by `cargo test`; build.rs

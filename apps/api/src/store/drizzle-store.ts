@@ -846,6 +846,8 @@ type DebtSummaryRow = {
 const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "setup",
   "createCategory",
+  "renameCategory",
+  "deleteCategory",
   "createItem",
   "updateItem",
   "setItemStockAndCost",

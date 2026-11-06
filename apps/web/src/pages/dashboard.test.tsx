@@ -430,28 +430,28 @@ describe("DashboardPage summary (issue 84)", () => {
     expect(page.card("dashboard-low-stock")?.textContent).toContain("4");
 
     const zero = list?.querySelector<HTMLElement>("[data-testid='dashboard-low-stock-row-zero-stock']");
-    expect(zero?.textContent).toContain(i18n.t("dashboardStockOutOfStock"));
-    expect(zero?.textContent).toContain(`${i18n.t("dashboardStockOnHand")}: 0`);
-    expect(zero?.textContent).toContain(`${i18n.t("dashboardStockThreshold")}: 5`);
+    expect(zero?.textContent).toContain("نفد المخزون");
+    expect(zero?.textContent).toContain("المخزون الحالي: 0");
+    expect(zero?.textContent).toContain("حد التنبيه: 5");
     expect(zero?.querySelector("[data-stock-status='out-of-stock']")?.className).toContain("text-destructive");
     expect(zero?.querySelector("[data-stock-status='out-of-stock']")?.className).toContain("bg-destructive/10");
     expect(zero?.querySelector("bdi[dir='ltr']")?.textContent).toBe("0");
 
     const boundary = list?.querySelector<HTMLElement>("[data-testid='dashboard-low-stock-row-boundary-stock']");
-    expect(boundary?.textContent).toContain(i18n.t("dashboardStockLow"));
-    expect(boundary?.textContent).toContain(`${i18n.t("dashboardStockOnHand")}: 2`);
-    expect(boundary?.textContent).toContain(`${i18n.t("dashboardStockThreshold")}: 2`);
+    expect(boundary?.textContent).toContain("مخزون منخفض");
+    expect(boundary?.textContent).toContain("المخزون الحالي: 2");
+    expect(boundary?.textContent).toContain("حد التنبيه: 2");
     expect(boundary?.querySelector("[data-stock-status='low-stock']")?.className).toContain("text-warning");
     expect(boundary?.querySelector("[data-stock-status='low-stock']")?.className).toContain("bg-warning/10");
     expect(Array.from(boundary?.querySelectorAll("bdi[dir='ltr']") ?? []).map((node) => node.textContent)).toEqual(["2", "2"]);
 
     const zeroThreshold = list?.querySelector<HTMLElement>("[data-testid='dashboard-low-stock-row-zero-threshold']");
-    expect(zeroThreshold?.textContent).toContain(i18n.t("dashboardStockOutOfStock"));
-    expect(zeroThreshold?.textContent).toContain(`${i18n.t("dashboardStockOnHand")}: 0`);
-    expect(zeroThreshold?.textContent).toContain(`${i18n.t("dashboardStockThreshold")}: 0`);
+    expect(zeroThreshold?.textContent).toContain("نفد المخزون");
+    expect(zeroThreshold?.textContent).toContain("المخزون الحالي: 0");
+    expect(zeroThreshold?.textContent).toContain("حد التنبيه: 0");
 
     const negative = list?.querySelector<HTMLElement>("[data-testid='dashboard-low-stock-row-negative-stock']");
-    expect(negative?.textContent).toContain(`${i18n.t("dashboardStockOnHand")}: -1`);
+    expect(negative?.textContent).toContain("المخزون الحالي: -1");
     expect(negative?.querySelector("[data-stock-status]")).toBeNull();
     expect(Array.from(negative?.querySelectorAll("bdi[dir='ltr']") ?? []).map((node) => node.textContent)).toEqual(["-1", "0"]);
 
@@ -471,8 +471,8 @@ describe("DashboardPage summary (issue 84)", () => {
     expect(debt).toContain("1,200"); // we-owe subline
 
     expect(page.card("dashboard-low-stock")?.textContent).toContain("1");
-    expect(page.card("dashboard-low-stock-list")?.textContent).toContain(`${i18n.t("dashboardStockOnHand")}: 0`);
-    expect(page.card("dashboard-low-stock-list")?.textContent).toContain(`${i18n.t("dashboardStockThreshold")}: 5`);
+    expect(page.card("dashboard-low-stock-list")?.textContent).toContain("المخزون الحالي: 0");
+    expect(page.card("dashboard-low-stock-list")?.textContent).toContain("حد التنبيه: 5");
     await page.unmount();
   });
 

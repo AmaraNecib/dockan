@@ -21,7 +21,7 @@ const analysesByProgram = new WeakMap<ESTree.Node, LexicalTypeParameterAnalysis>
 
 function analysisForSourceFile(node: ESTree.Node): LexicalTypeParameterAnalysis {
 	let root = node;
-	while (root.parent !== undefined && root.parent !== null && root.type !== "Program") {
+	while (root.type !== "Program" && root.parent !== undefined && root.parent !== null) {
 		root = root.parent;
 	}
 	if (root.type !== "Program") return createLexicalTypeParameterAnalysis();

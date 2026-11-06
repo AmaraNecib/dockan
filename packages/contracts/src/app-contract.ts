@@ -11,6 +11,9 @@ import {
   catalogSearchInputSchema,
   catalogSearchOutputSchema,
   categoryCreateInputSchema,
+  categoryDeleteInputSchema,
+  categoryDeleteOutputSchema,
+  categoryRenameInputSchema,
   categorySchema,
   dashboardSummaryOutputSchema,
   debtsByPartyInputSchema,
@@ -120,6 +123,8 @@ export const dokanContract = {
   // --- categories ----------------------------------------------------------
   categoriesList: oc.output(z.object({ items: z.array(categorySchema) })),
   categoriesCreate: oc.input(categoryCreateInputSchema).output(categorySchema),
+  categoriesRename: oc.input(categoryRenameInputSchema).output(categorySchema),
+  categoriesDelete: oc.input(categoryDeleteInputSchema).output(categoryDeleteOutputSchema),
 
   // --- items ---------------------------------------------------------------
   itemsList: oc.input(itemListInputSchema).output(itemListOutputSchema),

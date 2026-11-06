@@ -154,6 +154,8 @@ describe("health", () => {
 
   it("rejects a business procedure without a session (merged auth guard)", async () => {
     await expect(unauthed.categoriesList()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.categoriesRename({ id: "00000000-0000-4000-8000-000000000001", name: "ممنوع" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.categoriesDelete({ id: "00000000-0000-4000-8000-000000000001" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
   it("reports the service up with a version", async () => {
     const health = await client.health();
@@ -172,8 +174,43 @@ describe("categories", () => {
     expect(list.items.some((c) => c.id === created.id && c.name === "زيوت")).toBe(true);
   });
 
+  it("renames in place, refreshes joined labels, and refuses deletion with the actual item count", async () => {
+    const category = await client.categoriesCreate({ name: `إدارة-${Date.now()}` });
+    const itemOne = await client.itemsCreate({ name: `إدارة-منتج-1-${Date.now()}`, categoryId: category.id, costPrice: 10, sellingPrice: 20 });
+    const itemTwo = await client.itemsCreate({ name: `إدارة-منتج-2-${Date.now()}`, categoryId: category.id, costPrice: 10, sellingPrice: 20 });
+
+    const renamed = await client.categoriesRename({ id: category.id, name: "تصنيف بعد التعديل" });
+    expect(renamed).toMatchObject({ id: category.id, name: "تصنيف بعد التعديل" });
+    expect((await client.categoriesList()).items.some((row) => row.id === category.id && row.name === renamed.name)).toBe(true);
+    const listedItems = await client.itemsAll();
+    expect(listedItems.items.find((row) => row.id === itemOne.id)?.categoryName).toBe(renamed.name);
+    expect(listedItems.items.find((row) => row.id === itemTwo.id)?.categoryId).toBe(category.id);
+
+    await expect(client.categoriesDelete({ id: category.id })).resolves.toEqual({ deleted: false, itemCount: 2 });
+    expect((await client.itemsAll()).items.some((row) => row.id === itemOne.id && row.categoryId === category.id)).toBe(true);
+
+    const unused = await client.categoriesCreate({ name: `حذف-آمن-${Date.now()}` });
+    await expect(client.categoriesDelete({ id: unused.id })).resolves.toEqual({ deleted: true, itemCount: 0 });
+    expect((await client.categoriesList()).items.some((row) => row.id === unused.id)).toBe(false);
+  });
+
+  it("refuses normalized duplicate and blank category renames", async () => {
+    const original = await client.categoriesCreate({ name: `زينة مُوحَّدة-${Date.now()}` });
+    const duplicate = await client.categoriesCreate({ name: `اخرى-${Date.now()}` });
+
+    await expect(client.categoriesRename({ id: duplicate.id, name: original.name.replace("زينة", "زِينَة") })).rejects.toThrow(/CATEGORY_EXISTS/);
+    await expect(client.categoriesRename({ id: duplicate.id, name: "   " })).rejects.toThrow();
+    expect((await client.categoriesList()).items.find((row) => row.id === duplicate.id)?.name).toBe(duplicate.name);
+  });
+
   it("rejects a duplicate category name with a clear error", async () => {
     await expect(client.categoriesCreate({ name: "زيوت" })).rejects.toThrow(/CATEGORY_EXISTS/);
+  });
+
+  it("rejects category names that collide under normalized category identity", async () => {
+    await client.categoriesCreate({ name: "هوية مُوحَّدة" });
+
+    await expect(client.categoriesCreate({ name: "هُوية موحدة" })).rejects.toThrow(/CATEGORY_EXISTS/);
   });
 
   it("two concurrent creates of the same category resolve as CONFLICT, not a raw error", async () => {

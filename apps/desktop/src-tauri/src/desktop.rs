@@ -131,11 +131,14 @@ pub struct SidecarSlot {
     sidecar: Option<Sidecar>,
     restore_selection: Option<RestoreSelection>,
     restore_outcome: Option<serde_json::Value>,
-    restore_session_reset_pending: bool,
+    restore_session_reset_epoch: Option<String>,
 }
 
-fn take_restore_session_reset(slot: &mut SidecarSlot) -> bool {
-    std::mem::take(&mut slot.restore_session_reset_pending)
+fn take_restore_session_reset(slot: &mut SidecarSlot, requested_epoch: Option<&str>) -> bool {
+    if slot.restore_session_reset_epoch.as_deref() != requested_epoch || requested_epoch.is_none() {
+        return false;
+    }
+    slot.restore_session_reset_epoch.take().is_some()
 }
 
 /// Set once shutdown begins (window close / app exit). The launch path checks
@@ -361,6 +364,10 @@ fn setup_navigation_url(port: u16, boot_token: &str) -> String {
     format!("http://127.0.0.1:{port}/#setup_token={boot_token}")
 }
 
+fn restore_navigation_url(port: u16, boot_token: &str, reset_epoch: &str) -> String {
+    format!("http://127.0.0.1:{port}/#setup_token={boot_token}&session_reset_epoch={reset_epoch}")
+}
+
 
 /* ------------------------------------------------------------------ */
 /*  Stdin broker IPC (issue #141)                                       */
@@ -536,12 +543,12 @@ async fn run_broker_task<T: Send + 'static>(
 
 /// Gate status over the pipe. Carries no secret.
 #[tauri::command]
-pub async fn vault_status(app: AppHandle) -> Result<BrokerReply, String> {
+pub async fn vault_status(app: AppHandle, reset_epoch: Option<String>) -> Result<BrokerReply, String> {
     run_broker_task(move || {
         let mut reply = broker_exchange(&app, "status", serde_json::json!({}))?;
         let state = app.state::<SidecarState>();
         let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
-        if take_restore_session_reset(&mut slot) {
+        if take_restore_session_reset(&mut slot, reset_epoch.as_deref()) {
             reply.session_reset = Some(true);
         }
         Ok(reply)
@@ -892,10 +899,11 @@ pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, ses
             slot.restore_outcome = Some(outcome);
             // Only a successful native-confirmed restore resets the renderer's
             // generation epoch. No renderer parameter can request this reset.
-            slot.restore_session_reset_pending = true;
+            slot.restore_session_reset_epoch = Some(generate_boot_token());
         }
         if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
-        window.navigate(setup_navigation_url(config.port, &config.boot_token).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
+        let reset_epoch = state.0.lock().map_err(|_| FAILED)?.restore_session_reset_epoch.clone().ok_or(FAILED)?;
+        window.navigate(restore_navigation_url(config.port, &config.boot_token, &reset_epoch).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
         // The fresh gate reads the native-owned outcome, including rollback.
         Ok(())
     }).await
@@ -1380,10 +1388,27 @@ mod tests {
     }
 
     #[test]
-    fn restore_session_reset_is_native_owned_and_one_shot() {
-        let mut slot = SidecarSlot { restore_session_reset_pending: true, ..SidecarSlot::default() };
-        assert!(take_restore_session_reset(&mut slot));
-        assert!(!take_restore_session_reset(&mut slot));
+    fn restore_session_reset_is_bound_to_the_new_navigation_epoch() {
+        let old_page_epoch = Some("old-page".to_string());
+        let mut slot = SidecarSlot { restore_session_reset_epoch: Some("new-page".to_string()), ..SidecarSlot::default() };
+
+        // An old status request may return after restore, or have waited behind
+        // BROKER_GATE until the replacement sidecar was installed. Its captured
+        // epoch is still old, so neither ordering can spend the new grant.
+        assert!(!take_restore_session_reset(&mut slot, old_page_epoch.as_deref()));
+        // A previously queued IPC invocation carries the same retired epoch
+        // even if it reaches native only after the replacement sidecar starts.
+        assert!(!take_restore_session_reset(&mut slot, Some("queued-old-page")));
+        assert_eq!(slot.restore_session_reset_epoch.as_deref(), Some("new-page"));
+
+        assert!(take_restore_session_reset(&mut slot, Some("new-page")));
+        assert!(!take_restore_session_reset(&mut slot, Some("new-page")));
+        assert!(!take_restore_session_reset(&mut slot, None));
+    }
+
+    #[test]
+    fn restore_navigation_url_carries_native_reset_epoch() {
+        assert_eq!(restore_navigation_url(4321, "abc123", "epoch456"), "http://127.0.0.1:4321/#setup_token=abc123&session_reset_epoch=epoch456");
     }
 
     #[test]
@@ -1621,7 +1646,6 @@ mod tests {
         // the token never reaches the server: only the path is requested
         assert_eq!(parsed.path(), "/");
         assert_eq!(parsed.fragment(), Some("setup_token=abc123"));
-        assert_eq!(restore_navigation_url(4321, "abc123", "reset"), "http://127.0.0.1:4321/#setup_token=abc123&session_reset=reset");
     }
 
     /// A real child with broker pipes, for tests that only need a sidecar

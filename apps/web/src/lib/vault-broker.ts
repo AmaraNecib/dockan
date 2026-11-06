@@ -72,6 +72,7 @@ export type BrokerReply = z.infer<typeof brokerReplySchema>;
 
 /** The payloads the gate sends over the broker; each command names its own. */
 export type BrokerInvokeArgs =
+  | { resetEpoch?: string }
   | { passphrase: string }
   | { recoveryKey: string }
   | { recoveryKey: string; newPassphrase: string };

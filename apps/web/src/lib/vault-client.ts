@@ -292,6 +292,13 @@ export function readSetupTokenFromHash(): string | undefined {
   return token === null || token === "" ? undefined : token;
 }
 
+/** Read the native restore epoch for this document before starting an IPC call. */
+export function readRestoreEpochFromHash(): string | undefined {
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  const epoch = new URLSearchParams(hash).get("session_reset_epoch");
+  return epoch === null || epoch === "" ? undefined : epoch;
+}
+
 /** The vault session token the shell passed in the navigation fragment. */
 export function readSessionTokenFromHash(): string | undefined {
   const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
@@ -449,12 +456,15 @@ export function verifyVaultSession(): Promise<VaultBootStatus> {
 }
 
 async function loadVaultStatus(verifySession: boolean): Promise<VaultBootStatus> {
+  // Capture once, before IPC awaits. An old document callback keeps its old
+  // epoch even if native navigation to a restored session happens meanwhile.
+  const resetEpoch = readRestoreEpochFromHash();
   // Inside the desktop shell the broker is the authoritative gate transport:
   // try it first (no secret involved) and fall back to HTTP when the shell has
   // no sidecar (dev window) or the bridge is absent (browser)
   if (brokerAvailable()) {
     try {
-      const reply = await invokeBroker(brokerCommands.status);
+      const reply = await invokeBroker(brokerCommands.status, resetEpoch === undefined ? undefined : { resetEpoch });
       if (reply.sessionReset === true) {
         clearVaultSessionToken();
         stripVaultFragment();

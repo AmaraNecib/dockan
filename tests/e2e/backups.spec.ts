@@ -1,10 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { externalBackupDestinationInputSchema, type ExternalBackupStatus } from "../../packages/contracts/src/core";
+import { z } from "zod";
 import { callRpc, seedCategoryId } from "./rpc-helpers";
 import fs from "node:fs";
 import path from "node:path";
 
-test.use({ video: "on" });
+test.use({ video: { mode: "on", size: { width: 1920, height: 1080 } } });
 
 /**
  * The manual export button creates today's backup file on
@@ -86,6 +88,118 @@ async function installRevealBridge(page: Page): Promise<void> {
     };
   });
 }
+
+test("external backup destination persists, cancels edits, reports media failure, and retries", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await signIn(page);
+  let externalStatus: ExternalBackupStatus = {
+    destination: "D:/existing-backups",
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastError: null,
+    lastPath: null,
+  };
+  let failNextCopy = true;
+  let unchangedSaveSeen = false;
+  let releaseDestinationSave!: () => void;
+  let signalDestinationSave!: () => void;
+  const destinationSaveStarted = new Promise<void>((resolve) => { signalDestinationSave = resolve; });
+  const destinationSaveGate = new Promise<void>((resolve) => { releaseDestinationSave = resolve; });
+  await page.route("**/api/rpc/externalBackupStatus", (route) => route.fulfill({ json: { json: externalStatus } }));
+  await page.route("**/api/rpc/externalBackupDevice", (route) => route.fulfill({ json: { json: "same" } }));
+  await page.route("**/api/rpc/externalBackupDestinationSet", async (route) => {
+    const parsed = z.object({ json: externalBackupDestinationInputSchema }).safeParse(route.request().postDataJSON());
+    if (!parsed.success) throw new Error("external destination route received invalid input");
+    const destination = parsed.data.json.destination;
+    if (destination === "D:/existing-backups") unchangedSaveSeen = true;
+    if (destination === "D:/shop-backups") {
+      signalDestinationSave();
+      await destinationSaveGate;
+    }
+    externalStatus = {
+      destination,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+      lastPath: null,
+    };
+    await route.fulfill({ json: { json: externalStatus } });
+  });
+  await page.route("**/api/rpc/externalBackupRun", async (route) => {
+    const destinationAtRun = externalStatus.destination;
+    if (destinationAtRun === null) throw new Error("external backup ran without a saved destination");
+    externalStatus = failNextCopy
+      ? { ...externalStatus, lastAttemptAt: "2026-11-05T10:00:00", lastError: "disconnected" }
+      : { ...externalStatus, lastAttemptAt: "2026-11-05T10:01:00", lastSuccessAt: "2026-11-05T10:01:00", lastError: null, lastPath: `${destinationAtRun}/dokan-backup-set/dokan-backup.dknvbak` };
+    failNextCopy = false;
+    await route.fulfill({ json: { json: externalStatus } });
+  });
+
+  await page.goto("/backups");
+  const panel = page.getByTestId("external-backup-panel");
+  await page.waitForTimeout(1500);
+  const destination = page.getByTestId("external-backup-destination");
+  await expect(destination).toHaveValue("D:/existing-backups");
+  if (process.env.BACKUP_EVIDENCE === "before" || process.env.BACKUP_EVIDENCE === "both") {
+    await panel.screenshot({ path: ".scratch/evidence/403/before.png" });
+  }
+  await panel.getByRole("button", { name: "حفظ المجلد" }).click();
+  await expect.poll(() => unchangedSaveSeen).toBe(true);
+  await destination.fill("D:/shop-backups");
+  await panel.getByRole("button", { name: "حفظ المجلد" }).click();
+  await destinationSaveStarted;
+  await expect(destination).toBeDisabled();
+  await page.waitForTimeout(600);
+  releaseDestinationSave();
+  await expect(destination).toHaveValue("D:/shop-backups");
+  await page.waitForTimeout(1500);
+  await destination.fill("E:/unsaved");
+  await panel.getByRole("button", { name: "إلغاء التعديل" }).click();
+  await expect(destination).toHaveValue("D:/shop-backups");
+  await page.waitForTimeout(1500);
+
+  await expect(panel.getByRole("status")).toContainText("القرص الفعلي نفسه");
+  await page.waitForTimeout(1500);
+  await page.route("**/api/rpc/backupManual", async (route) => {
+    await route.fulfill({ json: { json: { path: "C:/safe/local-backup.db", createdAt: "2026-11-05T10:00:00" } } });
+    setTimeout(() => {
+      externalStatus = { ...externalStatus, lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/shop-backups/background-set/dokan-backup.dknvbak" };
+    }, 1_300);
+  });
+  await page.getByTestId("backup-export").click();
+  await expect(page.getByTestId("backup-done")).toBeVisible();
+  await expect(page.getByTestId("external-backup-success")).toContainText("10:00:01", { timeout: 8_000 });
+  await page.waitForTimeout(1500);
+
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(panel.getByRole("alert")).toContainText("القرص غير متصل");
+  await expect(panel.getByRole("alert")).toBeVisible();
+  await page.waitForTimeout(1500);
+
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(page.getByTestId("external-backup-success")).toContainText("dokan-backup.dknvbak");
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(1500);
+  failNextCopy = true;
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(panel.getByRole("alert")).toContainText("القرص غير متصل");
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(1500);
+  await panel.getByRole("button", { name: "نسخ الآن" }).click();
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(1500);
+  await page.reload();
+  await expect(destination).toHaveValue("D:/shop-backups");
+  await expect(page.getByTestId("external-backup-success").locator('[dir="ltr"]')).toContainText("D:/shop-backups/dokan-backup-set");
+  await page.waitForTimeout(1500);
+  if (process.env.BACKUP_EVIDENCE === "after" || process.env.BACKUP_EVIDENCE === "both") {
+    await panel.screenshot({ path: ".scratch/evidence/403/after.png" });
+  }
+  await page.waitForTimeout(6500);
+  await panel.getByRole("button", { name: "إزالة الوجهة" }).click();
+  await expect(destination).toHaveValue("");
+});
 
 test.describe("completed backup reveal", () => {
 

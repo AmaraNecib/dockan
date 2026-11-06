@@ -11,6 +11,11 @@ import i18n, { CATALOGUE_KEYS, PHONE_EXAMPLE_INTL, PHONE_EXAMPLE_LOCAL, authErro
  * message keys, and raw validator sentences.
  */
 describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
+  it("keeps the external-backup loading message valid Arabic", () => {
+    const loading = i18n.t("backupsExternalLoading");
+    expect(loading).toContain("الخارجية");
+    expect(loading).not.toContain("\uFFFD");
+  });
   it("gives each known auth failure its own key", () => {
     expect(authErrorKey({ code: "INVALID_USERNAME_OR_PASSWORD" })).toBe("AUTH_INVALID_CREDENTIALS");
     expect(authErrorKey({ code: "INVALID_USERNAME" })).toBe("INVALID_PHONE_NUMBER");

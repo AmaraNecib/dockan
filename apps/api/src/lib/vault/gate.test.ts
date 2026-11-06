@@ -117,6 +117,8 @@ function harness(
     bootstrap?: (input: { masterKey: Buffer; vaultId: string; fresh: boolean }) => Promise<void>;
     /** run the gate as the desktop shell's stdin-broker mode (issue #141) */
     broker?: boolean;
+    /** expose encrypted external-backup RPCs through this real vault harness */
+    externalBackup?: boolean;
   } = {},
 ): GateHarness {
   const config = createAppConfig({
@@ -158,6 +160,8 @@ function harness(
       logger,
       store,
       auth,
+      externalBackupEnabled: options.externalBackup,
+      externalBackupWriteGuard: options.externalBackup ? () => undefined : undefined,
       vault: {
         sessionMatches: (token) => manager.sessionMatches(token),
         ownerId: () => manager.ownerId(),
@@ -335,6 +339,58 @@ describe("vault HTTP gate", () => {
       body: JSON.stringify({ recoveryKey: setupBody.recoveryKey }),
     });
     expect(recoveryUnlock.status).toBe(200);
+  });
+
+  itHeavy("keeps the local backup and sales working when the configured external drive is missing", async () => {
+    const h = harness(tempDir("dokan-vault-external-offline-"), { externalBackup: true });
+    const setup = await h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    const owner = h.linkWith({ "x-vault-session": sessionTokenFrom(setup) });
+    await owner.firstTimeSetup({ ownerName: "مالك الاختبار", phoneNumber: "0550123123", storeName: "متجر الاختبار" });
+
+    const missingDrive = path.join(h.dir, "unavailable-removable-drive");
+    await owner.externalBackupDestinationSet({ destination: missingDrive });
+    const categories = await owner.categoriesList();
+    const category = categories.items.find((entry) => entry.name === "عام");
+    expect(category).toBeDefined();
+    if (category === undefined) throw new Error("setup did not create the default category");
+    const item = await owner.itemsCreate({
+      name: "external-failure-sale-probe",
+      categoryId: category.id,
+      costPrice: 100,
+      sellingPrice: 200,
+      lowStockThreshold: 0,
+    });
+    await owner.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    fs.mkdirSync(path.join(h.dir, "backups"), { recursive: true });
+
+    const firstOutcome = await owner.externalBackupRun();
+    expect(firstOutcome).toEqual({
+      destination: missingDrive,
+      lastAttemptAt: expect.any(String),
+      lastSuccessAt: null,
+      lastError: "disconnected",
+      lastPath: null,
+    });
+    const secondOutcome = await owner.externalBackupRun();
+    const thirdOutcome = await owner.externalBackupRun();
+    for (const outcome of [firstOutcome, secondOutcome, thirdOutcome, await owner.externalBackupStatus()]) {
+      expect(outcome).toEqual({
+        destination: missingDrive,
+        lastAttemptAt: expect.any(String),
+        lastSuccessAt: null,
+        lastError: "disconnected",
+        lastPath: null,
+      });
+    }
+    expect(new Set([firstOutcome.lastAttemptAt, secondOutcome.lastAttemptAt, thirdOutcome.lastAttemptAt]).size).toBe(3);
+    expect(fs.readdirSync(path.join(h.dir, "backups")).some((name) => /^dokan-.*\.db$/u.test(name))).toBe(true);
+    const sale = await owner.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.kind).toBe("SALE");
+    expect((await owner.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
   });
 
   itHeavy("refuses a non-JSON pre-auth request (cross-site POST) without consuming an attempt", async () => {

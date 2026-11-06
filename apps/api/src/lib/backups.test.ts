@@ -16,6 +16,9 @@ import {
   backupFilePath,
   createBackup as createBackupRaw,
   ensureDailyBackup as ensureDailyBackupRaw,
+  createExternalBackup,
+  readExternalBackupStatus,
+  setExternalBackupDestination,
 } from "./backups";
 import { localDate } from "./logger";
 
@@ -129,6 +132,53 @@ describe("manual export copy", () => {
     } finally {
       copy.close();
     }
+  });
+});
+
+describe("additional external backup", () => {
+  it("records a full-destination failure without ever publishing plaintext bytes", async () => {
+    const dataDir = freshDataDir();
+    const external = freshDataDir();
+    await setExternalBackupDestination(dataDir, external);
+    const failingStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async (staging) => {
+        fs.writeFileSync(staging, "plaintext database content");
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      },
+    };
+    const failed = await createExternalBackup({ store: failingStore, dataDir });
+    expect(failed.lastError).toBe("full");
+    expect(failed.lastPath).toBeNull();
+    expect(fs.readdirSync(external)).toEqual([]);
+    expect(fs.readdirSync(dataDir).some((entry) => entry.endsWith(".partial"))).toBe(false);
+    expect(readExternalBackupStatus(dataDir)).toEqual(failed);
+  });
+
+  it("records an unwritable destination without publishing an artifact", async () => {
+    const dataDir = freshDataDir();
+    const external = freshDataDir();
+    await setExternalBackupDestination(dataDir, external);
+    const deniedStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async () => { throw Object.assign(new Error("write denied"), { code: "EACCES" }); },
+    };
+    const failed = await createExternalBackup({ store: deniedStore, dataDir });
+    expect(failed.lastError).toBe("unwritable");
+    expect(failed.lastPath).toBeNull();
+    expect(fs.readdirSync(external)).toEqual([]);
+    expect(fs.readdirSync(dataDir).some((entry) => entry.endsWith(".partial"))).toBe(false);
+    expect(readExternalBackupStatus(dataDir)).toEqual(failed);
+  });
+
+  it("resetting a destination clears its attributed outcome without deleting old backup sets", async () => {
+    const dataDir = freshDataDir();
+    const destination = freshDataDir();
+    const saved = await setExternalBackupDestination(dataDir, destination);
+    const cleared = await setExternalBackupDestination(dataDir, null);
+    expect(cleared).toMatchObject({ destination: null, lastSuccessAt: null, lastPath: null });
+    expect(saved.destination).toBe(destination);
+    expect(fs.existsSync(destination)).toBe(true);
   });
 });
 

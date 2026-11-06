@@ -157,23 +157,20 @@ it("keeps destination edits locked until the save response arrives", async () =>
 
 it("refreshes a background outcome after 30 seconds without relying on a focus change", async () => {
   let statusRequests = 0;
-  let localBackupFinished = false;
   let now = 1_800_000_000_000;
   const dateNow = Date.now;
   Date.now = () => now;
+  const previous: ExternalBackupStatus = { destination: "D:/backup", lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/backup/previous/dokan-backup.dknvbak" };
+  const completed: ExternalBackupStatus = { ...previous, lastPath: "D:/backup/set/dokan-backup.dknvbak" };
+  const pendingStatusResponses: Array<(response: Response) => void> = [];
   globalThis.fetch = Object.assign(async (request: RequestInfo | URL) => {
     const url = request instanceof Request ? request.url : String(request);
     if (url.includes("externalBackupStatus")) {
       statusRequests++;
-      const status: ExternalBackupStatus = localBackupFinished && statusRequests >= 5 && now >= 1_800_000_031_000
-        ? { destination: "D:/backup", lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/backup/set/dokan-backup.dknvbak" }
-        : { destination: "D:/backup", lastAttemptAt: "2026-11-05T10:00:01", lastSuccessAt: "2026-11-05T10:00:01", lastError: null, lastPath: "D:/backup/previous/dokan-backup.dknvbak" };
-      return Response.json({ json: status });
+      if (statusRequests === 1) return Response.json({ json: previous });
+      return new Promise<Response>((resolve) => pendingStatusResponses.push(resolve));
     }
-    if (url.includes("backupManual")) {
-      localBackupFinished = true;
-      return Response.json({ json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } });
-    }
+    if (url.includes("backupManual")) return Response.json({ json: { path: completedPath, createdAt: "2026-10-28T09:00:00" } });
     return Response.json({ json: "unknown" });
   }, { preconnect: originalFetch.preconnect });
   await rerenderPage();
@@ -182,9 +179,12 @@ it("refreshes a background outcome after 30 seconds without relying on a focus c
     await click("إنشاء نسخة احتياطية الآن", () => {
       expect(host.querySelector('[data-testid="backup-done"]')?.textContent).toContain(completedPath);
     }, "manual backup and background external attempt");
-    await settle(() => expect(statusRequests).toBeGreaterThanOrEqual(2), "first pending status refresh");
+    await settle(() => expect(statusRequests).toBe(2), "first pending status refresh");
     now += 31_000;
-    await settle(() => expect(host.querySelector('[data-testid="external-backup-success"]')?.textContent).toContain("10:00:01"), "background external copy outcome refresh after simulated 31 seconds", 8_000);
+    await act(async () => pendingStatusResponses.shift()?.(Response.json({ json: previous })));
+    await settle(() => expect(statusRequests).toBe(3), "status polling continues after simulated 31 seconds", 8_000);
+    await act(async () => pendingStatusResponses.shift()?.(Response.json({ json: completed })));
+    await settle(() => expect(host.querySelector('[data-testid="external-backup-success"]')?.textContent).toContain("dokan-backup.dknvbak"), "same-timestamp background completion");
   } finally {
     Date.now = dateNow;
   }

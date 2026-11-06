@@ -28,7 +28,7 @@ export function BackupsPage() {
     ...orpc.externalBackupStatus.queryOptions(),
     refetchInterval: (query) => awaitingExternalOutcome
       && externalOutcomeKey(query.state.data) === externalAttemptBaseline.current
-      ? 5_000
+      ? 1_000
       : false,
   });
   const currentExternalOutcomeKey = externalOutcomeKey(externalStatus.data);

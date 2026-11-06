@@ -61,14 +61,18 @@ const context={newPage:async()=>({video:()=>({path:async()=>{fs.writeFileSync(${
 const browser={newContext:async()=>context,close:async()=>{await new Promise(r=>setTimeout(r,80));fs.writeFileSync(${JSON.stringify(closed)},'closed');${stage === "late-close-failure" ? "throw new Error('injected late disposal failed');" : ""}}};
 try { await capture(${JSON.stringify({ journey, source, revision, against, output, ports })},{preflight:async()=>{},launch:async()=>{${stage === "launch" || stage === "late-close-failure" ? `fs.writeFileSync(${JSON.stringify(marker)},'ready');await new Promise(r=>setTimeout(r,120));` : ""}return browser;}}); console.log('UNEXPECTED SUCCESS');process.exitCode=2; }
 catch(error){await new Promise(r=>setTimeout(r,200)); console.log(JSON.stringify({failure:error instanceof AggregateError ? error.errors.map(String).join('; ') : String(error),listeners:['SIGINT','SIGTERM'].map(s=>process.listenerCount(s)),baseline}));}
-process.stdin.destroy();`);
+process.stdin.destroy();
+process.exit(process.exitCode ?? 0);`);
         const child = spawn(process.execPath, [fixture], { stdio: ["pipe", "pipe", "pipe"] });
         let transcript = ""; child.stdout?.on("data", (data) => { transcript += String(data); }); child.stderr?.on("data", (data) => { transcript += String(data); });
         const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
         try {
           expect(await until(() => fs.existsSync(marker), child)).toBe(true);
           if (delivery === "os") child.kill(signal); else child.stdin?.write("cancel\n");
-          await Promise.race([exited, Bun.sleep(10_000).then(() => { throw new Error(`Cancellation timeout: ${transcript}`); })]);
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([exited, new Promise<void>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error(`Cancellation timeout: ${transcript}`)), 10_000); })]);
+          } finally { clearTimeout(timeout); }
           expect(child.exitCode).toBe(0);
           expect(transcript).not.toContain("UNEXPECTED SUCCESS");
           const result = JSON.parse(transcript.trim());

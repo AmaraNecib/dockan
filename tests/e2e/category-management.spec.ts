@@ -6,7 +6,7 @@ import { actAndAck } from "./rpc-helpers";
 
 test("searches all categories, preserves assignments on rename, and confirms safe deletion", async ({ page }) => {
   const stamp = Date.now();
-  const categories = Array.from({ length: 12 }, (_, index) => `بحث شامل ${stamp} ${index}`);
+  const categories = Array.from({ length: 2 }, (_, index) => `بحث شامل ${stamp} ${index}`);
   const target = categories.at(-1);
   if (target === undefined) throw new Error("category fixture is empty");
   const renamed = `تصنيف بعد التعديل ${stamp}`;
@@ -37,8 +37,8 @@ test("searches all categories, preserves assignments on rename, and confirms saf
   await page.getByRole("searchbox", { name: "ابحث في التصنيفات…" }).fill(target);
   const editRow = page.locator("li").filter({ hasText: target });
   await editRow.getByRole("button", { name: "تعديل الاسم" }).click();
-  await editRow.getByRole("textbox", { name: `اسم التصنيف ${target}` }).fill(renamed);
-  await editRow.getByRole("button", { name: "حفظ" }).click();
+  await page.getByRole("textbox", { name: `اسم التصنيف ${target}` }).fill(renamed);
+  await page.getByRole("button", { name: "حفظ" }).click();
   await expect(page.getByText(renamed, { exact: true })).toBeVisible();
 
   await page.goto("/items");

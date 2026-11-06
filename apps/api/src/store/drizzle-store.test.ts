@@ -102,22 +102,30 @@ describe("category management (#389)", () => {
     const holdQueue = store.withTransaction(async (tx) => {
       entered();
       await inspectRequested;
-      expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
-      expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
-      inspected();
-      await gate;
+      try {
+        expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
+        expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+      } finally {
+        inspected();
+        await gate;
+      }
     });
+    const heldOutcome = Promise.allSettled([holdQueue]);
 
     await transactionStarted;
     const deletion = store.deleteCategory(category.id);
     const creation = store.createItem({ name: `after-delete-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
     const outcomes = Promise.allSettled([deletion, creation]);
-    inspect();
-    await inspectionDone;
-    release();
-    await holdQueue;
+    try {
+      inspect();
+      await inspectionDone;
+    } finally {
+      release();
+    }
 
+    const [held] = await heldOutcome;
     const [deleted, created] = await outcomes;
+    if (held.status === "rejected") throw held.reason;
     expect(deleted).toEqual({ status: "fulfilled", value: { deleted: true, itemCount: 0 } });
     expect(created.status).toBe("rejected");
     expect((await store.listCategories()).some((row) => row.id === category.id)).toBe(false);
@@ -137,21 +145,34 @@ describe("category management (#389)", () => {
     const holdQueue = store.withTransaction(async (tx) => {
       entered();
       await inspectRequested;
-      expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
-      expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
-      inspected();
-      await gate;
+      try {
+        expect((await tx.listCategories()).some((row) => row.id === category.id)).toBe(true);
+        expect((await tx.listItems()).items.some((row) => row.categoryId === category.id)).toBe(false);
+      } finally {
+        inspected();
+        await gate;
+      }
     });
+    const heldOutcome = Promise.allSettled([holdQueue]);
 
     await transactionStarted;
     const creation = store.createItem({ name: `before-delete-${Date.now()}`, categoryId: category.id, costPrice: 1, sellingPrice: 2 });
     const deletion = store.deleteCategory(category.id);
-    inspect();
-    await inspectionDone;
-    release();
-    await holdQueue;
+    const outcomes = Promise.allSettled([creation, deletion]);
+    try {
+      inspect();
+      await inspectionDone;
+    } finally {
+      release();
+    }
 
-    const [created, deleted] = await Promise.all([creation, deletion]);
+    const [held] = await heldOutcome;
+    const [createdOutcome, deletedOutcome] = await outcomes;
+    if (held.status === "rejected") throw held.reason;
+    if (createdOutcome.status === "rejected") throw createdOutcome.reason;
+    if (deletedOutcome.status === "rejected") throw deletedOutcome.reason;
+    const created = createdOutcome.value;
+    const deleted = deletedOutcome.value;
     expect(created.categoryId).toBe(category.id);
     expect(deleted).toEqual({ deleted: false, itemCount: 1 });
     expect((await store.listCategories()).some((row) => row.id === category.id)).toBe(true);

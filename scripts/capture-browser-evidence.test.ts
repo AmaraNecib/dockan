@@ -65,7 +65,7 @@ it("allocates four strict distinct ports and protects private data settings from
   const ports = { api: 4617, web: 4618, vault: 4619, vaultWeb: 4620 };
   validatePorts(ports);
   expect(() => validatePorts({ ...ports, vaultWeb: 4617 })).toThrow("four lane ports");
-  expect(runnerEnvironment(ports, "D:/private-runner-data", {}, { DOKAN_DATA_DIR: "D:/user-data", DOKAN_PORT: "4317" })).toEqual({ DOKAN_DATA_DIR: "D:/private-runner-data", DOKAN_PORT_ROOT: path.join("D:/private-runner-data", "run"), DOKAN_PORT: "4617", DOKAN_WEB_PORT: "4618", DOKAN_VAULT_PORT: "4619", DOKAN_VAULT_WEB_PORT: "4620" });
+  expect(runnerEnvironment(ports, "D:/private-runner-data", { DOKAN_DB_PATH: "D:/existing-user.db" }, { DOKAN_DATA_DIR: "D:/user-data", DOKAN_DB_PATH: "D:/journey.db", DOKAN_PORT: "4317" })).toEqual({ DOKAN_DB_PATH: path.join("D:/private-runner-data", "dokan.db"), DOKAN_DATA_DIR: "D:/private-runner-data", DOKAN_PORT_ROOT: path.join("D:/private-runner-data", "run"), DOKAN_PORT: "4617", DOKAN_WEB_PORT: "4618", DOKAN_VAULT_PORT: "4619", DOKAN_VAULT_WEB_PORT: "4620" });
 });
 
 it("rejects a server cwd whose canonical path escapes the clean source root", async () => {
@@ -168,7 +168,7 @@ it("requires the exact other revision in a distinct clean capture root", async (
   const comparisonId = [before.head, after.head].sort().join("-");
   try {
     const artifacts: Record<string, { sha256: string; bytes: number }> = {};
-    for (const name of ["journey.mp4", "journey.gif"]) { const content = `fixture ${name}`; fs.writeFileSync(path.join(evidence, name), content); artifacts[name] = { sha256: createHash("sha256").update(content).digest("hex"), bytes: Buffer.byteLength(content) }; }
+    for (const name of ["journey.mp4", "journey.gif", "card.png"]) { const content = `fixture ${name}`; fs.writeFileSync(path.join(evidence, name), content); artifacts[name] = { sha256: createHash("sha256").update(content).digest("hex"), bytes: Buffer.byteLength(content) }; }
     fs.writeFileSync(manifest, JSON.stringify({ status: "passed", comparison: { id: comparisonId, revision: before.head }, source: { revision: before.head, tree: git(before.root, "rev-parse", "HEAD^{tree}"), clean: true, root: before.root }, artifacts }));
     const snapshot = await validateComparisonManifest(manifest, before.head, comparisonId, after.root);
     expect(snapshot).toMatchObject({ path: await fs.promises.realpath(manifest), sha256: createHash("sha256").update(fs.readFileSync(manifest)).digest("hex"), source: { revision: before.head } });
@@ -179,18 +179,23 @@ it("requires the exact other revision in a distinct clean capture root", async (
     fs.writeFileSync(manifest, originalManifest);
     const video = path.join(evidence, "journey.mp4"), originalVideo = fs.readFileSync(video);
     fs.writeFileSync(video, "tampered video");
-    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact changed during capture: journey.mp4");
+    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact hash mismatch: journey.mp4");
     fs.writeFileSync(video, originalVideo);
+    await verifyComparisonUnchanged(snapshot);
+    const screenshot = path.join(evidence, "card.png"), originalScreenshot = fs.readFileSync(screenshot);
+    fs.writeFileSync(screenshot, "changed screenshot");
+    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact hash mismatch: card.png");
+    fs.writeFileSync(screenshot, originalScreenshot);
     await verifyComparisonUnchanged(snapshot);
     // Simulate an input replacement while logs and the after manifest are finalized.
     fs.writeFileSync(video, "replacement after finalization check");
     const pairFile = path.join(evidence, "comparison-pair.json");
-    await expect(writeComparisonPair(snapshot, { manifest, sha256: "after-digest", root: after.root, revision: after.head, tree: "after-tree" }, comparisonId, pairFile)).rejects.toThrow("Comparison artifact changed during capture");
+    await expect(writeComparisonPair(snapshot, { manifest, sha256: "after-digest", root: after.root, revision: after.head, tree: "after-tree" }, comparisonId, pairFile)).rejects.toThrow("Comparison artifact hash mismatch");
     expect(fs.existsSync(pairFile)).toBe(false);
     fs.writeFileSync(video, originalVideo);
     const gif = path.join(evidence, "journey.gif"), originalGif = fs.readFileSync(gif);
     fs.writeFileSync(gif, "tampered GIF");
-    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact changed during capture: journey.gif");
+    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact hash mismatch: journey.gif");
     fs.writeFileSync(gif, originalGif);
     await writeComparisonPair(snapshot, { manifest, sha256: "after-digest", root: after.root, revision: after.head, tree: "after-tree" }, comparisonId, pairFile);
     expect(JSON.parse(fs.readFileSync(pairFile, "utf8"))).toMatchObject({ status: "pair-verified", before: { sha256: snapshot.sha256, revision: before.head } });

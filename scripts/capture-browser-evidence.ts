@@ -71,12 +71,20 @@ export function validateReadinessUrl(value: string, port: number): string {
   if (!(url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]") || Number(url.port) !== port) throw new Error(`Readiness URL must use loopback and the allocated port ${port}: ${url.href}`);
   return url.href;
 }
-async function waitReady(url: string, child: ChildProcess): Promise<void> {
+function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+async function waitReady(url: string, child: ChildProcess, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Owned server exited before readiness (code=${String(child.exitCode)}, signal=${String(child.signalCode)})`);
-    try { const response = await fetch(url, { signal: AbortSignal.timeout(1_000) }); if (response.ok) return; } catch { /* retry until the bounded deadline */ }
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    try { const response = await interruptible(fetch(url, { signal: AbortSignal.timeout(1_000) }), signal); if (response.ok) return; } catch { if (signal.aborted) throw signal.reason; /* retry until the bounded deadline */ }
+    await interruptible(new Promise<void>((resolve) => setTimeout(resolve, 200)), signal);
   }
   throw new Error(`Server readiness timed out at ${url}`);
 }
@@ -113,7 +121,7 @@ export function validateServerContract(servers: EvidenceServer[], ports: Evidenc
   }
 }
 export function runnerEnvironment(ports: EvidenceRuntime["ports"], dataDir: string, inherited: NodeJS.ProcessEnv = process.env, journeyEnv: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { ...inherited, ...journeyEnv, DOKAN_DATA_DIR: dataDir, DOKAN_PORT_ROOT: path.join(dataDir, "run"), DOKAN_PORT: String(ports.api), DOKAN_WEB_PORT: String(ports.web), DOKAN_VAULT_PORT: String(ports.vault), DOKAN_VAULT_WEB_PORT: String(ports.vaultWeb) };
+  return { ...inherited, ...journeyEnv, DOKAN_DATA_DIR: dataDir, DOKAN_DB_PATH: path.join(dataDir, "dokan.db"), DOKAN_PORT_ROOT: path.join(dataDir, "run"), DOKAN_PORT: String(ports.api), DOKAN_WEB_PORT: String(ports.web), DOKAN_VAULT_PORT: String(ports.vault), DOKAN_VAULT_WEB_PORT: String(ports.vaultWeb) };
 }
 function within(root: string, candidate: string): boolean { return candidate === root || candidate.startsWith(`${root}${path.sep}`); }
 export async function resolveServerCwd(source: string, cwd: string): Promise<string> {
@@ -130,8 +138,11 @@ export type ComparisonSnapshot = { path: string; sha256: string; source: { root:
 export async function verifyComparisonUnchanged(snapshot: ComparisonSnapshot): Promise<void> {
   if (await sha256(snapshot.path) !== snapshot.sha256) throw new Error("Comparison manifest changed during capture");
   for (const [name, record] of Object.entries(snapshot.artifacts)) {
-    const file = path.join(path.dirname(snapshot.path), name);
-    if (await sha256(file) !== record.sha256 || (await fs.promises.stat(file)).size !== record.bytes) throw new Error(`Comparison artifact changed during capture: ${name}`);
+    if (!/^[a-z0-9][a-z0-9-]{0,63}\.png$/i.test(name) && name !== "journey.mp4" && name !== "journey.gif") throw new Error(`Invalid comparison artifact path: ${name}`);
+    const file = path.resolve(path.dirname(snapshot.path), name);
+    if (!within(path.dirname(snapshot.path), file) || path.dirname(file) !== path.dirname(snapshot.path)) throw new Error(`Invalid comparison artifact path: ${name}`);
+    const stat = await fs.promises.stat(file);
+    if (!stat.isFile() || await sha256(file) !== record.sha256 || stat.size !== record.bytes) throw new Error(`Comparison artifact hash mismatch: ${name}`);
   }
 }
 type PairMember = { manifest: string; sha256: string; root: string; revision: string; tree: string };
@@ -147,7 +158,9 @@ export async function validateComparisonManifest(file: string, against: string, 
   const manifest = JSON.parse(bytes.toString("utf8")) as { status?: string; comparison?: { id?: string; revision?: string; against?: string }; source?: { revision?: string; tree?: string; clean?: boolean; root?: string }; artifacts?: Record<string, { sha256?: string; bytes?: number }> };
   if (manifest.status !== "passed" || manifest.comparison?.id !== comparisonId || manifest.comparison.revision !== against || manifest.source?.revision !== against || !/^[0-9a-f]{40}$/i.test(manifest.source?.tree ?? "") || manifest.source.clean !== true || !manifest.source.root || await fs.promises.realpath(manifest.source.root) === currentRoot) throw new Error("Comparison manifest does not prove a passed clean capture from a distinct source root at the exact --against revision");
   const artifacts: ComparisonSnapshot["artifacts"] = {};
-  for (const name of ["journey.mp4", "journey.gif"]) {
+  const screenshotNames = Object.keys(manifest.artifacts ?? {}).filter((name) => name.endsWith(".png"));
+  for (const name of ["journey.mp4", "journey.gif", ...screenshotNames]) {
+    if (name.endsWith(".png") && !/^[a-z0-9][a-z0-9-]{0,63}\.png$/i.test(name)) throw new Error(`Invalid comparison artifact path: ${name}`);
     const record = manifest.artifacts?.[name];
     if (!record?.sha256 || !record.bytes) throw new Error(`Comparison manifest is missing verified ${name}`);
     const artifact = path.join(path.dirname(canonicalFile), name);
@@ -186,12 +199,16 @@ export async function capture(options: Options): Promise<void> {
   let recordedDuration: number | null = null;
   let journeyIdentity: { path: string; sha256: string; bytes: number } | null = null;
   let logOut: number | undefined, logErr: number | undefined;
+  const cancellation = new AbortController();
+  const onInterrupt = () => cancellation.abort(new Error("Capture cancelled by SIGINT"));
+  const onTerminate = () => cancellation.abort(new Error("Capture cancelled by SIGTERM"));
+  // SAFETY: Node's process object is an EventEmitter; SIGINT and SIGTERM are runtime event names.
+  const signals = process as NodeJS.EventEmitter;
+  signals.once("SIGINT", onInterrupt);
+  signals.once("SIGTERM", onTerminate);
   try {
     logOut = fs.openSync(logs.server, "wx");
     logErr = fs.openSync(logs.server, "a");
-    // Preflight all external executables/browser before starting the useful recording.
-    await preflightExecutables(source);
-    browser = await chromium.launch({ headless: true });
     const runtime: EvidenceRuntime = { ports: options.ports, urls: runtimeUrls(options.ports) };
     const canonicalJourney = await fs.promises.realpath(options.journey);
     const journeyStat = await fs.promises.stat(canonicalJourney);
@@ -201,6 +218,9 @@ export async function capture(options: Options): Promise<void> {
     journey = journeyModule.default;
     if (!journey || !Array.isArray(journey.servers) || !journey.journey) throw new Error("Journey must export API and web servers plus journey(page, evidence, runtime)");
     validateServerContract(journey.servers, options.ports);
+    // Validate the supplied contract before requiring media tools or launching Chromium.
+    await interruptible(preflightExecutables(source), cancellation.signal);
+    browser = await interruptible(chromium.launch({ headless: true }), cancellation.signal);
     for (const port of Object.values(options.ports)) await assertPortFree(port);
     await fs.promises.mkdir(dataDir, { recursive: false });
     for (const server of journey.servers) {
@@ -210,22 +230,22 @@ export async function capture(options: Options): Promise<void> {
       const env = runnerEnvironment(options.ports, dataDir, process.env, server.env);
       const child = spawnOwnedServer(server.command, server.args, { cwd, env, stdio: ["ignore", logOut, logErr] });
       children.push(child);
-      await waitReady(readinessUrl, child);
+      await waitReady(readinessUrl, child, cancellation.signal);
     }
     await validateSource(source, head);
     const setupContext = await browser.newContext({ viewport: VIEWPORT });
     const setupPage = await setupContext.newPage();
-    if (journey.setup) await journey.setup(setupPage, runtime);
+    if (journey.setup) await interruptible(journey.setup(setupPage, runtime), cancellation.signal);
     const storageState = await setupContext.storageState();
     await setupContext.close();
     const context = await browser.newContext({ viewport: VIEWPORT, recordVideo: { dir: options.output, size: VIEWPORT }, storageState });
     const page = await context.newPage();
     const screenshots: string[] = [];
-    await journey.journey(page, { screenshotElement: async (name, selector) => {
+    await interruptible(journey.journey(page, { screenshotElement: async (name, selector) => {
       const file = path.join(options.output, `${artifactName(name)}.png`);
       if (fs.existsSync(file)) throw new Error(`Screenshot already exists: ${file}`);
       await page.locator(selector).screenshot({ path: file }); screenshots.push(file); return file;
-    } }, runtime);
+    } }, runtime), cancellation.signal);
     const video = page.video();
     await context.close();
     await validateSource(source, head);
@@ -275,6 +295,8 @@ export async function capture(options: Options): Promise<void> {
         }
       }
     } catch (manifestError) { failure += `\nManifest write failed: ${String(manifestError)}`; status = "failed"; }
+    signals.removeListener("SIGINT", onInterrupt);
+    signals.removeListener("SIGTERM", onTerminate);
     if (logOut !== undefined) fs.closeSync(logOut);
     if (logErr !== undefined) fs.closeSync(logErr);
   }

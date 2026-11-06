@@ -365,11 +365,24 @@ jobs:
           # specs). Word-split below is intended: each mapped path is one
           # Playwright positional filter.
           E2E_SPECS: ${{ needs.changes.outputs.e2e_specs }}
+          # Unique per execution attempt; the reporter writes only beneath this path.
+          BROWSER_CI_MANIFEST_DIR: e2e-manifest-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -o pipefail
           mkdir -p e2e-logs
           # shellcheck disable=SC2086 -- the spec list must word-split.
           bun run test:e2e $E2E_SPECS 2>&1 | tee e2e-logs/playwright.log
+
+      - name: Upload e2e success manifest
+        if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-e2e-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e-manifest-${{ github.run_id }}-${{ github.run_attempt }}/manifest.json
+          if-no-files-found: warn
+          retention-days: 5
+          compression-level: 9
 
       # Evidence, not a report: a green suite leaves nothing worth 5 days of
       # storage, so success is the one outcome that skips this. #197.

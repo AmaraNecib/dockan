@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertPortFree, capture, convertAndValidateMedia, preflightExecutables, resolveServerCwd, runnerEnvironment, runFile, stopServersAndCleanData, validateComparisonManifest, validatePorts, validateReadinessUrl, validateServerContract, validateSource, runtimeUrls, verifySourceSnapshot } from "./capture-browser-evidence";
+import { assertPortFree, capture, convertAndValidateMedia, preflightExecutables, resolveServerCwd, runnerEnvironment, runFile, stopServersAndCleanData, validateComparisonManifest, validatePorts, validateReadinessUrl, validateServerContract, validateSource, runtimeUrls, verifySourceSnapshot, verifyComparisonUnchanged } from "./capture-browser-evidence";
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", shell: false });
@@ -170,7 +170,21 @@ it("requires the exact other revision in a distinct clean capture root", async (
     const artifacts: Record<string, { sha256: string; bytes: number }> = {};
     for (const name of ["journey.mp4", "journey.gif"]) { const content = `fixture ${name}`; fs.writeFileSync(path.join(evidence, name), content); artifacts[name] = { sha256: createHash("sha256").update(content).digest("hex"), bytes: Buffer.byteLength(content) }; }
     fs.writeFileSync(manifest, JSON.stringify({ status: "passed", comparison: { id: comparisonId, revision: before.head }, source: { revision: before.head, tree: git(before.root, "rev-parse", "HEAD^{tree}"), clean: true, root: before.root }, artifacts }));
-    await expect(validateComparisonManifest(manifest, before.head, comparisonId, after.root)).resolves.toBeUndefined();
+    const snapshot = await validateComparisonManifest(manifest, before.head, comparisonId, after.root);
+    expect(snapshot).toMatchObject({ path: await fs.promises.realpath(manifest), sha256: createHash("sha256").update(fs.readFileSync(manifest)).digest("hex"), source: { revision: before.head } });
+    await expect(verifyComparisonUnchanged(snapshot)).resolves.toBeUndefined();
+    const originalManifest = fs.readFileSync(manifest);
+    fs.writeFileSync(manifest, JSON.stringify({ status: "failed", source: { revision: "f".repeat(40) } }));
+    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison manifest changed during capture");
+    fs.writeFileSync(manifest, originalManifest);
+    const video = path.join(evidence, "journey.mp4"), originalVideo = fs.readFileSync(video);
+    fs.writeFileSync(video, "tampered video");
+    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact changed during capture: journey.mp4");
+    fs.writeFileSync(video, originalVideo);
+    const gif = path.join(evidence, "journey.gif"), originalGif = fs.readFileSync(gif);
+    fs.writeFileSync(gif, "tampered GIF");
+    await expect(verifyComparisonUnchanged(snapshot)).rejects.toThrow("Comparison artifact changed during capture: journey.gif");
+    fs.writeFileSync(gif, originalGif);
     await expect(validateComparisonManifest(manifest, "f".repeat(40), comparisonId, after.root)).rejects.toThrow("exact --against revision");
     await expect(validateComparisonManifest(manifest, before.head, comparisonId, before.root)).rejects.toThrow("distinct source root");
   } finally { fs.rmSync(evidence, { recursive: true, force: true }); fs.rmSync(before.root, { recursive: true, force: true }); fs.rmSync(after.root, { recursive: true, force: true }); }

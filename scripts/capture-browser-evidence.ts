@@ -126,16 +126,31 @@ export async function stopServersAndCleanData(children: ChildProcess[], dataDir:
   await stop(children);
   if (fs.existsSync(dataDir)) await fs.promises.rm(dataDir, { recursive: true, force: false });
 }
-export async function validateComparisonManifest(file: string, against: string, comparisonId: string, currentRoot: string): Promise<void> {
+export type ComparisonSnapshot = { path: string; sha256: string; source: { root: string; revision: string; tree: string }; artifacts: Record<string, { sha256: string; bytes: number }> };
+export async function verifyComparisonUnchanged(snapshot: ComparisonSnapshot): Promise<void> {
+  if (await sha256(snapshot.path) !== snapshot.sha256) throw new Error("Comparison manifest changed during capture");
+  for (const [name, record] of Object.entries(snapshot.artifacts)) {
+    const file = path.join(path.dirname(snapshot.path), name);
+    if (await sha256(file) !== record.sha256 || (await fs.promises.stat(file)).size !== record.bytes) throw new Error(`Comparison artifact changed during capture: ${name}`);
+  }
+}
+export async function validateComparisonManifest(file: string, against: string, comparisonId: string, currentRoot: string): Promise<ComparisonSnapshot> {
+  const canonicalFile = await fs.promises.realpath(file);
+  const bytes = await fs.promises.readFile(canonicalFile);
   // SAFETY: the manifest is untrusted input; every required field is checked below before use.
-  const manifest = JSON.parse(await fs.promises.readFile(file, "utf8")) as { status?: string; comparison?: { id?: string; revision?: string; against?: string }; source?: { revision?: string; tree?: string; clean?: boolean; root?: string }; artifacts?: Record<string, { sha256?: string; bytes?: number }> };
+  const manifest = JSON.parse(bytes.toString("utf8")) as { status?: string; comparison?: { id?: string; revision?: string; against?: string }; source?: { revision?: string; tree?: string; clean?: boolean; root?: string }; artifacts?: Record<string, { sha256?: string; bytes?: number }> };
   if (manifest.status !== "passed" || manifest.comparison?.id !== comparisonId || manifest.comparison.revision !== against || manifest.source?.revision !== against || !/^[0-9a-f]{40}$/i.test(manifest.source?.tree ?? "") || manifest.source.clean !== true || !manifest.source.root || await fs.promises.realpath(manifest.source.root) === currentRoot) throw new Error("Comparison manifest does not prove a passed clean capture from a distinct source root at the exact --against revision");
+  const artifacts: ComparisonSnapshot["artifacts"] = {};
   for (const name of ["journey.mp4", "journey.gif"]) {
     const record = manifest.artifacts?.[name];
     if (!record?.sha256 || !record.bytes) throw new Error(`Comparison manifest is missing verified ${name}`);
-    const artifact = path.join(path.dirname(file), name);
+    const artifact = path.join(path.dirname(canonicalFile), name);
     if ((await sha256(artifact)) !== record.sha256 || (await fs.promises.stat(artifact)).size !== record.bytes) throw new Error(`Comparison artifact hash mismatch: ${artifact}`);
+    artifacts[name] = { sha256: record.sha256, bytes: record.bytes };
   }
+  const snapshot = { path: canonicalFile, sha256: createHash("sha256").update(bytes).digest("hex"), source: { root: manifest.source.root, revision: against, tree: manifest.source.tree ?? "" }, artifacts };
+  await verifyComparisonUnchanged(snapshot);
+  return snapshot;
 }
 export async function capture(options: Options): Promise<void> {
   if (!/^[0-9a-f]{40}$/i.test(options.revision) || !/^[0-9a-f]{40}$/i.test(options.against)) throw new Error("--revision and --against must be full 40-character commit SHAs");
@@ -147,7 +162,7 @@ export async function capture(options: Options): Promise<void> {
   const againstCommit = await runFile("git", ["rev-parse", "--verify", `${options.against}^{commit}`], source);
   if (againstCommit !== options.against) throw new Error(`Comparison revision must resolve to the exact commit: ${options.against}`);
   const comparisonId = [head, againstCommit].sort().join("-");
-  if (options.comparisonManifest) await validateComparisonManifest(options.comparisonManifest, againstCommit, comparisonId, source);
+  const comparisonSnapshot = options.comparisonManifest ? await validateComparisonManifest(options.comparisonManifest, againstCommit, comparisonId, source) : undefined;
   if (fs.existsSync(options.output)) throw new Error(`Output already exists; refusing to overwrite evidence: ${options.output}`);
   await fs.promises.mkdir(options.output, { recursive: false });
   const startedAt = new Date().toISOString();
@@ -227,6 +242,10 @@ export async function capture(options: Options): Promise<void> {
         try { if (await sha256(journeyIdentity.path) !== journeyIdentity.sha256) throw new Error("Journey module changed during capture"); }
         catch (error) { status = "failed"; failure += `\n${String(error)}`; }
       }
+      if (comparisonSnapshot && status === "passed") {
+        try { await verifyComparisonUnchanged(comparisonSnapshot); }
+        catch (error) { status = "failed"; failure += `\n${String(error)}`; }
+      }
       await fs.promises.writeFile(logs.runner, `${failure || "Capture passed"}\n`, { flag: "wx" });
       for (const entry of await fs.promises.readdir(options.output, { withFileTypes: true })) {
         if (!entry.isFile() || !/[.](png|webm|mp4|gif|log)$/i.test(entry.name)) continue;
@@ -236,10 +255,9 @@ export async function capture(options: Options): Promise<void> {
       const manifest = { status, comparison: { id: comparisonId, revision: head, against: againstCommit, status: options.comparisonManifest ? "pair-member" : "single-capture", pairedManifest: options.comparisonManifest ?? null },  source: { root: source, revision: head, tree: finalTree, clean: finalClean === "" }, journey: journeyIdentity, command: { invocation: process.argv, journey: options.journey, servers: journey?.servers ?? null, ports: options.ports }, startedAt, finishedAt: new Date().toISOString(), viewport: VIEWPORT, durationSeconds: recordedDuration, isolatedData: { path: dataDir, removed: !preserveData && !fs.existsSync(dataDir), preservedAfterCleanupFailure: preserveData }, artifacts, logs, failure };
       const manifestPath = path.join(options.output, "manifest.json");
       await fs.promises.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
-      if (options.comparisonManifest && status === "passed") {
-        // SAFETY: validateComparisonManifest checked these exact fields and artifacts before the capture began.
-        const before = JSON.parse(await fs.promises.readFile(options.comparisonManifest, "utf8")) as { source: { root: string; revision: string; tree: string }; comparison: { id: string } };
-        await fs.promises.writeFile(path.join(options.output, "comparison-pair.json"), `${JSON.stringify({ status: "pair-verified", id: comparisonId, before: { manifest: options.comparisonManifest, sha256: await sha256(options.comparisonManifest), root: before.source.root, revision: before.source.revision, tree: before.source.tree }, after: { manifest: manifestPath, sha256: await sha256(manifestPath), root: source, revision: head, tree: finalTree } }, null, 2)}\n`, { flag: "wx" });
+      if (comparisonSnapshot && status === "passed") {
+        // Use only the snapshot whose manifest and media digests were checked again during finalization.
+        await fs.promises.writeFile(path.join(options.output, "comparison-pair.json"), `${JSON.stringify({ status: "pair-verified", id: comparisonId, before: { manifest: comparisonSnapshot.path, sha256: comparisonSnapshot.sha256, ...comparisonSnapshot.source }, after: { manifest: manifestPath, sha256: await sha256(manifestPath), root: source, revision: head, tree: finalTree } }, null, 2)}\n`, { flag: "wx" });
       }
     } catch (manifestError) { failure += `\nManifest write failed: ${String(manifestError)}`; status = "failed"; }
     if (logOut !== undefined) fs.closeSync(logOut);

@@ -86,6 +86,50 @@ describe("activity actor snapshot migration", () => {
     }
   });
 
+  it("rolls back actor columns when recording the schema version fails, then retries safely", async () => {
+    const dbPath = makeV7Database();
+    const conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: directory, DOKAN_DB_PATH: dbPath }));
+    const originalExec = conn.raw.exec.bind(conn.raw);
+    try {
+      const store = createDrizzleStore(conn);
+      Object.defineProperty(conn.raw, "exec", {
+        configurable: true,
+        value: (query: string) => {
+          if (query === "PRAGMA user_version = 8") throw new Error("injected version stamp failure");
+          return originalExec(query);
+        },
+      });
+      await expect(store.setup()).rejects.toThrow("injected version stamp failure");
+      Object.defineProperty(conn.raw, "exec", { configurable: true, value: originalExec });
+      // SAFETY: PRAGMA table_info returns one row per column with a string name.
+      const columns = conn.raw.query("PRAGMA table_info(activities)").all() as Array<{ name: string }>;
+      expect(columns.map((column) => column.name)).not.toContain("actor_id");
+      expect(columns.map((column) => column.name)).not.toContain("actor_name");
+      expect(readSchemaVersion(conn.raw)).toBe(7);
+      await store.setup();
+      expect(readSchemaVersion(conn.raw)).toBe(8);
+      expect((await store.listActivities()).items.find((row) => row.id === "legacy-activity"))
+        .toMatchObject({ actorId: null, actorName: null, summary: "SALE_CREATED INV-0001" });
+    } finally {
+      Object.defineProperty(conn.raw, "exec", { configurable: true, value: originalExec });
+      conn.close();
+    }
+  });
+
+  it("refuses a newer database before setup changes its schema", async () => {
+    const dbPath = makeV7Database();
+    const conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: directory, DOKAN_DB_PATH: dbPath }));
+    try {
+      conn.raw.exec("PRAGMA user_version = 9");
+      const before = conn.raw.query("SELECT sql FROM sqlite_master ORDER BY name").all();
+      await expect(createDrizzleStore(conn).setup()).rejects.toThrow(UnsupportedSchemaVersionError);
+      expect(conn.raw.query("SELECT sql FROM sqlite_master ORDER BY name").all()).toEqual(before);
+      expect(readSchemaVersion(conn.raw)).toBe(9);
+    } finally {
+      conn.close();
+    }
+  });
+
   it("adds nullable snapshots without attributing old activity, stamps v8, refuses v7 readers, and reopens safely", async () => {
     const dbPath = makeV7Database();
     const conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: directory, DOKAN_DB_PATH: dbPath }));

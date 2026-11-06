@@ -17,7 +17,7 @@ A journey module default-exports:
 }
 ```
 
-`runtime.urls.api`, `runtime.urls.web`, and all four `runtime.ports` values are typed. The browser URLs use `dokan.localhost`, which Dokan uses for its cookie scope; readiness probes still use loopback. `setup` runs in an unrecorded browser context; use it for login or other setup. Keep business selectors and assertions inside `journey`. The runner owns process startup, safety environment, readiness, media and cleanup.
+`runtime.urls.api`, `runtime.urls.web`, and all four `runtime.ports` values are typed. The browser URLs use `dokan.localhost`, which Dokan uses for its cookie scope; readiness probes still use loopback. The example disables the encrypted vault because it captures ordinary product flows. Remove that setting for a vault journey and create or unlock the vault in `setup`. `setup` runs in an unrecorded browser context; use it for login or other setup. Keep business selectors and assertions inside `journey`. The runner owns process startup, safety environment, readiness, media and cleanup.
 
 Server commands use argument arrays and `shell: false`. `cwd` is relative to the exact source root and must resolve inside it. Server `env` cannot replace `DOKAN_DATA_DIR`, `DOKAN_PORT_ROOT`, or any allocated port. The runner assigns those after journey environment values.
 
@@ -32,7 +32,7 @@ Example API and web commands are real Dokan commands. Add the project-specific a
 ```js
 export default {
   servers: [
-    { name: "api", command: "bun", args: ["src/main.ts"], cwd: "apps/api", readinessUrl: "http://127.0.0.1:{port}/api/vault/status" },
+    { name: "api", command: "bun", args: ["src/main.ts"], cwd: "apps/api", readinessUrl: "http://127.0.0.1:{port}/api/vault/status", env: { DOKAN_VAULT: "disabled" } },
     { name: "web", command: "bun", args: ["run", "dev"], cwd: "apps/web", readinessUrl: "http://127.0.0.1:{port}/" },
   ],
   async setup(page, runtime) {

@@ -6,6 +6,7 @@ export default {
       args: ["src/main.ts"],
       cwd: "apps/api",
       readinessUrl: "http://127.0.0.1:{port}/api/vault/status",
+      env: { DOKAN_VAULT: "disabled" },
     },
     {
       name: "web",

@@ -839,6 +839,7 @@ test("sale save refuses sidebar navigation until its result is visible", async (
     void popupPromise.catch(() => undefined);
     await page.getByRole("link", { name: "المشتريات" }).click({ modifiers: ["ControlOrMeta"] });
     const popup = await popupPromise;
+    await popup.waitForURL(/\/purchase(?:[/?#]|$)/, { waitUntil: "domcontentloaded" });
     await expect(popup).toHaveURL(/\/purchase(?:[/?#]|$)/);
     await expect(page).toHaveURL(saleUrl);
     await popup.close();

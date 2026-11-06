@@ -441,4 +441,39 @@ describe("InvoicesPage empty states (issue #96)", () => {
     // focus must not go to a control that did not empty it
     expect(focusedTestId()).toBe("invoices-status-filter");
   });
+
+  it("reopens range details and focuses the exact input after clearing an empty range", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(seedInvoices[0]!);
+    const page = await mountPage();
+
+    await act(async () => page.rangeToggle()?.click());
+    await act(async () => setNativeValue(page.toNumber()!, "0"));
+    await waitFor(() => page.empty() !== null);
+    expect(requests.at(-1)?.toNumber).toBe("0");
+
+    await act(async () => page.rangeToggle()?.click());
+    expect(page.rangeDetails()?.open).toBe(false);
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 1);
+
+    expect(page.rangeDetails()?.open).toBe(true);
+    expect(document.activeElement).toBe(page.toNumber());
+  });
+
+  it("returns focus to order when order changed last in an empty range result", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(seedInvoices[0]!);
+    const page = await mountPage();
+
+    await act(async () => page.rangeToggle()?.click());
+    await act(async () => setNativeValue(page.fromNumber()!, "9999"));
+    await waitFor(() => page.empty() !== null);
+    await act(async () => chooseOption(page.order()!, i18n.t("invoicesOrderOldest")));
+    await waitFor(() => requests.at(-1)?.order === "OLDEST" && page.empty() !== null);
+
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 1);
+    expect(document.activeElement).toBe(page.order());
+  });
 });

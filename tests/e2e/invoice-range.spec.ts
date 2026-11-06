@@ -43,7 +43,7 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
   await holdForEvidence();
   const evidence = path.resolve(process.cwd(), ".scratch/evidence/406");
   fs.mkdirSync(evidence, { recursive: true });
-  await surface.screenshot({ path: path.join(evidence, "after-invoice-page-review-fix.png") });
+  await surface.screenshot({ path: path.join(evidence, "after-invoice-page-focus-fix.png") });
   await page.getByTestId("invoices-range-filters-toggle").click();
   await expect(page.getByTestId("invoices-range-details")).toHaveAttribute("open", "");
   const fromDate = page.getByTestId("invoices-from-date");
@@ -92,5 +92,24 @@ test("invoice list filters persisted ranges, sorts business dates, and clears de
   await page.getByTestId("invoices-search").fill(`range item ${stamp}`);
   await expect(rows).toHaveCount(3);
   await holdForEvidence();
-  await page.getByTestId("invoices-page").screenshot({ path: path.join(evidence, "after-invoice-page-review-fix-filtered.png") });
+  await page.getByTestId("invoices-page").screenshot({ path: path.join(evidence, "after-invoice-page-focus-fix-filtered.png") });
+
+  const rangeDetails = page.getByTestId("invoices-range-details");
+  await page.getByTestId("invoices-to-number").fill("0");
+  await expect(rows).toHaveCount(0);
+  await page.getByTestId("invoices-range-filters-toggle").click();
+  await expect(rangeDetails).not.toHaveAttribute("open", "");
+  await page.getByTestId("invoices-empty-action").click();
+  await expect(rows).toHaveCount(Math.min(existingInvoices.total + 3, 500));
+  await expect(rangeDetails).toHaveAttribute("open", "");
+  await expect(page.getByTestId("invoices-to-number")).toBeFocused();
+
+  await page.getByTestId("invoices-from-number").fill("999999");
+  await expect(rows).toHaveCount(0);
+  await page.getByTestId("invoices-order-filter").click();
+  await page.getByRole("option", { name: "الأقدم أولاً" }).click();
+  await expect(rows).toHaveCount(0);
+  await page.getByTestId("invoices-empty-action").click();
+  await expect(rows).toHaveCount(Math.min(existingInvoices.total + 3, 500));
+  await expect(page.getByTestId("invoices-order-filter")).toBeFocused();
 });

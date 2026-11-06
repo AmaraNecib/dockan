@@ -39,6 +39,8 @@ export function InvoicesPage() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const rangeDetailsRef = useRef<HTMLDetailsElement>(null);
+  const lastRangeFilterRef = useRef("invoices-from-date");
   const [kind, setKind] = useState<KindFilter>("");
   const [status, setStatus] = useState<StatusFilter>("");
   const [fromDate, setFromDate] = useState("");
@@ -188,24 +190,24 @@ export function InvoicesPage() {
         }}>{t("invoicesFiltersClear")}</Button>}
       </div>
 
-      <details className="mt-3 border-t pt-2" data-testid="invoices-range-details">
+      <details ref={rangeDetailsRef} className="mt-3 border-t pt-2" data-testid="invoices-range-details">
         <summary className="w-fit cursor-pointer py-1 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="invoices-range-filters-toggle">{t("invoicesRangeFilters")}</summary>
         <div className="mt-3 grid grid-cols-2 gap-3">
           <label className="grid gap-1 text-sm">
             {t("invoicesFromDate")}
-            <Input type="date" value={fromDate} data-testid="invoices-from-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setFromDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+            <Input type="date" value={fromDate} data-testid="invoices-from-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setFromDate(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-from-date"; pager.reset(); }} />
           </label>
           <label className="grid gap-1 text-sm">
             {t("invoicesToDate")}
-            <Input type="date" value={toDate} data-testid="invoices-to-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setToDate(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+            <Input type="date" value={toDate} data-testid="invoices-to-date" aria-invalid={dateRangeInvalid} onChange={(event) => { setToDate(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-to-date"; pager.reset(); }} />
           </label>
           <label className="grid gap-1 text-sm">
             {t("invoicesFromNumber")}
-            <Input value={fromNumber} inputMode="text" data-testid="invoices-from-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setFromNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+            <Input value={fromNumber} inputMode="text" data-testid="invoices-from-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setFromNumber(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-from-number"; pager.reset(); }} />
           </label>
           <label className="grid gap-1 text-sm">
             {t("invoicesToNumber")}
-            <Input value={toNumber} inputMode="text" data-testid="invoices-to-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setToNumber(event.target.value); lastFilterRef.current = "range"; pager.reset(); }} />
+            <Input value={toNumber} inputMode="text" data-testid="invoices-to-number" aria-invalid={numberRangeInvalid} onChange={(event) => { setToNumber(event.target.value); lastFilterRef.current = "range"; lastRangeFilterRef.current = "invoices-to-number"; pager.reset(); }} />
           </label>
           <p className="col-span-2 text-xs text-muted-foreground">{t("invoicesNumberRangeHint")}</p>
           {rangeError !== "" && <p className="col-span-2 text-sm text-destructive" role="alert" data-testid="invoices-range-error">{rangeError}</p>}
@@ -258,8 +260,15 @@ export function InvoicesPage() {
                   const last = lastFilterRef.current;
                   const target =
                     last ?? (kind !== "" ? "kind" : status !== "" ? "status" : "kind");
-                  const filter =
-                    target === "search" ? "invoices-search" : target === "status" ? "invoices-status-filter" : target === "range" ? "invoices-from-date" : "invoices-kind-filter";
+                  const filter = target === "search"
+                    ? "invoices-search"
+                    : target === "status"
+                      ? "invoices-status-filter"
+                      : target === "order"
+                        ? "invoices-order-filter"
+                        : target === "range"
+                          ? lastRangeFilterRef.current
+                          : "invoices-kind-filter";
                   setSearch("");
                   setDebouncedSearch("");
                   setKind("");
@@ -270,6 +279,9 @@ export function InvoicesPage() {
                   setToNumber("");
                   setOrder("NEWEST");
                   pager.reset();
+                  if (target === "range" && rangeDetailsRef.current !== null) {
+                    rangeDetailsRef.current.open = true;
+                  }
                   focusByTestId(filter);
                 }}
               >

@@ -2,6 +2,8 @@
 // packaged desktop evidence. This runner never connects to a desktop browser.
 import fs from "node:fs";
 import path from "node:path";
+import net from "node:net";
+import { once } from "node:events";
 import { execFileSync } from "node:child_process";
 import { chromium, expect, type BrowserContextOptions } from "@playwright/test";
 import { z } from "zod";
@@ -30,14 +32,18 @@ function Fixture(){
  const [view,setView]=useState(params.has('gate')?'gate':'restore');
  window.showFixtureGate=()=>setView('gate');
  const opened=()=>setView('record');
- return <main dir="rtl" className="mx-auto max-w-3xl bg-background px-5 py-6 text-foreground">
+ return <main dir="rtl" style={{width:'min(48rem, 100%)',marginInline:'auto',padding:20,boxSizing:'border-box'}} className="bg-background text-foreground">
  {view==='restore'?<><h1 className="text-2xl font-bold">النسخ الاحتياطي</h1>{params.has('before')?<Before/>:<BackupRestore/>}</>:view==='gate'&&!readVaultSessionToken()?<VaultGate status={{mode:'vault',state:'locked',legacyDatabase:false,recoveryKeyCount:1,lockedForMs:0,unlocked:false,session:false,broker:true}} onUnlocked={opened}/>:<><BackupRestoreOutcome/><p data-testid="reopened-record">Original native record</p></>}
  </main>;
 }
 createRoot(document.getElementById('root')).render(<Fixture/>);`);
+const reservation = net.createServer().listen(0, "127.0.0.1");
+await once(reservation, "listening");
+const isolatedPort = z.object({ port: z.number().int().positive() }).parse(reservation.address()).port;
+await new Promise<void>(resolve => reservation.close(() => resolve()));
 const server = await createServer({
   root: path.join(repo, "apps/web"), configFile: path.join(repo, "apps/web/vite.config.ts"),
-  server: { port: 0, open: false, host: "127.0.0.1", strictPort: true },
+  server: { port: isolatedPort, open: false, host: "127.0.0.1", strictPort: true },
   plugins: [{ name: "402-headless-fixture", configureServer(vite) {
     vite.middlewares.use((req, res, next) => {
       if (!req.url?.startsWith("/__402")) return next();
@@ -119,6 +125,10 @@ try {
     await expect(panel.locator("h3")).toBeFocused();
     await expect(panel).toContainText("آخر تعديل للملف");
     await expect(panel).not.toContainText("2020");
+    const panelMetrics = await panel.evaluate(el => { const box = el.getBoundingClientRect(); return { x: box.x, right: box.right, width: box.width, viewport: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth }; });
+    expect(panelMetrics.overflow).toBe(false);
+    expect(panelMetrics.x).toBeGreaterThanOrEqual(0);
+    expect(panelMetrics.right).toBeLessThanOrEqual(width);
     await panel.screenshot({ path: path.join(evidence, `after-preview-${width}.png`) });
     await panel.locator("#restore-current-secret").fill("wrong current");
     await panel.locator("#restore-confirm").check();
@@ -161,7 +171,7 @@ try {
     await page.reload();
     await expect(page.getByTestId("restore-outcome")).toContainText("اكتملت الاستعادة");
     await page.getByTestId("restore-outcome").screenshot({ path: path.join(evidence, `after-success-${width}.png`) });
-    results.push({ width, correctedUnlockSurvivesReload: true, previewAttempts, confirmationCalls, metrics });
+    results.push({ width, correctedUnlockSurvivesReload: true, previewAttempts, confirmationCalls, metrics, panelMetrics });
     const video = page.video();
     await context.close();
     if (width === 1100 && video) fs.copyFileSync(await video.path(), path.join(evidence, "restore-headless.webm"));

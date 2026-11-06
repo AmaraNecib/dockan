@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { NativeRestoreReply, RestoreInvokeArgs } from "../../web/src/lib/backup-restore";
 import type { BrokerReply, BrokerInvokeArgs } from "../../web/src/lib/vault-broker";
 // Vite belongs to the web workspace, not the desktop workspace.
-import { createServer } from "../../web/node_modules/vite/dist/node/index.js";
+import { createServer, type InlineConfig, type ViteDevServer } from "../../web/node_modules/vite";
 
 const repo = path.resolve(import.meta.dir, "../../..");
 if (process.cwd() !== repo) throw new Error("Run from the assigned repository root");
@@ -41,16 +41,18 @@ const reservation = net.createServer().listen(0, "127.0.0.1");
 await once(reservation, "listening");
 const isolatedPort = z.object({ port: z.number().int().positive() }).parse(reservation.address()).port;
 await new Promise<void>(resolve => reservation.close(() => resolve()));
-const server = await createServer({
-  root: path.join(repo, "apps/web"), configFile: path.join(repo, "apps/web/vite.config.ts"),
-  server: { port: isolatedPort, open: false, host: "127.0.0.1", strictPort: true },
-  plugins: [{ name: "402-headless-fixture", configureServer(vite) {
+const fixturePlugin = { name: "402-headless-fixture", configureServer(vite: ViteDevServer) {
     vite.middlewares.use((req, res, next) => {
       if (!req.url?.startsWith("/__402")) return next();
       void vite.transformIndexHtml(req.url, `<html lang="ar" dir="rtl"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/@fs/${fixture.replaceAll("\\", "/")}"></script></body></html>`).then(html => { res.setHeader("Content-Type", "text/html; charset=utf-8"); res.end(html); });
     });
-  } }],
-});
+} };
+const config: InlineConfig = {
+  root: path.join(repo, "apps/web"), configFile: path.join(repo, "apps/web/vite.config.ts"),
+  server: { port: isolatedPort, open: false, host: "127.0.0.1", strictPort: true },
+  plugins: [fixturePlugin],
+};
+const server = await createServer(config);
 await server.listen();
 const address = z.object({ port: z.number().int().positive() }).parse(server.httpServer?.address());
 const origin = `http://127.0.0.1:${address.port}`;

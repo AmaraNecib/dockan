@@ -120,7 +120,7 @@ describe("the verification rule is discoverable (#259)", () => {
     expect(agents).toContain("docs/agent-delegation-template.md");
     const template = read("docs/agent-delegation-template.md");
     for (const field of ["Goal", "Worktree", "Base and head", "Required reading", "Scope and authority", "Verification mode", "Concrete proof", "Completion report"]) {
-      expect(template).toContain(`\n${field}\n`);
+      expect(template).toMatch(new RegExp(`\\r?\\n${field}\\r?\\n`));
     }
     expect(template).toContain("reviewer is read-only on the source tree");
     expect(template).toContain("raw task input");

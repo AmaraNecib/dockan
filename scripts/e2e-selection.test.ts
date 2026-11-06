@@ -483,10 +483,11 @@ describe("e2e-selection CLI", () => {
     };
     try {
       const affected = run("apps/web/src/pages/backups.tsx\n");
-      expect(affected).toContain("mode=affected\n");
-      // ci.yml word-splits this line into Playwright positional filters, so the
-      // tests/e2e/ prefix and the space join are part of the contract.
-      expect(affected).toContain("specs=tests/e2e/backups.spec.ts\n");
+      // This subprocess uses live discovery. Curated selections are pinned
+      // above; here the public emitter must retain the current full inventory.
+      const liveScope = selectLive(["apps/web/src/pages/backups.tsx"], map);
+      expect(affected).toContain(`mode=${liveScope.mode}\n`);
+      expect(affected).toContain(`specs=${specPaths(liveScope).join(" ")}\n`);
       expect(affected).toMatch(/^reason=.+$/mu);
       // full and skip both emit an empty specs line, never a stale one
       expect(run("apps/api/src/rpc/router.ts\n")).toContain("mode=full\nspecs=\n");

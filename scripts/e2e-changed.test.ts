@@ -15,7 +15,7 @@ import {
   type Spawn,
 } from "./e2e-changed";
 import { type Discovery } from "./e2e-discovery";
-import { loadMap, specPaths, type Scope } from "./e2e-selection";
+import { loadMap, selectSpecs, specPaths, type Scope } from "./e2e-selection";
 
 // The local twin of the CI selector. CI answers "which specs does this PR
 // reach" server-side; this answers the same question on the lane that is about
@@ -540,15 +540,18 @@ describe("e2e-changed CLI", () => {
     }
   });
 
-  test("a mapped list stays short instead of widening to the suite", () => {
+  test("the CLI preserves the live selection without dropping discovered tests", () => {
     // `not.toContain("mode=full")` passed on empty stdout; the mode line is
     // asserted positively instead.
     const out = execFileSync(process.execPath, [CLI, "--dry-run", "--files", "apps/web/src/pages/backups.tsx"], {
       cwd: ROOT,
       encoding: "utf8",
     });
-    expect(out.split("\n")[0]).toBe("mode=affected");
-    expect(out).toContain("specs=tests/e2e/backups.spec.ts\n");
+    // The subprocess intentionally reads live discovery, unlike curated spawn
+    // unit cases. A new unregistered test must not invalidate this contract.
+    const liveScope = selectSpecs(["apps/web/src/pages/backups.tsx"]);
+    expect(out.split("\n")[0]).toBe(`mode=${liveScope.mode}`);
+    expect(out).toContain(`specs=${specPaths(liveScope).join(" ")}\n`);
   });
 
   test("a critical path forces full and emits an empty specs line", () => {

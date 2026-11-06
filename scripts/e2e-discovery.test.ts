@@ -124,6 +124,24 @@ describe("e2e test discovery", () => {
     }
   });
 
+  test("both CLI suites pass while an unregistered spec exists", () => {
+    const fixtureName = `orphan-cli-${process.pid}-${Date.now()}`;
+    const fixtureDir = join(ROOT, "tests", "e2e", fixtureName);
+    mkdirSync(fixtureDir, { recursive: true });
+    writeFileSync(join(fixtureDir, "new-flow.spec.ts"),
+      'import { test } from "@playwright/test"; test("orphan CLI fixture", () => {});\n');
+    try {
+      // Curated helper injection cannot protect real subprocess assertions.
+      const cliSuites = spawnSync(process.execPath, ["test", "scripts/e2e-selection.test.ts", "scripts/e2e-changed.test.ts"], {
+        cwd: ROOT,
+        encoding: "utf8",
+      });
+      expect({ status: cliSuites.status, error: cliSuites.error?.message }).toEqual({ status: 0, error: undefined });
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
   test("an unregistered nested candidate joins mapped specs for an affected path", () => {
     const { root, tests } = fixture();
     try {

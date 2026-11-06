@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
+import { QueryObserver } from "@tanstack/react-query";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import i18n from "../lib/i18n";
@@ -15,6 +16,12 @@ let created: Array<{ name: string }> = [];
 let categoryRenameFails = false;
 let categoryDeleteFails = false;
 let categoryUseCounts = new Map<string, number>();
+let categoryCreateDelay: Promise<void> | null = null;
+let releaseCategoryCreate: (() => void) | null = null;
+let categoryRenameDelay: Promise<void> | null = null;
+let releaseCategoryRename: (() => void) | null = null;
+let categoryDeleteDelay: Promise<void> | null = null;
+let releaseCategoryDelete: (() => void) | null = null;
 
 // NOTE: mock.module is process-global (see tests/router-mock.tsx); this file
 // owns the whole @/lib/rpc seam for its duration and exposes every member the
@@ -23,19 +30,20 @@ mock.module("@/lib/rpc", () => ({
   orpc: {
     categoriesList: {
       queryOptions: () => ({
-        queryKey: ["categoriesList"],
+        queryKey: [["categoriesList"]],
         queryFn: async () => ({ items: categories }),
       }),
-      queryKey: () => ["categoriesList"],
+      queryKey: () => [["categoriesList"]],
     },
-    itemsList: { queryKey: () => ["itemsList"] },
-    itemsAll: { queryKey: () => ["itemsAll"] },
+    itemsList: { queryKey: () => [["itemsList"]] },
+    itemsAll: { queryKey: () => [["itemsAll"]] },
     categoriesRename: {
       mutationOptions: (options: { onSuccess?: (category: Category) => void; onError?: (error: { message?: string }) => void }) => ({
         mutationKey: ["categoriesRename"],
         ...options,
         mutationFn: async (input: { id: string; name: string }) => {
           if (categoryRenameFails) throw new Error("CATEGORY_EXISTS");
+          await categoryRenameDelay;
           const category = categories.find((row) => row.id === input.id);
           if (category === undefined) throw new Error("CATEGORY_NOT_FOUND");
           category.name = input.name.trim();
@@ -49,6 +57,7 @@ mock.module("@/lib/rpc", () => ({
         ...options,
         mutationFn: async (input: { id: string }) => {
           if (categoryDeleteFails) throw new Error("CATEGORY_NOT_FOUND");
+          await categoryDeleteDelay;
           const itemCount = categoryUseCounts.get(input.id) ?? 0;
           if (itemCount > 0) return { deleted: false, itemCount };
           categories = categories.filter((row) => row.id !== input.id);
@@ -62,6 +71,7 @@ mock.module("@/lib/rpc", () => ({
         ...options,
         mutationFn: async (input: { name: string }) => {
           created.push(input);
+          await categoryCreateDelay;
           const row = { id: `cat-${created.length}`, name: input.name };
           categories.push(row);
           return row;
@@ -107,6 +117,12 @@ beforeEach(() => {
   categoryRenameFails = false;
   categoryDeleteFails = false;
   categoryUseCounts = new Map();
+  categoryCreateDelay = null;
+  releaseCategoryCreate = null;
+  categoryRenameDelay = null;
+  releaseCategoryRename = null;
+  categoryDeleteDelay = null;
+  releaseCategoryDelete = null;
   document.body.innerHTML = "";
 });
 
@@ -133,6 +149,92 @@ describe("CategoriesPage management (#389)", () => {
     await submitForm(page.container.querySelector("li form")!);
     await page.poll(() => page.container.textContent?.includes("جديد") === true, "renamed label shown");
     expect(categories).toEqual([{ id: "cat-stable", name: "جديد" }]);
+  });
+
+  it("locks other row actions and the draft while a rename is pending", async () => {
+    categories = [
+      { id: "cat-a", name: "أ" },
+      { id: "cat-b", name: "ب" },
+    ];
+    categoryRenameDelay = new Promise((resolve) => { releaseCategoryRename = resolve; });
+    const page = await mount();
+    const renameButtons = [...page.container.querySelectorAll("button")]
+      .filter((button) => button.textContent?.trim() === i18n.t("categoriesRename"));
+    await act(async () => renameButtons[0]?.click());
+    const editor = page.container.querySelector<HTMLInputElement>('input[aria-label="اسم التصنيف أ"]')!;
+    typeInto(editor, "أ جديد");
+    await submitForm(editor.closest("form")!);
+
+    const otherRename = [...page.container.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === i18n.t("categoriesRename"));
+    const interactionsLocked = editor.disabled && otherRename?.disabled === true;
+    releaseCategoryRename?.();
+    await page.poll(() => categories[0]?.name === "أ جديد", "delayed rename completes");
+
+    expect(interactionsLocked).toBe(true);
+    expect(page.container.textContent).toContain("ب");
+  });
+
+  it("locks other row actions while a delete is pending", async () => {
+    categories = [
+      { id: "cat-a", name: "أ" },
+      { id: "cat-b", name: "ب" },
+    ];
+    categoryDeleteDelay = new Promise((resolve) => { releaseCategoryDelete = resolve; });
+    const page = await mount();
+    const deleteButtons = [...page.container.querySelectorAll("button")]
+      .filter((button) => button.textContent?.trim() === i18n.t("categoriesDelete"));
+    await act(async () => deleteButtons[0]?.click());
+    await clickButton(page.container, i18n.t("categoriesConfirm"));
+
+    const otherDelete = [...page.container.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === i18n.t("categoriesDelete"));
+    const interactionsLocked = otherDelete?.disabled === true;
+    releaseCategoryDelete?.();
+    await page.poll(() => categories.length === 1, "delayed delete completes");
+
+    expect(interactionsLocked).toBe(true);
+    expect(categories).toEqual([{ id: "cat-b", name: "ب" }]);
+  });
+
+  it("locks the create field while a category create is pending", async () => {
+    categoryCreateDelay = new Promise((resolve) => { releaseCategoryCreate = resolve; });
+    const page = await mount();
+    const input = page.container.querySelector<HTMLInputElement>('input[placeholder="اسم تصنيف جديد"]')!;
+    typeInto(input, "أول تصنيف");
+    await submitForm(input.closest("form")!);
+
+    const draftLocked = input.disabled;
+    releaseCategoryCreate?.();
+    await page.poll(() => categories.length === 1, "delayed create completes");
+
+    expect(draftLocked).toBe(true);
+  });
+
+  it("refreshes cached item-list pages with the real nested oRPC key after rename", async () => {
+    categories = [{ id: "cat-stable", name: "قديم" }];
+    const page = await mount();
+    const itemListKeys = [
+      [["itemsList"], { input: { page: 1 } }],
+      [["itemsList"], { input: { page: 2 } }],
+    ] as const;
+    const observers = itemListKeys.map((queryKey) => new QueryObserver(page.queryClient, {
+      queryKey,
+      queryFn: async () => ({ categoryName: categories[0]?.name }),
+    }));
+    const unsubscribers = observers.map((observer) => observer.subscribe(() => undefined));
+    await Promise.all(observers.map((observer) => observer.refetch()));
+    expect(observers.map((observer) => observer.getCurrentResult().data?.categoryName)).toEqual(["قديم", "قديم"]);
+
+    await clickButton(page.container, i18n.t("categoriesRename"));
+    typeInto(page.container.querySelector<HTMLInputElement>('input[aria-label="اسم التصنيف قديم"]')!, "جديد");
+    await submitForm(page.container.querySelector("li form")!);
+    await page.poll(
+      () => observers.every((observer) => observer.getCurrentResult().data?.categoryName === "جديد"),
+      "cached item-list labels refreshed",
+    );
+
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
   });
 
   it("cancels an edit and a delete confirmation without changing the category", async () => {

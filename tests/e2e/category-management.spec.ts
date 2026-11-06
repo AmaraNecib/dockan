@@ -16,7 +16,7 @@ test("searches all categories, preserves assignments on rename, and confirms saf
   await page.goto("/categories");
   for (const name of categories) {
     await page.getByPlaceholder("اسم تصنيف جديد").fill(name);
-    await page.getByRole("button", { name: "إضافة" }).click();
+    await actAndAck(page, "categoriesCreate", () => page.getByRole("button", { name: "إضافة" }).click());
     await expect(page.getByText(name, { exact: true })).toBeVisible();
   }
 
@@ -38,7 +38,7 @@ test("searches all categories, preserves assignments on rename, and confirms saf
   const editRow = page.locator("li").filter({ hasText: target });
   await editRow.getByRole("button", { name: "تعديل الاسم" }).click();
   await page.getByRole("textbox", { name: `اسم التصنيف ${target}` }).fill(renamed);
-  await page.getByRole("button", { name: "حفظ" }).click();
+  await actAndAck(page, "categoriesRename", () => page.getByRole("button", { name: "حفظ" }).click());
   await page.getByRole("searchbox", { name: "ابحث في التصنيفات…" }).fill(renamed);
   await expect(page.getByText(renamed, { exact: true })).toBeVisible();
 
@@ -57,13 +57,13 @@ test("searches all categories, preserves assignments on rename, and confirms saf
   await unusedRow.getByRole("button", { name: "إلغاء" }).click();
   await expect(unusedRow).toBeVisible();
   await unusedRow.getByRole("button", { name: "حذف" }).click();
-  await unusedRow.getByRole("button", { name: "تأكيد الحذف" }).click();
+  await actAndAck(page, "categoriesDelete", () => unusedRow.getByRole("button", { name: "تأكيد الحذف" }).click());
   await expect(page.getByText(unused, { exact: true })).toHaveCount(0);
 
   await page.getByRole("searchbox", { name: "ابحث في التصنيفات…" }).fill(renamed);
   const usedRow = page.locator("li").filter({ hasText: renamed });
   await usedRow.getByRole("button", { name: "حذف" }).click();
-  await usedRow.getByRole("button", { name: "تأكيد الحذف" }).click();
+  await actAndAck(page, "categoriesDelete", () => usedRow.getByRole("button", { name: "تأكيد الحذف" }).click());
   await expect(page.getByRole("alert")).toContainText("مرتبط بـ 1 منتج");
   await expect(usedRow).toBeVisible();
   await page.goto("/items");

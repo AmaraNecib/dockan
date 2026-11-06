@@ -34,7 +34,7 @@ export function CategoriesPage() {
 
   const refreshCategoryLabels = () => {
     void queryClient.invalidateQueries({ queryKey: orpc.categoriesList.queryKey() });
-    void queryClient.invalidateQueries({ predicate: ({ queryKey }) => queryKey[0] === "itemsList" });
+    void queryClient.invalidateQueries({ queryKey: [["itemsList"]] });
     void queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() });
   };
 
@@ -107,8 +107,9 @@ export function CategoriesPage() {
           placeholder={t("categoriesNewName")}
           aria-label={t("categoriesNewName")}
           required
+          disabled={create.isPending}
         />
-        <button className="rounded-lg bg-primary px-4 py-2 text-primary-foreground" type="submit">
+        <button className="rounded-lg bg-primary px-4 py-2 text-primary-foreground" type="submit" disabled={create.isPending}>
           {t("categoriesAdd")}
         </button>
       </form>
@@ -170,6 +171,7 @@ export function CategoriesPage() {
                         className={cn(inputClass, "min-w-0 flex-1")}
                         value={editName}
                         onChange={(event) => setEditName(event.target.value)}
+                        disabled={rename.isPending}
                         aria-label={t("categoriesRenameLabel", { name: category.name })}
                         required
                       />
@@ -195,10 +197,10 @@ export function CategoriesPage() {
                         </div>
                       ) : (
                         <div className="flex gap-2">
-                          <Button type="button" size="sm" variant="outline" onClick={() => { setError(null); setNotice(null); setEditName(category.name); setEditingId(category.id); }}>
+                          <Button type="button" size="sm" variant="outline" disabled={rename.isPending || remove.isPending} onClick={() => { setError(null); setNotice(null); setEditName(category.name); setEditingId(category.id); }}>
                             {t("categoriesRename")}
                           </Button>
-                          <Button type="button" size="sm" variant="destructive" onClick={() => { setError(null); setNotice(null); setDeleteId(category.id); }}>
+                          <Button type="button" size="sm" variant="destructive" disabled={rename.isPending || remove.isPending} onClick={() => { setError(null); setNotice(null); setDeleteId(category.id); }}>
                             {t("categoriesDelete")}
                           </Button>
                         </div>

@@ -133,6 +133,17 @@ describe("vault backup bundle", () => {
     await store.createCategory({ name: "رحلة" });
     await sourceManager.commitSetup();
 
+    const savedHeader = fs.readFileSync(sourceManager.headerPath);
+    const mismatchedHeader = savedHeader.toString().replace(vaultId, "99999999-0000-0000-0000-000000000000");
+    expect(mismatchedHeader).not.toBe(savedHeader.toString());
+    fs.writeFileSync(sourceManager.headerPath, mismatchedHeader);
+    try {
+      await expect(conn.writeBackupTo(path.join(source, "mismatched-header.dknvbak")))
+        .rejects.toThrow("backup header does not belong to this vault");
+    } finally {
+      fs.writeFileSync(sourceManager.headerPath, savedHeader);
+    }
+
     // The actual external-copy seam writes a unique, validated encrypted bundle.
     const externalDir = tempDir("dokan-backup-external-");
     await setExternalBackupDestination(source, externalDir);

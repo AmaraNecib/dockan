@@ -1183,7 +1183,8 @@ test("a refused sale write keeps its draft after attempted sidebar navigation", 
     const refusalResponse = await refusal;
     const refusalBody = await refusalResponse.json();
     console.log(`[issue-395-stale-refusal-raw] ${JSON.stringify({ status: refusalResponse.status(), body: refusalBody })}`);
-    expect(refusalResponse.ok()).toBe(false);
+    expect(refusalResponse.status()).toBe(400);
+    expect(refusalBody.json).toMatchObject({ code: "BAD_REQUEST", message: "STOCK_NEGATIVE" });
     const stockAfterRefusal = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
     expect(stockAfterRefusal.items.find((item) => item.id === oldItem.id)?.stockOnHand).toBe(1);
     const invoicesAfterRefusal = await callRpc<{ total: number }, { limit: number; offset: number }>(page, "invoicesList", { limit: 1, offset: 0 });

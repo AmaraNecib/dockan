@@ -10,7 +10,8 @@ export type RestoreCredential = { passphrase: string } | { recoveryKey: string }
 
 export type VaultBackupPreview = {
   vaultId: string;
-  createdAt: string;
+  /** Vault creation time from the header, not the backup file's age. */
+  vaultCreatedAt: string;
   schemaVersion: number;
   supportedSchemaVersion: number;
   compatible: true;
@@ -55,7 +56,7 @@ export async function preflightVaultBackup(
     }
     return {
       vaultId: header.vaultId,
-      createdAt: header.createdAt,
+      vaultCreatedAt: header.createdAt,
       schemaVersion,
       supportedSchemaVersion: CURRENT_SCHEMA_VERSION,
       compatible: true,

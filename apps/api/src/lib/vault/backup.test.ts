@@ -111,6 +111,8 @@ describe("vault backup bundle", () => {
 
     const preview = await preflightVaultBackup(bundle, { passphrase: PASSPHRASE });
     expect(preview).toMatchObject({ vaultId: parseVaultHeader(header).vaultId, schemaVersion: 1, compatible: true });
+    expect(preview.vaultCreatedAt).toBe(parseVaultHeader(header).createdAt);
+    expect("createdAt" in preview).toBe(false);
     expect("image" in preview).toBe(false);
 
     const newerDb = new Database(":memory:");
@@ -139,14 +141,96 @@ describe("vault backup bundle", () => {
     expect(readVaultBackupBundle(Buffer.alloc(0))).toBeUndefined();
   });
 
-  it("extracts a bundle into a restorable data dir and refuses a non-bundle", async () => {
-    const header = await headerText();
-    const bundle = createVaultBackupBundle(header, fakeSnapshot());
-    const target = tempDir("dokan-backup-extract-");
-    const paths = await extractVaultBackup(bundle, target);
-    expect(fs.existsSync(paths.headerPath)).toBe(true);
-    expect(fs.existsSync(paths.snapshotPath)).toBe(true);
-    await expect(extractVaultBackup(Buffer.from("nope"), tempDir("dokan-backup-bad-"))).rejects.toThrow();
+  it("reopens persisted encrypted records after extracting a backup, with the prior vault independently recoverable", async () => {
+    const makeVault = async (dir: string, category: string) => {
+      const manager = new VaultManager({
+        dataDir: dir,
+        legacyDbPath: path.join(dir, "dokan.db"),
+        logger: new AppLogger(dir),
+        kdf: FAST_KDF,
+      });
+      const { recoveryKey, vaultId } = await manager.prepareSetup(PASSPHRASE);
+      const connection = createEncryptedConnection({
+        vaultId,
+        masterKey: manager.setupMasterKey(),
+        snapshotPath: manager.snapshotPath,
+        headerPath: manager.headerPath,
+        fresh: true,
+      });
+      const store = createDrizzleStore(connection);
+      await store.setup();
+      await store.createCategory({ name: category });
+      await manager.commitSetup();
+      const bundle = createVaultBackupBundle(
+        fs.readFileSync(manager.headerPath, "utf8"),
+        fs.readFileSync(manager.snapshotPath),
+      );
+      connection.close();
+      manager.close();
+      return { bundle, recoveryKey };
+    };
+
+    const currentDir = tempDir("dokan-restore-current-");
+    const incomingDir = tempDir("dokan-restore-incoming-");
+    const targetDir = tempDir("dokan-restore-target-");
+    const safetyDir = tempDir("dokan-restore-safety-");
+    const current = await makeVault(currentDir, "الحالي");
+    const incoming = await makeVault(incomingDir, "المستعاد");
+
+    await extractVaultBackup(current.bundle, targetDir);
+    const safety = createVaultBackupBundle(
+      fs.readFileSync(path.join(targetDir, "vault", "vault.json"), "utf8"),
+      fs.readFileSync(path.join(targetDir, "dokan.db.enc")),
+    );
+    await extractVaultBackup(incoming.bundle, targetDir);
+    await extractVaultBackup(safety, safetyDir);
+
+    const reopened = new VaultManager({
+      dataDir: targetDir,
+      legacyDbPath: path.join(targetDir, "dokan.db"),
+      logger: new AppLogger(targetDir),
+      kdf: FAST_KDF,
+    });
+    await reopened.unlock(PASSPHRASE);
+    const connection = createEncryptedConnection({
+      snapshotPath: reopened.snapshotPath,
+      masterKey: reopened.requireMasterKey(),
+      vaultId: reopened.metadata().vaultId,
+    });
+    const store = createDrizzleStore(connection);
+    await store.setup();
+    expect((await store.listCategories()).map(({ name }) => name)).toContain("المستعاد");
+    connection.close();
+    reopened.close();
+
+    const recoveredSafety = new VaultManager({
+      dataDir: safetyDir,
+      legacyDbPath: path.join(safetyDir, "dokan.db"),
+      logger: new AppLogger(safetyDir),
+      kdf: FAST_KDF,
+    });
+    await recoveredSafety.unlock(PASSPHRASE);
+    const safetyConnection = createEncryptedConnection({
+      snapshotPath: recoveredSafety.snapshotPath,
+      masterKey: recoveredSafety.requireMasterKey(),
+      vaultId: recoveredSafety.metadata().vaultId,
+    });
+    const safetyStore = createDrizzleStore(safetyConnection);
+    await safetyStore.setup();
+    expect((await safetyStore.listCategories()).map(({ name }) => name)).toContain("الحالي");
+    safetyConnection.close();
+    recoveredSafety.close();
+  });
+
+  it("refuses a malformed bundle before changing either live encrypted file", async () => {
+    const target = tempDir("dokan-backup-refusal-");
+    const vaultDir = path.join(target, "vault");
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, "vault.json"), "existing header");
+    fs.writeFileSync(path.join(target, "dokan.db.enc"), "existing encrypted snapshot");
+    await expect(extractVaultBackup(Buffer.from("nope"), target)).rejects.toThrow();
+    expect(fs.readFileSync(path.join(vaultDir, "vault.json"), "utf8")).toBe("existing header");
+    expect(fs.readFileSync(path.join(target, "dokan.db.enc"), "utf8")).toBe("existing encrypted snapshot");
   });
 
   itHeavy("exports a self-contained backup that restores the shop on a fresh install (finding: unlockable backups)", async () => {

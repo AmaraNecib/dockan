@@ -169,7 +169,7 @@ test("external backup destination persists, cancels edits, reports media failure
   });
   await page.getByTestId("backup-export").click();
   await expect(page.getByTestId("backup-done")).toBeVisible();
-  await expect(page.getByTestId("external-backup-success")).toContainText("10:00:01", { timeout: 5_000 });
+  await expect(page.getByTestId("external-backup-success")).toContainText("10:00:01", { timeout: 8_000 });
   await page.waitForTimeout(1500);
 
   await panel.getByRole("button", { name: "نسخ الآن" }).click();

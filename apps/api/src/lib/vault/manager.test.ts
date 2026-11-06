@@ -368,7 +368,7 @@ describe("VaultManager", () => {
         const store = createDrizzleStore(connection);
         await store.setup();
         const history = await store.getExpenseRefundHistory("expense");
-        expect(connection.raw.query("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+        expect(connection.raw.query("PRAGMA user_version").get()).toEqual({ user_version: 10 });
         expect(history?.expense.original.amount).toBe(1000);
         expect(history?.refundableAmount).toBe(700);
         expect(history?.refunds).toEqual([{

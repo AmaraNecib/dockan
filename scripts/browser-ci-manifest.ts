@@ -111,7 +111,8 @@ function normalizeTest(test: ManifestTest, cwd: string): BrowserManifest["invent
   const file = safeRelativeFile(test.location.file, cwd);
   const project = test.project()?.name;
   if (!file || !project || !test.id || test.id.length > 256 || !Number.isSafeInteger(test.repeatEachIndex) || test.repeatEachIndex < 0) return null;
-  const parsedTitlePath = z.array(safeFileText).max(40).safeParse(test.titlePath);
+  // Playwright includes an empty root-suite title; preserve the observed path.
+  const parsedTitlePath = z.array(z.union([safeFileText, z.literal("")])).max(40).safeParse(test.titlePath);
   if (!parsedTitlePath.success) return null;
   const titlePath = parsedTitlePath.data;
   const repeatEachIndex = test.repeatEachIndex;

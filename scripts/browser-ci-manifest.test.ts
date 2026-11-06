@@ -125,7 +125,7 @@ describe("browser CI manifest", () => {
       // SAFETY: This fixture contains every TestCase field the reporter reads.
       const fakeTest = {
         id: "runtime-id",
-        titlePath: () => ["root", "runtime title"],
+        titlePath: () => ["", "chromium", "runtime.spec.ts", "runtime title"],
         location: { file: path.join(process.cwd(), "tests", "e2e", "runtime.spec.ts") },
         repeatEachIndex: 0,
         expectedStatus: "passed",
@@ -145,7 +145,7 @@ describe("browser CI manifest", () => {
       // SAFETY: The reporter writes the BrowserManifest contract verified below.
       const recorded = JSON.parse(readFileSync(path.join(scratch, "attempt-7", "manifest.json"), "utf8")) as BrowserManifest;
       expect(recorded.inventory).toEqual([{
-        file: "tests/e2e/runtime.spec.ts", project: "chromium", titlePath: ["root", "runtime title"], repeatEachIndex: 0, id: "runtime-id",
+        file: "tests/e2e/runtime.spec.ts", project: "chromium", titlePath: ["", "chromium", "runtime.spec.ts", "runtime title"], repeatEachIndex: 0, id: "runtime-id",
       }]);
       expect(recorded.outcomes[0]).toMatchObject({ repeatEachIndex: 0, finalStatus: "passed", expectedStatus: "passed", attempts: [{ retry: 0 }] });
       expect(recorded).toMatchObject({ phase: "finalized", complete: true });

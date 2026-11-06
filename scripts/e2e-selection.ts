@@ -128,7 +128,24 @@ export function selectSpecs(
     if (!mapped.has(spec)) picked.add(spec);
   }
   const specs = [...picked].sort();
+  const unsafe = specs.find((spec) => !isSafePlaywrightFilter(spec));
+  if (unsafe !== undefined) {
+    return {
+      mode: "full",
+      specs: [],
+      reason: `discovered path ${unsafe} cannot be represented safely as a Playwright positional filter`,
+    };
+  }
   return { mode: "affected", specs, reason: `${specs.length} spec(s) selected from ${files.length} file(s)` };
+}
+
+// CI writes these paths as a space-separated string, and Playwright interprets
+// each positional filter as a regular expression. Dots are harmless overmatches
+// for the required extension, but separators, whitespace, backslashes, regex
+// operators, and glob characters could split or redirect the intended match.
+// Prefixing with tests/e2e also keeps every argument away from a leading dash.
+function isSafePlaywrightFilter(spec: string): boolean {
+  return /^[A-Za-z0-9_./-]+$/u.test(spec) && !spec.split("/").some((part) => part === "" || part === "." || part === "..");
 }
 
 // One builder for the Playwright path shape, used by both the selector's

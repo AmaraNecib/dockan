@@ -58,10 +58,6 @@ describe("e2e test discovery", () => {
       'const { test } = require("@playwright/test"); test("legacy discovery fixture", () => {});\n',
     );
     try {
-      const discovery = discoverE2eSpecs(ROOT);
-      expect(discovery.ok).toBe(true);
-      if (!discovery.ok) return;
-
       const listed = spawnSync(process.execPath, ["run", "test:e2e", "--list"], {
         cwd: ROOT,
         encoding: "utf8",
@@ -71,9 +67,58 @@ describe("e2e test discovery", () => {
         [...listed.stdout.matchAll(/^\s*(.+\.(?:spec|test)\.(?:[cm]?[jt]sx?)):\d+:\d+ ›/gmu)]
           .map((match) => (match[1] ?? "").replace(/^tests[\\/]+e2e[\\/]+/u, "").replace(/\\/gu, "/")),
       )].sort();
-      expect(runnerSpecs).toEqual(discovery.specs);
+      const discovery = discoverE2eSpecs(ROOT);
+      expect(discovery).toEqual({ ok: true, specs: runnerSpecs });
       expect(runnerSpecs).toContain(`${fixtureName}/ignored/new.spec.mts`);
       expect(runnerSpecs).toContain(`${fixtureName}/ignored/legacy.test.cjs`);
+    } finally {
+      rmSync(join(ROOT, "tests", "e2e", fixtureName), { recursive: true, force: true });
+    }
+  });
+
+  test("a filtered Playwright list includes a real unregistered nested candidate", () => {
+    const fixtureName = `orphan-filter-${process.pid}-${Date.now()}`;
+    const fixtureDir = join(ROOT, "tests", "e2e", fixtureName, "nested");
+    const relativeSpec = `${fixtureName}/nested/new-flow.spec.ts`;
+    mkdirSync(fixtureDir, { recursive: true });
+    writeFileSync(join(fixtureDir, ".gitignore"), "*.spec.ts\n");
+    writeFileSync(
+      join(fixtureDir, "new-flow.spec.ts"),
+      'import { test } from "@playwright/test"; test("orphan selection fixture", () => {});\n',
+    );
+    try {
+      const unfiltered = spawnSync(process.execPath, ["run", "test:e2e", "--list"], {
+        cwd: ROOT,
+        encoding: "utf8",
+      });
+      expect({ status: unfiltered.status, error: unfiltered.error?.message }).toEqual({ status: 0, error: undefined });
+      const inventory = [...new Set(
+        [...unfiltered.stdout.matchAll(/^\s*(.+\.(?:spec|test)\.(?:[cm]?[jt]sx?)):\d+:\d+ ›/gmu)]
+          .map((match) => (match[1] ?? "").replace(/^tests[\\/]+e2e[\\/]+/u, "").replace(/\\/gu, "/")),
+      )].sort();
+      const discovery = discoverE2eSpecs(ROOT);
+      expect(discovery).toEqual({ ok: true, specs: inventory });
+      expect(inventory).toContain(relativeSpec);
+
+      const scope = selectSpecs(["apps/web/src/pages/backups.tsx"]);
+      expect(scope).toEqual({
+        mode: "affected",
+        specs: expect.arrayContaining(["backups.spec.ts", relativeSpec]),
+        reason: expect.any(String),
+      });
+      if (!scope || scope.mode !== "affected") return;
+      const filtered = spawnSync(process.execPath, ["run", "test:e2e", "--list", ...scope.specs.map((spec) => `tests/e2e/${spec}`)], {
+        cwd: ROOT,
+        encoding: "utf8",
+      });
+      expect({ status: filtered.status, error: filtered.error?.message }).toEqual({ status: 0, error: undefined });
+      const filteredSpecs = [...new Set(
+        [...filtered.stdout.matchAll(/^\s*(.+\.(?:spec|test)\.(?:[cm]?[jt]sx?)):\d+:\d+ ›/gmu)]
+          .map((match) => (match[1] ?? "").replace(/^tests[\\/]+e2e[\\/]+/u, "").replace(/\\/gu, "/")),
+      )].sort();
+      expect(filteredSpecs).toContain(relativeSpec);
+      expect(filteredSpecs).toContain("backups.spec.ts");
+      expect(filteredSpecs).not.toContain("vault.spec.ts");
     } finally {
       rmSync(join(ROOT, "tests", "e2e", fixtureName), { recursive: true, force: true });
     }
@@ -122,8 +167,9 @@ describe("e2e test discovery", () => {
       ];
       for (const source of variants) {
         writeFileSync(join(root, "playwright.config.ts"), source);
-        expect(discoverE2eSpecs(root).ok).toBe(false);
-        expect(selectSpecs(["docs/readme.md"], undefined, discoverE2eSpecs(root)).mode).toBe("full");
+        const result = discoverE2eSpecs(root);
+        expect(result).toEqual({ ok: false, reason: expect.any(String) });
+        if (!result || result.ok) return;
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -133,18 +179,18 @@ describe("e2e test discovery", () => {
   test("missing, empty, unreadable, or unsupported config cannot prove discovery", () => {
     const { root, tests } = fixture();
     try {
-      expect(discoverE2eSpecs(join(root, "missing"))).toMatchObject({ ok: false });
+      expect(discoverE2eSpecs(join(root, "missing"))).toEqual({ ok: false, reason: expect.any(String) });
       rmSync(join(tests), { recursive: true, force: true });
       mkdirSync(tests, { recursive: true });
-      expect(discoverE2eSpecs(root)).toMatchObject({ ok: false });
+      expect(discoverE2eSpecs(root)).toEqual({ ok: false, reason: expect.any(String) });
       writeFileSync(join(tests, "one.spec.ts"), "export {};\n");
       writeFileSync(join(root, "playwright.config.ts"), "export default {};\n");
-      expect(discoverE2eSpecs(root)).toMatchObject({ ok: false });
+      expect(discoverE2eSpecs(root)).toEqual({ ok: false, reason: expect.any(String) });
       writeFileSync(
         join(root, "playwright.config.ts"),
         'import { E2E_TEST_MATCH } from "./scripts/e2e-discovery";\nexport default defineConfig({ testDir: "./tests/e2e", testMatch: E2E_TEST_MATCH, respectGitIgnore: false, testIgnore: "**/private/**" });\n',
       );
-      expect(discoverE2eSpecs(root)).toMatchObject({ ok: false });
+      expect(discoverE2eSpecs(root)).toEqual({ ok: false, reason: expect.any(String) });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

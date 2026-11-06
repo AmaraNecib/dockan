@@ -4,8 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { discoverE2eSpecs } from "./e2e-discovery";
-import { contractLines, globToRegExp, loadMap, selectSpecs, specPaths } from "./e2e-selection";
+import type { Discovery } from "./e2e-discovery";
+import { contractLines, globToRegExp, loadMap, selectSpecs as selectLive, specPaths } from "./e2e-selection";
 
 // This file is the reason the map can be trusted. It is cheap (no browser, no
 // server) and runs inside `bun run test` (`turbo test` then `bun test ./scripts/`),
@@ -18,9 +18,16 @@ const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "scripts", "e2e-selection.ts");
 
 const map = loadMap();
-const discovery = discoverE2eSpecs(ROOT);
-if (!discovery.ok) throw new Error(discovery.reason);
-const onDisk = discovery.specs;
+const specExists = (spec: string) => existsSync(join(ROOT, "tests", "e2e", spec));
+const mappedOnly = (selectionMap: typeof map = map): Discovery => ({
+  ok: true,
+  specs: [...new Set(selectionMap.features.flatMap((feature) => feature.specs))],
+});
+const selectSpecs = (
+  changed: string[],
+  selectionMap: typeof map = map,
+  inventory: Discovery = mappedOnly(selectionMap),
+) => selectLive(changed, selectionMap, inventory);
 // `--cached` is the committed tree; `--others --exclude-standard` adds a new
 // file that is not committed yet, so a pattern for a file this change adds is
 // already live when the guard runs pre-commit. Ignored trees (node_modules,
@@ -88,7 +95,7 @@ describe("e2e-selection map", () => {
 
   test("every mapped spec exists on disk; new specs need no map registration", () => {
     const mapped = [...new Set(map.features.flatMap((f) => f.specs))];
-    const missing = mapped.filter((s) => !onDisk.includes(s));
+    const missing = mapped.filter((spec) => !specExists(spec));
     expect(missing).toEqual([]);
   });
 
@@ -99,7 +106,7 @@ describe("e2e-selection map", () => {
   });
 
   test("every spec a rule names exists on disk", () => {
-    const missing = [...new Set(map.features.flatMap((f) => f.specs))].filter((s) => !onDisk.includes(s));
+    const missing = [...new Set(map.features.flatMap((f) => f.specs))].filter((spec) => !specExists(spec));
     expect(missing).toEqual([]);
   });
 
@@ -230,6 +237,18 @@ describe("e2e-selection behaviour", () => {
     });
     expect(scope.mode).toBe("affected");
     expect(scope.specs).toEqual(["backups.spec.ts", "nested/new-flow.test.ts"]);
+  });
+
+  test("an affected selection widens when a discovered name cannot be transported safely", () => {
+    const scope = selectSpecs(["apps/web/src/pages/backups.tsx"], map, {
+      ok: true,
+      specs: ["backups.spec.ts", "nested/flow[mobile].spec.ts"],
+    });
+    expect(scope).toEqual({
+      mode: "full",
+      specs: [],
+      reason: expect.stringContaining("cannot be represented safely"),
+    });
   });
 
   test("two features union their specs without duplicates", () => {

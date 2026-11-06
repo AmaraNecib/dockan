@@ -6,7 +6,6 @@ import { callRpc, seedCategoryId } from "./rpc-helpers";
 import fs from "node:fs";
 import path from "node:path";
 
-test.use({ video: "on" });
 
 /**
  * The manual export button creates today's backup file on
@@ -89,7 +88,10 @@ async function installRevealBridge(page: Page): Promise<void> {
   });
 }
 
-test("external backup destination persists, cancels edits, reports media failure, and retries", async ({ page }) => {
+test.describe("external backup destination", () => {
+  test.use({ video: { mode: "on", size: { width: 1920, height: 1080 } } });
+
+  test("persists, cancels edits, reports media failure, and retries", async ({ page }) => {
   await page.setViewportSize({ width: 1920, height: 1080 });
   await signIn(page);
   let externalStatus: ExternalBackupStatus = {
@@ -168,9 +170,10 @@ test("external backup destination persists, cancels edits, reports media failure
   if (process.env.BACKUP_EVIDENCE === "after" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/after.png" });
   }
-  await page.waitForTimeout(3200);
+  await page.waitForTimeout(5200);
   await panel.getByRole("button", { name: "إزالة الوجهة" }).click();
   await expect(destination).toHaveValue("");
+  });
 });
 
 test.describe("completed backup reveal", () => {

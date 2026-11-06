@@ -75,6 +75,21 @@ describe("offline browser CI evidence", () => {
     expect([result.passed, result.failed, result.skipped]).toEqual([143, 2, 3]);
   });
 
+  test("separate count blocks cannot be combined into one summary", () => {
+    const log = PIPELINE_LOG.replace("148 passed (8.0m)", "3 skipped\nunrelated output\n145 passed (8.0m)");
+    const result = parseBrowserLog({ runId: 3, attempt: 1, jobName: "playwright e2e", jobConclusion: "success", log });
+    expect(result.passed).toBeNull();
+    expect(result.skipped).toBeNull();
+    expect(result.evidenceErrors).toContain("ambiguous Playwright summary");
+  });
+
+  test("a partial summary cannot silently default missing results to zero", () => {
+    const log = PIPELINE_LOG.replace("148 passed (8.0m)", "145 passed (8.0m)");
+    const result = parseBrowserLog({ runId: 3, attempt: 1, jobName: "playwright e2e", jobConclusion: "success", log });
+    expect(result.passed).toBeNull();
+    expect(result.evidenceErrors).toContain("incomplete Playwright summary");
+  });
+
   test("a narrowed emitted Playwright command cannot establish full scope", () => {
     const log = PIPELINE_LOG.replace("$ playwright test\n", "$ playwright test tests/e2e/foo.spec.ts\n");
     const result = parseBrowserLog({ runId: 3, attempt: 1, jobName: "playwright e2e", jobConclusion: "success", log });

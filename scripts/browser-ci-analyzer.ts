@@ -61,19 +61,40 @@ export function parseBrowserLog(input: {
   if (shaValues.length !== 1) errors.push(shaValues.length ? "ambiguous browser checkout SHA" : "browser checkout SHA missing");
 
   const countPattern = /^\s*(\d+) (passed|failed|skipped)(?:\s*\([^)]*\))?\s*$/u;
-  const counts = lines.flatMap((line) => {
-    const parts = line.split(",").map((part) => part.match(countPattern));
-    return parts.every((part) => part !== null) ? parts : [];
+  const starts = lines.flatMap((line, index) => {
+    const match = line.match(/^Running (\d+) tests? using \d+ workers?\s*$/u);
+    return match ? [{ index, total: Number(match[1]) }] : [];
   });
+  const blocks: RegExpMatchArray[][] = [];
+  let activeBlock: RegExpMatchArray[] | null = null;
+  const start = starts.length === 1 ? starts[0] : undefined;
+  for (const line of lines.slice(start ? start.index + 1 : 0)) {
+    const parts = line.split(",").map((part) => part.match(countPattern));
+    if (parts.every((part) => part !== null)) {
+      if (!activeBlock) {
+        activeBlock = [];
+        blocks.push(activeBlock);
+      }
+      activeBlock.push(...parts);
+    } else if (line.trim()) {
+      activeBlock = null;
+    }
+  }
+  const counts = blocks.length === 1 ? blocks[0] ?? [] : [];
   const kinds = counts.map((count) => count[2]);
-  const summary = counts.length > 0 && new Set(kinds).size === kinds.length
+  const complete = start !== undefined && counts.reduce((total, count) => total + Number(count[1]), 0) === start.total;
+  const summary = blocks.length === 1 && counts.length > 0 && new Set(kinds).size === kinds.length && complete
     ? {
       passed: Number(counts.find((count) => count[2] === "passed")?.[1] ?? 0),
       failed: Number(counts.find((count) => count[2] === "failed")?.[1] ?? 0),
       skipped: Number(counts.find((count) => count[2] === "skipped")?.[1] ?? 0),
     }
     : null;
-  if (!summary) errors.push(counts.length ? "ambiguous Playwright summary" : "Playwright summary missing");
+  if (!summary) {
+    if (!blocks.length) errors.push("Playwright summary missing");
+    else if (blocks.length !== 1 || new Set(kinds).size !== kinds.length) errors.push("ambiguous Playwright summary");
+    else errors.push("incomplete Playwright summary");
+  }
 
   const launch = lines.filter((line) => /^bun run test:e2e\s+\$E2E_SPECS/u.test(line.trim()));
   const envLines = lines.filter((line) => /^\s*E2E_SPECS:\s*/u.test(line));

@@ -82,6 +82,8 @@ Use this existing design note or PR handoff for the acceptance goal and a concis
 
 ### 3. Implement (TDD + Playwright)
 
+For an issue that changes UI, load `impeccable` and critique the incumbent surface before the first UI edit. Treat Dokan app surfaces as Operate mode. A narrow refinement preserves the incumbent visual identity, behavior, and content; ask the owner before a broader redesign or unrelated copy or claim changes. Use the critique to define one bounded improvement pass, then inspect the result once in a batch and confirm at most once after fixes. Before editing UI, read `impeccable/reference/craft-floor.md`. Follow the skill's setup and supply-chain guards: if its launcher is unavailable or would download code, use its documented direct-context fallback without installing or fetching anything. Do not create PRODUCT.md or DESIGN.md, or run init/doctor, as a prerequisite for a narrow refinement. Keep keyboard, RTL, relevant states, and any required before/after element evidence and video/GIF in scope. Impeccable guides design work; it does not replace behavior tests, accessibility checks, code review, or the existing merge gate.
+
 Load `implement` skill. It handles TDD at pre-agreed seams. Write tests for changed behavior and use Playwright when changed UI behavior needs browser proof. Run applicable focused checks from `guard`; the guard defines when CI-final checks can replace routine full local runs. Preserve Rust checks when Rust Core changes.
 
 ### 4. Guard pre-review (Phase 1)
@@ -98,8 +100,7 @@ Load relevant skills from the workflow's quality check table:
 | Complex logic, state, or edge cases | `diagnosing-bugs` |
 | Domain entities, terms, or data models | `domain-modeling` |
 | Any production code | `code-review` |
-| UI components, pages, or visual design | `frontend-design`, `web-design-guidelines` |
-| Existing UI that needs polish | `redesign-existing-projects` |
+| UI components, pages, or visual design | `impeccable` |
 | Adding/managing shadcn/ui components | `shadcn` |
 | Component API design, prop proliferation | `vercel-composition-patterns` |
 | React rendering performance | `vercel-react-best-practices` |

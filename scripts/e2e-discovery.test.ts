@@ -131,6 +131,13 @@ describe("e2e test discovery", () => {
     writeFileSync(join(fixtureDir, "new-flow.spec.ts"),
       'import { test } from "@playwright/test"; test("orphan CLI fixture", () => {});\n');
     try {
+      // Passing CLI suites alone also worked before automatic discovery. Pin
+      // the new behavior first: this unregistered file must actually be picked.
+      expect(selectSpecs(["apps/web/src/pages/backups.tsx"])).toEqual({
+        mode: "affected",
+        specs: expect.arrayContaining(["backups.spec.ts", `${fixtureName}/new-flow.spec.ts`]),
+        reason: expect.any(String),
+      });
       // Curated helper injection cannot protect real subprocess assertions.
       const cliSuites = spawnSync(process.execPath, ["test", "scripts/e2e-selection.test.ts", "scripts/e2e-changed.test.ts"], {
         cwd: ROOT,

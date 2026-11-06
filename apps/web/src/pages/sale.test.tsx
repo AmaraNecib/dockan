@@ -777,6 +777,21 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelectorAll('[data-testid="sale-open-picker"]').length).toBe(1);
   });
 
+  it("keeps keyboard focus on the revealed discount type", async () => {
+    const host = await mountSale();
+    await scan("778");
+    const addDiscount = host.querySelector<HTMLButtonElement>('[data-testid="sale-add-discount"]');
+    if (addDiscount === null) throw new Error("missing Add discount button");
+    addDiscount.focus();
+    expect(document.activeElement === addDiscount).toBe(true);
+
+    await act(async () => addDiscount.click());
+
+    const discountType = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (discountType === null) throw new Error("missing revealed discount type");
+    expect(document.activeElement === discountType).toBe(true);
+  });
+
   it("groups totals, reveals discount controls on demand, and saves the displayed amount", async () => {
     const host = await mountSale();
     await scan("778");

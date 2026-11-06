@@ -41,7 +41,10 @@ test("sale checkout keeps the final line and focused control clear at short heig
   if (lineBox === null || checkoutBox === null) throw new Error("The final sale line or checkout bar is outside the viewport");
   expect(lineBox.y + lineBox.height).toBeLessThanOrEqual(checkoutBox.y);
 
-  await page.getByRole("button", { name: "إضافة خصم" }).click();
+  const addDiscount = page.getByRole("button", { name: "إضافة خصم" });
+  await addDiscount.focus();
+  await addDiscount.press("Enter");
+  await expect(page.getByTestId("sale-discount-type")).toBeFocused();
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
   await page.getByTestId("sale-discount-value").fill("10");
   await expect(page.getByTestId("sale-subtotal")).toContainText("1,000");

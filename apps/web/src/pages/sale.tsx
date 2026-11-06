@@ -124,6 +124,10 @@ export function SalePage() {
   const [discountType, setDiscountType] = useState<AmountKind>("");
   const [discountValue, setDiscountValue] = useState("");
   const [discountExpanded, setDiscountExpanded] = useState(false);
+  const discountTypeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (discountExpanded) discountTypeRef.current?.focus();
+  }, [discountExpanded]);
   const [error, setError] = useState<string | null>(null);
   /** the saved sale whose completion card is shown; the server's response is
    * kept whole so the card reads the authoritative number, remaining and party */
@@ -551,7 +555,7 @@ export function SalePage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             {discountExpanded ? (
               <div className="flex flex-wrap items-end gap-3">
-                <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => { setDiscountType(toAmountKind(value ?? "")); setDraftDirty(true); }} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
+                <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => { setDiscountType(toAmountKind(value ?? "")); setDraftDirty(true); }} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger ref={discountTypeRef} className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
                 <label className="grid gap-1 text-sm font-medium">{t("saleDiscountValue")}<input className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm" name="discountValue" autoComplete="off" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label>
               </div>
             ) : (

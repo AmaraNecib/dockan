@@ -130,7 +130,7 @@ try {
     await panel.locator("#restore-confirm").check();
     const replace = panel.getByRole("button", { name: "استبدال بيانات المتجر", exact: true });
     await replace.focus(); await page.keyboard.press("Enter");
-    await expect(replace).toBeDisabled();
+    await expect(panel.getByRole("button", { name: "جارٍ الاستبدال…", exact: true })).toBeDisabled();
     await page.keyboard.press("Enter");
     await expect.poll(() => confirmationCalls).toBe(2);
     await expect(panel.getByRole("button", { name: "إلغاء الاستعادة", exact: true })).toBeDisabled();

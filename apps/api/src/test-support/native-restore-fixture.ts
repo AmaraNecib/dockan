@@ -28,6 +28,12 @@ if (action === "create" || action === "create-webview") {
       const store = createDrizzleStore(conn);
       await store.setup();
       await store.createCategory({ name });
+      if (action === "create-webview") {
+        conn.raw.exec("INSERT INTO user (id, name, created_at, updated_at) VALUES ('owner', 'Native fixture owner', 1, 1)");
+        conn.markDirty();
+        await store.setSetting("adminUserId", "owner");
+        await store.setSetting("storeName", "Native restore fixture");
+      }
       if (action === "create-webview" && folder !== "current") {
         conn.raw.exec(`PRAGMA user_version = ${folder === "newer" ? 999 : 0}`);
         if (folder === "broken") conn.raw.exec("PRAGMA foreign_keys = OFF; DROP TABLE invoices; CREATE TABLE invoices (id TEXT PRIMARY KEY)");

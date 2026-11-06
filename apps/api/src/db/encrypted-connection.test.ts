@@ -1080,6 +1080,7 @@ describe("snapshot fence (#280)", () => {
     // connection cannot establish as its own version.
     const headerText = "{}";
     fs.writeFileSync(path.join(dir, "vault.json"), headerText);
+    const fencedSnapshot = fs.readFileSync(snapshotPath());
     const unstamped = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath(), headerPath: path.join(dir, "vault.json") });
     let refusal: unknown;
     try {
@@ -1091,6 +1092,7 @@ describe("snapshot fence (#280)", () => {
     // SAFETY: the assertion above established the class, and `reason` is the
     // field this test exists to read
     expect((refusal as SnapshotPersistenceError).reason).toBe("unfenced-holder");
+    expect(fs.readFileSync(snapshotPath()).equals(fencedSnapshot)).toBe(true);
     expect(fs.existsSync(path.join(dir, "today.dknvbak"))).toBe(false);
     await unstamped.close();
   });

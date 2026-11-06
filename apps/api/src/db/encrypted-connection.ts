@@ -715,6 +715,13 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       }
     },
     async writeBackupTo(destPath: string): Promise<void> {
+      // Refuse a fenced snapshot we cannot prove we own before flush can replace
+      // it with this connection's unstamped legacy envelope.
+      readVerifiedSnapshot(
+        snapshotPath,
+        connectionStamp,
+        "refusing to bundle a snapshot that is not this holder's",
+      );
       // A backup must be rebuilt from the live database even when the on-disk
       // snapshot's fence matches: the fence proves ownership, not ciphertext integrity.
       await connection.flush();

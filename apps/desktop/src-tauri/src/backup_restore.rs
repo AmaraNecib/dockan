@@ -1,5 +1,4 @@
-//! Native process boundary for encrypted restore. No renderer command is
-//! registered until selection, confirmation and the remaining evidence exist.
+//! Native process boundary for encrypted restore. Credentials use stdin only.
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
@@ -112,7 +111,9 @@ pub fn run_worker(
         };
         let reply: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| FAILED)?;
         if !status.success() || reply.get("ok") != Some(&serde_json::Value::Bool(true)) {
-            return Err(FAILED.to_string());
+            return Err(if reply.get("code").and_then(|v| v.as_str()) == Some("VAULT_BACKUP_NEWER_SCHEMA") {
+                "VAULT_BACKUP_NEWER_SCHEMA"
+            } else { FAILED }.to_string());
         }
         Ok(reply)
     })();

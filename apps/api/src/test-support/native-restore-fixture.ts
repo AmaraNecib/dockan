@@ -13,21 +13,30 @@ if (root === undefined) throw new Error("fixture root required");
 const passphrase = "native fixture passphrase";
 const kdf = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 } as const;
 function manager(dir: string) { return new VaultManager({ dataDir: dir, legacyDbPath: path.join(dir, "dokan.db"), logger: new AppLogger(dir), kdf }); }
-if (action === "create") {
-  for (const [folder, name] of [["current", "Original native record"], ["incoming", "Restored native record"]]) {
+if (action === "create" || action === "create-webview") {
+  const cases = [["current", "Original native record"], ["incoming", "Restored native record"]];
+  if (action === "create-webview") cases.push(["newer", "Future native record"], ["broken", "Broken migration record"]);
+  for (const [folder, name] of cases) {
     if (folder === undefined || name === undefined) throw new Error("fixture incomplete");
     const dir = path.join(root, folder);
     fs.mkdirSync(dir, { recursive: true });
     const vault = manager(dir);
-    const { vaultId } = await vault.prepareSetup(passphrase);
+    const fixturePassphrase = action === "create-webview" && folder !== "current" ? "incoming native fixture passphrase" : passphrase;
+    const { vaultId } = await vault.prepareSetup(fixturePassphrase);
     const conn = createEncryptedConnection({ vaultId, masterKey: vault.setupMasterKey(), snapshotPath: vault.snapshotPath, headerPath: vault.headerPath, fresh: true });
     try {
       const store = createDrizzleStore(conn);
       await store.setup();
       await store.createCategory({ name });
+      if (action === "create-webview" && folder !== "current") {
+        conn.raw.exec(`PRAGMA user_version = ${folder === "newer" ? 999 : 0}`);
+        if (folder === "broken") conn.raw.exec("PRAGMA foreign_keys = OFF; DROP TABLE invoices; CREATE TABLE invoices (id TEXT PRIMARY KEY)");
+        conn.markDirty();
+        await conn.flush();
+      }
       await vault.commitSetup();
     } finally { await conn.close(); vault.close(); }
-    if (folder === "incoming") fs.writeFileSync(path.join(root, "selected.dknvbak"), createVaultBackupBundle(fs.readFileSync(vault.headerPath, "utf8"), fs.readFileSync(vault.snapshotPath)));
+    if (folder !== "current") fs.writeFileSync(path.join(root, folder === "incoming" ? "selected.dknvbak" : `${folder}.dknvbak`), createVaultBackupBundle(fs.readFileSync(vault.headerPath, "utf8"), fs.readFileSync(vault.snapshotPath)));
   }
   console.log(JSON.stringify({ ok: true }));
 } else {

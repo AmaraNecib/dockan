@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { BackupRestore } from "@/components/vault/backup-restore";
 
 import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
@@ -163,6 +164,7 @@ export function BackupsPage() {
           </div>
         )}
       </div>
+      <BackupRestore />
     </section>
   );
 }

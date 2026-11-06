@@ -60,6 +60,10 @@ use std::time::{Duration, Instant};
 
 use tauri::{App, AppHandle, Manager, WebviewWindow};
 
+#[cfg(all(test, feature = "native-restore-webview-test"))]
+#[path = "restore_webview_tests.rs"]
+mod restore_webview_tests;
+
 // The api's default port (4317) is a dev-only fallback now: the packaged
 // shell binds a listener on port 0 and the kernel assigns the port (PR #51
 // TOCTOU fix), so the shell never probes or predicts a port.
@@ -125,6 +129,8 @@ pub struct SidecarState(pub Mutex<SidecarSlot>);
 pub struct SidecarSlot {
     config: Option<SidecarConfig>,
     sidecar: Option<Sidecar>,
+    restore_selection: Option<RestoreSelection>,
+    restore_outcome: Option<serde_json::Value>,
 }
 
 /// Set once shutdown begins (window close / app exit). The launch path checks
@@ -263,6 +269,7 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     // Reveal is not granted by the wildcard-port gate capability. Only this
     // verified launch's exact origin receives its separate native authority.
     app.add_capability(backup_reveal_capability(port).to_string())?;
+    app.add_capability(backup_restore_capability(port).to_string())?;
     if let Some(window) = app.get_webview_window("main") {
         navigate(window, &setup_navigation_url(port, &boot_token))?;
     }
@@ -635,6 +642,15 @@ fn backup_reveal_capability(port: u16) -> serde_json::Value {
     })
 }
 
+fn backup_restore_capability(port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "identifier":"backup-restore-sidecar", "description":"Restore only from this verified native launch",
+        "windows":["main"], "local":false,
+        "remote":{"urls":[format!("http://127.0.0.1:{port}")]},
+        "permissions":["allow-backup-restore"]
+    })
+}
+
 fn reveal_origin_matches(url: &tauri::Url, port: u16) -> bool {
     url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
         && url.port_or_known_default() == Some(port)
@@ -665,53 +681,208 @@ fn capture_live_reveal_launch(
     Ok((config, pid))
 }
 
-/// Native restore implementation is deliberately NOT registered as an IPC
-/// command. Selection/confirmation UI and its evidence must land before exposure.
-#[allow(dead_code)]
-pub fn backup_restore_confirmed(app: &AppHandle, window: &WebviewWindow, session: &str, request: serde_json::Value) -> Result<serde_json::Value, String> {
-    use crate::backup_restore::{quiesce, run_worker, stop_child, FAILED};
-    let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+/// A selection belongs to one native launch and one authenticated session.
+/// Only the native picker supplies its path. No credentials are retained here.
+struct RestoreSelection {
+    id: String,
+    path: PathBuf,
+    pid: u32,
+    session: String,
+    sha256: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum RestoreCredential {
+    Passphrase(PassphraseCredential),
+    Recovery(RecoveryCredential),
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassphraseCredential { passphrase: String }
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryCredential { #[serde(rename = "recoveryKey")] recovery_key: String }
+
+fn restore_worker_command(config: &SidecarConfig) -> Command {
+    let mut command = build_command(&config.binary);
+    for (key, value) in child_environment(&config.data_dir, &config.port_root, &config.web_dist, config.port, &config.boot_token) { command.env(key, value); }
+    command
+}
+
+fn restore_live(app: &AppHandle, window: &WebviewWindow, expected_pid: Option<u32>) -> Result<(SidecarConfig, u32), String> {
     let state = app.state::<SidecarState>();
-    let (config, pid) = {
-        let mut slot = state.0.lock().map_err(|_| FAILED)?;
-        capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), None).map_err(|_| FAILED)?
-    };
-    if request.get("action") != Some(&serde_json::json!("install")) || request.get("confirmed") != Some(&serde_json::json!(true)) {
-        return Err(FAILED.to_string());
+    let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+    capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| crate::backup_restore::FAILED)?, shutdown_began(), expected_pid).map_err(str::to_string)
+}
+
+fn restore_selection(slot: &SidecarSlot, id: &str, session: &str, pid: u32) -> Result<(PathBuf, Option<String>), String> {
+    let selection = slot.restore_selection.as_ref().ok_or(crate::backup_restore::FAILED)?;
+    if selection.id != id || selection.session != session || selection.pid != pid { return Err(crate::backup_restore::FAILED.to_string()); }
+    Ok((selection.path.clone(), selection.sha256.clone()))
+}
+
+/// Authenticate before showing a picker or inspecting local files. The URL,
+/// headers and port are native-owned, with no renderer HTTP fragments.
+fn restore_authenticate(config: &SidecarConfig, session: &str) -> Result<(), String> {
+    use crate::backup_restore::FAILED;
+    if session.len() != 43 || !session.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') { return Err(FAILED.to_string()); }
+    let mut stream = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127,0,0,1], config.port)), Duration::from_secs(3)).map_err(|_| FAILED)?;
+    stream.set_write_timeout(Some(Duration::from_secs(3))).map_err(|_| FAILED)?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    write!(stream, "GET /api/vault/status HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nx-vault-session: {}\r\nConnection: close\r\n\r\n", config.port, session).map_err(|_| FAILED)?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()).ok_or(FAILED)?;
+        stream.set_read_timeout(Some(remaining)).map_err(|_| FAILED)?;
+        let count = stream.read(&mut chunk).map_err(|_| FAILED)?;
+        if count == 0 { break; }
+        bytes.extend_from_slice(&chunk[..count]);
+        if bytes.len() > 8192 { return Err(FAILED.to_string()); }
     }
-    let worker_command = || {
-        let mut command = build_command(&config.binary);
-        for (key, value) in child_environment(&config.data_dir, &config.port_root, &config.web_dist, config.port, &config.boot_token) { command.env(key, value); }
-        command
-    };
-    let preview = run_worker(worker_command(), &serde_json::json!({"action":"preview", "path":request.get("path"), "credential":request.get("credential")}), CLEANUP_REPLY_TIMEOUT)?;
-    if preview.pointer("/preview/sha256") != request.get("expectedSha256") { return Err(FAILED.to_string()); }
-    quiesce(config.port, &config.boot_token, session, CLEANUP_REPLY_TIMEOUT)?;
-    let mut old = {
-        let mut slot = state.0.lock().map_err(|_| FAILED)?;
-        capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), Some(pid)).map_err(|_| FAILED)?;
-        slot.sidecar.take().ok_or(FAILED)?
-    };
-    if let Err(error) = stop_child(&mut old.child) {
-        let mut slot = state.0.lock().unwrap_or_else(|p| p.into_inner());
-        install_sidecar(&mut slot, old);
-        return Err(error);
+    let response = std::str::from_utf8(&bytes).map_err(|_| FAILED)?;
+    let (headers, body) = response.split_once("\r\n\r\n").ok_or(FAILED)?;
+    if !headers.starts_with("HTTP/1.1 200 ") && !headers.starts_with("HTTP/1.0 200 ") { return Err(FAILED.to_string()); }
+    let mut length = None;
+    for line in headers.lines().skip(1) {
+        let (name, value) = line.split_once(':').ok_or(FAILED)?;
+        if name.eq_ignore_ascii_case("transfer-encoding") || name.eq_ignore_ascii_case("content-encoding") { return Err(FAILED.to_string()); }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() { return Err(FAILED.to_string()); }
+            length = Some(value.trim().parse::<usize>().map_err(|_| FAILED)?);
+        }
     }
-    // No old process can checkpoint after this point. The offline helper owns
-    // the folder lock, including migrations and rollback. Always reap it before
-    // restart, including timeout/failure; fresh startup recovers pending intents.
-    let result = run_worker(worker_command(), &request, CLEANUP_REPLY_TIMEOUT);
-    if shutdown_began() || !crate::backup_restore::worker_stopped() { return Err(FAILED.to_string()); }
-    let sidecar = launch_verified_sidecar(&config)?;
-    {
-        let mut slot = state.0.lock().map_err(|_| FAILED)?;
-        if !install_sidecar(&mut slot, sidecar) { return Err(FAILED.to_string()); }
-    }
-    if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
-    // Reload the gate against the new LOCKED process, never keep old stores,
-    // routers, owner sessions or cached views alive after replacement/rollback.
-    window.navigate(setup_navigation_url(config.port, &config.boot_token).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
-    result
+    if length != Some(body.len()) { return Err(FAILED.to_string()); }
+    let reply: serde_json::Value = serde_json::from_str(body).map_err(|_| FAILED)?;
+    if reply.get("session") != Some(&serde_json::json!(true)) || reply.get("broker") != Some(&serde_json::json!(true)) { return Err(FAILED.to_string()); }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn backup_restore_choose(app: AppHandle, window: WebviewWindow, session_token: String) -> Result<Option<serde_json::Value>, String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (config, pid) = restore_live(&app, &window, None)?;
+        restore_authenticate(&config, &session_token)?;
+        let state = app.state::<SidecarState>();
+        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection = None;
+        #[cfg(windows)]
+        let owner = window.hwnd().map_err(|_| crate::backup_restore::FAILED)?.0 as isize;
+        #[cfg(not(windows))]
+        let owner = 0;
+        let path = crate::backup_picker::choose(owner)?;
+        restore_live(&app, &window, Some(pid))?;
+        restore_authenticate(&config, &session_token)?;
+        let Some(path) = path else { return Ok(None); };
+        let id = generate_boot_token();
+        let name = path.file_name().ok_or(crate::backup_restore::FAILED)?.to_string_lossy().into_owned();
+        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection = Some(RestoreSelection { id: id.clone(), path, pid, session: session_token, sha256: None });
+        Ok(Some(serde_json::json!({"id":id,"name":name})))
+    }).await
+}
+
+#[tauri::command]
+pub async fn backup_restore_preview(app: AppHandle, window: WebviewWindow, session_token: String, selection_id: String, credential: RestoreCredential) -> Result<serde_json::Value, String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (config, pid) = restore_live(&app, &window, None)?;
+        restore_authenticate(&config, &session_token)?;
+        let state = app.state::<SidecarState>();
+        let (path, _) = restore_selection(&*state.0.lock().map_err(|_| crate::backup_restore::FAILED)?, &selection_id, &session_token, pid)?;
+        // A failed re-preview must not leave an earlier confirmation valid.
+        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection.as_mut().ok_or(crate::backup_restore::FAILED)?.sha256 = None;
+        let reply = crate::backup_restore::run_worker(restore_worker_command(&config), &serde_json::json!({"action":"preview","path":path,"credential":credential}), CLEANUP_REPLY_TIMEOUT)?;
+        restore_live(&app, &window, Some(pid))?;
+        restore_authenticate(&config, &session_token)?;
+        let sha = reply.pointer("/preview/sha256").and_then(|v| v.as_str()).ok_or(crate::backup_restore::FAILED)?;
+        state.0.lock().map_err(|_| crate::backup_restore::FAILED)?.restore_selection.as_mut().ok_or(crate::backup_restore::FAILED)?.sha256 = Some(sha.to_string());
+        Ok(reply["preview"].clone())
+    }).await
+}
+
+#[tauri::command]
+pub async fn backup_restore_cancel(app: AppHandle, window: WebviewWindow, session_token: String, selection_id: String) -> Result<(), String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (_, pid) = restore_live(&app, &window, None)?;
+        let state = app.state::<SidecarState>();
+        let mut slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+        restore_selection(&slot, &selection_id, &session_token, pid)?;
+        slot.restore_selection = None;
+        Ok(())
+    }).await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreConfirmation {
+    selection_id: String,
+    expected_sha256: String,
+    credential: RestoreCredential,
+    current_credential: RestoreCredential,
+    confirmed: bool,
+}
+
+#[tauri::command]
+pub async fn backup_restore_confirmed(app: AppHandle, window: WebviewWindow, session_token: String, confirmation: RestoreConfirmation) -> Result<(), String> {
+    run_broker_task(move || {
+        let RestoreConfirmation { selection_id, expected_sha256, credential, current_credential, confirmed } = confirmation;
+        use crate::backup_restore::{quiesce, run_worker, stop_child, FAILED};
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (config, pid) = restore_live(&app, &window, None)?;
+        restore_authenticate(&config, &session_token)?;
+        let state = app.state::<SidecarState>();
+        let (path, digest) = restore_selection(&*state.0.lock().map_err(|_| FAILED)?, &selection_id, &session_token, pid)?;
+        if !confirmed || digest.as_deref() != Some(&expected_sha256) { return Err(FAILED.to_string()); }
+        let preview = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"preview","path":path,"credential":credential}), CLEANUP_REPLY_TIMEOUT)?;
+        if preview.pointer("/preview/sha256") != Some(&serde_json::json!(expected_sha256)) { return Err("VAULT_BACKUP_CHANGED".to_string()); }
+        run_worker(restore_worker_command(&config), &serde_json::json!({"action":"current","credential":current_credential}), CLEANUP_REPLY_TIMEOUT).map_err(|_| "VAULT_RESTORE_CURRENT_CREDENTIAL".to_string())?;
+        restore_live(&app, &window, Some(pid))?;
+        // Never kill a process whose drain was not acknowledged. A timeout
+        // can still have admitted work in flight; replacement must fail closed.
+        quiesce(config.port, &config.boot_token, &session_token, CLEANUP_REPLY_TIMEOUT).map_err(|_| "VAULT_RESTORE_DRAIN_UNCONFIRMED".to_string())?;
+        restore_live(&app, &window, Some(pid))?;
+        state.0.lock().map_err(|_| FAILED)?.restore_selection = None;
+        let mut old = {
+            let mut slot = state.0.lock().map_err(|_| FAILED)?;
+            capture_live_reveal_launch(&mut slot, window.label(), &window.url().map_err(|_| FAILED)?, shutdown_began(), Some(pid)).map_err(|_| FAILED)?;
+            slot.sidecar.take().ok_or(FAILED)?
+        };
+        if let Err(error) = stop_child(&mut old.child) {
+            install_sidecar(&mut state.0.lock().unwrap_or_else(|p| p.into_inner()), old);
+            return Err(error);
+        }
+        let intent_path = config.data_dir.join("vault/restore-intent.json");
+        let previous_intent = std::fs::read(&intent_path).ok();
+        let result = run_worker(restore_worker_command(&config), &serde_json::json!({"action":"install","path":path,"credential":credential,"currentCredential":current_credential,"expectedSha256":expected_sha256,"confirmed":true}), CLEANUP_REPLY_TIMEOUT);
+        if shutdown_began() || !crate::backup_restore::worker_stopped() { return Err(FAILED.to_string()); }
+        let sidecar = launch_verified_sidecar(&config)?;
+        if !install_sidecar(&mut *state.0.lock().map_err(|_| FAILED)?, sidecar) { return Err(FAILED.to_string()); }
+        // A helper may commit just before its reply is lost. Read the durable
+        // verdict AFTER fresh startup has recovered pending intents, never
+        // infer that rollback happened merely because the pipe failed.
+        let after = std::fs::read(&intent_path).ok();
+        let intent = after.as_ref().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+        let new_intent = after != previous_intent;
+        let restored = result.is_ok() || new_intent && intent.as_ref().and_then(|v| v.get("state")).and_then(|v| v.as_str()) == Some("committed");
+        let safety_file = intent.as_ref().and_then(|v| v.get("safetyFile")).and_then(|v| v.as_str()).filter(|name| name.starts_with("restore-") && name.ends_with(".dknvbak") && !name.contains(['/', '\\']));
+        let outcome = serde_json::json!({"status":if restored {"restored"} else {"failed"}, "safetyDirectory":config.data_dir.join("vault"), "safetyPath":safety_file.map(|name| config.data_dir.join("vault").join(name)), "selectedUnchanged":true});
+        state.0.lock().map_err(|_| FAILED)?.restore_outcome = Some(outcome);
+        if !reveal_origin_matches(&window.url().map_err(|_| FAILED)?, config.port) { return Err(FAILED.to_string()); }
+        window.navigate(setup_navigation_url(config.port, &config.boot_token).parse().map_err(|_| FAILED)?).map_err(|_| FAILED)?;
+        // The fresh gate reads the native-owned outcome, including rollback.
+        Ok(())
+    }).await
+}
+
+#[tauri::command]
+pub fn backup_restore_outcome(app: AppHandle, window: WebviewWindow) -> Result<Option<serde_json::Value>, String> {
+    let state = app.state::<SidecarState>();
+    let slot = state.0.lock().map_err(|_| crate::backup_restore::FAILED)?;
+    let config = slot.config.as_ref().ok_or(crate::backup_restore::FAILED)?;
+    if shutdown_began() || window.label() != "main" || !reveal_origin_matches(&window.url().map_err(|_| crate::backup_restore::FAILED)?, config.port) { return Err(crate::backup_restore::FAILED.to_string()); }
+    Ok(slot.restore_outcome.clone())
 }
 
 const BACKUP_AUDIT_MAX_RESPONSE: usize = 2 * 1024 * 1024;
@@ -1701,6 +1872,43 @@ mod tests {
             assert_eq!(commands.iter().any(|command| matches!(&command.context, ExecutionContext::Remote { url: pattern } if pattern.test(&url))), expected, "{text}");
             assert_eq!(reveal_origin_matches(&url, 4318), expected, "runtime origin: {text}");
         }
+    }
+
+    #[test]
+    fn backup_restore_capability_is_exact_origin_only_and_all_commands_are_granted_together() {
+        use std::collections::BTreeMap;
+        use tauri::utils::acl::{capability::Capability, manifest::Manifest, resolved::Resolved, ExecutionContext};
+        use tauri::utils::platform::Target;
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |name: &str| std::fs::read_to_string(manifest.join("gen/schemas").join(name)).unwrap();
+        let acl: BTreeMap<String, Manifest> = serde_json::from_str(&read("acl-manifests.json")).unwrap();
+        let mut caps: BTreeMap<String, Capability> = serde_json::from_str(&read("capabilities.json")).unwrap();
+        let names = ["backup_restore_choose", "backup_restore_preview", "backup_restore_cancel", "backup_restore_confirmed", "backup_restore_outcome"];
+        let static_acl = Resolved::resolve(&acl, caps.clone(), Target::Windows).unwrap();
+        for name in names { assert!(!static_acl.allowed_commands.contains_key(name)); }
+        let cap: Capability = serde_json::from_value(backup_restore_capability(4318)).unwrap();
+        assert!(!cap.local); assert_eq!(cap.windows, ["main"]);
+        caps.insert(cap.identifier.clone(), cap);
+        let resolved = Resolved::resolve(&acl, caps, Target::Windows).unwrap();
+        for name in names {
+            let commands = resolved.allowed_commands.get(name).expect("all restore commands resolve");
+            for (origin, expected) in [("http://127.0.0.1:4318/backups", true), ("http://127.0.0.1:4319/", false), ("http://dokan.localhost:4318/", false), ("tauri://localhost/", false), ("https://127.0.0.1:4318/", false)] {
+                let url = origin.parse().unwrap();
+                assert_eq!(commands.iter().any(|c| matches!(&c.context, ExecutionContext::Remote { url: p } if p.test(&url))), expected, "{name} {origin}");
+            }
+        }
+    }
+
+    #[test]
+    fn backup_restore_selection_binds_launch_session_and_opaque_id() {
+        let mut slot = SidecarSlot { restore_selection: Some(RestoreSelection { id:"chosen".into(), path:PathBuf::from("C:/selected.dknvbak"), pid:7, session:"owner".into(), sha256:Some("a".repeat(64)) }), ..Default::default() };
+        assert!(restore_selection(&slot, "chosen", "owner", 7).is_ok());
+        assert!(restore_selection(&slot, "C:/injected", "owner", 7).is_err());
+        assert!(restore_selection(&slot, "chosen", "stale", 7).is_err());
+        assert!(restore_selection(&slot, "chosen", "owner", 8).is_err());
+        slot.restore_selection = None;
+        assert!(restore_selection(&slot, "chosen", "owner", 7).is_err());
+        assert!(serde_json::from_value::<RestoreCredential>(serde_json::json!({"passphrase":"fixture","recoveryKey":"injected"})).is_err());
     }
 
     #[test]

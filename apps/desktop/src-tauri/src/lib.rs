@@ -1,4 +1,5 @@
 mod backup_reveal;
+mod backup_picker;
 mod backup_restore;
 mod desktop;
 
@@ -9,8 +10,7 @@ mod sidecar_freshness;
 
 use tauri::{Manager, RunEvent};
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub(crate) fn app_builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .manage(desktop::SidecarState::default())
         // issue #141: the vault gate's pre-boot credentials travel over the
@@ -24,8 +24,18 @@ pub fn run() {
             desktop::vault_setup_saved,
             desktop::vault_setup_warning,
             desktop::vault_logout,
-            desktop::backup_reveal
+            desktop::backup_reveal,
+            desktop::backup_restore_choose,
+            desktop::backup_restore_preview,
+            desktop::backup_restore_cancel,
+            desktop::backup_restore_confirmed,
+            desktop::backup_restore_outcome
         ])
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    app_builder()
         .setup(desktop::setup)
         .on_window_event(|window, event| {
             // Closing the last window shuts the app down; take the sidecar

@@ -253,7 +253,7 @@ it("native quiescence refuses unauthorized stops, closes the served vault, and r
 }, 15000);
 
 type NativeWorkerRequest = {
-  action: string; path: string; credential: { passphrase: string };
+  action: string; path?: string; credential: { passphrase: string };
   currentCredential?: { passphrase: string }; expectedSha256?: string; confirmed?: boolean;
 };
 async function nativeWorker(dir: string, request: NativeWorkerRequest) {
@@ -264,6 +264,17 @@ async function nativeWorker(dir: string, request: NativeWorkerRequest) {
   const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   return { exit, body: JSON.parse(stdout), stderr };
 }
+
+it("authenticates the current safety credential before native shutdown without changing current data", async () => {
+  const current = temp();
+  await fixture(current, "Original record", CURRENT.passphrase);
+  const before = readBundle(current);
+  expect((await nativeWorker(current, { action: "current", credential: INCOMING })).exit).toBe(1);
+  const verified = await nativeWorker(current, { action: "current", credential: CURRENT });
+  expect(verified.exit).toBe(0);
+  expect(verified.body).toEqual({ ok: true });
+  expect(readBundle(current).equals(before)).toBe(true);
+});
 
 it("pins native confirmation to authenticated preview bytes and installs through the one-shot process", async () => {
   const current = temp();

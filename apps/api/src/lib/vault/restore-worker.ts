@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 
 import { UnsupportedSchemaVersionError } from "../schema-version";
 import { replaceVaultOffline } from "./restore";
+import { createVaultBackupBundle } from "./backup";
 import { preflightVaultBackup } from "./restore-preflight";
 
 const credential = z.union([z.object({ passphrase: z.string() }).strict(), z.object({ recoveryKey: z.string() }).strict()]);
 const requestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("current"), credential }).strict(),
   z.object({ action: z.literal("preview"), path: z.string().min(1), credential }).strict(),
   z.object({ action: z.literal("install"), path: z.string().min(1), credential, currentCredential: credential,
     confirmed: z.literal(true), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
@@ -24,6 +27,16 @@ export async function runRestoreWorker(dataDir: string): Promise<number> {
       chunks.push(chunk);
     }
     const request = requestSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (request.action === "current") {
+      // Read-only preflight before native quiescence. The offline installer
+      // repeats this against the final drained image before creating safety.
+      await preflightVaultBackup(createVaultBackupBundle(
+        fs.readFileSync(path.join(dataDir, "vault", "vault.json"), "utf8"),
+        fs.readFileSync(path.join(dataDir, "dokan.db.enc")),
+      ), request.credential);
+      process.stdout.write(`${JSON.stringify({ ok: true })}\n`);
+      return 0;
+    }
     const fd = fs.openSync(request.path, "r");
     let bundle: Buffer;
     let modifiedAt: string;

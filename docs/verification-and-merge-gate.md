@@ -40,12 +40,9 @@ evidence comment carries all three:
 3. **the video link** — the full-quality mp4 beside the GIF. GitHub strips `<video>`, so the
    GIF is the only thing that plays in a PR comment; the mp4 is the full-speed copy.
 
-Record headless as webm, convert with ffmpeg (GIF via `palettegen`/`paletteuse`, mp4 as CRF 18),
-then upload to the public `crew-evidence` bucket under `<project>/<pr>/<head>/<artifact>`. Use the
-existing authenticated `cf` CLI; `cf` and Wrangler have separate authentication, so a missing
-Wrangler token does not mean `cf` lacks credentials. Request private credentials only if a `cf`
-command itself fails authentication. Never print tokens or provision credentials when the existing
-`cf` login works.
+Use the repository-owned runner at [`scripts/capture-browser-evidence.ts`](../scripts/capture-browser-evidence.ts) for recording, conversion, validation and provenance. Its contract and invocation are documented in [`scripts/browser-evidence.md`](../scripts/browser-evidence.md). The journey owns UI actions and assertions; the runner owns process and artifact handling. Before and after captures use distinct clean source roots and exact revisions. Never swap tracked source under a running server.
+
+Upload validated PNG, GIF and MP4 files to the public `crew-evidence` bucket under `<project>/<pr>/<head>/<artifact>`. Use the existing authenticated `cf` CLI; `cf` and Wrangler have separate authentication, so a missing Wrangler token does not mean `cf` lacks credentials. Request private credentials only if a `cf` command itself fails authentication. Never print tokens or provision credentials when the existing `cf` login works.
 
 1. Run anonymous command discovery with no account or resource identifiers:
    `cf cli search "upload local file to R2 object storage bucket"`.

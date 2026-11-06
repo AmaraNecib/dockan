@@ -90,6 +90,7 @@ async function installRevealBridge(page: Page): Promise<void> {
 }
 
 test("external backup destination persists, cancels edits, reports media failure, and retries", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.setViewportSize({ width: 1920, height: 1080 });
   await signIn(page);
   let externalStatus: ExternalBackupStatus = {

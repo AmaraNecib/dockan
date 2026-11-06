@@ -10,7 +10,9 @@ const OXLINT = resolve(ROOT, "node_modules/oxlint/bin/oxlint");
 
 test("reports object parameters with stable names and bounded comment input", () => {
   const fixture = resolve(ROOT, `tools/no-object-parameters-${randomUUID()}.ts`);
-  const longWhitespaceComment = `/*${" ".repeat(60_000)}*/`;
+  // A restored quadratic scan cannot finish this comment within the process budget.
+  // Linear extraction leaves ample room for CLI startup on a loaded runner.
+  const longWhitespaceComment = `/*${" ".repeat(1_000_000)}*/`;
   writeFileSync(
     fixture,
     [
@@ -28,7 +30,7 @@ test("reports object parameters with stable names and bounded comment input", ()
     const result = spawnSync(
       process.execPath,
       [OXLINT, "-c", "oxlint.config.ts", fixture],
-      { cwd: ROOT, encoding: "utf8" },
+      { cwd: ROOT, encoding: "utf8", timeout: 10_000 },
     );
 
     expect(result.error).toBeUndefined();
@@ -46,4 +48,4 @@ test("reports object parameters with stable names and bounded comment input", ()
   } finally {
     rmSync(fixture, { force: true });
   }
-});
+}, 20_000);

@@ -50,6 +50,15 @@ let logger: AppLogger;
 let auth: BetterAuthInstance;
 let cookie = "";
 
+async function expectActivityActorSnapshot(type: string, ref: string | null | undefined, summary: string): Promise<void> {
+  const activities = (await client.activitiesList({ limit: 500 })).items.filter(
+    (entry) => entry.type === type && (ref === undefined || entry.ref === ref) && entry.summary === summary,
+  );
+  expect(activities).toHaveLength(1);
+  const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+  expect(activities[0]).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+}
+
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-"));
   config = createAppConfig({
@@ -1345,6 +1354,7 @@ describe("purchase intake (ticket 29)", () => {
     });
     expect(result.linked).toBe(3);
     expect(result.remainderMoved).toBe(2); // unmatched share, reported only
+    await expectActivityActorSnapshot("STOCK_ADJUSTED", invoice.id, `STOCK_LINKED ${invoice.invoiceNumber}`);
 
     const history = await client.itemsHistory({ itemId: item.id });
     // +3 manual +5 invoice posting = 8 physical units; linking NEVER adds stock
@@ -2377,6 +2387,7 @@ describe("party-detail tab pagination (issue 174)", () => {
     expect((await client.suppliersGet({ id: supplier.id })).invoices).toHaveLength(12);
     const paid = await client.suppliersPay({ supplierId: supplier.id, amount: 1_200, target: { kind: "OLDEST" } });
     expect(paid.balance).toBe(0);
+    await expectActivityActorSnapshot("PAYMENT_RECORDED", supplier.id, `SUPPLIER_PAYMENT 1200 ${supplier.name}`);
     const all = await client.partyInvoices({ role: "supplier", id: supplier.id, limit: 100, offset: 0 });
     expect(all.total).toBe(12);
     expect(all.items.every((invoice) => invoice.remainingAmount === 0)).toBe(true);
@@ -2411,6 +2422,14 @@ async function setupSupplier(name: string, units = 10) {
 
 describe("supplier adjustments (issue 176)", () => {
 
+  it("attributes a refund paid from supplier credit", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد استرداد-${Date.now()}` });
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 500 });
+    const refunded = await client.suppliersRefund({ supplierId: supplier.id, amount: 500 });
+    expect(refunded.balance).toBe(0);
+    await expectActivityActorSnapshot("PAYMENT_RECORDED", supplier.id, `SUPPLIER_REFUND 500 ${supplier.name}`);
+  });
+
   it("records an account-only adjustment: the balance moves and no invoice is touched", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية رصيد", 10);
 
@@ -2424,6 +2443,7 @@ describe("supplier adjustments (issue 176)", () => {
       // the backdatable date is persisted as the owner entered it
       occurredAt: "2026-10-13T12:00:00",
     });
+    await expectActivityActorSnapshot("ADJUSTMENT_RECORDED", supplier.id, `SUPPLIER_ADJUSTMENT WE_OWE 800 ${supplier.name}`);
 
     const decreased = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 300, reason: "تصحيح" });
     expect(decreased.balance).toBe(-1500);
@@ -2583,6 +2603,8 @@ describe("supplier adjustments (issue 176)", () => {
       ],
     });
     expect(result.created).toBe(2);
+    await expectActivityActorSnapshot("ADJUSTMENT_RECORDED", a.id, `SUPPLIER_OPENING_BALANCE WE_OWE 500 ${a.name}`);
+    await expectActivityActorSnapshot("ADJUSTMENT_RECORDED", b.id, `SUPPLIER_OPENING_BALANCE WE_OWE 500 ${b.name}`);
   });
 
   it("refuses two rows naming the same new supplier before creating a party (issue 177)", async () => {
@@ -3705,6 +3727,7 @@ describe("invoice payments (ticket 8)", () => {
     expect(paid.remainingAmount).toBe(500);
     expect(paid.payments).toHaveLength(1);
     expect(paid.payments[0]).toMatchObject({ amount: 300, method: "CASH", note: "أول دفعة" });
+    await expectActivityActorSnapshot("PAYMENT_RECORDED", invoice.id, `PAYMENT_RECORDED 300 ${invoice.invoiceNumber}`);
 
     // persisted: a fresh read shows the same header + history
     const reread = await client.invoicesGet({ id: invoice.id });
@@ -4945,6 +4968,8 @@ describe("purchase return default refund (#256)", () => {
     // the return reduced the debt instead of handing cash back; #260 reads a
     // debt we owe as a NEGATIVE balance
     expect(returned.balance).toBe(-500);
+    const returnEntry = returned.entries.find((entry) => entry.kind === "RETURN");
+    await expectActivityActorSnapshot("RETURN_RECORDED", undefined, `SUPPLIER_RETURN ${returnEntry!.ref} 500 ${supplier.name}`);
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.movements.find((movement) => movement.reason === "SUPPLIER_RETURN")?.details?.documents)
       .toContainEqual({ id: purchase.id, number: purchase.invoiceNumber });

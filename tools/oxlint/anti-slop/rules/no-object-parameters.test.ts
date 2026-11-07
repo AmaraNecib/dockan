@@ -29,22 +29,24 @@ test("reports object parameters with stable names and bounded comment input", ()
   try {
     const result = spawnSync(
       process.execPath,
-      [OXLINT, "-c", "oxlint.config.ts", fixture],
+      [OXLINT, "-c", "oxlint.config.ts", "-f", "json", fixture],
       { cwd: ROOT, encoding: "utf8", timeout: 10_000 },
     );
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
-    expect(result.stdout).toContain(
-      "error anti-slop(no-object-parameters): Parameter `{ value }` uses the broad `object` type.",
-    );
-    expect(result.stdout).toContain(
-      "error anti-slop(no-object-parameters): Parameter `{ value } /* */` uses the broad `object` type.",
-    );
-    expect(result.stdout).toContain(
-      "error anti-slop(no-object-parameters): Parameter `{ value }: Payload` uses the broad `object` type.",
-    );
-    expect(result.stdout.match(/error anti-slop\(no-object-parameters\)/gu)).toHaveLength(3);
+    const diagnostics = JSON.parse(result.stdout).diagnostics;
+    expect(diagnostics).toHaveLength(3);
+    expect(diagnostics.map(({ code }) => code)).toEqual([
+      "anti-slop(no-object-parameters)",
+      "anti-slop(no-object-parameters)",
+      "anti-slop(no-object-parameters)",
+    ]);
+    expect(diagnostics.map(({ message }) => message.replace(/\s+/gu, " "))).toEqual([
+      "Parameter `{ value }` uses the broad `object` type. Accept a named owner type; parse external input at its boundary before calling this function.",
+      "Parameter `{ value }: Payload` uses the broad `object` type. Accept a named owner type; parse external input at its boundary before calling this function.",
+      "Parameter `{ value } /* */` uses the broad `object` type. Accept a named owner type; parse external input at its boundary before calling this function.",
+    ]);
   } finally {
     rmSync(fixture, { force: true });
   }

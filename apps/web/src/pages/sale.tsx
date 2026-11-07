@@ -180,8 +180,9 @@ export function SalePage() {
   const catalogSearch = useQuery({
     ...orpc.catalogSearch.queryOptions({ input: { query: searchDebounced || " " }, enabled: searchDebounced.length > 0 }),
   });
-  const searchMatches = catalogSearch.data?.matches ?? [];
-  const searchExact = catalogSearch.data?.exact ?? null;
+  const searchReady = searchDebounced === searchQuery.trim();
+  const searchMatches = searchReady ? catalogSearch.data?.matches ?? [] : [];
+  const searchExact = searchReady ? catalogSearch.data?.exact ?? null : null;
   const searchMatchSetKey = searchMatches.map((match) => match.item.id).join("|");
   const visibleSearchIndex = searchActiveIndex !== null && searchActiveIndex < searchMatches.length ? searchActiveIndex : null;
 
@@ -530,7 +531,7 @@ export function SalePage() {
               role="combobox"
               aria-autocomplete="list"
               aria-controls="sale-search-results"
-              aria-expanded={searchDebounced.length > 0}
+              aria-expanded={searchReady && searchDebounced.length > 0}
               aria-activedescendant={visibleSearchIndex !== null ? `sale-search-option-${searchMatches[visibleSearchIndex]?.item.id}` : undefined}
               className={cn(inputClass, "w-full px-3 py-2")}
               autoComplete="off"
@@ -559,13 +560,13 @@ export function SalePage() {
               }}
               data-testid="sale-search"
             />
-            {searchDebounced.length > 0 && catalogSearch.isError && <p role="alert" className="text-sm text-destructive" data-testid="sale-search-error">{tError(catalogSearch.error.message)}</p>}
+            {searchReady && searchDebounced.length > 0 && catalogSearch.isError && <p role="alert" className="text-sm text-destructive" data-testid="sale-search-error">{tError(catalogSearch.error.message)}</p>}
             {searchExact !== null && (
               <button type="button" className="w-full rounded border bg-accent p-2 text-right hover:bg-accent/80" onClick={() => addLine(searchExact.item)} data-testid="sale-search-exact">
                 {searchExact.item.name}
               </button>
             )}
-            {searchDebounced.length > 0 && !catalogSearch.isPending && !catalogSearch.isError && searchMatches.length === 0 && searchExact === null && (
+            {searchReady && searchDebounced.length > 0 && !catalogSearch.isPending && !catalogSearch.isError && searchMatches.length === 0 && searchExact === null && (
               <p className="text-sm text-muted-foreground" data-testid="sale-search-empty">{t("itemsSearchEmpty")}</p>
             )}
             {searchMatches.length > 0 && (

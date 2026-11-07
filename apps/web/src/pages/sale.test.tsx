@@ -1673,6 +1673,21 @@ describe("SalePage persistent search (issue #396)", () => {
     expect(lastInvoiceInput?.lines).toEqual([{ itemId: "ambiguous-1", quantity: 1 }]);
   });
 
+  it("does not add a result from the previous query during the debounce window", async () => {
+    const previous = saleSearchMatch("previous-query-item", "نتيجة قديمة", 400);
+    catalogFixtures.previous = { exact: null, matches: [previous] };
+    const host = await mountSale();
+    await typeSaleSearch(host, "previous");
+    const staleResult = host.querySelector<HTMLButtonElement>('[data-testid="sale-search-result"]');
+    expect(staleResult?.textContent).toContain("نتيجة قديمة");
+
+    await act(async () => {
+      setInput(host, "sale-search", "new query");
+      staleResult?.click();
+    });
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(0);
+  });
+
   it("ignores stale results and refuses unknown and failed lookups", async () => {
     const current = saleSearchMatch("current-item", "منتج حالي", 900);
     const stale = saleSearchMatch("stale-item", "منتج قديم", 700);

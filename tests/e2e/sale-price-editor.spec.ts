@@ -188,8 +188,8 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   // The same barcode was just scanned; let the documented 1200ms duplicate guard expire.
   await page.waitForTimeout(1300);
   await lines.getByRole("radio", { name: `${item.name}: دينار جزائري (دج)` }).focus();
-  // This gap exceeds the 50 ms editable-field threshold; the focused radio is not a text editor.
-  await page.keyboard.type(barcode, { delay: 80 });
+  // Exceed CI's 250 ms VITE_SCAN_MAX_GAP_MS so editable-target handling would clear the buffer.
+  await page.keyboard.type(barcode, { delay: 300 });
   await page.keyboard.press("Enter");
   await expect(lines.getByLabel(`${item.name}: الكمية`)).toHaveValue("2");
   await expect(value).toHaveValue("900");

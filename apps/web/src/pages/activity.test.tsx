@@ -11,7 +11,7 @@ import { createRoot } from "react-dom/client";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar)
-import { activityRefLink, activitySummaryText } from "./activity";
+import { activityActorText, activityRefLink, activitySummaryText } from "./activity";
 
 // SAFETY: the initialized i18next instance is a TFunction; the module's default
 // export is typed as a broader i18n interface, so the narrowing is asserted here
@@ -215,6 +215,20 @@ describe("activity summary tokens render translated copy", () => {
  * not act on. The tag (not the type) decides the target because several types
  * carry more than one tag with different refs.
  */
+describe("activity actor snapshots", () => {
+  it("names the saved account and shows its stable ID without claiming a specific person", () => {
+    const rendered = renderNode(activityActorText(t, { actorName: "مالك الاختبار", actorId: "account-123" }));
+
+    expect(rendered.textContent).toContain("حساب: مالك الاختبار");
+    expect(rendered.textContent).toContain("account-123");
+    expect(rendered.textContent).not.toContain("بواسطة مالك الاختبار");
+  });
+
+  it("uses one honest unknown/system fallback when the snapshot is null", () => {
+    expect(renderNode(activityActorText(t, { actorName: null, actorId: null })).textContent).toBe("غير معروف / النظام");
+  });
+});
+
 describe("activity reference links", () => {
   const item = { summary: "ITEM_CREATED بطارية", ref: "1111aaaa-2222" };
   const invoice = { summary: "SALE_CREATED INV-2", ref: "3333bbbb-4444" };

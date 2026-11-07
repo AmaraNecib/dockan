@@ -86,6 +86,21 @@ function ActivityRefCell({ entry }: { entry: { type: string; summary: string; re
   return <ActivityRef target={target}>{label}</ActivityRef>;
 }
 
+export function activityActorText(
+  t: TFunction,
+  actor: { actorId: string | null; actorName: string | null },
+): ReactNode {
+  if (actor.actorName === null) return t("activityActorUnknownSystem");
+  return (
+    <span className="grid gap-1">
+      <span>{t("activityActorAccount", { name: actor.actorName })}</span>
+      {actor.actorId !== null && (
+        <bdi dir="ltr" className="cell-ltr max-w-40 break-all font-mono text-xs text-muted-foreground">{actor.actorId}</bdi>
+      )}
+    </span>
+  );
+}
+
 /** Translate the locale-neutral activity summaries the api stores: a stable
  * ASCII tag followed by positional data fields (`CATEGORY_CREATED <name>`,
  * `RETURN_RECORDED <rtn> <amount> <invoice> <debt>`, ...). Unknown/legacy
@@ -288,6 +303,7 @@ export function ActivityLogPage() {
               <th className="p-3">{t("historyDate")}</th>
               <th className="p-3">{t("activityType")}</th>
               <th className="p-3">{t("activitySummary")}</th>
+              <th className="p-3">{t("activityActor")}</th>
               <th className="p-3">{t("activityRef")}</th>
             </tr>
           </thead>
@@ -301,6 +317,7 @@ export function ActivityLogPage() {
                   <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">{t(`activityType_${entry.type}`)}</span>
                 </td>
                 <td className="p-3">{activitySummaryText(t, entry.summary)}</td>
+                <td className="p-3" data-testid="activity-actor">{activityActorText(t, entry)}</td>
                 {/* Entity refs are compact; backup refs display their safe local filename.
                     #253 — a ref with a detail screen is a link, so the column answers
                     "what is this?" instead of printing an opaque id. */}

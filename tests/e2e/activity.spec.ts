@@ -33,6 +33,9 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   const rows = page.getByTestId("activity-table").locator("tbody tr");
   await expect(rows.first()).toContainText("إنشاء منتج");
   await expect(rows.first()).toContainText("سجل-منتج-12");
+  const actor = rows.first().getByTestId("activity-actor");
+  await expect(actor).toContainText("حساب: مالك الاختبار");
+  await expect(actor.locator("bdi")).toHaveText(/^[0-9a-f-]{36}$/iu);
   // the item creation carries its related item id as a ref, and the ref is a
   // link to the record (#253) rather than a bare id
   await expect(rows.nth(1)).toContainText("إنشاء تصنيف");

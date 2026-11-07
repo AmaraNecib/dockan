@@ -20,6 +20,11 @@ async function openDiscountControls(page: Page): Promise<void> {
   await expect(page.getByTestId("sale-discount-value")).toBeVisible();
 }
 
+async function choosePriceMode(page: Page, itemName: string, mode: "AMOUNT" | "PERCENTAGE"): Promise<void> {
+  const group = page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`);
+  await group.getByText(mode === "AMOUNT" ? "دج" : "%", { exact: true }).click();
+}
+
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 520 });
   await signIn(page);
@@ -185,7 +190,7 @@ test("sale checkout: an invalid price override outranks the payment it invalidat
   // A payment the override will invalidate: 999 is not the 1000 default, so the
   // pair's source pins to the amount and survives the total dropping to 13.
   await page.getByTestId("sale-paid").fill("999");
-  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  await choosePriceMode(page, itemName, "AMOUNT");
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("12.5");
   await expect(page.getByTestId("sale-total")).toContainText("13");
 
@@ -256,7 +261,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   // Amount negotiated price + amount invoice discount: 3 × 900 − 100.
   // Choosing an override type with an EMPTY value must not submit a free
   // (0 DZD) line: save is rejected, the error is shown, the cart stays intact.
-  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  await choosePriceMode(page, itemName, "AMOUNT");
   // Choosing a mode now shows the default. Clearing it is still a refusal.
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("");
   await page.getByTestId("sale-save").click();
@@ -291,7 +296,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   });
   await expect(page.getByTestId("sale-lines")).toContainText(secondName);
   await expectDiscountControlsCollapsed(page);
-  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${secondName}: نوع تعديل السعر`), "نسبة %");
+  await choosePriceMode(page, secondName, "PERCENTAGE");
   await page.getByTestId("sale-lines").getByLabel(`${secondName}: قيمة تعديل السعر`).fill("80");
   await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
@@ -376,7 +381,7 @@ test("sale checkout: Arabic-Indic digits price the line and the discount like AS
   // Every money field typed with Arabic-Indic digits, the owner's keyboard
   // default: 5 × 900 = 4500, amount discount 100, total 4400.
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`).fill("٥");
-  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  await choosePriceMode(page, itemName, "AMOUNT");
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("٩٠٠");
   await expectDiscountControlsCollapsed(page);
   await openDiscountControls(page);
@@ -434,7 +439,7 @@ test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the type
   // the field really holds the invisible mark, so the pin cannot pass by
   // normalising the value before the parser ever sees it
   await expect(quantity).toHaveValue(`${rlm}٥`);
-  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  await choosePriceMode(page, itemName, "AMOUNT");
   const overrideValue = page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`);
   await overrideValue.fill(`${rlm}٩٠٠`);
   await expect(overrideValue).toHaveValue(`${rlm}٩٠٠`);

@@ -7,7 +7,7 @@ import type { Category, Preferences } from "@dokan/contracts";
 import { SaleDraftProvider } from "@/components/app/sale-draft";
 
 import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
-import { activateOption, chooseOption, findOption, openSelect } from "../tests/select-driver";
+import { activateOption, chooseOption as chooseSelectOption, findOption, openSelect } from "../tests/select-driver";
 import { routerMock } from "../tests/router-mock";
 
 // React 19 act() requires the environment flag to be set explicitly.
@@ -347,10 +347,58 @@ const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-
  * dropped before reading the digits. */
 const totalAmount = (host: HTMLElement) => Number(totalText(host).replaceAll(",", "").match(/\d+/)?.[0] ?? Number.NaN);
 const errorText = (host: HTMLElement) => host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
-const lineOverrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]')[index]!;
+const lineOverrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]')[index]!;
 const lineOverrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
+async function choosePriceMode(group: HTMLElement, label: string) {
+  const value = label === "نسبة %" ? "PERCENTAGE" : "AMOUNT";
+  const radio = group.querySelector<HTMLInputElement>(`input[value="${value}"]`);
+  if (radio === null) throw new Error(`missing ${value} sale price mode`);
+  await act(async () => { radio.click(); });
+}
+async function chooseOption(trigger: HTMLElement, label: string) {
+  if (trigger.matches('[role="radiogroup"][data-testid="sale-price-mode"]')) return choosePriceMode(trigger, label);
+  return chooseSelectOption(trigger, label);
+}
 
 describe("SalePage effective price editor (#397)", () => {
+  it("shows named DZD and percentage modes with the default and effective unit price", async () => {
+    const host = await mountSale();
+    await scan("435-ui");
+
+    const group = host.querySelector<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]');
+    expect(group?.querySelector("label")?.textContent).toBe("دج");
+    const radios = group?.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+    expect(group?.getAttribute("aria-label")).toBe("منتج 435-ui: نوع تعديل السعر");
+    expect(radios).toHaveLength(2);
+    expect(radios?.[0]?.getAttribute("aria-label")).toBe("منتج 435-ui: دينار جزائري (دج)");
+    expect(radios?.[1]?.getAttribute("aria-label")).toBe("منتج 435-ui: نسبة مئوية");
+    expect(radios?.[0]?.checked).toBe(true);
+    expect(host.textContent).toContain("الافتراضي (دج)");
+    expect(host.textContent).toContain("السعر النهائي للوحدة (دج)");
+    expect(host.textContent).toContain("1,000");
+  });
+
+  it("returns focus to the selected mode when price conversion is refused", async () => {
+    const host = await mountSale();
+    scanPrice = 333;
+    await scan("435-refused-focus");
+    const group = lineOverrideType(host, 0);
+    const amount = group.querySelector<HTMLInputElement>('input[value="AMOUNT"]')!;
+    const percentage = group.querySelector<HTMLInputElement>('input[value="PERCENTAGE"]')!;
+
+    for (const value of ["301", ""]) {
+      await act(async () => setElementValue(lineOverrideValue(host)!, value));
+      percentage.focus();
+      await choosePriceMode(group, "نسبة %");
+      expect(amount.checked).toBe(true);
+      expect(percentage.checked).toBe(false);
+      expect(document.activeElement === amount).toBe(true);
+      expect(lineOverrideValue(host)?.value).toBe(value);
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain("دون تغيير السعر");
+    }
+    expect(preferenceValues).toEqual({});
+  });
+
   it("remembers only the mode, not another transaction price", async () => {
     const host = await mountSale();
     await scan("397-mode");
@@ -374,7 +422,7 @@ describe("SalePage effective price editor (#397)", () => {
     await act(async () => { release?.(); await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(lineOverrideValue(host)?.value).toBe("800");
     expect(totalAmount(host)).toBe(800);
-    expect(lineOverrideType(host, 0).textContent).toContain("مبلغ");
+    expect(lineOverrideType(host, 0).querySelector<HTMLInputElement>('input[value="AMOUNT"]')?.checked).toBe(true);
   });
 
   it("reports preference write failure without discarding the price or blocking sale", async () => {
@@ -401,7 +449,7 @@ describe("SalePage effective price editor (#397)", () => {
     await chooseOption(lineOverrideType(host, 0), "نسبة %");
     expect(preferenceValues["ui.sale.priceMode"]).toBe("PERCENTAGE");
     await scan("397-read-second");
-    expect(lineOverrideType(host, 1).textContent).toContain("نسبة %");
+    expect(lineOverrideType(host, 1).querySelector<HTMLInputElement>('input[value="PERCENTAGE"]')?.checked).toBe(true);
     const secondPrice = host.querySelectorAll<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]')[1];
     expect(secondPrice?.value).toBe("100");
     await chooseOption(lineOverrideType(host, 0), "مبلغ");
@@ -674,8 +722,8 @@ describe("SalePage commit states (greptile round-2)", () => {
     await scan("555");
     await expandDiscount(host);
     // give the line an override so the override-value input renders too
-    const overrideType = host.querySelector<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]');
-    if (overrideType === null) throw new Error("missing override type select");
+    const overrideType = host.querySelector<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]');
+    if (overrideType === null) throw new Error("missing sale price mode group");
     await chooseOption(overrideType, "مبلغ");
     await act(async () => {
       const overrideValue = host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
@@ -698,7 +746,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(disabled('[data-testid="sale-discount-type"]')).toBe(true);
     expect(disabled('[data-testid="sale-discount-value"]')).toBe(true);
     expect(disabled('input[aria-label$="الكمية"]')).toBe(true);
-    expect(disabled('button[aria-label$="نوع تعديل السعر"]')).toBe(true);
+    expect(disabled('[data-testid="sale-price-mode"] input[type="radio"]')).toBe(true);
     expect(disabled('input[aria-label$="قيمة تعديل السعر"]')).toBe(true);
     expect(disabled('button[aria-label^="حذف"]')).toBe(true);
 
@@ -1054,8 +1102,8 @@ describe("SalePage learnability (issue #94)", () => {
     const host = await mountSale();
     await scan("717");
 
-    const overrideType = host.querySelector<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]');
-    if (overrideType === null) throw new Error("missing override select");
+    const overrideType = host.querySelector<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]');
+    if (overrideType === null) throw new Error("missing sale price mode group");
     await chooseOption(overrideType, "مبلغ");
     expect(host.querySelector('input[aria-label$="قيمة تعديل السعر"]')).not.toBeNull();
 
@@ -1070,8 +1118,8 @@ describe("SalePage learnability (issue #94)", () => {
     const host = await mountSale();
     await scan("727");
 
-    const overrideType = host.querySelector<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]');
-    if (overrideType === null) throw new Error("missing override select");
+    const overrideType = host.querySelector<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]');
+    if (overrideType === null) throw new Error("missing sale price mode group");
     await chooseOption(overrideType, "مبلغ");
     const overrideValue = host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
     if (overrideValue === null) throw new Error("missing override value");

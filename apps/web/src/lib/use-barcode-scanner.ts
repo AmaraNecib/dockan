@@ -30,9 +30,13 @@ function parseEnvInt(raw: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-const isEditableTarget = (target: EventTarget | null): boolean =>
-  target instanceof HTMLElement &&
-  (target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+const isEditableTarget = (target: EventTarget | null): boolean => {
+  if (!(target instanceof HTMLElement)) return false;
+  // Radio inputs accept keys for selection, but they do not edit text. Keep
+  // scanner bursts independent of the inter-key gap while a mode is focused.
+  if (target instanceof HTMLInputElement) return target.type !== "radio";
+  return target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+};
 
 export function useBarcodeScanner(onScan: (code: string) => void): void {
   // latest callback without re-binding the listener on every render

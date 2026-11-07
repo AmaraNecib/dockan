@@ -228,18 +228,18 @@ if (evidence) test("sale page approval evidence: light, dark and mobile", async 
   await expect(page.getByTestId("sale-total")).toContainText("6,000");
   await expect(page.getByTestId("sale-lines")).toContainText("7,500");
   await page.waitForTimeout(900);
-  await page.getByTestId("sale-form").screenshot({ path: ".scratch/evidence/sale-page/light-desktop.png" });
+  await page.screenshot({ path: ".scratch/evidence/sale-page/light-desktop.png", fullPage: true });
 
   await page.getByRole("button", { name: "المظهر" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
   await page.waitForTimeout(900);
-  await page.getByTestId("sale-form").screenshot({ path: ".scratch/evidence/sale-page/dark-desktop.png" });
+  await page.screenshot({ path: ".scratch/evidence/sale-page/dark-desktop.png", fullPage: true });
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
   await expect(page.getByTestId("sale-save")).toBeVisible();
   await page.waitForTimeout(900);
-  await page.getByTestId("sale-form").screenshot({ path: ".scratch/evidence/sale-page/dark-mobile.png" });
+  await page.screenshot({ path: ".scratch/evidence/sale-page/dark-mobile.png", fullPage: true });
 });
 
 if (evidence) test("price editor user journey at reading pace (#397 evidence)", async ({ page }, testInfo) => {

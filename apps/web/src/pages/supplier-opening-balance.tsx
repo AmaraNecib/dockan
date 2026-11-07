@@ -3,7 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../lib/scoped-mutation";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 import { normalizeTextKey, type SupplierAdjustmentDirection } from "@dokan/contracts";
 
@@ -903,7 +903,7 @@ export function SupplierOpeningBalancePage() {
                             disabled={submitting || bulk.isPending}
                             data-testid={`opening-balance-typed-remove-${index}`}
                           >
-                            <X size={16} aria-hidden="true" />
+                            <Trash2 size={16} aria-hidden="true" />
                           </button>
                         </div>
                         {typedError !== null && (

@@ -52,12 +52,11 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
   const restoreLabel = `${t("saleResetPrice")} ${line.item.name}`;
 
   return <div className="grid min-w-0 gap-1">
-    <div className="flex items-center justify-end gap-1" dir="rtl">
-      {line.overrideType !== "" && (
-        <Button type="button" variant="ghost" size="icon-sm" data-testid="sale-price-reset" aria-label={restoreLabel} title={t("saleResetPrice")} onClick={reset} disabled={disabled}>
-          <RotateCcw size={14} aria-hidden="true" />
-        </Button>
-      )}
+    <div className="flex items-center justify-start gap-1">
+      <input ref={input} data-testid="sale-price-value" className={cn(inputClass, "w-20 px-2 py-1")} autoComplete="off" inputMode="numeric" dir="ltr"
+        value={salePriceInput(line, mode)} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`}
+        aria-invalid={invalid || undefined} aria-describedby={[invalid ? invalidId : "", switchError ? errorId : ""].filter(Boolean).join(" ") || undefined}
+        onChange={(event) => { setChosenMode(mode); setSwitchError(false); onChange({ overrideType: mode, overrideValue: event.target.value }); }} disabled={disabled} />
       <div role="radiogroup" aria-label={`${line.item.name}: ${t("saleOverrideType")}`} data-testid="sale-price-mode" className="inline-flex overflow-hidden rounded-md border border-input">
         <label className="relative cursor-pointer">
           <input ref={amountRadio} type="radio" name={modeGroupId} value="AMOUNT" aria-label={`${line.item.name}: ${t("saleOverrideDzd")}`} checked={mode === "AMOUNT"} onChange={() => selectMode("AMOUNT")} disabled={disabled} className="peer sr-only" />
@@ -68,10 +67,11 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
           <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">%</span>
         </label>
       </div>
-      <input ref={input} data-testid="sale-price-value" className={cn(inputClass, "w-20 px-2 py-1")} autoComplete="off" inputMode="numeric" dir="ltr"
-        value={salePriceInput(line, mode)} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`}
-        aria-invalid={invalid || undefined} aria-describedby={[invalid ? invalidId : "", switchError ? errorId : ""].filter(Boolean).join(" ") || undefined}
-        onChange={(event) => { setChosenMode(mode); setSwitchError(false); onChange({ overrideType: mode, overrideValue: event.target.value }); }} disabled={disabled} />
+      {line.overrideType !== "" && (
+        <Button type="button" variant="ghost" size="icon-sm" data-testid="sale-price-reset" aria-label={restoreLabel} title={t("saleResetPrice")} onClick={reset} disabled={disabled}>
+          <RotateCcw size={14} aria-hidden="true" />
+        </Button>
+      )}
     </div>
     {invalid && <span id={invalidId} className="text-xs text-destructive">{t("salePriceUnusable")}</span>}
     {switchError && <span id={errorId} role="alert" className="text-xs text-destructive">{t("salePriceSwitchRefused")}</span>}

@@ -5,7 +5,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceDetail, Item } from "@dokan/contracts";
-import { PackagePlus, X } from "lucide-react";
+import { PackagePlus, Trash2 } from "lucide-react";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
@@ -872,7 +872,7 @@ export function PurchasePage() {
                           <td className="p-2">{lineQuantity(line) * line.unitCost}</td>
                           <td className="p-2">
                             <button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent" disabled={savePending} aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => draft.remove(line.item.id)}>
-                              <X size={16} aria-hidden="true" />
+                              <Trash2 size={16} aria-hidden="true" />
                             </button>
                           </td>
                         </tr>

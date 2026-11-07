@@ -384,11 +384,11 @@ describe("SalePage effective price editor (#397)", () => {
     expect(host.querySelector('[data-testid="sale-price-reset"]')?.getAttribute("aria-label")).toContain("435-ui");
     expect(host.querySelector('[data-testid="sale-price-reset"]')?.getAttribute("title")).toBe("إعادة للافتراضي");
     const controls = group?.parentElement;
-    expect(controls?.getAttribute("dir")).toBe("rtl");
+    expect(controls?.hasAttribute("dir")).toBe(false);
     expect(Array.from(controls?.children ?? []).map((child) => child.getAttribute("data-testid") ?? child.getAttribute("role"))).toEqual([
-      "sale-price-reset",
-      "sale-price-mode",
       "sale-price-value",
+      "sale-price-mode",
+      "sale-price-reset",
     ]);
   });
 
@@ -955,6 +955,7 @@ describe("SalePage learnability (issue #94)", () => {
     if (remove === null) throw new Error("missing remove button");
     // the row control is an icon with a real accessible name
     expect(remove.getAttribute("aria-label")).toBe("حذف منتج 999");
+    expect(remove.querySelector('[data-testid="sale-remove-trash-icon"]')).not.toBeNull();
     await act(async () => {
       remove.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });

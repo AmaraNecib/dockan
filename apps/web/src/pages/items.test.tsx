@@ -461,6 +461,9 @@ describe("products table search (#388)", () => {
 
     click("items-pager-next");
     await waitFor(() => document.querySelector('[data-testid="edit-item-row-10"]') !== null);
+    const editButton = el<HTMLButtonElement>('[data-testid="edit-item-row-10"]');
+    expect(editButton.getAttribute("aria-label")).toContain("تعديل");
+    expect(editButton.querySelector("svg")).not.toBeNull();
     setInput("catalog-search", "item-full-388");
     await waitFor(() => document.querySelector('[data-testid="edit-item-row-23"]') !== null);
     expect(el<HTMLElement>('[data-testid="items-search-total"]').textContent).toContain("1");

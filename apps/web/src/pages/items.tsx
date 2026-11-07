@@ -2,6 +2,7 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Pencil } from "lucide-react";
 
 import { Link } from "@tanstack/react-router";
 import type { ItemListItem, ItemCreate, ItemUpdate } from "@dokan/contracts";
@@ -1153,12 +1154,14 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
                       <button
                         type="button"
                         id={`edit-button-${item.id}`}
-                        className="rounded text-muted-foreground underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+                        className="grid size-8 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
                         onClick={() => beginEdit(item)}
                         disabled={update.isPending || draftDirty}
                         data-testid={`edit-item-${item.id}`}
+                        aria-label={`${t("itemsEdit")} ${item.name}`}
+                        title={t("itemsEdit")}
                       >
-                        {t("itemsEdit")}
+                        <Pencil size={16} aria-hidden="true" />
                       </button>
                       <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="rounded text-muted-foreground underline hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
                         {t("historyLink")}

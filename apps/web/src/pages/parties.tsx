@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { Pencil, Trash2 } from "lucide-react";
 
 import type { Party, PartyListItem, PartyRole } from "@dokan/contracts";
 import { displayAlgerianPhone } from "@dokan/contracts";
@@ -171,19 +172,20 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                         <Link to={role === "customer" ? "/customers/$partyId" : "/suppliers/$partyId"} params={{ partyId: row.id }} className={buttonVariants({ variant: "outline", size: "sm" })} data-testid="party-row-details" aria-label={`${t("partyDetails")} ${row.name}`}>
                           {t("partyDetails")}
                         </Link>
-                        <Button variant="ghost" size="sm" onClick={() => setEditing(row)} data-testid="party-row-edit" aria-label={`${t("partyEdit")} ${row.name}`}>
-                          {t("partyEdit")}
+                        <Button variant="ghost" size="icon-sm" onClick={() => setEditing(row)} data-testid="party-row-edit" aria-label={`${t("partyEdit")} ${row.name}`} title={t("partyEdit")}>
+                          <Pencil size={16} aria-hidden="true" data-testid="party-row-pencil-icon" />
                         </Button>
                         <Button
                           variant="ghost"
-                          size="sm"
+                          size="icon-sm"
+                          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                           onClick={() => setDeleting(row)}
                           disabled={deleteBlocked}
-                          title={deleteBlocked ? t("partyDeleteBlocked") : undefined}
+                          title={deleteBlocked ? t("partyDeleteBlocked") : t("partyDelete")}
                           data-testid="party-row-delete"
                           aria-label={`${t("partyDelete")} ${row.name}`}
                         >
-                          {t("partyDelete")}
+                          <Trash2 size={16} aria-hidden="true" data-testid="party-row-trash-icon" />
                         </Button>
                         {/* the rule must be readable without a mouse: a disabled
                             button is skipped by focus and title is unreliable */}

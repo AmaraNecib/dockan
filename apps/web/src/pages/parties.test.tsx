@@ -226,6 +226,8 @@ describe("PartiesPage (issue 120)", () => {
       expect(host.querySelector("thead th:last-child")?.textContent).toBe("تفاصيل / تعديل / حذف");
       expect(details?.getAttribute("href")).toBe(`/${role}s/$partyId?partyId=${role}-407`);
       expect(details?.closest("td")).toBe(host.querySelector('[data-testid="party-row-edit"]')?.closest("td"));
+      expect(host.querySelector('[data-testid="party-row-edit"] [data-testid="party-row-pencil-icon"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="party-row-delete"] [data-testid="party-row-trash-icon"]')).not.toBeNull();
       expect(host.querySelector('[data-testid="party-row-link"]')).not.toBeNull();
     });
   }

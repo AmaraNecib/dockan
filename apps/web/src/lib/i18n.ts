@@ -58,7 +58,7 @@ const resources = {
       activityType: "النوع",
       activitySummary: "الوصف",
       activityActor: "الحساب المنفّذ",
-      activityActorAccount: "حساب: {{name}}",
+      activityActorAccount: "{{name}}",
       activityActorUnknownSystem: "غير معروف / النظام",
       activityRef: "المرجع",
       activityType_LOGIN: "تسجيل دخول",

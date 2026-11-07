@@ -30,12 +30,27 @@ test("reports object parameters with stable names and bounded comment input", ()
     const result = spawnSync(
       process.execPath,
       [OXLINT, "-c", "oxlint.config.ts", "-f", "json", fixture],
-      { cwd: ROOT, encoding: "utf8", timeout: 10_000 },
+      { cwd: ROOT, encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 },
     );
 
-    expect(result.error).toBeUndefined();
-    expect(result.status).toBe(1);
-    const diagnostics = JSON.parse(result.stdout).diagnostics;
+    const stdoutBytes = Buffer.byteLength(result.stdout ?? "", "utf8");
+    const stderrBytes = Buffer.byteLength(result.stderr ?? "", "utf8");
+    const captureContext =
+      `stdout=${stdoutBytes} bytes, stderr=${stderrBytes} bytes, ` +
+      `status=${result.status}, error=${result.error?.code ?? "none"}`;
+    expect(result.error, `Oxlint subprocess failed: ${captureContext}`).toBeUndefined();
+    expect(result.status, `Unexpected Oxlint status: ${captureContext}`).toBe(1);
+
+    let output: { diagnostics: { code: string; message: string }[] };
+    try {
+      output = JSON.parse(result.stdout);
+    } catch (error) {
+      throw new Error(
+        `Oxlint stdout was not complete JSON (${captureContext}): ${String(error)}; ` +
+          `tail=${JSON.stringify(result.stdout.slice(-240))}`,
+      );
+    }
+    const diagnostics = output.diagnostics;
     expect(diagnostics).toHaveLength(3);
     expect(diagnostics.map(({ code }) => code)).toEqual([
       "anti-slop(no-object-parameters)",

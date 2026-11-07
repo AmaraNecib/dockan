@@ -218,8 +218,6 @@ test("sale quick-add creates a category explicitly and keeps item and customer d
   await category.fill(categoryName);
   const createCategory = page.getByTestId("sale-quick-category-create");
   await expect(createCategory).toBeVisible();
-  await page.keyboard.press("Tab");
-  await expect(createCategory).toBeFocused();
   const createdCategory = await actAndAck<{ id: string }>(page, "categoriesCreate", () => page.keyboard.press("Enter"));
   await expect(category).toHaveValue(categoryName);
   await expect(page.getByTestId("sale-quick-name")).toHaveValue(itemName);

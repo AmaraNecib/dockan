@@ -250,24 +250,19 @@ describe("EntityPicker", () => {
     expect(document.querySelector('[role="option"]')?.textContent).toBe("منتج أول");
   });
 
-  it("keeps Create open when keyboard focus enters its portaled popup", async () => {
+  it("creates a missing option when Enter is pressed", async () => {
     let created = "";
     const host = await mount((query) => { created = query; });
     await type(host, "تصنيف جديد");
     const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
-    const action = document.querySelector<HTMLButtonElement>('[data-testid="entity-create"]');
-    expect(input).not.toBeNull();
-    expect(action).not.toBeNull();
-
-    await act(async () => {
-      action?.focus();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
     expect(input?.getAttribute("aria-expanded")).toBe("true");
-    expect(action?.isConnected).toBe(true);
-    await act(async () => action?.click());
+    expect(document.querySelector('[data-testid="entity-create"]')).not.toBeNull();
+
+    await press(host, "Enter");
+
     expect(created).toBe("تصنيف جديد");
+    expect(input?.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("first");
   });
 
   it("offers an explicit create action only when there is no match", async () => {

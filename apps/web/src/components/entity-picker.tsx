@@ -108,6 +108,10 @@ export function EntityPicker({
     if (event.key === "Enter" && open) {
       event.preventDefault();
       if (active !== undefined) pick(active);
+      else if (canCreate) {
+        closeSearch();
+        onCreate?.(trimmedQuery);
+      }
     }
   }
 

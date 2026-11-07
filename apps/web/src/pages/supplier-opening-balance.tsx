@@ -884,7 +884,7 @@ export function SupplierOpeningBalancePage() {
                   return (
                     <tr key={typedRow.id} className="border-b bg-accent/40" data-testid={`opening-balance-typed-row-${index}`}>
                       <td className="p-2">
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-2">
                           <input
                             className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
                             value={typedRow.name}

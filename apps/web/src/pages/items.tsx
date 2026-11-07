@@ -1158,7 +1158,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
                         onClick={() => beginEdit(item)}
                         disabled={update.isPending || draftDirty}
                         data-testid={`edit-item-${item.id}`}
-                        aria-label={`${t("itemsEdit")} ${item.name}`}
+                        aria-label={t("itemsEdit")}
                         title={t("itemsEdit")}
                       >
                         <Pencil size={16} aria-hidden="true" />

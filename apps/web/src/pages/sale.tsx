@@ -3,7 +3,7 @@ import { useMutation } from "../lib/scoped-mutation";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ScanBarcode, Trash2 } from "lucide-react";
+import { RotateCcw, ScanBarcode, Trash2 } from "lucide-react";
 
 import type { Category, InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
@@ -11,7 +11,6 @@ import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { cn } from "@/lib/utils";
@@ -28,7 +27,6 @@ import {
   resolveInitialPaid,
   saleOverrideInvalid,
   saleUnitPrice,
-  toAmountKind,
   type AmountKind,
   type SaleDraftLine,
 } from "@/lib/invoice-draft";
@@ -141,9 +139,18 @@ export function SalePage() {
   const [discountType, setDiscountType] = useState<AmountKind>("");
   const [discountValue, setDiscountValue] = useState("");
   const [discountExpanded, setDiscountExpanded] = useState(false);
-  const discountTypeRef = useRef<HTMLButtonElement>(null);
+  const discountValueRef = useRef<HTMLInputElement>(null);
+  const addDiscountRef = useRef<HTMLButtonElement>(null);
+  const refocusAddDiscount = useRef(false);
   useEffect(() => {
-    if (discountExpanded) discountTypeRef.current?.focus();
+    if (discountExpanded) {
+      discountValueRef.current?.focus();
+      return;
+    }
+    if (refocusAddDiscount.current) {
+      refocusAddDiscount.current = false;
+      addDiscountRef.current?.focus();
+    }
   }, [discountExpanded]);
   const [error, setError] = useState<string | null>(null);
   /** the saved sale whose completion card is shown; the server's response is
@@ -316,7 +323,7 @@ export function SalePage() {
     // would otherwise fail the amount-vs-total check and mask the real problem.
     const parsedDiscount = parseLooseNumber(discountValue);
     const discountInvalid =
-      discountType !== "" &&
+      discountType !== "" && !draftBlank(discountValue) &&
       (!Number.isFinite(parsedDiscount) ||
         (discountType === "AMOUNT" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0)) ||
         (discountType === "PERCENTAGE" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0 || parsedDiscount > 100)));
@@ -354,7 +361,7 @@ export function SalePage() {
       initialPaid: resolvedInitialPaid(paid),
       lines: invoiceLines,
     };
-    if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
+    if (discountType !== "" && !draftBlank(discountValue)) invoiceInput.discount = { type: discountType, value: enteredDiscount };
     setSubmittedNotice(liveNotice);
     commitRef.current = true;
     setSavePending(true);
@@ -572,12 +579,78 @@ export function SalePage() {
           <div className="grid gap-3 sm:grid-cols-2 sm:items-center">
             <div data-testid="sale-discount-area" className="flex min-h-14 items-center">
               {discountExpanded ? (
-                <div className="flex flex-wrap items-end gap-3">
-                  <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => { setDiscountType(toAmountKind(value ?? "")); setDraftDirty(true); }} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger ref={discountTypeRef} className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
-                  <label className="grid gap-1 text-sm font-medium">{t("saleDiscountValue")}<input className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm" name="discountValue" autoComplete="off" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label>
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="grid gap-1 text-sm font-medium">
+                    {t("saleDiscountValue")}
+                    <input
+                      ref={discountValueRef}
+                      className={cn(inputClass, "w-20 px-2 py-1")}
+                      name="discountValue"
+                      autoComplete="off"
+                      inputMode="numeric"
+                      dir="ltr"
+                      value={discountValue}
+                      onChange={(event) => { setDiscountValue(event.target.value); setDraftDirty(true); }}
+                      disabled={createInvoice.isPending}
+                      data-testid="sale-discount-value"
+                    />
+                  </label>
+                  <div
+                    role="radiogroup"
+                    aria-label={t("saleDiscountType")}
+                    data-testid="sale-discount-type"
+                    className="inline-flex overflow-hidden rounded-md border border-input"
+                  >
+                    <label className="relative cursor-pointer">
+                      <input
+                        type="radio"
+                        name="discountType"
+                        value="AMOUNT"
+                        aria-label={`${t("saleDiscountType")}: ${t("saleDiscountAmount")} (${t("saleOverrideDzd")})`}
+                        checked={discountType === "AMOUNT"}
+                        onChange={() => { setDiscountType("AMOUNT"); setDraftDirty(true); }}
+                        disabled={createInvoice.isPending}
+                        className="peer sr-only"
+                      />
+                      <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">
+                        {t("saleOverrideDzdShort")}
+                      </span>
+                    </label>
+                    <label className="relative cursor-pointer border-s border-input">
+                      <input
+                        type="radio"
+                        name="discountType"
+                        value="PERCENTAGE"
+                        aria-label={`${t("saleDiscountType")}: ${t("saleDiscountPercentage")}`}
+                        checked={discountType === "PERCENTAGE"}
+                        onChange={() => { setDiscountType("PERCENTAGE"); setDraftDirty(true); }}
+                        disabled={createInvoice.isPending}
+                        className="peer sr-only"
+                      />
+                      <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">%</span>
+                    </label>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    data-testid="sale-discount-reset"
+                    aria-label={t("saleNoDiscount")}
+                    title={t("saleNoDiscount")}
+                    onClick={() => {
+                      refocusAddDiscount.current = true;
+                      setDiscountType("");
+                      setDiscountValue("");
+                      setDiscountExpanded(false);
+                      setDraftDirty(true);
+                    }}
+                    disabled={createInvoice.isPending}
+                  >
+                    <RotateCcw size={14} aria-hidden="true" />
+                  </Button>
                 </div>
               ) : (
-                <Button type="button" variant="outline" size="sm" data-testid="sale-add-discount" onClick={() => setDiscountExpanded(true)} disabled={createInvoice.isPending}>
+                <Button ref={addDiscountRef} type="button" variant="outline" size="sm" data-testid="sale-add-discount" onClick={() => { setDiscountType("PERCENTAGE"); setDiscountValue(""); setDiscountExpanded(true); setDraftDirty(true); }} disabled={createInvoice.isPending}>
                   {t("saleAddDiscount")}
                 </Button>
               )}

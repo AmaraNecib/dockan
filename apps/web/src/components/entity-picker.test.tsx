@@ -59,7 +59,7 @@ async function mount(
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   mounted.push({ root, host });
-  expect(host.querySelector('[data-testid="entity"]'), "EntityPicker renders its searchable input").not.toBeNull();
+  expect(host.querySelector('[data-testid="entity"]')).not.toBeNull();
   return host;
 }
 

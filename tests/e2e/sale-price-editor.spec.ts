@@ -89,7 +89,7 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   await choosePriceMode(mode, "PERCENTAGE");
   await expect(value).toHaveValue("100");
   await value.fill("٨٠");
-  await expect(lines.getByTestId("sale-price-meaning")).toContainText("266");
+  await expect(page.getByTestId("sale-total")).toContainText("266");
   await choosePriceMode(mode, "AMOUNT");
   await expect(value).toHaveValue("266");
   await choosePriceMode(mode, "PERCENTAGE");
@@ -125,7 +125,7 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   await scan(page, barcode);
   await expectDiscountControlsCollapsed(page);
   await expect(value).toHaveValue("100");
-  await expect(lines.getByTestId("sale-price-meaning")).toContainText("500");
+  await expect(page.getByTestId("sale-total")).toContainText("500");
   await value.fill("50");
   await lines.getByTestId("sale-price-reset").click();
   await expect(value).toHaveValue("100");
@@ -209,6 +209,36 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   expect(zero.totalAmount).toBe(0);
   expect(zero.lines[0]).toMatchObject({ defaultUnitPrice: 1200, unitPrice: 0, total: 0 });
   expect((await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: zero.id })).totalAmount).toBe(0);
+});
+
+if (evidence) test("sale page approval evidence: light, dark and mobile", async ({ page }) => {
+  test.setTimeout(120_000);
+  await signIn(page);
+  await page.evaluate(() => localStorage.setItem("theme", "light"));
+  await callRpc(page, "preferencesSet", { key: "ui.sale.priceMode", value: "PERCENTAGE" });
+  const { item } = await fixture(page, 7_500);
+  await page.setViewportSize({ width: 1440, height: 960 });
+
+  const lines = page.getByTestId("sale-lines");
+  const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
+  await expect(lines.getByRole("radio", { name: `${item.name}: نسبة مئوية` })).toBeChecked();
+  await expect(value).toHaveValue("100");
+  await expect(page.locator("html")).toHaveClass(/light/);
+  await value.fill("80");
+  await expect(page.getByTestId("sale-total")).toContainText("6,000");
+  await expect(page.getByTestId("sale-lines")).toContainText("7,500");
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: ".scratch/evidence/sale-page/light-desktop.png" });
+
+  await page.getByRole("button", { name: "المظهر" }).click();
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: ".scratch/evidence/sale-page/dark-desktop.png" });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByTestId("sale-save")).toBeVisible();
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: ".scratch/evidence/sale-page/dark-mobile.png", fullPage: true });
 });
 
 if (evidence) test("price editor user journey at reading pace (#397 evidence)", async ({ page }, testInfo) => {

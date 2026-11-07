@@ -348,7 +348,7 @@ const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-
 const totalAmount = (host: HTMLElement) => Number(totalText(host).replaceAll(",", "").match(/\d+/)?.[0] ?? Number.NaN);
 const errorText = (host: HTMLElement) => host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
 const lineOverrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]')[index]!;
-const lineOverrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
+const lineOverrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('[data-testid="sale-price-value"]');
 async function choosePriceMode(group: HTMLElement, label: string) {
   const value = label === "نسبة %" ? "PERCENTAGE" : "AMOUNT";
   const radio = group.querySelector<HTMLInputElement>(`input[value="${value}"]`);
@@ -361,21 +361,35 @@ async function chooseOption(trigger: HTMLElement, label: string) {
 }
 
 describe("SalePage effective price editor (#397)", () => {
-  it("shows named DZD and percentage modes with the default and effective unit price", async () => {
+  it("defaults to percentage mode and keeps the catalogue price in its table column", async () => {
+    scanPrice = 7_500;
     const host = await mountSale();
     await scan("435-ui");
 
     const group = host.querySelector<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]');
-    expect(group?.querySelector("label")?.textContent).toBe("دج");
     const radios = group?.querySelectorAll<HTMLInputElement>('input[type="radio"]');
     expect(group?.getAttribute("aria-label")).toBe("منتج 435-ui: نوع تعديل السعر");
     expect(radios).toHaveLength(2);
     expect(radios?.[0]?.getAttribute("aria-label")).toBe("منتج 435-ui: دينار جزائري (دج)");
     expect(radios?.[1]?.getAttribute("aria-label")).toBe("منتج 435-ui: نسبة مئوية");
-    expect(radios?.[0]?.checked).toBe(true);
-    expect(host.textContent).toContain("الافتراضي (دج)");
-    expect(host.textContent).toContain("السعر النهائي للوحدة (دج)");
-    expect(host.textContent).toContain("1,000");
+    expect(radios?.[0]?.checked).toBe(false);
+    expect(radios?.[1]?.checked).toBe(true);
+    expect(lineOverrideValue(host)?.value).toBe("100");
+    expect(host.querySelector('[data-testid="sale-price-reset"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-price-meaning"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-lines"]')?.textContent).toContain("7,500");
+
+    await act(async () => setInput(host, "sale-price-value", "80"));
+    expect(host.querySelector('[data-testid="sale-total"]')?.textContent).toContain("6,000");
+    expect(host.querySelector('[data-testid="sale-price-reset"]')?.getAttribute("aria-label")).toContain("435-ui");
+    expect(host.querySelector('[data-testid="sale-price-reset"]')?.getAttribute("title")).toBe("إعادة للافتراضي");
+    const controls = group?.parentElement;
+    expect(controls?.getAttribute("dir")).toBe("rtl");
+    expect(Array.from(controls?.children ?? []).map((child) => child.getAttribute("data-testid") ?? child.getAttribute("role"))).toEqual([
+      "sale-price-reset",
+      "sale-price-mode",
+      "sale-price-value",
+    ]);
   });
 
   it("returns focus to the selected mode when price conversion is refused", async () => {
@@ -385,6 +399,7 @@ describe("SalePage effective price editor (#397)", () => {
     const group = lineOverrideType(host, 0);
     const amount = group.querySelector<HTMLInputElement>('input[value="AMOUNT"]')!;
     const percentage = group.querySelector<HTMLInputElement>('input[value="PERCENTAGE"]')!;
+    await choosePriceMode(group, "مبلغ");
 
     for (const value of ["301", ""]) {
       await act(async () => setElementValue(lineOverrideValue(host)!, value));
@@ -396,12 +411,13 @@ describe("SalePage effective price editor (#397)", () => {
       expect(lineOverrideValue(host)?.value).toBe(value);
       expect(host.querySelector('[role="alert"]')?.textContent).toContain("دون تغيير السعر");
     }
-    expect(preferenceValues).toEqual({});
+    expect(preferenceValues).toEqual({ "ui.sale.priceMode": "AMOUNT" });
   });
 
   it("remembers only the mode, not another transaction price", async () => {
     const host = await mountSale();
     await scan("397-mode");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
     await chooseOption(lineOverrideType(host, 0), "نسبة %");
     await act(async () => setElementValue(lineOverrideValue(host)!, "80"));
     expect(preferenceValues).toEqual({ "ui.sale.priceMode": "PERCENTAGE" });
@@ -418,6 +434,7 @@ describe("SalePage effective price editor (#397)", () => {
     preferenceGate = new Promise<void>((resolve) => { release = resolve; });
     const host = await mountSale();
     await scan("397-late");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
     await act(async () => setElementValue(lineOverrideValue(host)!, "800"));
     await act(async () => { release?.(); await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(lineOverrideValue(host)?.value).toBe("800");
@@ -429,6 +446,7 @@ describe("SalePage effective price editor (#397)", () => {
     preferenceWriteFails = true;
     const host = await mountSale();
     await scan("397-fail");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
     await chooseOption(lineOverrideType(host, 0), "نسبة %");
     await act(async () => setElementValue(lineOverrideValue(host)!, "80"));
     expect(host.textContent).toContain(i18n.t("salePriceModeNotSaved"));
@@ -443,9 +461,10 @@ describe("SalePage effective price editor (#397)", () => {
     preferenceReadFails = true;
     const host = await mountSale();
     await scan("397-read");
-    expect(lineOverrideValue(host)?.value).toBe("1000");
+    expect(lineOverrideValue(host)?.value).toBe("100");
     expect(host.textContent).toContain(i18n.t("salePriceModeNotSaved"));
     preferenceReadFails = false;
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
     await chooseOption(lineOverrideType(host, 0), "نسبة %");
     expect(preferenceValues["ui.sale.priceMode"]).toBe("PERCENTAGE");
     await scan("397-read-second");
@@ -484,7 +503,8 @@ describe("SalePage effective price editor (#397)", () => {
     await scan("397");
     const price = lineOverrideValue(host);
     expect(price).not.toBeNull();
-    expect(price!.value).toBe("1000");
+    expect(price!.value).toBe("100");
+    await chooseOption(lineOverrideType(host, 0), "مبلغ");
     await act(async () => setElementValue(price!, "٩٠٠"));
     expect(totalAmount(host)).toBe(900);
     await act(async () => setElementValue(price!, ""));
@@ -1104,12 +1124,15 @@ describe("SalePage learnability (issue #94)", () => {
 
     const overrideType = host.querySelector<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]');
     if (overrideType === null) throw new Error("missing sale price mode group");
+    expect(host.querySelector('[data-testid="sale-price-reset"]')).toBeNull();
     await chooseOption(overrideType, "مبلغ");
+    await act(async () => setElementValue(lineOverrideValue(host)!, "900"));
     expect(host.querySelector('input[aria-label$="قيمة تعديل السعر"]')).not.toBeNull();
 
     const reset = host.querySelector<HTMLButtonElement>('[data-testid="sale-price-reset"]');
     if (reset === null) throw new Error("missing reset-to-default action");
     await act(async () => reset.click());
+    expect(host.querySelector('[data-testid="sale-price-reset"]')).toBeNull();
     expect(lineOverrideValue(host)?.value).toBe("1000");
     expect(totalAmount(host)).toBe(1000);
   });
@@ -1550,7 +1573,8 @@ describe("SalePage commit order (#198)", () => {
     await scan("1981"); // line 1
     await scan("1982"); // line 2
 
-    // Clearing the direct price is invalid; choosing a mode alone is not an edit.
+    // An amount override left blank is invalid; choosing a mode alone is not an edit.
+    await act(async () => { await chooseOption(lineOverrideType(host, 0), "مبلغ"); });
     await act(async () => setElementValue(lineOverrideValue(host)!, ""));
     // line 2: a cleared quantity is invalid
     const quantities = host.querySelectorAll<HTMLInputElement>('input[aria-label*="الكمية"]');

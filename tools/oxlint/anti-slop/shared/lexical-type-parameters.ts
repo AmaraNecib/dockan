@@ -3,6 +3,7 @@ import type { ESTree } from "@oxlint/plugins";
 type VisitorKeys = Readonly<Record<string, readonly string[]>>;
 
 const MAX_INFER_TYPE_PARAMETER_VISITS = 100_000;
+const MAX_INFER_TYPE_PARAMETER_DEPTH = 256;
 
 interface LexicalTypeParameterAnalysis {
 	inferNamesByExtendsType: WeakMap<ESTree.Node, ReadonlySet<string>>;
@@ -56,20 +57,24 @@ function collectInferTypeParameterNames(
 	visitorKeys: VisitorKeys,
 	names: Set<string>,
 	analysis: LexicalTypeParameterAnalysis,
+	depth = 0,
 ): boolean {
-	if (analysis.inferTypeParameterVisits >= MAX_INFER_TYPE_PARAMETER_VISITS) return false;
+	if (
+		depth >= MAX_INFER_TYPE_PARAMETER_DEPTH ||
+		analysis.inferTypeParameterVisits >= MAX_INFER_TYPE_PARAMETER_VISITS
+	) return false;
 	analysis.inferTypeParameterVisits += 1;
 	if (node.type === "TSInferType") names.add(node.typeParameter.name.name);
 	const record = node as unknown as Readonly<Record<string, unknown>>;
 	for (const key of visitorKeys[node.type] ?? []) {
 		const value = record[key];
 		if (isNode(value)) {
-			if (!collectInferTypeParameterNames(value, visitorKeys, names, analysis)) return false;
+			if (!collectInferTypeParameterNames(value, visitorKeys, names, analysis, depth + 1)) return false;
 			continue;
 		}
 		if (!Array.isArray(value)) continue;
 		for (const child of value) {
-			if (isNode(child) && !collectInferTypeParameterNames(child, visitorKeys, names, analysis)) {
+			if (isNode(child) && !collectInferTypeParameterNames(child, visitorKeys, names, analysis, depth + 1)) {
 				return false;
 			}
 		}

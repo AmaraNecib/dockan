@@ -117,6 +117,21 @@ test("keeps inferred binders local to each source file", () => {
 	expect(secondVisits).toBe(4);
 });
 
+test("treats inferred names as shadowing when the depth limit is exhausted", () => {
+	const { callbacks, visitorKeys } = fixture(1, 0);
+	const callback = callbacks[0]!;
+	const conditional = callback.parent!.parent as Node;
+	let chain = node("TSUnknownKeyword");
+	for (let depth = 0; depth < 2_000; depth += 1) {
+		chain = node("TSParenthesizedType", { typeAnnotation: chain });
+	}
+	conditional.extendsType = chain;
+	const keys = { ...visitorKeys, TSParenthesizedType: ["typeAnnotation"] };
+	const names = lexicalTypeParameterNames(callback, keys);
+
+	expect(names.has("ModuleAlias"), "deep binder scans must conservatively suppress alias diagnostics").toBe(true);
+});
+
 test("treats inferred names as shadowing when the work limit is exhausted", () => {
 	const { callbacks, visitorKeys } = fixture(24, 100_001);
 	let visited = 0;

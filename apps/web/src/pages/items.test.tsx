@@ -505,6 +505,29 @@ describe("products table search (#388)", () => {
     expect(updateInputs).toHaveLength(0);
   });
 
+  it("keeps dirty edit controls visible while a new search loads or fails", async () => {
+    await mount();
+    click("edit-item-item-1");
+    setInput("edit-name", "بطارية قيد التعديل");
+    itemsGate = new Promise<void>((resolve) => {
+      releaseItemsGate = resolve;
+    });
+    itemsListFailsFor = "FAIL-DRAFT-388";
+    setInput("catalog-search", "FAIL-DRAFT-388");
+    await waitFor(() => document.querySelector('[data-testid="items-search-loading"]') !== null);
+    expect(inputByTestId("edit-name").value).toBe("بطارية قيد التعديل");
+    expect(document.querySelector('[data-testid="edit-save"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="edit-cancel"]')).not.toBeNull();
+
+    act(() => releaseItemsGate?.());
+    await waitFor(() => document.querySelector('[role="alert"]')?.textContent?.includes(i18n.t("itemsSearchError")) === true);
+    expect(inputByTestId("edit-name").value).toBe("بطارية قيد التعديل");
+    expect(document.querySelector('[data-testid="edit-save"]')).not.toBeNull();
+    click("edit-cancel");
+    expect(document.querySelector('[data-testid="edit-name"]')).toBeNull();
+    expect(updateInputs).toHaveLength(0);
+  });
+
   it("keeps the search input available while results load", async () => {
     await mount();
     itemsGate = new Promise<void>((resolve) => {

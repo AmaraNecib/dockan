@@ -871,7 +871,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
   // contains it, including while a search excludes it.
   const renderedRows = liveDraftRow !== null && !draftRowOnPage ? [...pageItems, liveDraftRow] : pageItems;
 
-  if (items.isError && !items.data) {
+  if (items.isError && !items.data && renderedRows.length === 0) {
     return (
       <div id="items-table-results" className="mt-4 rounded border bg-card p-3">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded border bg-destructive/10 p-2 text-sm text-destructive" role="alert">
@@ -886,7 +886,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
 
   // first load or a new query: retain the search control above and announce
   // progress without exposing placeholder rows as product results.
-  if (items.isPending || !items.data) {
+  if ((items.isPending || !items.data) && renderedRows.length === 0) {
     return (
       <div id="items-table-results" className="mt-6 grid gap-3 rounded border bg-card p-3" aria-busy="true">
         <p className="text-sm text-muted-foreground" role="status" aria-live="polite" data-testid="items-search-loading">
@@ -901,8 +901,8 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
     );
   }
 
-  const noMatches = searchQuery !== "" && items.data.total === 0;
-  if (noMatches && renderedRows.length === 0) {
+  const noMatches = searchQuery !== "" && items.data?.total === 0;
+  if (noMatches && items.data && renderedRows.length === 0) {
     return (
       <div id="items-table-results" className="mt-4 rounded border bg-card p-3">
         <p className="text-sm text-muted-foreground" role="status" data-testid="items-search-total">
@@ -923,7 +923,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
     );
   }
 
-  if (items.data.total === 0 && searchQuery === "") {
+  if (items.data?.total === 0 && searchQuery === "" && renderedRows.length === 0) {
     // a fresh install has no item category, and the add form requires one it
     // cannot create. A failed category read is the same dead end. In both cases
     // point at the categories screen instead of opening a form the owner cannot
@@ -969,7 +969,12 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
           </Button>
         </div>
       )}
-      {searchQuery !== "" && (
+      {items.isPending && (
+        <p className="mt-4 text-sm text-muted-foreground" role="status" aria-live="polite" data-testid="items-search-loading">
+          {t("itemsLoading")}
+        </p>
+      )}
+      {searchQuery !== "" && items.data && (
         <p className="mt-4 text-sm text-muted-foreground" role="status" data-testid="items-search-total">
           {t("itemsSearchTotal", { total: items.data.total })}
         </p>
@@ -1167,7 +1172,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
         </tbody>
       </table>
       </div>
-      {items.data.total > 0 && (
+      {items.data && items.data.total > 0 && (
         <Pager
           total={items.data.total}
           pageSize={pager.pageSize}

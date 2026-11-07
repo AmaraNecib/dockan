@@ -28,6 +28,7 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
   const invalid = saleOverrideInvalid(line);
 
   function reset() {
+    (mode === "AMOUNT" ? amountRadio : percentageRadio).current?.focus();
     onChange({ overrideType: "", overrideValue: "" });
     setSwitchError(false);
     previousPercentage.current = undefined;

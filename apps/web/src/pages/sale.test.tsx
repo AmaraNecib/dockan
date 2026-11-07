@@ -361,7 +361,7 @@ async function chooseOption(trigger: HTMLElement, label: string) {
 }
 
 describe("SalePage effective price editor (#397)", () => {
-  it("defaults to percentage mode and keeps the catalogue price in its table column", async () => {
+  it("defaults to percentage mode, previews the total, and saves that override", async () => {
     scanPrice = 7_500;
     const host = await mountSale();
     await scan("435-ui");
@@ -390,6 +390,9 @@ describe("SalePage effective price editor (#397)", () => {
       "sale-price-mode",
       "sale-price-reset",
     ]);
+
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.lines?.[0]?.priceOverride).toEqual({ type: "PERCENTAGE", value: 80 });
   });
 
   it("returns focus to the selected mode when price conversion is refused", async () => {

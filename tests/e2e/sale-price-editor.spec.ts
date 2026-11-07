@@ -83,8 +83,9 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   await expect(percentageRadio).not.toBeChecked();
   await expect(amountRadio).toBeFocused();
   await lines.getByTestId("sale-price-reset").click();
-  await expect(lines.getByTestId("sale-price-reset")).toBeFocused();
+  await expect(amountRadio).toBeFocused();
   await expect(value).not.toBeFocused();
+  await expect(lines.getByTestId("sale-price-reset")).toHaveCount(0);
   await expect(value).toHaveValue("333");
   await choosePriceMode(mode, "PERCENTAGE");
   await expect(value).toHaveValue("100");
@@ -145,12 +146,15 @@ test("resetting a sale price leaves keyboard barcode scans out of the price edit
   });
   const lines = page.getByTestId("sale-lines");
   const originalPrice = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  await choosePriceMode(lines.getByLabel(`${item.name}: نوع تعديل السعر`), "AMOUNT");
+  const priceMode = lines.getByLabel(`${item.name}: نوع تعديل السعر`);
+  const amountRadio = priceMode.getByRole("radio", { name: `${item.name}: دينار جزائري (دج)` });
+  await choosePriceMode(priceMode, "AMOUNT");
   await originalPrice.fill("301");
   const reset = lines.getByTestId("sale-price-reset");
   await reset.click();
-  await expect(reset).toBeFocused();
+  await expect(amountRadio).toBeFocused();
   await expect(originalPrice).not.toBeFocused();
+  await expect(reset).toHaveCount(0);
 
   await page.keyboard.type(barcode, { delay: 8 });
   await page.keyboard.press("Enter");

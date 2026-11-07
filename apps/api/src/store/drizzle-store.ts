@@ -55,7 +55,7 @@ import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberBoundSe
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
-import { CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersionLocked } from "../lib/schema-version";
+import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersion } from "../lib/schema-version";
 import type { DashboardAggregates, ExpenseReportEntry, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, StoreReadPort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
 import { sameParty, trimSql } from "./trim-chars";
@@ -363,7 +363,7 @@ const paymentCols = {
   paidAt: payments.paidAt,
   createdAt: payments.createdAt,
 };
-const activityCols = { id: activities.id, at: activities.at, type: activities.type, summary: activities.summary, ref: activities.ref };
+const activityCols = { id: activities.id, at: activities.at, type: activities.type, summary: activities.summary, ref: activities.ref, actorId: activities.actorId, actorName: activities.actorName };
 const expenseCategoryCols = {
   id: expenseCategories.id,
   name: expenseCategories.name,
@@ -1415,6 +1415,30 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
   };
 
   /**
+   * Issue 400 migration slice: add nullable actor snapshots without inventing
+   * an owner for historical or system events. Column changes and the version
+   * stamp share one write-locked transaction after all earlier setup steps.
+   * Failed DDL or stamping rolls back the pair, so an older reader cannot
+   * accept a committed upgrade still labelled as its previous version.
+   */
+  const ensureActivityActorColumns = (): void => {
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      assertSchemaVersionSupported(conn.raw);
+      // SAFETY: PRAGMA table_info returns one row per column with a string name.
+      const rows = conn.raw.query("PRAGMA table_info(activities)").all() as Array<{ name: string }>;
+      const names = new Set(rows.map((row) => row.name));
+      if (rows.length > 0 && !names.has("actor_id")) conn.raw.exec("ALTER TABLE activities ADD COLUMN actor_id TEXT");
+      if (rows.length > 0 && !names.has("actor_name")) conn.raw.exec("ALTER TABLE activities ADD COLUMN actor_name TEXT");
+      stampSchemaVersion(conn.raw);
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      conn.raw.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
+  /**
    * Seed the default expense categories atomically with a durable marker, and
    * SELF-HEAL partial seeds left by a boot interrupted mid-seed (the pre-fix
    * loop committed row by row, so a crash between inserts left a marker-less
@@ -1431,6 +1455,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    *   user categories or renamed defaults are never duplicated.
    */
   async function setup(): Promise<void> {
+    assertSchemaVersionSupported(conn.raw);
     rebuildLegacyAuthTables();
     ensureUserAuthColumns();
     ensureExpenseActorColumns();
@@ -1518,13 +1543,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       `);
     }
 
-    // ADR-0008 §4.5: every forward migration above has run; stamp the data
-    // format this build writes. The stamp is write-locked and re-reads the
-    // version first: a newer build that opened the same file meanwhile must
-    // never be overwritten with this build's older version. An interrupted
-    // earlier boot left the version unstamped, so the next setup re-runs the
-    // (idempotent) migrations.
-    stampSchemaVersionLocked(conn.raw);
+    // ADR-0008 §4.5: earlier migrations have finished. Commit actor columns
+    // and the schema version together, with a locked version recheck, so a
+    // newer database is never downgraded and a failed stamp leaves no actor DDL.
+    ensureActivityActorColumns();
     // boot migrations write through raw exec and setup's own statements; mark
     // the vault image dirty so the first snapshot materialises even when the
     // store is otherwise only read from

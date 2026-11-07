@@ -69,10 +69,15 @@ import type { Database } from "bun:sqlite";
  * amount and omit every correction delta, so it MUST refuse a version-8 file.
  * Existing expense rows gain null actor snapshots rather than guessed actors;
  * their original business and recording timestamps remain unchanged.
+ *
+ * Version 9 (issue 409): expense refunds contribute on their cash-return date.
+ * A v8 reader omits those signed facts and must refuse this format.
+ *
+ * Version 10 (issue 400, migration slice): activities gain nullable `actor_id`
+ * and `actor_name` snapshots. Existing rows remain NULL because the actor
+ * cannot be reconstructed safely; older builds must refuse this shape.
  */
-// Version 9 (#409): expense refunds contribute on their own cash-return date.
-// A v8 reader omits those signed facts and must refuse instead of overstating expenses.
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 /**
  * A database written by a newer app. The older build cannot know what the

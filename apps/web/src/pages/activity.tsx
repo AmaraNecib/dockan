@@ -86,6 +86,14 @@ function ActivityRefCell({ entry }: { entry: { type: string; summary: string; re
   return <ActivityRef target={target}>{label}</ActivityRef>;
 }
 
+export function activityActorText(
+  t: TFunction,
+  actor: { actorId: string | null; actorName: string | null },
+): ReactNode {
+  if (actor.actorName === null) return t("activityActorUnknownSystem");
+  return t("activityActorAccount", { name: actor.actorName });
+}
+
 /** Translate the locale-neutral activity summaries the api stores: a stable
  * ASCII tag followed by positional data fields (`CATEGORY_CREATED <name>`,
  * `RETURN_RECORDED <rtn> <amount> <invoice> <debt>`, ...). Unknown/legacy
@@ -249,6 +257,20 @@ export function activitySummaryText(t: TFunction, summary: string): ReactNode {
  * The api owns ordering and the limit clamp; the page stays a pure projection.
  */
 
+const activityColumnKeys = ["historyDate", "activityType", "activitySummary", "activityActor", "activityRef"] as const;
+
+function ActivitySkeletonRow() {
+  return (
+    <tr className="border-b last:border-0">
+      <td className="p-2"><Skeleton className="h-4 w-24" /></td>
+      <td className="p-2"><Skeleton className="h-4 w-20" /></td>
+      <td className="p-2"><Skeleton className="h-4 w-44" /></td>
+      <td className="p-2"><Skeleton className="h-4 w-28" /></td>
+      <td className="p-2"><Skeleton className="h-4 w-24" /></td>
+    </tr>
+  );
+}
+
 export function ActivityLogPage() {
   const { orpc } = useRpc();
   const { t } = useTranslation();
@@ -260,17 +282,25 @@ export function ActivityLogPage() {
       <h1 className="text-xl font-bold">{t("activityTitle")}</h1>
 
       {activities.isError ? (
-        <div className="mt-4 flex items-center justify-between rounded border bg-destructive/10 p-3 text-sm text-destructive">
+        <div role="alert" className="mt-4 flex items-center justify-between rounded border bg-destructive/10 p-3 text-sm text-destructive">
           <span>{t("activityError")}</span>
           <button type="button" className="underline" onClick={() => void activities.refetch()}>
             {t("itemsSearchRetry")}
           </button>
         </div>
       ) : activities.isPending || !activities.data ? (
-        <div className="mt-4 grid gap-3 rounded border bg-card p-3">
-          {[0, 1, 2].map((row) => (
-            <Skeleton key={row} className="h-6 w-full" />
-          ))}
+        <div role="status" aria-label={t("itemsLoading")} className="mt-4 overflow-x-auto rounded border bg-card p-3">
+          <span className="sr-only">{t("itemsLoading")}</span>
+          <table aria-hidden="true" className="w-full min-w-[44rem] text-sm">
+            <thead>
+              <tr className="border-b text-right text-muted-foreground">
+                {activityColumnKeys.map((column) => <th key={column} className="p-2">{t(column)}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {[0, 1, 2, 3].map((row) => <ActivitySkeletonRow key={row} />)}
+            </tbody>
+          </table>
         </div>
       ) : activities.data.total === 0 ? (
         <EmptyState
@@ -282,35 +312,46 @@ export function ActivityLogPage() {
         />
       ) : (
         <>
-        <table className="mt-4 w-full rounded border bg-card" data-testid="activity-table">
-          <thead>
-            <tr className="border-b text-right text-sm text-muted-foreground">
-              <th className="p-3">{t("historyDate")}</th>
-              <th className="p-3">{t("activityType")}</th>
-              <th className="p-3">{t("activitySummary")}</th>
-              <th className="p-3">{t("activityRef")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {activities.data.items.map((entry) => (
-              <tr key={entry.id} className="border-b last:border-0">
-                <td className="p-3 whitespace-nowrap text-sm text-muted-foreground">
-                  {formatDateTime(entry.at)}
-                </td>
-                <td className="p-3">
-                  <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">{t(`activityType_${entry.type}`)}</span>
-                </td>
-                <td className="p-3">{activitySummaryText(t, entry.summary)}</td>
-                {/* Entity refs are compact; backup refs display their safe local filename.
-                    #253 — a ref with a detail screen is a link, so the column answers
-                    "what is this?" instead of printing an opaque id. */}
-                <td className="p-3 cell-ltr font-mono text-xs text-muted-foreground" data-testid="activity-ref">
-                  <ActivityRefCell entry={entry} />
-                </td>
+        <div
+          className="mt-4 overflow-x-auto rounded border bg-card"
+          role="region"
+          aria-label={t("activityTitle")}
+          tabIndex={0}
+          data-testid="activity-table-region"
+        >
+          <table className="w-full min-w-[44rem] text-sm" data-testid="activity-table">
+            <caption className="sr-only">{t("activityTitle")}</caption>
+            <thead>
+              <tr className="border-b text-right text-muted-foreground">
+                <th scope="col" className="p-2">{t("historyDate")}</th>
+                <th scope="col" className="p-2">{t("activityType")}</th>
+                <th scope="col" className="p-2">{t("activitySummary")}</th>
+                <th scope="col" className="p-2">{t("activityActor")}</th>
+                <th scope="col" className="p-2">{t("activityRef")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {activities.data.items.map((entry) => (
+                <tr key={entry.id} className="border-b last:border-0">
+                  <td className="p-2 whitespace-nowrap text-muted-foreground">
+                    {formatDateTime(entry.at)}
+                  </td>
+                  <td className="p-2">
+                    <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">{t(`activityType_${entry.type}`)}</span>
+                  </td>
+                  <td className="p-2">{activitySummaryText(t, entry.summary)}</td>
+                  <td className="p-2" data-testid="activity-actor">{activityActorText(t, entry)}</td>
+                  {/* Entity refs are compact; backup refs display their safe local filename.
+                      #253 — a ref with a detail screen is a link, so the column answers
+                      "what is this?" instead of printing an opaque id. */}
+                  <td className="p-2 cell-ltr font-mono text-xs text-muted-foreground" data-testid="activity-ref">
+                    <ActivityRefCell entry={entry} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <Pager
           total={activities.data.total}
           pageSize={pager.pageSize}

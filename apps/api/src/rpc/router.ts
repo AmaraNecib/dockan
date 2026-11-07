@@ -400,6 +400,15 @@ export function createRpcRouter(deps: RpcDeps) {
     return { id: session.user.id, name: rows[0]?.name ?? null };
   };
 
+  const insertSessionActivity = async (
+    tx: StorePort,
+    session: SessionIdentity,
+    activity: Parameters<StorePort["insertActivity"]>[0],
+  ): Promise<void> => {
+    const actor = await expenseActor(session);
+    await tx.insertActivity({ ...activity, actorId: actor.id, actorName: actor.name });
+  };
+
   /**
    * #317 — a supplier account holding a row the rule table cannot sign used to
    * reach the owner as an unmapped internal error, and the UI's `serverErrorKey`
@@ -443,10 +452,10 @@ export function createRpcRouter(deps: RpcDeps) {
     throw error;
   };
 
-  const guarded = <T>(handler: (context: RpcContext) => Promise<T>) => async ({ context }: { context: RpcContext }): Promise<T> => {
-    await requireSession(context);
+  const guarded = <T>(handler: (context: RpcContext, session: SessionIdentity) => Promise<T>) => async ({ context }: { context: RpcContext }): Promise<T> => {
+    const session = await requireSession(context);
     try {
-      return await handler(context);
+      return await handler(context, session);
     } catch (error) {
       // a thrown non-Error (`throw "x"`) carries no store refusal to translate
       if (error instanceof Error) rethrowStoreRefusal(error);
@@ -602,7 +611,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- categories (ticket 03) ----------------------------------------------
     categoriesList: os.categoriesList.handler(guarded(async () => ({ items: await deps.store.listCategories() }))),
     categoriesCreate: os.categoriesCreate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         // duplicate check lives INSIDE the serialized unit; concurrent creates
         // for the same name serialize, and the UNIQUE constraint catch below
         // translates the race into the same CONFLICT response
@@ -613,7 +622,7 @@ export function createRpcRouter(deps: RpcDeps) {
               throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
             }
             const category = await tx.createCategory({ name: input.name });
-            await tx.insertActivity({ type: "CATEGORY_CREATED", summary: `CATEGORY_CREATED ${input.name}` });
+            await insertSessionActivity(tx, session, { type: "CATEGORY_CREATED", summary: `CATEGORY_CREATED ${input.name}` });
             return category;
           });
         } catch (err) {
@@ -660,7 +669,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // pickers/selects need the whole catalog; `itemsList` pages the table
     itemsAll: os.itemsAll.handler(guarded(async () => ({ items: (await deps.store.listItems()).items }))),
     itemsCreate: os.itemsCreate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         const categories = await deps.store.listCategories();
         if (!categories.some((c) => c.id === input.categoryId)) {
           throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
@@ -671,7 +680,7 @@ export function createRpcRouter(deps: RpcDeps) {
         return withBarcodeConflict(async () => {
           return deps.store.withTransaction(async (tx) => {
             const item = await tx.createItem({ ...input, barcode });
-            await tx.insertActivity({ type: "ITEM_CREATED", summary: `ITEM_CREATED ${input.name}`, ref: item.id });
+            await insertSessionActivity(tx, session, { type: "ITEM_CREATED", summary: `ITEM_CREATED ${input.name}`, ref: item.id });
             return item;
           });
         });
@@ -680,7 +689,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // unknown-scan "create with stock": item + initial stock in one unit,
     // through the same movement-posting seam the invoice flows use
     itemsCreateWithStock: os.itemsCreateWithStock.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         const categories = await deps.store.listCategories();
         if (!categories.some((c) => c.id === input.categoryId)) {
           throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
@@ -706,7 +715,7 @@ export function createRpcRouter(deps: RpcDeps) {
               ref: null,
               occurredAt: item.createdAt,
             });
-            await tx.insertActivity({
+            await insertSessionActivity(tx, session, {
               type: "ITEM_CREATED",
               summary: `ITEM_CREATED_WITH_STOCK ${input.stockOnHand} ${input.name}`,
               ref: item.id,
@@ -717,7 +726,7 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     itemsUpdate: os.itemsUpdate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         // item + audit entry commit in the same transaction; a moved item must
         // point at a real category, like create does (FK errors are not 500s)
         return withBarcodeConflict(() =>
@@ -768,9 +777,9 @@ export function createRpcRouter(deps: RpcDeps) {
             }
             // the seam already wrote the cache inside this transaction; the
             // activity rows below complete the unit
-            await tx.insertActivity({ type: "ITEM_UPDATED", summary: `ITEM_UPDATED ${item.name}`, ref: item.id });
+            await insertSessionActivity(tx, session, { type: "ITEM_UPDATED", summary: `ITEM_UPDATED ${item.name}`, ref: item.id });
             if (costChanged) {
-              await tx.insertActivity({
+              await insertSessionActivity(tx, session, {
                 type: "ITEM_COST_CORRECTED",
                 summary: `ITEM_COST_CORRECTED ${correctedCost} ${item.name}`,
                 ref: item.id,
@@ -793,7 +802,7 @@ export function createRpcRouter(deps: RpcDeps) {
 
     // --- stock ledger (ticket 27) ----------------------------------------------
     stockAddManual: os.stockAddManual.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         if (input.kind === "PURCHASE" && input.delta <= 0) {
           throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_REQUIRES_INFLOW" });
         }
@@ -874,7 +883,7 @@ export function createRpcRouter(deps: RpcDeps) {
             ref: null,
             occurredAt: input.occurredAt,
           });
-          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `STOCK_ADJUSTED ${item.name}`, ref: item.id });
+          await insertSessionActivity(tx, session, { type: "STOCK_ADJUSTED", summary: `STOCK_ADJUSTED ${item.name}`, ref: item.id });
           return posted.movement;
         });
       }),
@@ -892,30 +901,30 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     customersCreate: os.customersCreate.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         withPartyPhoneRefusals("CUSTOMER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.createParty("customer", input);
-            await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED CUSTOMER ${party.name}`, ref: party.id });
+            await insertSessionActivity(tx, session, { type: "PARTY_CREATED", summary: `PARTY_CREATED CUSTOMER ${party.name}`, ref: party.id });
             return party;
           }),
         ),
       ),
     ),
     customersUpdate: os.customersUpdate.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         withPartyPhoneRefusals("CUSTOMER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.updateParty("customer", input.id, input);
             if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
-            await tx.insertActivity({ type: "PARTY_UPDATED", summary: `PARTY_UPDATED CUSTOMER ${party.name}`, ref: party.id });
+            await insertSessionActivity(tx, session, { type: "PARTY_UPDATED", summary: `PARTY_UPDATED CUSTOMER ${party.name}`, ref: party.id });
             return party;
           }),
         ),
       ),
     ),
     customersDelete: os.customersDelete.handler(
-      guardedInput(async ({ id }) =>
+      guardedInput(async ({ id }, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           // read the identity first so the audit row can name a row that is
           // about to stop existing
@@ -924,7 +933,7 @@ export function createRpcRouter(deps: RpcDeps) {
           const result = await tx.deleteParty("customer", id);
           if (result === "HAS_INVOICES") throw new ORPCError("CONFLICT", { message: "PARTY_HAS_INVOICES" });
           if (result !== "DELETED") throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
-          await tx.insertActivity({ type: "PARTY_DELETED", summary: `PARTY_DELETED CUSTOMER ${party.name}`, ref: id });
+          await insertSessionActivity(tx, session, { type: "PARTY_DELETED", summary: `PARTY_DELETED CUSTOMER ${party.name}`, ref: id });
           return { deleted: true as const };
         }),
       ),
@@ -943,37 +952,37 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     suppliersCreate: os.suppliersCreate.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         withPartyPhoneRefusals("SUPPLIER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.createParty("supplier", input);
-            await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED SUPPLIER ${party.name}`, ref: party.id });
+            await insertSessionActivity(tx, session, { type: "PARTY_CREATED", summary: `PARTY_CREATED SUPPLIER ${party.name}`, ref: party.id });
             return party;
           }),
         ),
       ),
     ),
     suppliersUpdate: os.suppliersUpdate.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         withPartyPhoneRefusals("SUPPLIER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.updateParty("supplier", input.id, input);
             if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
-            await tx.insertActivity({ type: "PARTY_UPDATED", summary: `PARTY_UPDATED SUPPLIER ${party.name}`, ref: party.id });
+            await insertSessionActivity(tx, session, { type: "PARTY_UPDATED", summary: `PARTY_UPDATED SUPPLIER ${party.name}`, ref: party.id });
             return party;
           }),
         ),
       ),
     ),
     suppliersDelete: os.suppliersDelete.handler(
-      guardedInput(async ({ id }) =>
+      guardedInput(async ({ id }, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const party = await tx.getParty("supplier", id);
           if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
           const result = await tx.deleteParty("supplier", id);
           if (result === "HAS_INVOICES") throw new ORPCError("CONFLICT", { message: "PARTY_HAS_INVOICES" });
           if (result !== "DELETED") throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
-          await tx.insertActivity({ type: "PARTY_DELETED", summary: `PARTY_DELETED SUPPLIER ${party.name}`, ref: id });
+          await insertSessionActivity(tx, session, { type: "PARTY_DELETED", summary: `PARTY_DELETED SUPPLIER ${party.name}`, ref: id });
           return { deleted: true as const };
         }),
       ),
@@ -1000,7 +1009,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // invoice's paid/remaining cache move together, and the DB-level conditional
     // UPDATE is the authoritative boundary (never check-then-act).
     suppliersPay: os.suppliersPay.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const supplier = await tx.getParty("supplier", input.supplierId);
           if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
@@ -1055,14 +1064,14 @@ export function createRpcRouter(deps: RpcDeps) {
           if (credit > 0) {
             await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "PAYMENT", amount: credit, invoiceId: null, method, note, occurredAt });
           }
-          await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_PAYMENT ${input.amount} ${supplier.name}`, ref: supplier.id });
+          await insertSessionActivity(tx, session, { type: "PAYMENT_RECORDED", summary: `SUPPLIER_PAYMENT ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
           return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
     suppliersReturn: os.suppliersReturn.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const supplier = await tx.getParty("supplier", input.supplierId);
           if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
@@ -1181,14 +1190,14 @@ export function createRpcRouter(deps: RpcDeps) {
             if (cashBack > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
             await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "REFUND", amount: cashBack, invoiceId: null, note: reason, ref: returnNumber, occurredAt });
           }
-          await tx.insertActivity({ type: "RETURN_RECORDED", summary: `SUPPLIER_RETURN ${returnNumber} ${amount} ${supplier.name}`, ref: returnId });
+          await insertSessionActivity(tx, session, { type: "RETURN_RECORDED", summary: `SUPPLIER_RETURN ${returnNumber} ${amount} ${supplier.name}`, ref: returnId });
           const entries = await tx.listSupplierEntries(input.supplierId);
           return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
       ),
     ),
     suppliersRefund: os.suppliersRefund.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const supplier = await tx.getParty("supplier", input.supplierId);
           if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
@@ -1205,7 +1214,7 @@ export function createRpcRouter(deps: RpcDeps) {
             note: input.note == null || input.note.trim() === "" ? null : input.note.trim(),
             occurredAt,
           });
-          await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_REFUND ${input.amount} ${supplier.name}`, ref: supplier.id });
+          await insertSessionActivity(tx, session, { type: "PAYMENT_RECORDED", summary: `SUPPLIER_REFUND ${input.amount} ${supplier.name}`, ref: supplier.id });
           const next = await tx.listSupplierEntries(input.supplierId);
           return { balance: supplierBalance(next, input.supplierId), entries: next };
         }),
@@ -1218,7 +1227,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // signature (#181) and keeps the entry and the reduction together (never
     // check-then-act).
     suppliersAdjust: os.suppliersAdjust.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const supplier = await tx.getParty("supplier", input.supplierId);
           if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
@@ -1255,7 +1264,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // the #177 signature arm stays in force
             idempotencyKey: input.idempotencyKey ?? null,
           });
-          await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
+          await insertSessionActivity(tx, session, { type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
           return { balance: supplierBalance(entries, input.supplierId), entries };
         }),
@@ -1266,7 +1275,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // unknown id or an unconfirmed existing account rolls the whole batch back
     // with nothing half-saved.
     suppliersOpeningBalances: os.suppliersOpeningBalances.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
           // #177 (debate finding 8) — two rows naming the same new supplier would
@@ -1376,7 +1385,7 @@ export function createRpcRouter(deps: RpcDeps) {
               invoiceId: null,
               ref: "OPENING_BALANCE",
             });
-            await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });
+            await insertSessionActivity(tx, session, { type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });
           }
           const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];
           for (const row of plan) {
@@ -1419,7 +1428,7 @@ export function createRpcRouter(deps: RpcDeps) {
 
     // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
     invoicesCreate: os.invoicesCreate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         // Resolve items and persist inside ONE serialized unit so pricing,
         // FIFO consumption, and writes all observe the same committed state.
         // Reading item snapshots before the transaction let a queued request
@@ -1542,7 +1551,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 }),
               );
             }
-            await tx.insertActivity({ type: "SALE_CREATED", summary: `SALE_CREATED ${invoiceNumber}`, ref: invoice.id });
+            await insertSessionActivity(tx, session, { type: "SALE_CREATED", summary: `SALE_CREATED ${invoiceNumber}`, ref: invoice.id });
             // a brand-new invoice has no returns yet, so no debt was relieved
             return { ...invoice, lines: insertedLines, payments: insertedPayments, returnCreditAmount: 0 } satisfies InvoiceDetail;
         }
@@ -1614,7 +1623,7 @@ export function createRpcRouter(deps: RpcDeps) {
               }),
             );
           }
-          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${partyName ? ` ${partyName}` : ""}`, ref: invoice.id });
+          await insertSessionActivity(tx, session, { type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${partyName ? ` ${partyName}` : ""}`, ref: invoice.id });
           // Supplier account (issue 161): an id-backed purchase is a signed
           // charge, and a down payment is a signed payment entry. Typed-name
           // purchases (no supplier record) stay invoice-based like customers.
@@ -1664,7 +1673,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // sync with the payments history (high-assurance: amounts are never
     // allowed to exceed an invoice's remaining amount).
     invoicesPay: os.invoicesPay.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const detail = await tx.getInvoiceDetail(input.invoiceId);
           if (detail === undefined) {
@@ -1706,7 +1715,7 @@ export function createRpcRouter(deps: RpcDeps) {
               occurredAt: localDateTime(),
             });
           }
-          await tx.insertActivity({
+          await insertSessionActivity(tx, session, {
             type: "PAYMENT_RECORDED",
             summary: `PAYMENT_RECORDED ${input.amount} ${detail.invoiceNumber}`,
             ref: detail.id,
@@ -1735,7 +1744,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // the audit entry — so a failure anywhere rolls everything back and the
     // returned goods can never half-land in the ledger.
     returnsCreate: os.returnsCreate.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const invoice = await tx.getInvoiceDetail(input.invoiceId);
           if (invoice === undefined) {
@@ -1898,7 +1907,7 @@ export function createRpcRouter(deps: RpcDeps) {
           // the voucher records the owner's chosen split, but the invoice keeps
           // its debt until the owner accepts the goods (a rejected return never
           // relieves it). The ledger application moves to returnsAccept.
-          await tx.insertActivity({
+          await insertSessionActivity(tx, session, {
             type: "RETURN_RECORDED",
             // locale-neutral tokens: key + data; the activity ui translates
             summary: `RETURN_RECORDED ${returnNumber} ${refund.refundTotal} ${invoice.invoiceNumber} ${debtOffset}`, 
@@ -1926,7 +1935,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // confirmed salable. The ledger facts are untouched; only the review tag
     // transitions, in the same unit as the status (append-only preserved).
     returnsAccept: os.returnsAccept.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const existing = await tx.getReturnDetail(input.returnId);
           if (existing === undefined) {
@@ -2003,7 +2012,7 @@ export function createRpcRouter(deps: RpcDeps) {
               await tx.setDebtApplied(existing.id, existing.debtApplied + relieved.reduce((sum, row) => sum + row.amount, 0));
             }
           }
-          await tx.insertActivity({
+          await insertSessionActivity(tx, session, {
             type: "RETURN_REVIEWED",
             // locale-neutral tokens; the activity ui translates
             summary: `RETURN_REVIEWED ${existing.returnNumber} ACCEPTED ${existing.refundAmount}`,
@@ -2026,7 +2035,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // item never double-attributes a movement. Reasons/summaries are
     // locale-neutral keys; the ui translates.
     returnsReject: os.returnsReject.handler(
-      guardedInput(async (input) =>
+      guardedInput(async (input, _context, session) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const existing = await tx.getReturnDetail(input.returnId);
           if (existing === undefined) {
@@ -2083,7 +2092,7 @@ export function createRpcRouter(deps: RpcDeps) {
             await postStockBatch(tx, scrapSpecs);
           }
           await tx.setReturnMarks(existing.id, "REJECTED");
-          await tx.insertActivity({
+          await insertSessionActivity(tx, session, {
             type: "RETURN_REVIEWED",
             // locale-neutral tokens; the activity ui translates
             summary: `RETURN_REVIEWED ${existing.returnNumber} REJECTED ${existing.refundAmount}`,
@@ -2125,7 +2134,7 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     purchasesLinkStock: os.purchasesLinkStock.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         return deps.store.withTransaction(async (tx) => {
           const detail = await tx.getInvoiceDetail(input.invoiceId);
           if (detail === undefined || detail.kind !== "PURCHASE") {
@@ -2173,7 +2182,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // share is reported back as remainderMoved instead.
             remainderMoved += remainingToLink;
           }
-          await tx.insertActivity({
+          await insertSessionActivity(tx, session, {
             type: "STOCK_ADJUSTED",
             summary: `STOCK_LINKED ${detail.invoiceNumber}`,
             ref: detail.id,
@@ -2183,7 +2192,7 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     purchasesCorrectLine: os.purchasesCorrectLine.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         const line = await deps.store.getInvoiceLine(input.lineId);
         if (line === undefined || line.itemId === null) {
           throw new ORPCError("NOT_FOUND", { message: "LINE_NOT_FOUND" });
@@ -2244,7 +2253,7 @@ export function createRpcRouter(deps: RpcDeps) {
             ref: detail.id,
             occurredAt: correctionOccurredAt,
           });
-          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `PURCHASE_CORRECTED ${item.name}`, ref: item.id });
+          await insertSessionActivity(tx, session, { type: "STOCK_ADJUSTED", summary: `PURCHASE_CORRECTED ${item.name}`, ref: item.id });
           const refreshed = await tx.getInvoiceDetail(detail.id);
           // SAFETY: the invoice was just read inside this handler; it cannot vanish mid-transaction
           return refreshed!;
@@ -2319,7 +2328,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- expenses (ticket 31) ------------------------------------------------
     expenseCategoriesList: os.expenseCategoriesList.handler(guarded(async () => ({ items: await deps.store.listExpenseCategories() }))),
     expenseCategoriesCreate: os.expenseCategoriesCreate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         // duplicate check lives INSIDE the serialized unit, same as categoriesCreate
         try {
           return await deps.store.withTransaction(async (tx) => {
@@ -2330,7 +2339,7 @@ export function createRpcRouter(deps: RpcDeps) {
             const category = await tx.createExpenseCategory(input);
             // the flag choice rides in the audit summary so a misclassification
             // is traceable (the flag itself is create-only today, by design)
-            await tx.insertActivity({ type: "EXPENSE_CATEGORY_CREATED", summary: `EXPENSE_CATEGORY_CREATED ${input.isOwnerWithdrawal === true ? "WITHDRAWAL" : "OPERATING"} ${input.name}` });
+            await insertSessionActivity(tx, session, { type: "EXPENSE_CATEGORY_CREATED", summary: `EXPENSE_CATEGORY_CREATED ${input.isOwnerWithdrawal === true ? "WITHDRAWAL" : "OPERATING"} ${input.name}` });
             return category;
           });
         } catch (err) {
@@ -2360,7 +2369,7 @@ export function createRpcRouter(deps: RpcDeps) {
             actorId: actor.id,
             actorName: actor.name,
           });
-          await tx.insertActivity({ type: "EXPENSE_RECORDED", summary: `EXPENSE_RECORDED ${input.amount}`, ref: expense.id });
+          await tx.insertActivity({ type: "EXPENSE_RECORDED", summary: `EXPENSE_RECORDED ${input.amount}`, ref: expense.id, actorId: actor.id, actorName: actor.name });
           return expense;
         });
       }),
@@ -2551,7 +2560,7 @@ export function createRpcRouter(deps: RpcDeps) {
 
     settingsGet: os.settingsGet.handler(guarded(async () => deps.store.getSettings())),
     settingsUpdate: os.settingsUpdate.handler(
-      guardedInput(async (input) => {
+      guardedInput(async (input, _context, session) => {
         // semantic phone handling at the boundary, like requireBarcode: zod
         // kept the shape; this normalizes to the canonical +213 form and
         // maps empty strings to a cleared phone (null) so the invoice header
@@ -2575,7 +2584,7 @@ export function createRpcRouter(deps: RpcDeps) {
         // un-audited identity that a retry would misrepresent (greptile P1)
         return deps.store.withTransaction(async (tx) => {
           const updated = await tx.updateSettings({ storeName: input.storeName, storePhone, storeAddress });
-          await tx.insertActivity({ type: "SETTINGS_UPDATED", summary: "SETTINGS_UPDATED" });
+          await insertSessionActivity(tx, session, { type: "SETTINGS_UPDATED", summary: "SETTINGS_UPDATED" });
           return updated;
         });
       }),
@@ -2640,11 +2649,11 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     externalBackupRun: os.externalBackupRun.handler(
-      guarded(async () => {
+      guarded(async (_context, session) => {
         if (!deps.externalBackupEnabled) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
         if (deps.externalBackupWriteGuard === undefined) throw new ORPCError("FORBIDDEN", { message: "ENCRYPTED_BACKUP_REQUIRED" });
         const local = await createBackup({ store: deps.store, dataDir: deps.config.dataDir });
-        await deps.store.insertActivity({
+        await insertSessionActivity(deps.store, session, {
           type: "BACKUP_CREATED",
           summary: `BACKUP_CREATED ${local.path.split(/[\\/]/).pop()}`,
           ref: local.path,
@@ -2657,11 +2666,11 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     backupManual: os.backupManual.handler(
-      guarded(async () => {
+      guarded(async (_context, session) => {
         // checkpoint+copy through the store seam; the audit entry lands only
         // after the file exists, so a failed copy never logs a phantom backup
         const result = await createBackup({ store: deps.store, dataDir: deps.config.dataDir });
-        await deps.store.insertActivity({
+        await insertSessionActivity(deps.store, session, {
           type: "BACKUP_CREATED",
           summary: `BACKUP_CREATED ${result.path.split(/[\\/]/).pop()}`,
           ref: result.path,

@@ -58,7 +58,7 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
       <div role="radiogroup" aria-label={`${line.item.name}: ${t("saleOverrideType")}`} data-testid="sale-price-mode" className="inline-flex overflow-hidden rounded-md border border-input">
         <label className="relative cursor-pointer">
           <input ref={amountRadio} type="radio" name={modeGroupId} value="AMOUNT" aria-label={`${line.item.name}: ${t("saleOverrideDzd")}`} checked={mode === "AMOUNT"} onChange={() => selectMode("AMOUNT")} disabled={disabled} className="peer sr-only" />
-          <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">دج</span>
+          <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">{t("saleOverrideDzdShort")}</span>
         </label>
         <label className="relative cursor-pointer border-s border-input">
           <input ref={percentageRadio} type="radio" name={modeGroupId} value="PERCENTAGE" aria-label={`${line.item.name}: ${t("saleOverridePercentAccessible")}`} checked={mode === "PERCENTAGE"} onChange={() => selectMode("PERCENTAGE")} disabled={disabled} className="peer sr-only" />

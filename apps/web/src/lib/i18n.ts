@@ -636,6 +636,7 @@ const resources = {
       saleOverrideAmount: "مبلغ",
       saleOverridePercentage: "نسبة %",
       saleOverrideDzd: "دينار جزائري (دج)",
+      saleOverrideDzdShort: "دج",
       saleOverridePercentAccessible: "نسبة مئوية",
       saleResetPrice: "إعادة للافتراضي",
       salePriceDefault: "الافتراضي (دج):",

@@ -366,6 +366,7 @@ describe("SalePage effective price editor (#397)", () => {
     await scan("435-ui");
 
     const group = host.querySelector<HTMLElement>('[role="radiogroup"][data-testid="sale-price-mode"]');
+    expect(group?.querySelector("label")?.textContent).toBe("دج");
     const radios = group?.querySelectorAll<HTMLInputElement>('input[type="radio"]');
     expect(group?.getAttribute("aria-label")).toBe("منتج 435-ui: نوع تعديل السعر");
     expect(radios).toHaveLength(2);

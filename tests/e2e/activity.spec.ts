@@ -34,7 +34,7 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   await expect(rows.first()).toContainText("إنشاء منتج");
   await expect(rows.first()).toContainText("سجل-منتج-12");
   const actor = rows.first().getByTestId("activity-actor");
-  await expect(actor).toHaveText("حساب: مالك الاختبار");
+  await expect(actor).toHaveText("مالك الاختبار");
   await expect(actor.locator("bdi")).toHaveCount(0);
 
   await page.setViewportSize({ width: 390, height: 844 });

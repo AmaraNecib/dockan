@@ -54,6 +54,19 @@ export async function activateOption(option: HTMLElement): Promise<void> {
 
 /** Open `trigger` and activate the option labelled `label`. */
 export async function chooseOption(trigger: HTMLElement, label: string): Promise<void> {
+  if (trigger instanceof HTMLInputElement && trigger.getAttribute("role") === "combobox") {
+    await act(async () => {
+      trigger.focus();
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(trigger, label);
+      trigger.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const option = await findOption(label);
+    if (option === null) throw new Error(`entity option not found: ${label}`);
+    await activateOption(option);
+    return;
+  }
   await openSelect(trigger);
   const option = await findOption(label, trigger);
   if (option === null) throw new Error(`select option not found: ${label}`);

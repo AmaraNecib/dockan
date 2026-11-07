@@ -1,8 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
-import { chooseSelectOption } from "./select-helpers";
+import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
-import { saveQuickAdd } from "./rpc-helpers";
+import { actAndAck, saveQuickAdd } from "./rpc-helpers";
+
+async function setDisabledInput(locator: import("@playwright/test").Locator, disabled: boolean): Promise<void> {
+  await locator.evaluate((element, nextDisabled) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error("category control is not an input");
+    element.disabled = nextDisabled;
+  }, disabled);
+}
 
 /**
  * Issue #98 — items flow. One-step item + opening stock, inline price
@@ -36,7 +43,19 @@ test("items flow: one-step stock, inline edit, and prefilled stock add", async (
   await expect(page.locator("#items-panel-add")).toBeVisible();
 
   // 1. Item + opening stock in ONE submit, no scan involved. No barcode read.
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  const category = page.getByLabel("التصنيف");
+  await setDisabledInput(category, true);
+  const chooseAfterLoad = chooseSelectOption(page, category, categoryName);
+  await expect(category).toBeDisabled();
+  await setDisabledInput(category, false);
+  await chooseAfterLoad;
+
+  await setDisabledInput(category, true);
+  const expectAfterLoad = expectSelectOption(page, category, categoryName);
+  await expect(category).toBeDisabled();
+  await setDisabledInput(category, false);
+  await expectAfterLoad;
+
   await page.getByTestId("item-name").fill(stockedName);
   await page.getByLabel("سعر الشراء (دج)").fill("100");
   await page.getByLabel("سعر البيع (دج)").fill("200");
@@ -153,8 +172,7 @@ test("a zero-price item from sale quick-add stays editable", async ({ page }) =>
   await page.getByTestId("sale-quick-add").click();
   const quick = page.getByTestId("sale-quick-form");
   await page.getByTestId("sale-quick-name").fill(itemName);
-  // the sale quick form's category is the themed Select now (issue #101), and
-  // it stays disabled until the category list has answered
+  // The category picker stays disabled until its list has answered.
   const quickCategory = page.getByTestId("sale-quick-category");
   await expect(quickCategory).toBeEnabled();
   await chooseSelectOption(page, quickCategory, categoryName);
@@ -179,4 +197,53 @@ test("a zero-price item from sale quick-add stays editable", async ({ page }) =>
   await page.getByTestId("edit-name").fill(renamed);
   await page.getByTestId("edit-save").click();
   await expect(page.locator("tr").filter({ has: page.getByRole("cell", { name: renamed, exact: true }) })).toBeVisible();
+});
+
+test("sale quick-add creates a category explicitly and keeps item and customer drafts", async ({ page }) => {
+  const stamp = Date.now();
+  const categoryName = `تصنيف سريع-${stamp}`;
+  const itemName = `منتج سريع-${stamp}`;
+  const customerName = `زبون سريع-${stamp}`;
+
+  await signIn(page);
+  await page.goto("/sale");
+  await page.getByTestId("sale-quick-add").click();
+  const quick = page.getByTestId("sale-quick-form");
+  const category = page.getByTestId("sale-quick-category");
+  await expect(category).toBeEnabled();
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await quick.getByLabel("سعر الشراء (دج)").fill("100");
+  await quick.getByLabel("سعر البيع (دج)").fill("200");
+  await page.getByTestId("sale-quick-stock").fill("2");
+  await category.fill(categoryName);
+  const createCategory = page.getByTestId("sale-quick-category-create");
+  await expect(createCategory).toBeVisible();
+  const createdCategory = await actAndAck<{ id: string }>(page, "categoriesCreate", () => page.keyboard.press("Enter"));
+  await expect(category).toHaveValue(categoryName);
+  await expect(page.getByTestId("sale-quick-name")).toHaveValue(itemName);
+  await expect(page.getByTestId("sale-quick-stock")).toHaveValue("2");
+
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: quick.getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
+
+  const customer = page.getByTestId("sale-customer");
+  await customer.fill(customerName);
+  const createCustomer = page.getByTestId("sale-customer-create");
+  await expect(createCustomer).toBeVisible();
+  await createCustomer.click();
+  const createPanel = page.getByTestId("sale-customer-create-panel");
+  await expect(createPanel).toBeVisible();
+  await expect(page.getByTestId("sale-customer-create-name")).toHaveValue(customerName);
+  const createdParty = await actAndAck<{ id: string }>(page, "customersCreate", () => page.getByTestId("sale-customer-create-save").click());
+  expect(createdCategory.id).toBeTruthy();
+  expect(createdParty.id).toBeTruthy();
+  await expect(customer).toHaveValue(customerName);
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
 });

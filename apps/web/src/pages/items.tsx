@@ -6,7 +6,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import type { ItemListItem, ItemCreate, ItemUpdate } from "@dokan/contracts";
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { EntityPicker } from "@/components/entity-picker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
@@ -541,27 +541,17 @@ function ItemForm({
         <input ref={nameRef} readOnly={busy} className={inputClass} name="itemName" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
       </label>
       <div className="grid grid-cols-2 gap-3">
-        <label className="grid gap-1">
-          {t("itemsCategory")}
-          <Select
-            disabled={busy}
-            value={selectedCategoryId}
-            onValueChange={(value) => setCategoryId(value ?? "")}
-            items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder={categories.data?.items.length === 0 ? t("itemsChooseCategory") : undefined} />
-            </SelectTrigger>
-            <SelectContent>
-              {categories.data?.items.map((category) => (
-                <SelectItem key={category.id} value={category.id}>
-                  {category.name}
-                </SelectItem>
-              ))}
-              {categories.data?.items.length === 0 && <SelectItem value="">{t("itemsChooseCategory")}</SelectItem>}
-            </SelectContent>
-          </Select>
-        </label>
+        <EntityPicker
+          label={t("itemsCategory")}
+          options={categories.data?.items ?? []}
+          value={selectedCategoryId}
+          onChange={setCategoryId}
+          disabled={busy}
+          placeholder={categories.data?.items.length === 0 ? t("itemsChooseCategory") : undefined}
+          noMatchesLabel={t("categoriesNoMatches")}
+          name="categoryId"
+          testId="item-category"
+        />
         <label className="grid gap-1">
           {t("itemsBarcode")}
           <input
@@ -1004,23 +994,16 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
                 </td>
                 <td className="p-3">
                   {editing ? (
-                    <Select
+                    <EntityPicker
+                      label={t("itemsCategory")}
+                      options={categories.data?.items ?? []}
                       value={draft.categoryId}
-                      onValueChange={(value) => patchDraft({ categoryId: value ?? "" })}
+                      onChange={(value) => patchDraft({ categoryId: value })}
                       disabled={update.isPending}
-                      items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
-                    >
-                      <SelectTrigger className="w-full" size="sm" aria-label={t("itemsCategory")} data-testid="edit-category">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {categories.data?.items.map((category) => (
-                          <SelectItem key={category.id} value={category.id}>
-                            {category.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      hideLabel
+                      noMatchesLabel={t("categoriesNoMatches")}
+                      testId="edit-category"
+                    />
                   ) : (
                     item.categoryName ?? "—"
                   )}

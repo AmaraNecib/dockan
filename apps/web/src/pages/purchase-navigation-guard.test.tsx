@@ -25,6 +25,11 @@ interface ItemMutationOptions {
   onError?: (error: { message: string }) => void;
 }
 
+interface CategoryMutationOptions {
+  onSuccess?: (category: { id: string; name: string }) => void;
+  onError?: (error: { message: string }) => void;
+}
+
 mock.module("@/lib/rpc", () => ({
   orpc: {
     // the shell's pending-returns badge (#118)
@@ -35,6 +40,13 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: () => ({
         queryKey: ["categories"],
         queryFn: async () => ({ items: [{ id: "cat-1", name: "تصنيف" }] }),
+      }),
+      queryKey: () => ["categories"],
+    },
+    categoriesCreate: {
+      mutationOptions: (opts?: CategoryMutationOptions) => ({
+        mutationFn: async (input: { name: string }) => ({ id: "cat-2", name: input.name }),
+        ...opts,
       }),
     },
     // the picker, if a test opens it
@@ -228,7 +240,7 @@ async function addQuickLine(container: HTMLElement, qty: string, cost: string) {
   });
   // the driver runs its own act() calls; wrapping it in another one overlaps
   // them and React then drops later updates
-  await chooseOption(mustFind<HTMLElement>(form, "button"), "تصنيف");
+  await chooseOption(mustFind<HTMLInputElement>(form, '[data-testid="purchase-quick-category"]'), "تصنيف");
   await act(async () => {
     form.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));

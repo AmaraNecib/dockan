@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ScanBarcode, X } from "lucide-react";
 
-import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
+import type { Category, InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,7 @@ import { parseSalePriceMode } from "@/lib/sale-price-editor";
 import { usePreference } from "@/lib/preferences";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
+import { EntityPicker } from "@/components/entity-picker";
 import { useSaleDraft } from "@/components/app/sale-draft";
 import { useInvoiceEntryShortcut } from "@/hooks/use-invoice-entry-shortcut";
 import { shortcutKeys } from "@/lib/keyboard-actions";
@@ -117,6 +118,22 @@ export function SalePage() {
     return () => releaseOwner(draftOwner);
   }, [claimOwner, draftOwner, releaseOwner]);
   const categories = useQuery(orpc.categoriesList.queryOptions());
+  const [categoryCreateError, setCategoryCreateError] = useState<string | null>(null);
+  const categoryCreate = useMutation(
+    orpc.categoriesCreate.mutationOptions({
+      onSuccess: (category) => {
+        queryClient.setQueryData(orpc.categoriesList.queryKey(), (current: { items: Category[] } | undefined) => ({
+          items: [...(current?.items ?? []), category].sort((a, b) => a.name.localeCompare(b.name)),
+        }));
+        void queryClient.invalidateQueries({ queryKey: orpc.categoriesList.queryKey() });
+        void queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() });
+        quick.setField("categoryId", category.id);
+        setCategoryCreateError(null);
+        setDraftDirty(true);
+      },
+      onError: (err) => setCategoryCreateError(tError(err.message)),
+    }),
+  );
   const priceMode = usePreference("ui.sale.priceMode", "AMOUNT", parseSalePriceMode, String);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
@@ -254,7 +271,7 @@ export function SalePage() {
   const draftDirtyWithoutQuickCategory = draftDirtyOutsideQuickAdd || quickFieldsDirty;
   const quickDraft = quickFieldsDirty || quickCategoryDirty;
   const draftDirty = draftDirtyWithoutQuickCategory || quickCategoryDirty;
-  const quickCreatePending = createItem.isPending || createWithStock.isPending;
+  const quickCreatePending = createItem.isPending || createWithStock.isPending || categoryCreate.isPending;
   const savePending = createInvoice.isPending || quickCreatePending;
   // A write cannot be cancelled when its screen unmounts. Refuse new same-tab
   // navigation attempts during the pending window; do not hold a destination.
@@ -352,6 +369,7 @@ export function SalePage() {
     quickCategoryDefaultAtOpen.current = quickCategoryDefault;
     setQuickStockRequired(withStock);
     if (withStock) setQuickStockFocusRequest((request) => request + 1);
+    setCategoryCreateError(null);
     quick.openForm({ barcode: code, categoryId: quickCategoryDefault });
   }
 
@@ -430,7 +448,10 @@ export function SalePage() {
 
   return (
     <section data-testid="sale-form" onInput={(event) => {
-      if (event.target instanceof Element && event.target.closest('[data-testid="picker-dialog"]') !== null) return;
+      if (event.target instanceof Element && (
+        event.target.closest('[data-testid="picker-dialog"]') !== null ||
+        event.target.matches('[data-testid="sale-quick-category"]')
+      )) return;
       setDraftDirty(true);
     }}>
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
@@ -487,32 +508,27 @@ export function SalePage() {
               <div className="grid grid-cols-2 gap-3">
                 <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" disabled={quickCreatePending} value={quick.fields.name} onChange={(event) => quick.setField("name", event.target.value)} required data-testid="sale-quick-name" /></label>
                 <label className="grid gap-1 text-sm font-medium">{t("saleQuickBarcode")}<input dir="ltr" className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" disabled={quickCreatePending} value={quick.fields.barcode} onChange={(event) => quick.setField("barcode", event.target.value)} data-testid="sale-quick-barcode" /></label>
-                <label className="grid gap-1 text-sm font-medium">
-                  {t("itemsCategory")}
-                  <Select
-                    value={quickCategory}
-                    onValueChange={(value) => {
-                      const nextCategoryId = value ?? "";
-                      quick.setField("categoryId", nextCategoryId);
-                      // Base UI Select does not emit the form's native input
-                      // event, so keep the shortcut guard in step with this pick.
-                      setDraftDirty(
-                        draftDirtyWithoutQuickCategory ||
-                          (nextCategoryId !== "" && nextCategoryId !== quickCategoryDefaultAtOpen.current),
-                      );
-                    }}
-                    name="quickCategory"
-                    disabled={quickCategoriesLoading || quickCreatePending}
-                    items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
-                  >
-                    <SelectTrigger className="w-full" data-testid="sale-quick-category">
-                      <SelectValue placeholder={quickCategoriesLoading ? t("itemsLoading") : undefined} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {categories.data?.items.map((category) => <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </label>
+                <EntityPicker
+                  label={t("itemsCategory")}
+                  options={categories.data?.items ?? []}
+                  value={quickCategory}
+                  onChange={(nextCategoryId) => {
+                    quick.setField("categoryId", nextCategoryId);
+                    setDraftDirty(
+                      draftDirtyWithoutQuickCategory ||
+                        (nextCategoryId !== "" && nextCategoryId !== quickCategoryDefaultAtOpen.current),
+                    );
+                  }}
+                  onCreate={(name) => {
+                    setCategoryCreateError(null);
+                    categoryCreate.mutate({ name });
+                  }}
+                  createLabel={(name) => t("categoriesCreateInline", { name })}
+                  noMatchesLabel={t("categoriesNoMatches")}
+                  name="quickCategory"
+                  disabled={quickCategoriesLoading || quickCreatePending}
+                  testId="sale-quick-category"
+                />
                 <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">
@@ -520,6 +536,7 @@ export function SalePage() {
                   <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.stock} onChange={(event) => quick.setField("stock", event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />
                 </label>
               </div>
+              {categoryCreateError && <p className="text-sm text-destructive" role="alert" data-testid="sale-quick-category-error">{categoryCreateError}</p>}
               <div className="flex gap-2"><Button type="submit" disabled={quickCreatePending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => quick.close()} disabled={quickCreatePending}>{t("dialogClose")}</Button></div>
             </form>
           )}

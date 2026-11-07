@@ -646,6 +646,24 @@ test("picker search does not mark an empty sale dirty", async ({ page }) => {
   await expect(page.getByTestId("purchase-form")).toBeVisible();
 });
 
+test("canceled sale category search does not trigger the discard guard", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+
+  const category = page.getByTestId("sale-quick-category");
+  await expect(category).toBeEnabled();
+  const originalValue = await category.inputValue();
+  await category.fill("category search only");
+  await page.keyboard.press("Escape");
+  await expect(category).toHaveValue(originalValue);
+
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("new-sale-discard-confirm")).toHaveCount(0);
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+});
+
 test("category refresh does not make an untouched sale quick-add dirty", async ({ page }) => {
   await signIn(page);
   const before = await callRpc<{ items: Array<{ id: string; name: string }> }, Record<string, never>>(
@@ -665,7 +683,7 @@ test("category refresh does not make an untouched sale quick-add dirty", async (
   const category = page.getByTestId("sale-quick-category");
   await expect(quick).toBeVisible();
   await expect(category).toBeEnabled();
-  await expect(category).toContainText(openingCategory.name);
+  await expect(category).toHaveValue(openingCategory.name);
 
   const secondTab = await page.context().newPage();
   try {
@@ -687,8 +705,10 @@ test("category refresh does not make an untouched sale quick-add dirty", async (
     await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
     const refreshed = await rpcOutput<{ items: Array<{ id: string; name: string }> }>(await refresh, "categoriesList");
     expect(refreshed.items[0]?.id).toBe(earlierCategory.id);
-    await expect(category).toContainText(openingCategory.name);
-    await category.click();
+    await expect(category).toHaveValue(openingCategory.name);
+    const refreshedCategory = refreshed.items[0];
+    if (refreshedCategory === undefined) throw new Error("refreshed category list is empty");
+    await category.fill(refreshedCategory.name);
     await expect(page.getByRole("option", { name: /!PR422-/ })).toBeVisible();
     await page.keyboard.press("Escape");
 
@@ -726,7 +746,7 @@ test("category refresh cannot hide a changed quick-add category from Ctrl+B", as
   await page.getByTestId("sale-quick-add").click();
   const category = page.getByTestId("sale-quick-category");
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
-  await expect(category).toContainText(openingCategoryName);
+  await expect(category).toHaveValue(openingCategoryName);
   await chooseSelectOption(page, category, selectedCategoryName);
 
   const secondTab = await page.context().newPage();
@@ -744,7 +764,7 @@ test("category refresh cannot hide a changed quick-add category from Ctrl+B", as
     await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
     const refreshed = await rpcOutput<{ items: Array<{ id: string; name: string }> }>(await refresh, "categoriesList");
     expect(refreshed.items[0]?.name).toBe(refreshedDefaultName);
-    await expect(category).toContainText(selectedCategoryName);
+    await expect(category).toHaveValue(selectedCategoryName);
     await chooseSelectOption(page, category, refreshedDefaultName);
 
     await page.keyboard.press("Control+b");
@@ -785,12 +805,12 @@ test("an explicit sale quick-add category choice blocks Ctrl+B until reset", asy
   await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
   await expect(page).toHaveURL(saleUrl);
   await page.keyboard.press("Escape");
-  await expect(category).toContainText(explicitCategory.name);
+  await expect(category).toHaveValue(explicitCategory.name);
 
   await quick.getByRole("button", { name: "إغلاق", exact: true }).click();
   await expect(quick).toHaveCount(0);
   await page.getByTestId("sale-quick-add").click();
-  await expect(category).toContainText(defaultCategory.name);
+  await expect(category).toHaveValue(defaultCategory.name);
   await page.keyboard.press("Control+b");
   await expect(page.getByTestId("new-sale-discard-confirm")).toHaveCount(0);
   await expect(page.getByTestId("purchase-form")).toBeVisible();
@@ -1115,7 +1135,7 @@ test("sale quick-add refusal preserves the form and re-enables its dirty guard",
     await expect(closeButton).toBeEnabled();
     await expect(nameInput).toHaveValue(enteredName);
     await expect(barcodeInput).toHaveValue(duplicateBarcode);
-    await expect(categoryControl).toContainText(selectedCategoryName);
+    await expect(categoryControl).toHaveValue(selectedCategoryName);
     await expect(costInput).toHaveValue("400");
     await expect(sellInput).toHaveValue("1000");
     await expect(stockInput).toHaveValue("0");
@@ -1128,7 +1148,7 @@ test("sale quick-add refusal preserves the form and re-enables its dirty guard",
     await expect(discard).toHaveCount(0);
     await expect(nameInput).toHaveValue(enteredName);
     await expect(barcodeInput).toHaveValue(duplicateBarcode);
-    await expect(categoryControl).toContainText(selectedCategoryName);
+    await expect(categoryControl).toHaveValue(selectedCategoryName);
     await expect(costInput).toHaveValue("400");
     await expect(sellInput).toHaveValue("1000");
     await expect(stockInput).toHaveValue("0");

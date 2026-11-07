@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 
 import type { MovementKind } from "@dokan/contracts";
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { EntityPicker } from "@/components/entity-picker";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
@@ -124,25 +124,14 @@ export function StockForm() {
   return (
     <form className="mt-4 grid gap-3 rounded border bg-card p-4" onSubmit={submit} data-testid="stock-form">
       <h2 className="font-semibold">{t("stockAddTitle")}</h2>
-      <label className="grid gap-1">
-        {t("stockItem")}
-        <Select
-          value={selectedItemId}
-          onValueChange={(value) => setItemId(value ?? "")}
-          items={items.data?.items.map((item) => ({ value: item.id, label: item.name })) ?? []}
-        >
-          <SelectTrigger className="w-full" data-testid="stock-item">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {items.data?.items.map((item) => (
-              <SelectItem key={item.id} value={item.id}>
-                {item.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </label>
+      <EntityPicker
+        label={t("stockItem")}
+        options={items.data?.items ?? []}
+        value={selectedItemId}
+        onChange={setItemId}
+        testId="stock-item"
+        noMatchesLabel={t("itemsSearchEmpty")}
+      />
       {selectedItem && (
         <p className="text-sm text-muted-foreground" data-testid="stock-selling-price">
           {t("stockSellingPrice")}: <Amount value={selectedItem.sellingPrice} className="text-foreground" />

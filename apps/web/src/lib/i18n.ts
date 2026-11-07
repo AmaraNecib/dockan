@@ -242,6 +242,7 @@ const resources = {
       categoriesEmptyAction: "أضف تصنيفاً",
       categoriesSearch: "ابحث في التصنيفات…",
       categoriesNoMatches: "لا توجد تصنيفات مطابقة",
+      categoriesCreateInline: "إنشاء تصنيف «{{name}}»",
       categoriesRename: "تعديل الاسم",
       categoriesRenameLabel: "اسم التصنيف {{name}}",
       categoriesSave: "حفظ",

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Preferences } from "@dokan/contracts";
+import type { Category, Preferences } from "@dokan/contracts";
 
 import { SaleDraftProvider } from "@/components/app/sale-draft";
 
@@ -59,6 +59,10 @@ interface PartyCreateMutationOptions {
   onSuccess?: (party: { id: string; name: string; phone: string | null; createdAt: string }) => void;
   onError?: (error: { message?: string }) => void;
 }
+interface CategoryCreateMutationOptions {
+  onSuccess?: (category: Category) => void;
+  onError?: (error: { message?: string }) => void;
+}
 
 let preferenceValues: Preferences = {};
 let preferenceReadFails = false;
@@ -70,6 +74,10 @@ let scanFails = false;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
 /** the picker's loaded customer list; tests seed it to exercise picking */
 let partyFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
+let categoryFixtures: Category[] = [
+  { id: "cat-1", name: "تصنيف", createdAt: "2026-10-01T00:00:00", updatedAt: "2026-10-01T00:00:00" },
+  { id: "cat-late", name: "السعيد", createdAt: "2026-10-02T00:00:00", updatedAt: "2026-10-02T00:00:00" },
+];
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
 let resolveItemCreate: ((item: { id: string; name: string; sellingPrice: number }) => void) | null = null;
 /** the last payload each create path received, so a test can assert what was sent */
@@ -94,9 +102,21 @@ mock.module("@/lib/rpc", () => ({
         queryKey: ["categories"],
         queryFn: async () => {
           if (categoriesGate !== null) await categoriesGate;
-          return { items: [{ id: "cat-1", name: "تصنيف" }] };
+          return { items: categoryFixtures };
         },
       }),
+      queryKey: () => ["categories"],
+    },
+    categoriesCreate: {
+      mutationOptions: (opts?: CategoryCreateMutationOptions) => ({
+        mutationFn: async ({ name }: { name: string }) => {
+          const category: Category = { id: `cat-created-${categoryFixtures.length}`, name, createdAt: "2026-10-03T00:00:00", updatedAt: "2026-10-03T00:00:00" };
+          categoryFixtures = [...categoryFixtures, category];
+          return category;
+        },
+        ...opts,
+      }),
+      queryKey: () => ["categories"],
     },
     // ItemPickerDialog evaluates this useQuery even while closed (before its
     // `if (!open) return null` guard), so the stub must exist on mount.
@@ -157,7 +177,7 @@ mock.module("@/lib/rpc", () => ({
       queryKey: () => ["suppliers"],
     },
     customersCreate: {
-      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "c-1", name: "زبون", phone: null, createdAt: "" }), ...opts }),
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async (input: { name: string }) => ({ id: "c-1", name: input.name, phone: null, createdAt: "" }), ...opts }),
     },
     suppliersCreate: {
       mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "s-1", name: "مورد", phone: null, createdAt: "" }), ...opts }),
@@ -247,6 +267,10 @@ beforeEach(() => {
   categoriesGate = null;
   releaseCategoriesGate = null;
   partyFixtures = [];
+  categoryFixtures = [
+    { id: "cat-1", name: "تصنيف", createdAt: "2026-10-01T00:00:00", updatedAt: "2026-10-01T00:00:00" },
+    { id: "cat-late", name: "السعيد", createdAt: "2026-10-02T00:00:00", updatedAt: "2026-10-02T00:00:00" },
+  ];
 });
 
 afterEach(async () => {
@@ -900,24 +924,66 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("PERCENTAGE");
   });
 
-  it("opens the themed quick-add category select, selects, and closes", async () => {
+  it("searches beyond the first 50 quick-add categories and selects a normalized match with the keyboard", async () => {
+    categoryFixtures = [
+      categoryFixtures[0]!,
+      ...Array.from({ length: 60 }, (_, index) => ({
+        id: `cat-extra-${index}`,
+        name: `تصنيف إضافي ${index}`,
+        createdAt: "2026-10-03T00:00:00",
+        updatedAt: "2026-10-03T00:00:00",
+      })),
+      categoryFixtures[1]!,
+    ];
     const host = await mountSale();
     await act(async () => {
       host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category"]');
-    if (trigger === null) throw new Error("missing quick category select");
+    const input = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-category"]');
+    if (input === null) throw new Error("missing quick category picker");
+    await act(async () => setElementValue(input, "السعيد"));
+    expect(document.querySelector('[data-testid="sale-quick-category-option"]')?.textContent).toBe("السعيد");
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-late");
+    expect(input.value).toBe("السعيد");
+  });
 
-    await openSelect(trigger);
-    const option = await findOption("تصنيف");
-    expect(option).not.toBeNull();
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-
-    await activateOption(option!);
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    // the category id reaches the form value
+  it("creates a missing quick-add category only by explicit action and keeps the form draft", async () => {
+    const host = await mountSale();
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.click());
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج قيد الإدخال");
+      setInput(host, "sale-quick-category", "تصنيف جديد");
+      setInput(host, "sale-quick-stock", "7");
+    });
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
+    expect(document.querySelector('[data-testid="sale-quick-category-create"]')).not.toBeNull();
+
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category-create"]')?.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-created-2");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-category"]')?.value).toBe("تصنيف جديد");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-name"]')?.value).toBe("منتج قيد الإدخال");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]')?.value).toBe("7");
+  });
+
+  it("cancels category search without changing the selected category or quick-add draft", async () => {
+    const host = await mountSale();
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.click());
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج محفوظ كمسودة");
+      setInput(host, "sale-quick-category", "تصنيف غير موجود");
+    });
+    const input = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-category"]')!;
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+
+    expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
+    expect(input.value).toBe("تصنيف");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-name"]')?.value).toBe("منتج محفوظ كمسودة");
+    expect(document.querySelector('[data-testid="sale-quick-category-create"]')).toBeNull();
   });
 
   it("disables the quick-add category until the list arrives", async () => {
@@ -931,7 +997,7 @@ describe("SalePage learnability (issue #94)", () => {
     });
 
     // an empty, enabled select would let the operator submit into nothing
-    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category"]');
+    const trigger = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-category"]');
     expect(trigger?.disabled).toBe(true);
 
     await act(async () => {
@@ -961,8 +1027,8 @@ describe("SalePage learnability (issue #94)", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
-    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category"]');
-    expect(trigger?.textContent).toContain("تصنيف");
+    const trigger = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-category"]');
+    expect(trigger?.value).toBe("تصنيف");
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
   });
 
@@ -1268,6 +1334,21 @@ describe("SalePage party picker (issue 120)", () => {
     await act(async () => saveButton(host).click());
     expect(lastInvoiceInput?.counterpartyId).toBe("c-9");
     expect(lastInvoiceInput?.counterpartyName).toBe("زبون مسجّل");
+  });
+
+  it("creates a customer explicitly without losing the sale draft and saves against the new identity", async () => {
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-customer", "زبون جديد"));
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-customer-create"]')?.click());
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-customer-create-save"]')?.click());
+
+    expect(host.querySelector('[data-testid="sale-lines"]')?.textContent).toContain("منتج 111");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-customer"]')?.value).toBe("زبون جديد");
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.counterpartyId).toBe("c-1");
+    expect(lastInvoiceInput?.counterpartyName).toBe("زبون جديد");
+    expect(host.querySelector('[data-testid="sale-lines"]')?.textContent).toContain("منتج 111");
   });
 
   it("refuses to save a typed name that exactly matches an existing record", async () => {

@@ -10,12 +10,12 @@ import { PackagePlus, X } from "lucide-react";
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
+import { EntityPicker } from "@/components/entity-picker";
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { draftBlank, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import { PURCHASE_QUICK, type PurchaseQuickFields } from "@/lib/purchase-quick";
@@ -131,6 +131,7 @@ export function PurchasePage() {
   /** the line create that is open, or null (#257) */
   const [lineDraft, setLineDraft] = useState<LineCreateDraft | null>(null);
   const [lineError, setLineError] = useState<string | null>(null);
+  const [categoryCreateError, setCategoryCreateError] = useState<string | null>(null);
   /**
    * The category the last line create recorded. It seeds the next one, so one
    * pick serves several products — the same keep policy the page-level form
@@ -403,6 +404,19 @@ export function PurchasePage() {
     },
     setError,
   });
+  const categoryCreate = useMutation(
+    orpc.categoriesCreate.mutationOptions({
+      onSuccess: (category) => {
+        queryClient.setQueryData(orpc.categoriesList.queryKey(), (current: { items: typeof category[] } | undefined) => ({
+          items: [...(current?.items ?? []), category].sort((a, b) => a.name.localeCompare(b.name)),
+        }));
+        void queryClient.invalidateQueries({ queryKey: orpc.categoriesList.queryKey() });
+        void queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() });
+        setCategoryCreateError(null);
+      },
+      onError: (err) => setCategoryCreateError(tError(err.message)),
+    }),
+  );
 
   /**
    * #321 — what a navigation would throw away on this screen. The cart is the
@@ -492,6 +506,7 @@ export function PurchasePage() {
   }
 
   function quickSubmit() {
+    if (categoryCreate.isPending) return;
     void quick.submit(async (fields) => {
       if (fields.categoryId === "") return { ok: false, error: t("itemsChooseCategory") };
       // the shared draft rule bounds the quick quantity too: an over-cap value
@@ -527,7 +542,7 @@ export function PurchasePage() {
     // belt for the disabled submit (#257 review round 4, F1): a create started now
     // would re-point the line the in-flight save already serialised, and its
     // product would be left off the invoice. Refuse before the write starts.
-    if (savePending) return;
+    if (savePending || categoryCreate.isPending) return;
     setLineError(null);
     const line = lines.find((entry) => entry.item.id === current.target);
     // the owner deleted the line while the form was open: nothing to land on
@@ -698,29 +713,24 @@ export function PurchasePage() {
                     {t("purchasesQuickBarcode")}
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" dir="ltr" value={quick.fields.barcode} onChange={(e) => quick.setField("barcode", e.target.value)} />
                   </label>
-                  <label className="grid gap-1 text-sm font-medium">
-                    {t("purchasesQuickCategory")}
-                    <Select
-                      value={quick.fields.categoryId}
-                      onValueChange={(value) => quick.setField("categoryId", value ?? "")}
-                      items={[
-                        { value: "", label: "—" },
-                        ...(categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []),
-                      ]}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="—" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="">—</SelectItem>
-                        {categories.data?.items.map((category) => (
-                          <SelectItem key={category.id} value={category.id}>
-                            {category.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
+                  <EntityPicker
+                    label={t("purchasesQuickCategory")}
+                    options={[{ id: "", name: "—" }, ...(categories.data?.items ?? [])]}
+                    value={quick.fields.categoryId}
+                    onChange={(value) => {
+                      setCategoryCreateError(null);
+                      quick.setField("categoryId", value);
+                    }}
+                    onCreate={(name) => {
+                      setCategoryCreateError(null);
+                      categoryCreate.mutate({ name }, { onSuccess: (category) => quick.setField("categoryId", category.id) });
+                    }}
+                    createLabel={(name) => t("categoriesCreateInline", { name })}
+                    noMatchesLabel={t("categoriesNoMatches")}
+                    disabled={categoryCreate.isPending}
+                    testId="purchase-quick-category"
+                  />
+                  {categoryCreateError && <p className="col-span-2 text-sm text-destructive" role="alert" data-testid="purchase-quick-category-error">{categoryCreateError}</p>}
                   <label className="grid gap-1 text-sm font-medium">
                     {t("itemsSell")}
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quick.fields.sellPrice} onChange={(e) => quick.setField("sellPrice", e.target.value)} />
@@ -738,7 +748,7 @@ export function PurchasePage() {
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickUnitCost" autoComplete="off" required inputMode="numeric" value={quick.fields.unitCost} onChange={(e) => quick.setField("unitCost", e.target.value)} data-testid="quick-cost" />
                   </label>
                 </div>
-                <Button type="submit" disabled={createItem.isPending || savePending}>
+                <Button type="submit" disabled={createItem.isPending || categoryCreate.isPending || savePending}>
                   {t("purchasesQuickAddBtn")}
                 </Button>
               </form>
@@ -895,29 +905,27 @@ export function PurchasePage() {
                                       data-testid="line-product-name"
                                     />
                                   </label>
-                                  <label className="grid gap-1 text-sm font-medium">
-                                    {t("purchasesLineProductCategory")}
-                                    <Select
-                                      value={lineDraft.categoryId}
-                                      onValueChange={(value) => patchLineDraft({ categoryId: value ?? "" })}
-                                      items={[
-                                        { value: "", label: "—" },
-                                        ...(categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []),
-                                      ]}
-                                    >
-                                      <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="—" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="">—</SelectItem>
-                                        {categories.data?.items.map((category) => (
-                                          <SelectItem key={category.id} value={category.id}>
-                                            {category.name}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
-                                  </label>
+                                  <EntityPicker
+                                    label={t("purchasesLineProductCategory")}
+                                    options={[{ id: "", name: "—" }, ...(categories.data?.items ?? [])]}
+                                    value={lineDraft.categoryId}
+                                    onChange={(value) => {
+                                      setCategoryCreateError(null);
+                                      patchLineDraft({ categoryId: value });
+                                    }}
+                                    onCreate={(name) => {
+                                      setCategoryCreateError(null);
+                                      const attempt = lineAttemptRef.current;
+                                      categoryCreate.mutate({ name }, { onSuccess: (category) => {
+                                        if (attempt === lineAttemptRef.current) patchLineDraft({ categoryId: category.id });
+                                      } });
+                                    }}
+                                    createLabel={(name) => t("categoriesCreateInline", { name })}
+                                    noMatchesLabel={t("categoriesNoMatches")}
+                                    disabled={categoryCreate.isPending}
+                                    testId="purchase-line-category"
+                                  />
+                                  {categoryCreateError && <p className="col-span-2 text-sm text-destructive" role="alert" data-testid="purchase-line-category-error">{categoryCreateError}</p>}
                                   <label className="grid gap-1 text-sm font-medium">
                                     {t("itemsSell")}
                                     <input
@@ -941,7 +949,7 @@ export function PurchasePage() {
                                   </p>
                                 )}
                                 <div className="flex items-center gap-2">
-                                  <Button type="submit" disabled={createItem.isPending || savePending} data-testid="line-product-save">
+                                  <Button type="submit" disabled={createItem.isPending || categoryCreate.isPending || savePending} data-testid="line-product-save">
                                     {t("purchasesLineCreateSave")}
                                   </Button>
                                   <Button type="button" variant="outline" onClick={closeLineCreate} data-testid="line-product-cancel">

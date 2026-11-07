@@ -121,6 +121,39 @@ describe("EntityPicker", () => {
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
 
+  it("Escape restores the pre-search text when the default selection arrives mid-search", async () => {
+    const host = await mount(undefined, [], true);
+    const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
+    if (input === null) throw new Error("missing entity picker input");
+    const originalQuery = input.value;
+    await type(host, "تصنيف متأخر");
+    await updateOptions(host, [{ id: "default", name: "تصنيف حالي" }, { id: "late", name: "تصنيف متأخر" }], true);
+
+    await press(host, "Escape");
+
+    expect(input.value).toBe(originalQuery);
+    expect(input.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
+  });
+
+  it("outside blur discards ephemeral search text without changing the selection", async () => {
+    const host = await mount(undefined, [], true);
+    const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
+    if (input === null) throw new Error("missing entity picker input");
+    const originalQuery = input.value;
+    await type(host, "تصنيف متأخر");
+    await updateOptions(host, [{ id: "default", name: "تصنيف حالي" }, { id: "late", name: "تصنيف متأخر" }], true);
+
+    await act(async () => {
+      input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(input.value).toBe(originalQuery);
+    expect(input.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
+  });
+
   it("prevents Enter from submitting the caller form when no option is active", async () => {
     const host = await mount();
     await type(host, "missing category");

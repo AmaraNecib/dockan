@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
+import type { ItemCreate } from "../../packages/contracts/src/core";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
 import { captureEvidence } from "./money-display-helpers";
-import { actAndAck } from "./rpc-helpers";
+import { actAndAck, callRpc } from "./rpc-helpers";
 
 // #254 evidence (#259): the money display is a VISUAL change, so this spec can
 // record a video at real user pace when a lane asks for one. CI never sets
@@ -15,18 +16,49 @@ test.use({ video: process.env.E2E_VIDEO === "1" ? "on" : "off" });
  * preview, save it, and see it listed as low stock on the dashboard.
  */
 test("the last table row category editor opens its menu outside the scroll container", async ({ page }) => {
+  const stamp = Date.now();
+  const itemName = `😀 PR460-last-row-${stamp}`;
+  const categoryName = `PR460-category-${stamp}`;
   await signIn(page);
+  const baseCategory = await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", {
+    name: `PR460-base-${stamp}`,
+  });
+  await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", { name: categoryName });
+  await callRpc<{ id: string }, ItemCreate>(page, "itemsCreate", {
+    name: itemName,
+    categoryId: baseCategory.id,
+    costPrice: 100,
+    sellingPrice: 150,
+    lowStockThreshold: 0,
+  });
+  await page.goto("/items");
   await openItemsTab(page, "products");
 
   const table = page.getByRole("table");
   const lastRow = table.getByRole("row").last();
+  await expect(lastRow).toContainText(itemName);
   await lastRow.getByRole("button", { name: "تعديل", exact: true }).click();
-  const category = lastRow.getByTestId("edit-category");
-  await category.click();
-  await expect(page.getByRole("option").first()).toBeVisible();
+  const editor = lastRow.getByTestId("edit-category");
+  await editor.click();
+  const menu = page.getByTestId("edit-category-menu");
+  await expect(menu).toBeVisible();
+  expect(await menu.evaluate((element) => element.closest(".overflow-x-auto") === null)).toBe(true);
+  const option = menu.getByRole("option", { name: categoryName, exact: true });
+  await expect(option).toBeVisible();
+  await option.click();
+  await actAndAck(page, "itemsUpdate", () => lastRow.getByTestId("edit-save").click());
+  await expect(lastRow).toContainText(categoryName);
 
-  await page.keyboard.press("Escape");
-  await lastRow.getByTestId("edit-cancel").click();
+  await lastRow.getByRole("button", { name: "تعديل", exact: true }).click();
+  const reopenedEditor = lastRow.getByTestId("edit-category");
+  await reopenedEditor.click();
+  const reopenedMenu = page.getByTestId("edit-category-menu");
+  await expect(reopenedMenu).toBeVisible();
+  await reopenedMenu.getByRole("option", { name: `PR460-base-${stamp}`, exact: true }).click();
+  await actAndAck(page, "itemsUpdate", () => lastRow.getByTestId("edit-save").click());
+  await page.reload();
+  await openItemsTab(page, "products");
+  await expect(lastRow).toContainText(`PR460-base-${stamp}`);
 });
 
 test("category, item with profit preview, low-stock dashboard", async ({ page }) => {

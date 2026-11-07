@@ -44,14 +44,19 @@ export function EntityPicker({
   const [query, setQuery] = useState(selected?.name ?? "");
   const [open, setOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const queryAtOpenRef = useRef(query);
   const inputRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const listId = `${testId}-list`;
   const inputId = `${testId}-input`;
 
   useEffect(() => {
-    if (!open) setQuery(selected?.name ?? "");
-  }, [open, selected?.id, selected?.name]);
+    if (!open) {
+      const selectedName = selected?.name ?? "";
+      setQuery(selectedName);
+      queryAtOpenRef.current = selectedName;
+    }
+  }, [selected?.id, selected?.name]);
 
   const matches = useMemo(() => {
     const trimmed = query.trim();
@@ -67,18 +72,28 @@ export function EntityPicker({
     if (activeIndex !== null && activeIndex >= 0) optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
   }, [activeIndex]);
 
+  function openSearch() {
+    if (!open) queryAtOpenRef.current = query;
+    setOpen(true);
+  }
+
+  function closeSearch() {
+    setOpen(false);
+    setQuery(queryAtOpenRef.current);
+    setActiveId(null);
+  }
+
   function pick(option: EntityOption) {
     onChange(option.id);
     setQuery(option.name);
+    queryAtOpenRef.current = option.name;
     setOpen(false);
     setActiveId(null);
   }
 
   function keyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
-      setQuery(selected?.name ?? "");
-      setOpen(false);
-      setActiveId(null);
+      closeSearch();
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -86,7 +101,7 @@ export function EntityPicker({
       event.preventDefault();
       const delta = event.key === "ArrowDown" ? 1 : -1;
       if (!open) {
-        setOpen(true);
+        openSearch();
         setActiveId(matches[delta === 1 ? 0 : matches.length - 1]?.id ?? null);
         return;
       }
@@ -103,12 +118,10 @@ export function EntityPicker({
   }
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={(nextOpen) => nextOpen ? openSearch() : closeSearch()}>
       <div className="grid gap-1 text-sm font-medium" onBlur={(event) => {
       if (event.relatedTarget !== null && event.currentTarget.contains(event.relatedTarget)) return;
-      setOpen(false);
-      setQuery(selected?.name ?? "");
-      setActiveId(null);
+      closeSearch();
     }}>
       <label htmlFor={inputId} className={hideLabel ? "sr-only" : undefined}>{label}</label>
       <input type="hidden" name={name} value={value} />
@@ -130,11 +143,11 @@ export function EntityPicker({
           disabled={disabled}
           onChange={(event) => {
             setQuery(event.target.value);
-            setOpen(true);
+            openSearch();
             setActiveId(null);
           }}
-          onFocus={() => setOpen(true)}
-          onClick={() => setOpen(true)}
+          onFocus={openSearch}
+          onClick={openSearch}
           onKeyDown={keyDown}
           data-testid={testId}
         />
@@ -172,9 +185,7 @@ export function EntityPicker({
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     const name = trimmedQuery;
-                    setOpen(false);
-                    setQuery(selected?.name ?? "");
-                    setActiveId(null);
+                    closeSearch();
                     onCreate?.(name);
                   }}
                   data-testid={`${testId}-create`}

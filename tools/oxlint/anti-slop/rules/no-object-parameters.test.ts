@@ -14,25 +14,27 @@ test("reports object parameters with stable names and bounded comment input", ()
   const captureDirectory = mkdtempSync(resolve(tmpdir(), "oxlint-capture-"));
   const stdoutPath = resolve(captureDirectory, "stdout.json");
   const stderrPath = resolve(captureDirectory, "stderr.log");
-  let stdoutFd: number | undefined = openSync(stdoutPath, "w");
-  let stderrFd: number | undefined = openSync(stderrPath, "w");
-  // A restored quadratic scan cannot finish this comment within the process budget.
-  // Linear extraction leaves ample room for CLI startup on a loaded runner.
-  const longWhitespaceComment = `/*${" ".repeat(1_000_000)}*/`;
-  writeFileSync(
-    fixture,
-    [
-      "type Payload = object;",
-      "function ordinary({ value }: object): void { void value; }",
-      "function aliased({ value }: Payload): void { void value; }",
-      `function commented({ value } ${longWhitespaceComment} ${" ".repeat(60_000)}: object): void { void value; }`,
-      "void ordinary;",
-      "void aliased;",
-      "void commented;",
-    ].join("\n"),
-  );
-
+  let stdoutFd: number | undefined;
+  let stderrFd: number | undefined;
   try {
+    stdoutFd = openSync(stdoutPath, "w");
+    stderrFd = openSync(stderrPath, "w");
+    // A restored quadratic scan cannot finish this comment within the process budget.
+    // Linear extraction leaves ample room for CLI startup on a loaded runner.
+    const longWhitespaceComment = `/*${" ".repeat(1_000_000)}*/`;
+    writeFileSync(
+      fixture,
+      [
+        "type Payload = object;",
+        "function ordinary({ value }: object): void { void value; }",
+        "function aliased({ value }: Payload): void { void value; }",
+        `function commented({ value } ${longWhitespaceComment} ${" ".repeat(60_000)}: object): void { void value; }`,
+        "void ordinary;",
+        "void aliased;",
+        "void commented;",
+      ].join("\n"),
+    );
+
     const result = spawnSync(
       process.execPath,
       [OXLINT, "-c", "oxlint.config.ts", "-f", "json", fixture],

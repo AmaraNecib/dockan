@@ -7,7 +7,7 @@ export function saleLineRow(lines: Locator, itemName: string): Locator {
 export async function selectRadioValue(group: Locator, value: "AMOUNT" | "PERCENTAGE"): Promise<void> {
   const radio = group.locator(`input[type="radio"][value="${value}"]`);
   await expect(radio).toBeVisible();
-  await group.locator("label").filter({ has: radio }).click();
+  await radio.locator("xpath=..").click();
   await expect(radio).toBeChecked();
 }
 

@@ -59,14 +59,17 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   await customer.fill("مسودة الاختصار");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Control+n");
-  const picker = page.getByTestId("picker-dialog");
-  await expect(picker.getByPlaceholder("ابحث بالاسم أو الباركود…")).toBeFocused();
-  await page.keyboard.press("Control+b");
-  await expect(page).toHaveURL(saleUrl);
-  await expect(picker).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(picker).toBeHidden();
+  const saleSearch = page.getByTestId("sale-search");
+  await expect(saleSearch).toBeFocused();
   await expect(customer).toHaveValue("مسودة الاختصار");
+  await page.keyboard.press("Control+b");
+  const saleDiscard = page.getByRole("dialog").filter({ has: page.getByTestId("new-sale-discard-confirm") });
+  await expect(saleDiscard).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(saleDiscard).toBeHidden();
+  await expect(page).toHaveURL(saleUrl);
+  await expect(customer).toHaveValue("مسودة الاختصار");
+  await expect(saleSearch).toBeFocused();
 
   await customer.focus();
   await page.keyboard.press("Control+b");

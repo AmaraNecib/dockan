@@ -400,6 +400,9 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
         <bdi>{history.data?.item?.name ?? t("historyTitle")}</bdi>
       </h1>
       {history.data?.item && <p className="mt-1 text-sm text-muted-foreground">{t("historyTitle")}</p>}
+      {history.isPending && (
+        <p role="status" aria-live="polite" className="sr-only">{t("historyLoading")}</p>
+      )}
       {history.isError && (
         <div role="alert" className="mt-4 rounded border border-destructive p-3">
           <p>{t("historyLoadError")}</p>
@@ -408,10 +411,38 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
       )}
 
       {history.isPending ? (
-        <div className="mt-4 grid gap-3 rounded border bg-card p-3">
-          {[0, 1, 2].map((row) => (
-            <Skeleton key={row} className="h-6 w-full" />
-          ))}
+        <div
+          className="mt-4 space-y-3"
+          data-testid="history-loading"
+          aria-hidden="true"
+        >
+          <div className="flex min-h-12 items-center rounded border bg-card px-3">
+            <Skeleton className="h-5 w-48 max-w-full motion-reduce:animate-none" />
+          </div>
+          <div className="overflow-hidden rounded border bg-card">
+            <table className="w-full min-w-[40rem] text-sm" aria-hidden="true">
+              <thead>
+                <tr className="border-b">
+                  <th className="h-10 px-3 text-start"><Skeleton className="h-3 w-20 motion-reduce:animate-none" /></th>
+                  <th className="h-10 px-3 text-start"><Skeleton className="h-3 w-24 motion-reduce:animate-none" /></th>
+                  <th className="h-10 px-3 text-start"><Skeleton className="h-3 w-14 motion-reduce:animate-none" /></th>
+                  <th className="h-10 px-3 text-start"><Skeleton className="h-3 w-20 motion-reduce:animate-none" /></th>
+                  <th className="h-10 px-3 text-start"><Skeleton className="h-3 w-20 motion-reduce:animate-none" /></th>
+                </tr>
+              </thead>
+              <tbody>
+                {[0, 1, 2].map((row) => (
+                  <tr key={row} className="h-12 border-b last:border-0">
+                    <td className="px-3"><Skeleton className="h-4 w-24 motion-reduce:animate-none" /></td>
+                    <td className="px-3"><Skeleton className="h-4 w-20 motion-reduce:animate-none" /></td>
+                    <td className="px-3"><Skeleton className="h-4 w-12 motion-reduce:animate-none" /></td>
+                    <td className="px-3"><Skeleton className="h-4 w-24 motion-reduce:animate-none" /></td>
+                    <td className="px-3"><Skeleton className="h-4 w-10 motion-reduce:animate-none" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : !history.data ? null : history.data.total === 0 ? (
         <EmptyState
@@ -484,60 +515,69 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                   </TableRow>
                   <TableRow hidden={!expanded} data-testid={`history-detail-row-${movement.id}`}>
                     <TableCell colSpan={5} className="whitespace-normal bg-muted/30 p-4 align-top">
-                      <div id={detailId} data-testid={`history-detail-${movement.id}`}>
-                        <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
-                            <div>
-                              <dt className="text-muted-foreground">{t("stockSellingPrice")}</dt>
-                              <dd data-testid={`history-selling-price-${movement.id}`}>
-                                {movement.details?.sellingPrice == null ? t("historyUnavailable") : <Amount value={movement.details.sellingPrice} />}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-muted-foreground">{t("stockUnitCost")}</dt>
-                              <dd>
-                                <HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} />
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-muted-foreground">{t("historySaleTotal")}</dt>
-                              <dd data-testid={`history-sale-total-${movement.id}`}>
-                                {movement.details?.saleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.saleTotal} />}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-muted-foreground">{t("historyNetSaleTotal")}</dt>
-                              <dd>
-                                {movement.details?.netSaleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.netSaleTotal} />}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-muted-foreground">{t("historyCostTotal")}</dt>
-                              <dd data-testid={`history-cost-total-${movement.id}`}>
-                                {movement.details?.cost?.total == null ? t("historyUnavailable") : <Amount value={movement.details.cost.total} />}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-muted-foreground">{t("historyRecordedAt")}</dt>
-                              <dd>{formatDateTime(movement.createdAt)}</dd>
-                            </div>
-                        </dl>
-                        <p className="mt-3 text-xs text-muted-foreground">{t("historyFactsHint")}</p>
-                        {movement.details?.documents.length ? (
-                          <div className="mt-3 grid gap-1">
-                            <p className="text-sm font-medium">{t("historyDocuments")}</p>
-                            {movement.details.documents.map((document) => (
-                              <Link
-                                key={document.id}
-                                to="/invoices/$invoiceId"
-                                params={{ invoiceId: document.id }}
-                                className="inline-flex min-h-8 w-fit items-center text-sm text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                                data-testid={`history-document-${movement.id}`}
-                              >
-                                <bdi dir="ltr">{document.number}</bdi>
-                              </Link>
-                            ))}
+                      <div id={detailId} data-testid={`history-detail-${movement.id}`} className="max-w-4xl space-y-3">
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          <section>
+                            <h3 className="mb-2 text-xs font-semibold text-muted-foreground">{t("historyAmounts")}</h3>
+                            <dl className="grid grid-cols-2 gap-x-5 gap-y-2 text-sm">
+                              <div>
+                                <dt className="text-xs text-muted-foreground">{t("stockSellingPrice")}</dt>
+                                <dd data-testid={`history-selling-price-${movement.id}`}>
+                                  {movement.details?.sellingPrice == null ? t("historyUnavailable") : <Amount value={movement.details.sellingPrice} />}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs text-muted-foreground">{t("stockUnitCost")}</dt>
+                                <dd>
+                                  <HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} />
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs text-muted-foreground">{t("historySaleTotal")}</dt>
+                                <dd data-testid={`history-sale-total-${movement.id}`}>
+                                  {movement.details?.saleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.saleTotal} />}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs text-muted-foreground">{t("historyNetSaleTotal")}</dt>
+                                <dd>
+                                  {movement.details?.netSaleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.netSaleTotal} />}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-xs text-muted-foreground">{t("historyCostTotal")}</dt>
+                                <dd data-testid={`history-cost-total-${movement.id}`}>
+                                  {movement.details?.cost?.total == null ? t("historyUnavailable") : <Amount value={movement.details.cost.total} />}
+                                </dd>
+                              </div>
+                            </dl>
+                          </section>
+                          <div className="space-y-3">
+                            <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">{t("historyFactsHint")}</p>
+                            <dl className="text-sm">
+                              <dt className="text-xs text-muted-foreground">{t("historyRecordedAt")}</dt>
+                              <dd className="break-words">{formatDateTime(movement.createdAt)}</dd>
+                            </dl>
+                            {movement.details?.documents.length ? (
+                              <div>
+                                <p className="mb-1 text-xs text-muted-foreground">{t("historyDocuments")}</p>
+                                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                  {movement.details.documents.map((document) => (
+                                    <Link
+                                      key={document.id}
+                                      to="/invoices/$invoiceId"
+                                      params={{ invoiceId: document.id }}
+                                      className="inline-flex min-h-7 max-w-full items-center break-all text-sm text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                                      data-testid={`history-document-${movement.id}`}
+                                    >
+                                      <bdi dir="ltr">{document.number}</bdi>
+                                    </Link>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
                           </div>
-                        ) : null}
+                        </div>
                       </div>
                     </TableCell>
                   </TableRow>

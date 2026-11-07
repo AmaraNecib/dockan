@@ -103,7 +103,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
     .getByRole("link", { name: "السجل" })
     .click();
   await expect(page.getByTestId("history-table")).toBeVisible();
-  const rows = page.getByTestId("history-table").locator("tbody tr");
+  const rows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("+6");
   await expect(page.getByTestId("stock-after").last()).toHaveText("6");
@@ -159,7 +159,7 @@ test("an edited cost survives the next inflow and shows as a correction movement
   // the history records the edit as a zero-quantity correction
   await row.getByRole("link", { name: "السجل" }).click();
   await expect(page.getByTestId("history-table")).toBeVisible();
-  const historyRows = page.getByTestId("history-table").locator("tbody tr");
+  const historyRows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   await expect(historyRows).toHaveCount(2);
   await expect(historyRows.last()).toContainText("تصحيح تكلفة يدوي");
   await expect(historyRows.last()).toContainText("300");
@@ -223,7 +223,7 @@ test("a future-dated purchase recorded before a cost correction is flagged as su
 
   await row.getByRole("link", { name: "السجل" }).click();
   await expect(page.getByTestId("history-table")).toBeVisible();
-  const rows = page.getByTestId("history-table").locator("tbody tr");
+  const rows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   await expect(rows).toHaveCount(3);
   // the issue's inversion: the correction is drawn ABOVE the future-dated row
   const texts = await rows.allInnerTexts();
@@ -279,7 +279,7 @@ test("a superseded row is badged even when its correction is on a prior page", a
   await page.goto(`/items/${item.id}/history`);
   await expect(page.getByTestId("history-table")).toBeVisible();
 
-  const rows = page.getByTestId("history-table").locator("tbody tr");
+  const rows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   // page 1 draws the correction, but the row it supersedes is not on this page
   await expect(rows).toHaveCount(2);
   await expect(page.getByTestId("history-superseded")).toHaveCount(0);

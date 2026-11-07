@@ -61,11 +61,12 @@ function sale(id: string, documentId: string, number: string, delta: number) {
 }
 
 let historyResult: HistoryFixture;
+let historyPromise: Promise<HistoryFixture> | null = null;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
     itemsHistory: {
-      queryOptions: () => ({ queryKey: ["issue467-item-history"], queryFn: async () => historyResult }),
+      queryOptions: () => ({ queryKey: ["issue467-item-history"], queryFn: () => historyPromise ?? Promise.resolve(historyResult) }),
     },
   },
   rpcClient: {},
@@ -75,6 +76,7 @@ const { ItemHistoryPage } = await import("./stock");
 
 describe("item-history navigation and disclosure (issue #467)", () => {
   beforeEach(() => {
+    historyPromise = null;
     historyResult = {
       item: { id: itemId, name: "بطارية طويلة الاسم للاختبار" },
       total: 2,
@@ -87,6 +89,37 @@ describe("item-history navigation and disclosure (issue #467)", () => {
   afterEach(async () => {
     await unmountAllMountedPages();
     document.body.innerHTML = "";
+  });
+
+  it("shows accessible identity and table-shaped placeholders only for the initial load", async () => {
+    let resolveHistory!: (result: HistoryFixture) => void;
+    historyPromise = new Promise((resolve) => { resolveHistory = resolve; });
+    const page = await mountWithProviders(<ItemHistoryPage />);
+
+    const status = page.container.querySelector('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status?.textContent ?? "").toContain("جارٍ تحميل سجل المنتج");
+    expect(page.container.querySelector('[data-testid="history-loading"]')?.getAttribute("aria-hidden")).toBe("true");
+    expect(page.container.querySelectorAll('[data-testid="history-loading"] [data-slot="skeleton"]').length).toBeGreaterThan(5);
+    expect(page.container.querySelector('[data-testid="history-loading"] [data-slot="skeleton"]')?.className).toContain("motion-reduce:animate-none");
+    expect(page.query("history-table")).toBeNull();
+
+    historyPromise = null;
+    await act(async () => resolveHistory(historyResult));
+    await page.poll(() => page.query("history-table") !== null, "loaded history table");
+
+    let resolveRefetch!: (result: HistoryFixture) => void;
+    historyPromise = new Promise((resolve) => { resolveRefetch = resolve; });
+    await act(async () => {
+      void page.queryClient.invalidateQueries({ queryKey: ["issue467-item-history"] });
+      await Promise.resolve();
+    });
+    expect(page.query("history-table")).not.toBeNull();
+    expect(page.container.querySelector('[data-testid="history-loading"]')).toBeNull();
+    expect(page.container.querySelector("h1")?.textContent).toContain("بطارية طويلة الاسم للاختبار");
+
+    historyPromise = null;
+    await act(async () => resolveRefetch(historyResult));
   });
 
   it("keeps the item identity visible and links the breadcrumb to Products", async () => {

@@ -1,9 +1,12 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { readSchemaVersion } from "../lib/schema-version";
 import { readSnapshotFence } from "../lib/vault/format";
+import { sealSnapshot } from "./snapshot-durability";
 import { openVaultStore } from "./vault-store";
 
 /**
@@ -58,6 +61,7 @@ describe("openVaultStore composes the connection and the store", () => {
       writeStamp: () => token,
     });
     await first.store.setup();
+    await first.store.insertActivity({ type: "SALE_CREATED", summary: "SALE_CREATED INV-0001", ref: "INV-0001" });
     await first.store.setSetting("composition-probe", "written-through-the-store");
     // flush, not persistIfDirty: the write is only real once it is on disk
     await first.conn.flush();
@@ -74,7 +78,52 @@ describe("openVaultStore composes the connection and the store", () => {
       headerPath: headerPath(),
     });
     expect(await second.store.getSetting("composition-probe")).toBe("written-through-the-store");
+    const activity = (await second.store.listActivities({ limit: 10 })).items[0];
+    expect(activity).toMatchObject({ type: "SALE_CREATED", actorId: null, actorName: null });
     await second.conn.close();
+  });
+
+  it("persists an encrypted v9 activity upgrade after setup, close and reopen", async () => {
+    const legacy = new Database(":memory:");
+    try {
+      legacy.exec("CREATE TABLE activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)");
+      legacy.exec("INSERT INTO activities VALUES ('legacy-sale', '2026-01-02T03:04:05', 'SALE_CREATED', 'SALE_CREATED INV-0001', 'INV-0001')");
+      legacy.exec("PRAGMA user_version = 9");
+      fs.writeFileSync(snapshotPath(), sealSnapshot(masterKey, vaultId, legacy.serialize(), undefined));
+    } finally {
+      legacy.close();
+    }
+
+    const input = { vaultId, masterKey, snapshotPath: snapshotPath(), headerPath: headerPath() };
+    const upgraded = openVaultStore(input);
+    try {
+      expect(readSchemaVersion(upgraded.conn.raw)).toBe(9);
+      expect(upgraded.conn.raw.query<{ name: string }, []>("PRAGMA table_info(activities)").all().map((column) => column.name))
+        .toEqual(["id", "at", "type", "summary", "ref"]);
+      await upgraded.store.setup();
+    } finally {
+      await upgraded.conn.close();
+    }
+
+    // Do not run setup again: that would repair an upgrade that was never saved.
+    const reopened = openVaultStore(input);
+    try {
+      expect(readSchemaVersion(reopened.conn.raw)).toBe(10);
+      expect(await reopened.store.listActivities({ limit: 10 })).toEqual({
+        total: 1,
+        items: [{
+          id: "legacy-sale",
+          at: "2026-01-02T03:04:05",
+          type: "SALE_CREATED",
+          summary: "SALE_CREATED INV-0001",
+          ref: "INV-0001",
+          actorId: null,
+          actorName: null,
+        }],
+      });
+    } finally {
+      await reopened.conn.close();
+    }
   });
 
   it("main.ts hands the store the lock's own token", () => {

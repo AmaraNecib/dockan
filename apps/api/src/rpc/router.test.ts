@@ -50,13 +50,18 @@ let logger: AppLogger;
 let auth: BetterAuthInstance;
 let cookie = "";
 
+async function expectActivityActorFields(activity: { actorId: string | null; actorName: string | null } | undefined): Promise<void> {
+  expect(activity).toBeDefined();
+  const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+  expect(activity).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+}
+
 async function expectActivityActorSnapshot(type: string, ref: string | null | undefined, summary: string): Promise<void> {
   const activities = (await client.activitiesList({ limit: 500 })).items.filter(
     (entry) => entry.type === type && (ref === undefined || entry.ref === ref) && entry.summary === summary,
   );
   expect(activities).toHaveLength(1);
-  const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
-  expect(activities[0]).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+  await expectActivityActorFields(activities[0]);
 }
 
 beforeAll(async () => {
@@ -179,6 +184,7 @@ describe("categories", () => {
     const created = await client.categoriesCreate({ name: "زيوت" });
     expect(created.name).toBe("زيوت");
     expect(created.id).toBeTruthy();
+    await expectActivityActorSnapshot("CATEGORY_CREATED", null, "CATEGORY_CREATED زيوت");
 
     const list = await client.categoriesList();
     expect(list.items.some((c) => c.id === created.id && c.name === "زيوت")).toBe(true);
@@ -275,6 +281,7 @@ describe("items", () => {
     });
     const updated = await client.itemsUpdate({ id: created.id, name: "زيت مكينة 5W30", sellingPrice: 200 });
     expect(updated?.name).toBe("زيت مكينة 5W30");
+    await expectActivityActorSnapshot("ITEM_UPDATED", created.id, "ITEM_UPDATED زيت مكينة 5W30");
     expect(updated?.sellingPrice).toBe(200);
     expect(updated?.costPrice).toBe(120); // untouched by the partial update
   });
@@ -394,6 +401,7 @@ describe("catalog search + barcodes (ticket 28)", () => {
       stockOnHand: 12,
     });
     expect(item.stockOnHand).toBe(12);
+    await expectActivityActorSnapshot("ITEM_CREATED", item.id, "ITEM_CREATED_WITH_STOCK 12 فلتر زيت");
     const listed = await client.itemsAll();
     expect(listed.items.find((i) => i.id === item.id)?.stockOnHand).toBe(12);
     const history = await client.itemsHistory({ itemId: item.id });
@@ -1078,6 +1086,7 @@ describe("settings (ticket 10)", () => {
       type: "SETTINGS_UPDATED",
       summary: "SETTINGS_UPDATED",
     });
+    await expectActivityActorFields(activities.items[0]);
   });
 
   it("persists and clears the store address through settingsUpdate", async () => {
@@ -2241,15 +2250,20 @@ describe("parties (issue 120)", () => {
     expect(group?.counterpartyName).toBe("بعد-إعادة-التسمية");
   });
 
-  it("records PARTY_CREATED/UPDATED/DELETED audit rows", async () => {
+  it("records party audit rows with the authenticated actor for both roles", async () => {
     const created = await client.customersCreate({ name: "تدقيق-جهة" });
+    await expectActivityActorSnapshot("PARTY_CREATED", created.id, "PARTY_CREATED CUSTOMER تدقيق-جهة");
     await client.customersUpdate({ id: created.id, name: "تدقيق-معدّل" });
+    await expectActivityActorSnapshot("PARTY_UPDATED", created.id, "PARTY_UPDATED CUSTOMER تدقيق-معدّل");
     await client.customersDelete({ id: created.id });
-    const activities = await client.activitiesList({ limit: 100 });
-    const summaries = activities.items.map((entry) => entry.summary);
-    expect(summaries).toContain("PARTY_CREATED CUSTOMER تدقيق-جهة");
-    expect(summaries).toContain("PARTY_UPDATED CUSTOMER تدقيق-معدّل");
-    expect(summaries).toContain("PARTY_DELETED CUSTOMER تدقيق-معدّل");
+    await expectActivityActorSnapshot("PARTY_DELETED", created.id, "PARTY_DELETED CUSTOMER تدقيق-معدّل");
+
+    const supplier = await client.suppliersCreate({ name: "تدقيق-مورد" });
+    await expectActivityActorSnapshot("PARTY_CREATED", supplier.id, "PARTY_CREATED SUPPLIER تدقيق-مورد");
+    await client.suppliersUpdate({ id: supplier.id, name: "تدقيق-مورد-معدّل" });
+    await expectActivityActorSnapshot("PARTY_UPDATED", supplier.id, "PARTY_UPDATED SUPPLIER تدقيق-مورد-معدّل");
+    await client.suppliersDelete({ id: supplier.id });
+    await expectActivityActorSnapshot("PARTY_DELETED", supplier.id, "PARTY_DELETED SUPPLIER تدقيق-مورد-معدّل");
   });
 
   it("returns the detail aggregate and payment invoice numbers, and refuses to delete a party with invoices", async () => {
@@ -3335,9 +3349,11 @@ describe("expenses (ticket 31)", () => {
   it("creates an extra expense category and rejects duplicates", async () => {
     const created = await client.expenseCategoriesCreate({ name: "تسويق" });
     expect(created.isOwnerWithdrawal).toBe(false);
+    await expectActivityActorSnapshot("EXPENSE_CATEGORY_CREATED", null, "EXPENSE_CATEGORY_CREATED OPERATING تسويق");
     await expect(client.expenseCategoriesCreate({ name: "تسويق" })).rejects.toThrow(/EXPENSE_CATEGORY_EXISTS/);
     const flagged = await client.expenseCategoriesCreate({ name: "سحب خاص", isOwnerWithdrawal: true });
     expect(flagged.isOwnerWithdrawal).toBe(true);
+    await expectActivityActorSnapshot("EXPENSE_CATEGORY_CREATED", null, "EXPENSE_CATEGORY_CREATED WITHDRAWAL سحب خاص");
   });
 
   it("records an expense with a note, defaults the moment, and audits it", async () => {

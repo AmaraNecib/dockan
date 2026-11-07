@@ -653,6 +653,7 @@ test("canceled sale category search does not trigger the discard guard", async (
   await page.getByTestId("sale-quick-add").click();
 
   const category = page.getByTestId("sale-quick-category");
+  await expect(category).toBeEnabled();
   const originalValue = await category.inputValue();
   await category.fill("category search only");
   await page.keyboard.press("Escape");

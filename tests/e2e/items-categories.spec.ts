@@ -36,6 +36,7 @@ test("the last table row category editor opens its menu outside the scroll conta
 
   const table = page.getByRole("table");
   const lastRow = table.getByRole("row").last();
+  const seededRow = table.getByRole("row").filter({ hasText: itemName });
   await expect(lastRow).toContainText(itemName);
   await lastRow.getByRole("button", { name: "تعديل", exact: true }).click();
   const editor = lastRow.getByTestId("edit-category");
@@ -60,7 +61,8 @@ test("the last table row category editor opens its menu outside the scroll conta
   await actAndAck(page, "itemsUpdate", () => lastRow.getByTestId("edit-save").click());
   await page.reload();
   await openItemsTab(page, "products");
-  await expect(lastRow).toContainText(`PR460-base-${stamp}`);
+  await expect(seededRow).toBeVisible();
+  await expect(seededRow).toContainText(`PR460-base-${stamp}`);
 });
 
 test("category, item with profit preview, low-stock dashboard", async ({ page }) => {

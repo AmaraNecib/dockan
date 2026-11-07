@@ -40,6 +40,17 @@ test("sale checkout keeps the final line and focused control clear at short heig
 
   await expect(page.getByTestId("sale-add-discount")).toBeVisible();
   await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
+  await expect(page.getByTestId("sale-paid-reference")).toHaveCount(0);
+  const assertDetailsFieldWidths = async () => {
+    const [customer, amount, percentage] = await Promise.all([
+      page.getByTestId("sale-customer").boundingBox(),
+      page.getByTestId("sale-paid").boundingBox(),
+      page.getByTestId("sale-paid-percentage").boundingBox(),
+    ]);
+    if (customer === null || amount === null || percentage === null) throw new Error("Sale detail fields must be measurable");
+    for (const field of [amount, percentage]) expect(Math.abs(customer.width - field.width)).toBeLessThanOrEqual(1);
+  };
+  await assertDetailsFieldWidths();
   const [detailsBox, linesPanelBox, desktopCheckoutBox] = await Promise.all([
     page.getByTestId("sale-details-panel").boundingBox(),
     page.getByTestId("sale-lines-panel").boundingBox(),
@@ -52,6 +63,7 @@ test("sale checkout keeps the final line and focused control clear at short heig
   expect(Math.abs((linesPanelBox.x + linesPanelBox.width) - (desktopCheckoutBox.x + desktopCheckoutBox.width))).toBeLessThanOrEqual(1);
 
   await page.setViewportSize({ width: 800, height: 520 });
+  await assertDetailsFieldWidths();
   const quantity = page.getByLabel(`${itemName}: الكمية`);
   await quantity.focus();
   await expect(quantity).toBeFocused();

@@ -464,7 +464,8 @@ export function SalePage() {
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
 
       <div className="mt-4 grid gap-4">
-        <div data-testid="sale-details-panel" className="grid grid-cols-2 gap-3 rounded border border-border bg-card p-4">
+        <div data-testid="sale-details-panel" className="grid grid-cols-1 gap-3 rounded border border-border bg-card p-4 md:grid-cols-3">
+          <div className="md:col-span-1">
           <PartyPicker
             role="customer"
             label={t("saleCustomer")}
@@ -476,6 +477,8 @@ export function SalePage() {
             disabled={createInvoice.isPending}
             testId="sale-customer"
           />
+          </div>
+          <div className="md:col-span-2">
           <AmountPercentageInput
             referenceTotal={total > 0 ? total : null}
             value={{ amount: payment.amount, percentage: payment.percentage }}
@@ -487,9 +490,11 @@ export function SalePage() {
             amountTestId="sale-paid"
             percentageTestId="sale-paid-percentage"
             referenceTestId="sale-paid-reference"
+            showReference={false}
             percentageInvalid={percentageDraftInvalid(payment.percentage)}
             disabled={createInvoice.isPending}
           />
+          </div>
         </div>
 
         <div data-testid="sale-lines-panel" className="rounded border border-border bg-card">

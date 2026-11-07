@@ -558,7 +558,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     await scan("111");
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("1000");
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("100");
-    expect(host.querySelector('[data-testid="sale-paid-reference"]')?.textContent).toContain("1,000");
+    expect(host.querySelector('[data-testid="sale-paid-reference"]')).toBeNull();
     await act(async () => setInput(host, "sale-paid-percentage", "50"));
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
   });

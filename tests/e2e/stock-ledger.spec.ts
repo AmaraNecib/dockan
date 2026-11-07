@@ -161,11 +161,15 @@ test("an edited cost survives the next inflow and shows as a correction movement
   await expect(page.getByTestId("history-table")).toBeVisible();
   const historyRows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   await expect(historyRows).toHaveCount(2);
-  await expect(historyRows.last()).toContainText("تصحيح تكلفة يدوي");
-  await expect(historyRows.last()).toContainText("300");
-  // a zero-quantity correction is not a stock loss: neutral delta styling
-  await expect(historyRows.last().getByRole("cell").nth(2)).toHaveClass(/text-muted-foreground/);
-  await expect(historyRows.last().getByRole("cell").nth(2)).not.toHaveClass(/text-destructive/);
+  const correctionRow = historyRows.last();
+  await expect(correctionRow).toContainText("تصحيح تكلفة يدوي");
+  const correctionTestId = await correctionRow.getAttribute("data-testid");
+  if (!correctionTestId) throw new Error("Cost-correction movement row is missing its identity");
+  const correctionId = correctionTestId.slice("history-movement-row-".length);
+  await correctionRow.getByRole("button", { name: "عرض التفاصيل" }).click();
+  await expect(page.getByTestId(`history-detail-${correctionId}`)).toContainText("300");
+  // a zero-quantity correction remains explicitly neutral, never a stock loss
+  await expect(historyRows.last().getByRole("cell").nth(2)).toHaveAttribute("data-delta-state", "neutral");
 
   // a later inflow replays the ledger: (10×300 + 10×200) / 20 = 250
   await page.goto("/items");

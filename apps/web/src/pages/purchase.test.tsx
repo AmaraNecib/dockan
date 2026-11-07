@@ -1280,7 +1280,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       });
     }
 
-    it("does not submit quick-add with the previous category when Enter follows a typed search", async () => {
+    it("creates and selects a missing category with Enter without saving the purchase product", async () => {
       const { container } = await mountPage();
       await toggleQuick(container);
       await fillQuick(container, "منتج لا ينحفظ", "2", "800");
@@ -1289,8 +1289,9 @@ describe("PurchasePage quantity draft (#146)", () => {
       await pressEnter(input);
 
       expect(createdItemInputs).toHaveLength(0);
-      expect(categoryCreateInputs).toHaveLength(0);
+      expect(categoryCreateInputs).toEqual([{ name: "تصنيف غير موجود" }]);
       expect(input.value).toBe("تصنيف غير موجود");
+      expect(input.parentElement?.parentElement?.querySelector<HTMLInputElement>('input[type="hidden"]')?.value).toBe("cat-created-1");
       expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-name"]')?.value).toBe("منتج لا ينحفظ");
     });
 

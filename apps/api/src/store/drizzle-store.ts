@@ -3441,13 +3441,15 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return true;
     },
     // --- activities + settings ----------------------------------------------
-    async insertActivity(activity: { type: Activity["type"]; summary: string; ref?: string | null }) {
+    async insertActivity(activity: { type: Activity["type"]; summary: string; ref?: string | null; actorId?: string | null; actorName?: string | null }) {
       const value: (typeof activities.$inferInsert) & { ref: string | null } = {
         id: id(),
         at: now(),
         type: activity.type,
         summary: activity.summary,
         ref: activity.ref ?? null,
+        actorId: activity.actorId ?? null,
+        actorName: activity.actorName ?? null,
       };
       await db.insert(activities).values(value).run();
     },

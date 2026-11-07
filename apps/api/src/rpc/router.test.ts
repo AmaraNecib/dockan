@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
+import { eq } from "drizzle-orm";
 import { RPCLink } from "@orpc/client/fetch";
 import { dashboardSummaryOutputSchema, invoiceListInputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient, stockMovementWithBalanceSchema } from "@dokan/contracts";
 
@@ -48,6 +49,20 @@ let config: AppConfig;
 let logger: AppLogger;
 let auth: BetterAuthInstance;
 let cookie = "";
+
+async function expectActivityActorFields(activity: { actorId: string | null; actorName: string | null } | undefined): Promise<void> {
+  expect(activity).toBeDefined();
+  const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+  expect(activity).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+}
+
+async function expectActivityActorSnapshot(type: string, ref: string | null | undefined, summary: string): Promise<void> {
+  const activities = (await client.activitiesList({ limit: 500 })).items.filter(
+    (entry) => entry.type === type && (ref === undefined || entry.ref === ref) && entry.summary === summary,
+  );
+  expect(activities).toHaveLength(1);
+  await expectActivityActorFields(activities[0]);
+}
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-"));
@@ -169,6 +184,7 @@ describe("categories", () => {
     const created = await client.categoriesCreate({ name: "زيوت" });
     expect(created.name).toBe("زيوت");
     expect(created.id).toBeTruthy();
+    await expectActivityActorSnapshot("CATEGORY_CREATED", null, "CATEGORY_CREATED زيوت");
 
     const list = await client.categoriesList();
     expect(list.items.some((c) => c.id === created.id && c.name === "زيوت")).toBe(true);
@@ -265,6 +281,7 @@ describe("items", () => {
     });
     const updated = await client.itemsUpdate({ id: created.id, name: "زيت مكينة 5W30", sellingPrice: 200 });
     expect(updated?.name).toBe("زيت مكينة 5W30");
+    await expectActivityActorSnapshot("ITEM_UPDATED", created.id, "ITEM_UPDATED زيت مكينة 5W30");
     expect(updated?.sellingPrice).toBe(200);
     expect(updated?.costPrice).toBe(120); // untouched by the partial update
   });
@@ -407,6 +424,7 @@ describe("catalog search + barcodes (ticket 28)", () => {
       stockOnHand: 12,
     });
     expect(item.stockOnHand).toBe(12);
+    await expectActivityActorSnapshot("ITEM_CREATED", item.id, "ITEM_CREATED_WITH_STOCK 12 فلتر زيت");
     const listed = await client.itemsAll();
     expect(listed.items.find((i) => i.id === item.id)?.stockOnHand).toBe(12);
     const history = await client.itemsHistory({ itemId: item.id });
@@ -559,6 +577,12 @@ describe("stock adjustment — the same action is applied once (#295)", () => {
     expect(history.stockOnHand).toBe(5);
     const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(5);
+    const activityRows = (await client.activitiesList({ limit: 500 })).items.filter(
+      (entry) => entry.type === "STOCK_ADJUSTED" && entry.ref === item.id && entry.summary === `STOCK_ADJUSTED ${item.name}`,
+    );
+    expect(activityRows).toHaveLength(1);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(activityRows[0]).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
   });
 
   it("still records a different adjustment right after the first one", async () => {
@@ -997,6 +1021,8 @@ describe("backups (ticket 13)", () => {
     const backupEntry = activities.find((a) => a.type === "BACKUP_CREATED");
     expect(backupEntry).toBeDefined();
     expect(backupEntry!.ref).toBe(result.path);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(backupEntry).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
   });
 });
 
@@ -1019,6 +1045,14 @@ describe("activity log (ticket 12)", () => {
 
     const all = await client.activitiesList({});
     expect(all.items.length).toBeGreaterThanOrEqual(3);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(owner).toBeDefined();
+    // User-authored activity stores the account snapshot, not client input.
+    expect(all.items[0]).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+    expect(all.items[1]).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+    // Unattributed setup history remains null rather than inheriting the current owner.
+    const storedActivities = await store.listActivities();
+    expect(storedActivities.items.find((entry) => entry.type === "STORE_SETUP")).toMatchObject({ actorId: null, actorName: null });
     // newest first: the stock adjustment is the latest entry
     expect(all.items[0]!.type).toBe("STOCK_ADJUSTED");
     expect(all.items[0]!.summary).toContain("activity-log-probe");
@@ -1075,6 +1109,7 @@ describe("settings (ticket 10)", () => {
       type: "SETTINGS_UPDATED",
       summary: "SETTINGS_UPDATED",
     });
+    await expectActivityActorFields(activities.items[0]);
   });
 
   it("persists and clears the store address through settingsUpdate", async () => {
@@ -1255,6 +1290,9 @@ describe("purchase intake (ticket 29)", () => {
       expect(line.costAtSale).toBe(line.unitPrice);
     }
 
+    const purchaseActivity = (await client.activitiesList({ limit: 500 })).items.find((entry) => entry.type === "PURCHASE_CREATED" && entry.ref === invoice.id);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(purchaseActivity).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
     // one PURCHASE movement per line, attributed to the invoice
     const historyA = await client.itemsHistory({ itemId: a.id });
     expect(historyA.movements.filter((m) => m.ref === invoice.id)).toHaveLength(1);
@@ -1348,6 +1386,7 @@ describe("purchase intake (ticket 29)", () => {
     });
     expect(result.linked).toBe(3);
     expect(result.remainderMoved).toBe(2); // unmatched share, reported only
+    await expectActivityActorSnapshot("STOCK_ADJUSTED", invoice.id, `STOCK_LINKED ${invoice.invoiceNumber}`);
 
     const history = await client.itemsHistory({ itemId: item.id });
     // +3 manual +5 invoice posting = 8 physical units; linking NEVER adds stock
@@ -1436,6 +1475,12 @@ describe("purchase intake (ticket 29)", () => {
     // ADR-0002 replay: 10@100 → avg 100; +6@200 → 2200/16 = 137.5;
     // reversal drops running qty to 6; +9@150 → (137.5×6 + 1350)/15 = 145
     expect(listed.costPrice).toBe(145);
+    const correctionActivities = (await client.activitiesList({ limit: 500 })).items.filter(
+      (entry) => entry.type === "STOCK_ADJUSTED" && entry.summary === `PURCHASE_CORRECTED ${item.name}` && entry.ref === item.id,
+    );
+    expect(correctionActivities).toHaveLength(2);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(correctionActivities.every((entry) => entry.actorId === owner!.id && entry.actorName === owner!.name)).toBe(true);
   });
 
   it("correction oversell guard uses the EFFECTIVE quantity after prior corrections", async () => {
@@ -1589,12 +1634,17 @@ describe("sale checkout (ticket 30)", () => {
       sellingPrice: 700,
       stockOnHand: 3,
     });
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(owner).toBeDefined();
+    // SAFETY: the cast only adds untrusted fields to exercise the RPC schema's stripping behavior.
     const invoice = await client.invoicesCreate({
       kind: "SALE",
       counterpartyName: "زبون البيع",
       initialPaid: 700,
       lines: [{ itemId: stocked.id, quantity: 1 }],
-    });
+      actorId: "forged-account",
+      actorName: "زبون البيع",
+    } as Parameters<typeof client.invoicesCreate>[0] & { actorId: string; actorName: string });
     expect(invoice.totalAmount).toBe(700);
     expect(invoice.paidAmount).toBe(700);
     expect(invoice.remainingAmount).toBe(0);
@@ -1610,6 +1660,16 @@ describe("sale checkout (ticket 30)", () => {
     expect(saleActivity).toBeDefined();
     expect(saleActivity!.ref).toBe(invoice.id);
     expect(saleActivity!.summary).toContain(invoice.invoiceNumber);
+    expect(saleActivity).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+    expect(saleActivity!.actorId).not.toBe("forged-account");
+    expect(saleActivity!.actorName).not.toBe("زبون البيع");
+    await conn.db.update(users).set({ name: "اسم جديد" }).where(eq(users.id, owner!.id)).run();
+    try {
+      const savedSnapshot = (await client.activitiesList({ limit: 500 })).items.find((entry) => entry.id === saleActivity!.id);
+      expect(savedSnapshot).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
+    } finally {
+      await conn.db.update(users).set({ name: owner!.name }).where(eq(users.id, owner!.id)).run();
+    }
     expect((await client.itemsAll()).items.find((row) => row.id === stocked.id)?.stockOnHand).toBe(2);
     expect((await client.itemsHistory({ itemId: stocked.id })).movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
   });
@@ -2213,15 +2273,20 @@ describe("parties (issue 120)", () => {
     expect(group?.counterpartyName).toBe("بعد-إعادة-التسمية");
   });
 
-  it("records PARTY_CREATED/UPDATED/DELETED audit rows", async () => {
+  it("records party audit rows with the authenticated actor for both roles", async () => {
     const created = await client.customersCreate({ name: "تدقيق-جهة" });
+    await expectActivityActorSnapshot("PARTY_CREATED", created.id, "PARTY_CREATED CUSTOMER تدقيق-جهة");
     await client.customersUpdate({ id: created.id, name: "تدقيق-معدّل" });
+    await expectActivityActorSnapshot("PARTY_UPDATED", created.id, "PARTY_UPDATED CUSTOMER تدقيق-معدّل");
     await client.customersDelete({ id: created.id });
-    const activities = await client.activitiesList({ limit: 100 });
-    const summaries = activities.items.map((entry) => entry.summary);
-    expect(summaries).toContain("PARTY_CREATED CUSTOMER تدقيق-جهة");
-    expect(summaries).toContain("PARTY_UPDATED CUSTOMER تدقيق-معدّل");
-    expect(summaries).toContain("PARTY_DELETED CUSTOMER تدقيق-معدّل");
+    await expectActivityActorSnapshot("PARTY_DELETED", created.id, "PARTY_DELETED CUSTOMER تدقيق-معدّل");
+
+    const supplier = await client.suppliersCreate({ name: "تدقيق-مورد" });
+    await expectActivityActorSnapshot("PARTY_CREATED", supplier.id, "PARTY_CREATED SUPPLIER تدقيق-مورد");
+    await client.suppliersUpdate({ id: supplier.id, name: "تدقيق-مورد-معدّل" });
+    await expectActivityActorSnapshot("PARTY_UPDATED", supplier.id, "PARTY_UPDATED SUPPLIER تدقيق-مورد-معدّل");
+    await client.suppliersDelete({ id: supplier.id });
+    await expectActivityActorSnapshot("PARTY_DELETED", supplier.id, "PARTY_DELETED SUPPLIER تدقيق-مورد-معدّل");
   });
 
   it("returns the detail aggregate and payment invoice numbers, and refuses to delete a party with invoices", async () => {
@@ -2359,6 +2424,7 @@ describe("party-detail tab pagination (issue 174)", () => {
     expect((await client.suppliersGet({ id: supplier.id })).invoices).toHaveLength(12);
     const paid = await client.suppliersPay({ supplierId: supplier.id, amount: 1_200, target: { kind: "OLDEST" } });
     expect(paid.balance).toBe(0);
+    await expectActivityActorSnapshot("PAYMENT_RECORDED", supplier.id, `SUPPLIER_PAYMENT 1200 ${supplier.name}`);
     const all = await client.partyInvoices({ role: "supplier", id: supplier.id, limit: 100, offset: 0 });
     expect(all.total).toBe(12);
     expect(all.items.every((invoice) => invoice.remainingAmount === 0)).toBe(true);
@@ -2393,6 +2459,14 @@ async function setupSupplier(name: string, units = 10) {
 
 describe("supplier adjustments (issue 176)", () => {
 
+  it("attributes a refund paid from supplier credit", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد استرداد-${Date.now()}` });
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 500 });
+    const refunded = await client.suppliersRefund({ supplierId: supplier.id, amount: 500 });
+    expect(refunded.balance).toBe(0);
+    await expectActivityActorSnapshot("PAYMENT_RECORDED", supplier.id, `SUPPLIER_REFUND 500 ${supplier.name}`);
+  });
+
   it("records an account-only adjustment: the balance moves and no invoice is touched", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية رصيد", 10);
 
@@ -2406,6 +2480,7 @@ describe("supplier adjustments (issue 176)", () => {
       // the backdatable date is persisted as the owner entered it
       occurredAt: "2026-10-13T12:00:00",
     });
+    await expectActivityActorSnapshot("ADJUSTMENT_RECORDED", supplier.id, `SUPPLIER_ADJUSTMENT WE_OWE 800 ${supplier.name}`);
 
     const decreased = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 300, reason: "تصحيح" });
     expect(decreased.balance).toBe(-1500);
@@ -2565,6 +2640,8 @@ describe("supplier adjustments (issue 176)", () => {
       ],
     });
     expect(result.created).toBe(2);
+    await expectActivityActorSnapshot("ADJUSTMENT_RECORDED", a.id, `SUPPLIER_OPENING_BALANCE WE_OWE 500 ${a.name}`);
+    await expectActivityActorSnapshot("ADJUSTMENT_RECORDED", b.id, `SUPPLIER_OPENING_BALANCE WE_OWE 500 ${b.name}`);
   });
 
   it("refuses two rows naming the same new supplier before creating a party (issue 177)", async () => {
@@ -3295,9 +3372,11 @@ describe("expenses (ticket 31)", () => {
   it("creates an extra expense category and rejects duplicates", async () => {
     const created = await client.expenseCategoriesCreate({ name: "تسويق" });
     expect(created.isOwnerWithdrawal).toBe(false);
+    await expectActivityActorSnapshot("EXPENSE_CATEGORY_CREATED", null, "EXPENSE_CATEGORY_CREATED OPERATING تسويق");
     await expect(client.expenseCategoriesCreate({ name: "تسويق" })).rejects.toThrow(/EXPENSE_CATEGORY_EXISTS/);
     const flagged = await client.expenseCategoriesCreate({ name: "سحب خاص", isOwnerWithdrawal: true });
     expect(flagged.isOwnerWithdrawal).toBe(true);
+    await expectActivityActorSnapshot("EXPENSE_CATEGORY_CREATED", null, "EXPENSE_CATEGORY_CREATED WITHDRAWAL سحب خاص");
   });
 
   it("records an expense with a note, defaults the moment, and audits it", async () => {
@@ -3308,8 +3387,8 @@ describe("expenses (ticket 31)", () => {
     expect(expense.note).toBe("كراء فيفري");
     expect(expense.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
     expect(expense.categoryId).toBe(rent.id);
-    const activityRows = (await client.activitiesList({})).items.filter((entry) => entry.type === "EXPENSE_RECORDED");
-    expect(activityRows.some((entry) => entry.ref === expense.id && entry.summary.includes("1200"))).toBe(true);
+    const activityRows = (await client.activitiesList({ limit: 500 })).items.filter((entry) => entry.type === "EXPENSE_RECORDED");
+    expect(activityRows.some((entry) => entry.ref === expense.id && entry.summary.includes("1200") && entry.actorId === expense.actorId && entry.actorName === expense.actorName)).toBe(true);
   });
 
   it("rejects an unknown category and schema-invalid amounts", async () => {
@@ -3687,6 +3766,7 @@ describe("invoice payments (ticket 8)", () => {
     expect(paid.remainingAmount).toBe(500);
     expect(paid.payments).toHaveLength(1);
     expect(paid.payments[0]).toMatchObject({ amount: 300, method: "CASH", note: "أول دفعة" });
+    await expectActivityActorSnapshot("PAYMENT_RECORDED", invoice.id, `PAYMENT_RECORDED 300 ${invoice.invoiceNumber}`);
 
     // persisted: a fresh read shows the same header + history
     const reread = await client.invoicesGet({ id: invoice.id });
@@ -4000,7 +4080,9 @@ describe("returns & refunds", () => {
     expect(returnMovement).toBeDefined();
     expect(returnMovement).toMatchObject({ kind: "SALE", delta: 2, unitCost: 100, reason: "RETURN_RECORDED", ref: created.id });
     expect((await client.itemsAll()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
-    expect((await client.activitiesList({})).items.some((entry) => entry.type === "RETURN_RECORDED" && entry.ref === created.id)).toBe(true);
+    const returnActivity = (await client.activitiesList({ limit: 500 })).items.find((entry) => entry.type === "RETURN_RECORDED" && entry.ref === created.id);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(returnActivity).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
 
     // a second return cannot exceed what is left (2 of 2 already returned)
     await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] })).rejects.toMatchObject({
@@ -4101,6 +4183,9 @@ describe("returns & refunds", () => {
     expect(history.movements.find((movement) => movement.returnMark === "ACCEPTED")).toBeDefined();
     expect(history.movements.find((movement) => movement.returnMark === "PENDING")).toBeUndefined();
     expect(history.stockOnHand).toBe(2);
+    const reviewActivity = (await client.activitiesList({ limit: 500 })).items.find((entry) => entry.type === "RETURN_REVIEWED" && entry.ref === created.id);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(reviewActivity).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
 
     await expect(client.returnsAccept({ returnId: created.id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_PENDING" });
     await expect(client.returnsReject({ returnId: created.id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_PENDING" });
@@ -4118,6 +4203,9 @@ describe("returns & refunds", () => {
     // the rejection note is recorded on the return too, so the voucher and
     // the returns list tell the full story
     expect(rejected.reason).toBe("كسر في العبوة");
+    const rejectionActivity = (await client.activitiesList({ limit: 500 })).items.find((entry) => entry.type === "RETURN_REVIEWED" && entry.ref === created.id);
+    const [owner] = await conn.db.select({ id: users.id, name: users.name }).from(users).limit(1);
+    expect(rejectionActivity).toMatchObject({ actorId: owner!.id, actorName: owner!.name });
 
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.stockOnHand).toBe(0);
@@ -4919,6 +5007,8 @@ describe("purchase return default refund (#256)", () => {
     // the return reduced the debt instead of handing cash back; #260 reads a
     // debt we owe as a NEGATIVE balance
     expect(returned.balance).toBe(-500);
+    const returnEntry = returned.entries.find((entry) => entry.kind === "RETURN");
+    await expectActivityActorSnapshot("RETURN_RECORDED", undefined, `SUPPLIER_RETURN ${returnEntry!.ref} 500 ${supplier.name}`);
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.movements.find((movement) => movement.reason === "SUPPLIER_RETURN")?.details?.documents)
       .toContainEqual({ id: purchase.id, number: purchase.invoiceNumber });

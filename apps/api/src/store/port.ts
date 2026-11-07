@@ -514,7 +514,7 @@ export interface StorePort {
    * returns whether the milestone is (now) recorded. */
   recordOnboardingCompletion(): Promise<boolean>;
 
-  insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;
+  insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null; actorId?: string | null; actorName?: string | null }): Promise<void>;
   listActivities(pagination?: PaginationInput): Promise<{ items: Activity[]; total: number }>;
   /** true only when no shop record exists (seed rows and settings excluded).
    * The first-run provisioning gate uses this: a non-empty database with no

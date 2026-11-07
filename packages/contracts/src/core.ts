@@ -1788,7 +1788,10 @@ export const lowStockOutputSchema = z.object({
 /** item rows as returned by listItems: the owning category's display name
  * comes pre-joined so the UI never renders the raw categoryId (issue 67). */
 export const itemListItemSchema = itemSchema.extend({ categoryName: z.string().nullable() });
-export const itemListInputSchema = paginationInputSchema;
+export const itemListInputSchema = paginationInputSchema.extend({
+  /** Optional bounded filter for the products table; blank means unfiltered. */
+  query: z.string().trim().max(200).optional(),
+});
 export const itemListOutputSchema = pagedOutputSchema(itemListItemSchema);
 /** Unpaginated item read for pickers/selects: a dropdown needs the whole
  * catalog, not a page. Kept separate so `itemsList` can paginate freely. */

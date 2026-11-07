@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
-import { actAndAck, saveQuickAdd } from "./rpc-helpers";
+import { actAndAck, callRpc, saveQuickAdd, seedCategoryId } from "./rpc-helpers";
 
 async function setDisabledInput(locator: import("@playwright/test").Locator, disabled: boolean): Promise<void> {
   await locator.evaluate((element, nextDisabled) => {
@@ -197,6 +197,53 @@ test("a zero-price item from sale quick-add stays editable", async ({ page }) =>
   await page.getByTestId("edit-name").fill(renamed);
   await page.getByTestId("edit-save").click();
   await expect(page.locator("tr").filter({ has: page.getByRole("cell", { name: renamed, exact: true }) })).toBeVisible();
+});
+
+test("products table search reaches full-catalogue matches and keeps edit/history actions (#388)", async ({ page }) => {
+  const stamp = Date.now().toString();
+  await signIn(page);
+  const categoryId = await seedCategoryId(page, `بحث-تصنيف-${stamp}`);
+  for (let index = 0; index < 24; index++) {
+    await callRpc(page, "itemsCreate", {
+      name: `000388-${stamp}-${String(index).padStart(2, "0")}`,
+      categoryId,
+      costPrice: 100,
+      sellingPrice: 150,
+    });
+  }
+  const targetName = `مصطفى 388 ${stamp}`;
+  const barcode = `FIND388-${stamp}`;
+  await callRpc(page, "itemsCreate", {
+    name: targetName,
+    barcode,
+    categoryId,
+    costPrice: 100,
+    sellingPrice: 150,
+  });
+  await callRpc(page, "preferencesSet", { key: "ui.pageSize", value: "10" });
+
+  await page.goto("/items");
+  await expect(page.getByTestId("items-pager-next")).toBeEnabled();
+  await page.getByTestId("items-pager-next").click();
+  await expect(page.getByTestId("items-pager-page-2")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("cell", { name: targetName, exact: true })).toHaveCount(0);
+
+  const search = page.getByTestId("catalog-search");
+  await search.fill("مصطفي 388");
+  const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: targetName, exact: true }) });
+  await expect(row).toBeVisible();
+  await expect(page.getByTestId("items-search-total")).toHaveText("النتائج: 1");
+
+  await search.fill(barcode.toLowerCase());
+  await expect(row).toBeVisible();
+  await expect(page.getByTestId("items-search-total")).toHaveText("النتائج: 1");
+  await row.getByRole("button", { name: "تعديل" }).click();
+  await page.getByTestId("edit-sell").fill("777");
+  await actAndAck(page, "itemsUpdate", () => page.getByTestId("edit-save").click());
+  await expect(row).toContainText("777");
+
+  await row.getByRole("link", { name: "السجل" }).click();
+  await expect(page.getByRole("heading").filter({ hasText: targetName })).toBeVisible();
 });
 
 test("sale quick-add creates a category explicitly and keeps item and customer drafts", async ({ page }) => {

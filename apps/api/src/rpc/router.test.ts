@@ -281,6 +281,29 @@ describe("items", () => {
     void catId;
   });
 
+  it("itemsList searches across pages and preserves the joined list output (#388)", async () => {
+    const category = await client.categoriesCreate({ name: "تصنيف بحث 388" });
+    const created = [];
+    for (let index = 0; index < 12; index++) {
+      created.push(await client.itemsCreate({
+        name: `مصطفى بحث388 ${String(index).padStart(2, "0")}`,
+        barcode: `WIRE388-${index}`,
+        categoryId: category.id,
+        costPrice: 100,
+        sellingPrice: 150,
+      }));
+    }
+
+    const page = await client.itemsList({ query: "مصطفي بحث388", limit: 10, offset: 10 });
+    expect(page.total).toBe(12);
+    expect(page.items.map((item) => item.id)).toEqual(created.slice(10).map((item) => item.id));
+    expect(page.items[0]?.categoryName).toBe(category.name);
+    const barcode = await client.itemsList({ query: "wire388-11", limit: 10, offset: 0 });
+    expect(barcode.total).toBe(1);
+    expect(barcode.items[0]?.id).toBe(created[11]!.id);
+    await expect(client.itemsList({ query: "x".repeat(201) })).rejects.toThrow();
+  });
+
   it("itemsList rows carry the category name next to categoryId (issue 67)", async () => {
     const category = await client.categoriesCreate({ name: "قطع غيار" });
     const created = await client.itemsCreate({

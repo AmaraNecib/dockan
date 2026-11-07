@@ -19,6 +19,7 @@ import type {
   Item,
   ItemCreate,
   ItemListItem,
+  ItemListInput,
   ItemUpdate,
   OnboardingProgress,
   PaginationInput,
@@ -291,7 +292,7 @@ export interface StorePort {
   /** Deletes only when no items reference the category; otherwise returns their count. */
   deleteCategory(id: string): Promise<{ deleted: boolean; itemCount: number }>;
 
-  listItems(pagination?: PaginationInput): Promise<{ items: ItemListItem[]; total: number }>;
+  listItems(pagination?: ItemListInput): Promise<{ items: ItemListItem[]; total: number }>;
   listLowStockItems(): Promise<Item[]>;
   getItemsByIds(ids: string[]): Promise<Map<string, Item>>;
   /** exact normalized-barcode lookup; undefined when no item carries it */

@@ -117,6 +117,27 @@ test("keeps inferred binders local to each source file", () => {
 	expect(secondVisits).toBe(4);
 });
 
+test("shares the work budget across distinct conditional subtrees in one source file", () => {
+	const first = fixture(1, 60_000);
+	const second = fixture(1, 60_000);
+	const firstConditional = first.callbacks[0]!.parent!.parent as Node;
+	const secondConditional = second.callbacks[0]!.parent!.parent as Node;
+	secondConditional.parent = firstConditional.parent;
+	let visited = 0;
+	const keys = new Proxy(first.visitorKeys, {
+		get(target, key: string) {
+			if (key !== "then") visited += 1;
+			return Reflect.get(target, key);
+		},
+	});
+
+	expect(lexicalTypeParameterNames(first.callbacks[0]!, keys).has("ModuleAlias")).toBe(false);
+	expect(visited).toBe(60_001);
+	expect(lexicalTypeParameterNames(second.callbacks[0]!, keys).has("ModuleAlias"),
+		"the unfinished second subtree must conservatively shadow aliases").toBe(true);
+	expect(visited, "different extends subtrees must share the per-file work budget").toBe(100_000);
+});
+
 test("treats inferred names as shadowing when the depth limit is exhausted", () => {
 	const { callbacks, visitorKeys } = fixture(1, 0);
 	const callback = callbacks[0]!;

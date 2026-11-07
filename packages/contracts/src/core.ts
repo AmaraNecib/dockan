@@ -411,6 +411,10 @@ export const activitySchema = z.object({
   type: activityTypeSchema,
   summary: z.string(),
   ref: z.string().nullable(),
+  /** Account identity snapshot when captured; null for legacy/system events. */
+  actorId: z.string().nullable(),
+  /** Display-name snapshot with actorId; null for legacy/system events. */
+  actorName: z.string().nullable(),
 });
 
 export const settingsSchema = z.object({

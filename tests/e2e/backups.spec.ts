@@ -101,7 +101,10 @@ test("external backup destination persists, cancels edits, reports media failure
     lastPath: null,
   };
   let failNextCopy = true;
-  let unchangedSaveSeen = false;
+  let releaseUnchangedSave!: () => void;
+  let signalUnchangedSave!: () => void;
+  const unchangedSaveStarted = new Promise<void>((resolve) => { signalUnchangedSave = resolve; });
+  const unchangedSaveGate = new Promise<void>((resolve) => { releaseUnchangedSave = resolve; });
   let releaseDestinationSave!: () => void;
   let signalDestinationSave!: () => void;
   const destinationSaveStarted = new Promise<void>((resolve) => { signalDestinationSave = resolve; });
@@ -112,7 +115,10 @@ test("external backup destination persists, cancels edits, reports media failure
     const parsed = z.object({ json: externalBackupDestinationInputSchema }).safeParse(route.request().postDataJSON());
     if (!parsed.success) throw new Error("external destination route received invalid input");
     const destination = parsed.data.json.destination;
-    if (destination === "D:/existing-backups") unchangedSaveSeen = true;
+    if (destination === "D:/existing-backups") {
+      signalUnchangedSave();
+      await unchangedSaveGate;
+    }
     if (destination === "D:/shop-backups") {
       signalDestinationSave();
       await destinationSaveGate;
@@ -144,8 +150,13 @@ test("external backup destination persists, cancels edits, reports media failure
   if (process.env.BACKUP_EVIDENCE === "before" || process.env.BACKUP_EVIDENCE === "both") {
     await panel.screenshot({ path: ".scratch/evidence/403/before.png" });
   }
-  await panel.getByRole("button", { name: "حفظ المجلد" }).click();
-  await expect.poll(() => unchangedSaveSeen).toBe(true);
+  const saveDestination = panel.getByRole("button", { name: "حفظ المجلد" });
+  await saveDestination.click();
+  await unchangedSaveStarted;
+  await expect(destination).toBeDisabled();
+  releaseUnchangedSave();
+  await expect(destination).toBeEnabled();
+  await expect(destination).toHaveValue("D:/existing-backups");
   await destination.fill("D:/shop-backups");
   await panel.getByRole("button", { name: "حفظ المجلد" }).click();
   await destinationSaveStarted;

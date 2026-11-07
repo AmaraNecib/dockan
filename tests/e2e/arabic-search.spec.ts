@@ -50,12 +50,12 @@ test("arabic search folds alef/ya and the definite article in items and parties"
   //    so every fill awaits its response too: a slow read under CI load must
   //    not be mistaken for a missing match (issue 179).
   const search = page.getByTestId("catalog-search");
-  const results = page.getByTestId("search-results");
+  const results = page.getByRole("table");
   /** This spec's own result row; another spec's catalog can never satisfy or
    * break an assertion meant for the stamped item (issue 179). */
   const resultRow = (name: string) => results.getByText(name, { exact: true });
   /** Fill the search box and await the server read it triggers. */
-  const searchFor = (query: string) => actAndAck(page, "catalogSearch", () => search.fill(query));
+  const searchFor = (query: string) => actAndAck(page, "itemsList", () => search.fill(query));
 
   await searchFor("اليوز");
   await expect(resultRow(lyousItem)).toBeVisible();

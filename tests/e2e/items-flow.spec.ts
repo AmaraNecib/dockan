@@ -83,7 +83,7 @@ test("items flow: one-step stock, inline edit, and prefilled stock add", async (
   await expect(plainRow.getByTestId("stock-after-cell")).toContainText("منخفض");
 
   // 3. Correct a price from the table; the change persists across a reload.
-  await stockedRow.getByRole("button", { name: "تعديل" }).click();
+  await stockedRow.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-sell").fill("777");
   await page.getByTestId("edit-save").click();
   await expect(stockedRow).toContainText("777");
@@ -138,7 +138,7 @@ test("stock prefill follows a cost correction and stays editable end to end", as
   // correct the cost from the products table
   await openItemsTab(page, "products");
   const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
-  await row.getByRole("button", { name: "تعديل" }).click();
+  await row.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-cost").fill("150");
   await page.getByTestId("edit-save").click();
   await expect(row).toContainText("150");
@@ -193,7 +193,7 @@ test("a zero-price item from sale quick-add stays editable", async ({ page }) =>
   // a name-only correction saves without touching the zero price
   await page.goto("/items");
   const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
-  await row.getByRole("button", { name: "تعديل" }).click();
+  await row.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-name").fill(renamed);
   await page.getByTestId("edit-save").click();
   await expect(page.locator("tr").filter({ has: page.getByRole("cell", { name: renamed, exact: true }) })).toBeVisible();
@@ -237,7 +237,7 @@ test("products table search reaches full-catalogue matches and keeps edit/histor
   await search.fill(barcode.toLowerCase());
   await expect(row).toBeVisible();
   await expect(page.getByTestId("items-search-total")).toHaveText("النتائج: 1");
-  await row.getByRole("button", { name: "تعديل" }).click();
+  await row.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-sell").fill("777");
   await actAndAck(page, "itemsUpdate", () => page.getByTestId("edit-save").click());
   await expect(row).toContainText("777");

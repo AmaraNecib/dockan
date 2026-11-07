@@ -64,8 +64,10 @@ test("creation: explicit zeros persist, blank is refused, keyboard entry retains
   // Read persisted values after a reload, not mutation arguments or component state.
   await page.reload();
   const zeroName = `متتابع-${stamp}-0`;
+  const persistedZero = (await catalog(page)).find((item) => item.name === zeroName);
+  if (persistedZero === undefined) throw new Error("zero-price item missing after reload");
   const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: zeroName, exact: true }) });
-  await row.getByRole("button", { name: "تعديل", exact: true }).click();
+  await row.getByTestId(`edit-item-${persistedZero.id}`).click();
   await expect(page.getByTestId("edit-cost")).toHaveValue("0");
   await expect(page.getByTestId("edit-sell")).toHaveValue("0");
 });

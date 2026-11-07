@@ -151,7 +151,7 @@ test("an edited cost survives the next inflow and shows as a correction movement
   // edit the cost to 300
   await openItemsTab(page, "products");
   const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
-  await row.getByRole("button", { name: "تعديل" }).click();
+  await row.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-cost").fill("300");
   await page.getByTestId("edit-save").click();
   await expect(row).toContainText("300");
@@ -220,7 +220,7 @@ test("a future-dated purchase recorded before a cost correction is flagged as su
   await page.goto("/items");
   await openItemsTab(page, "products");
   const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
-  await row.getByRole("button", { name: "تعديل" }).click();
+  await row.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-cost").fill("300");
   await page.getByTestId("edit-save").click();
   await expect(row).toContainText("300");

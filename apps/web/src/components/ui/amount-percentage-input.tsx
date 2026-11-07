@@ -87,6 +87,7 @@ export interface AmountPercentageInputProps {
   amountTestId?: string;
   percentageTestId?: string;
   referenceTestId?: string;
+  showReference?: boolean;
   amountPlaceholder?: string;
   disabled?: boolean;
   /** the amount field's own invalidity (e.g. over the remaining) */
@@ -105,6 +106,7 @@ export function AmountPercentageInput({
   amountTestId = "amount-percentage-amount",
   percentageTestId = "amount-percentage-percentage",
   referenceTestId = "amount-percentage-reference",
+  showReference = true,
   amountPlaceholder,
   disabled = false,
   amountInvalid = false,
@@ -125,7 +127,7 @@ export function AmountPercentageInput({
             className={inputClass}
             inputMode="numeric"
             aria-invalid={amountInvalid || undefined}
-            aria-describedby={showPercentage ? referenceId : undefined}
+            aria-describedby={showPercentage && showReference ? referenceId : undefined}
             value={value.amount}
             placeholder={amountPlaceholder}
             disabled={disabled}
@@ -141,7 +143,7 @@ export function AmountPercentageInput({
               className={inputClass}
               inputMode="numeric"
               aria-invalid={percentageInvalid || undefined}
-              aria-describedby={referenceId}
+              aria-describedby={showReference ? referenceId : undefined}
               value={value.percentage}
               disabled={disabled}
               onChange={(event) => onChange(percentageEdited(referenceTotal, event.target.value), "percentage")}
@@ -150,7 +152,7 @@ export function AmountPercentageInput({
           </label>
         )}
       </div>
-      {showPercentage && (
+      {showPercentage && showReference && (
         <p id={referenceId} className="text-xs text-muted-foreground" data-testid={referenceTestId}>
           {referenceLabel ?? t("amountReferenceLabel")}: <Amount value={referenceTotal} />
         </p>

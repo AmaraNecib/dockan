@@ -646,6 +646,23 @@ test("picker search does not mark an empty sale dirty", async ({ page }) => {
   await expect(page.getByTestId("purchase-form")).toBeVisible();
 });
 
+test("canceled sale category search does not trigger the discard guard", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+
+  const category = page.getByTestId("sale-quick-category");
+  const originalValue = await category.inputValue();
+  await category.fill("category search only");
+  await page.keyboard.press("Escape");
+  await expect(category).toHaveValue(originalValue);
+
+  await page.keyboard.press("Control+b");
+  await expect(page.getByTestId("new-sale-discard-confirm")).toHaveCount(0);
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+});
+
 test("category refresh does not make an untouched sale quick-add dirty", async ({ page }) => {
   await signIn(page);
   const before = await callRpc<{ items: Array<{ id: string; name: string }> }, Record<string, never>>(
@@ -688,7 +705,9 @@ test("category refresh does not make an untouched sale quick-add dirty", async (
     const refreshed = await rpcOutput<{ items: Array<{ id: string; name: string }> }>(await refresh, "categoriesList");
     expect(refreshed.items[0]?.id).toBe(earlierCategory.id);
     await expect(category).toHaveValue(openingCategory.name);
-    await category.click();
+    const refreshedCategory = refreshed.items[0];
+    if (refreshedCategory === undefined) throw new Error("refreshed category list is empty");
+    await category.fill(refreshedCategory.name);
     await expect(page.getByRole("option", { name: /!PR422-/ })).toBeVisible();
     await page.keyboard.press("Escape");
 

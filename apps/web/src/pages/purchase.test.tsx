@@ -64,6 +64,8 @@ let releaseItemsCreate: (() => void) | null = null;
 let itemsCreateFails = false;
 let categoryCreateFails = false;
 let categoryCreateInputs: Array<{ name: string }> = [];
+let categoryCreateGate: Promise<void> | null = null;
+let releaseCategoryCreate: (() => void) | null = null;
 let categoryFixtures = [{ id: "cat-1", name: "تصنيف" }];
 /** when set, an invoicesCreate that gets past its gate rejects (#257 round 6) */
 let invoiceCreateFails = false;
@@ -117,6 +119,7 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: { onSuccess?: (category: { id: string; name: string }) => void; onError?: (error: { message: string }) => void }) => ({
         mutationFn: async (input: { name: string }) => {
           categoryCreateInputs.push(input);
+          if (categoryCreateGate !== null) await categoryCreateGate;
           if (categoryCreateFails) throw new Error("CATEGORY_EXISTS");
           const category = { id: `cat-created-${categoryCreateInputs.length}`, name: input.name };
           categoryFixtures.push(category);
@@ -232,6 +235,8 @@ beforeEach(() => {
   invoiceCreateFails = false;
   categoryCreateFails = false;
   categoryCreateInputs = [];
+  categoryCreateGate = null;
+  releaseCategoryCreate = null;
   categoryFixtures = [{ id: "cat-1", name: "تصنيف" }];
   // a gated save must never leak into the next test either
   invoiceCreateGate = null;
@@ -1258,7 +1263,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     }
 
     async function createCategory(container: HTMLElement, testId: string) {
-      const create = container.querySelector<HTMLButtonElement>(`[data-testid="${testId}-create"]`);
+      const create = document.querySelector<HTMLButtonElement>(`[data-testid="${testId}-create"]`);
       if (create === null) throw new Error(`missing ${testId} create action`);
       await act(async () => {
         create.click();
@@ -1305,6 +1310,32 @@ describe("PurchasePage quantity draft (#146)", () => {
       expect(createdItemInputs.at(-1)).toMatchObject({ name: "منتج مسودة", categoryId: "cat-created-1" });
     });
 
+    it("blocks quick-add while category creation is pending", async () => {
+      const { container } = await mountPage();
+      await toggleQuick(container);
+      await fillQuick(container, "منتج مسجّل", "2", "500");
+      await chooseOption(categoryTrigger(container)!, "تصنيف");
+      categoryCreateGate = new Promise<void>((resolve) => { releaseCategoryCreate = resolve; });
+      await typeCategory(container, "purchase-quick-category", "فئة مؤجلة");
+      await createCategory(container, "purchase-quick-category");
+
+      const form = quickForm(container);
+      const save = form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+      expect(save?.disabled).toBe(true);
+      await act(async () => {
+        form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(createdItemInputs).toHaveLength(0);
+
+      await act(async () => {
+        releaseCategoryCreate?.();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      await submitQuick(container);
+      expect(createdItemInputs.at(-1)).toMatchObject({ name: "منتج مسجّل", categoryId: "cat-created-1" });
+    });
+
     it("cancels quick-add category search without creating or changing its draft", async () => {
       const { container } = await mountPage();
       await toggleQuick(container);
@@ -1335,6 +1366,55 @@ describe("PurchasePage quantity draft (#146)", () => {
       expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-name"]')?.value).toBe("منتج يبقى");
       expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')?.value).toBe("2");
       expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')?.value).toBe("650");
+    });
+
+    it("blocks line-product save while category creation is pending", async () => {
+      const { container } = await mountWithTypedLine("3", "1200");
+      await openCreate(container, "item-منتج");
+      await chooseLineCategory(container, "تصنيف");
+      await fillCreate(container, { name: "منتج مسجّل" });
+      categoryCreateGate = new Promise<void>((resolve) => { releaseCategoryCreate = resolve; });
+      await typeCategory(container, "purchase-line-category", "فئة مؤجلة");
+      await createCategory(container, "purchase-line-category");
+
+      const form = lineForm(container);
+      const save = container.querySelector<HTMLButtonElement>('[data-testid="line-product-save"]');
+      expect(save?.disabled).toBe(true);
+      await act(async () => {
+        form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(createdItemInputs).toHaveLength(0);
+
+      await act(async () => {
+        releaseCategoryCreate?.();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      await submitCreate(container);
+      expect(createdItemInputs.at(-1)).toMatchObject({ name: "منتج مسجّل", categoryId: "cat-created-1" });
+    });
+
+    it("does not apply a late category reply to a newly opened line draft", async () => {
+      const { container } = await mountWithTypedLine("3", "1200");
+      await openCreate(container, "item-منتج");
+      await chooseLineCategory(container, "تصنيف");
+      categoryCreateGate = new Promise<void>((resolve) => { releaseCategoryCreate = resolve; });
+      await typeCategory(container, "purchase-line-category", "فئة مؤجلة");
+      await createCategory(container, "purchase-line-category");
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="line-product-cancel"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      await openCreate(container, "item-منتج");
+      await chooseLineCategory(container, "تصنيف");
+      await act(async () => {
+        releaseCategoryCreate?.();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+
+      expect(lineCategoryTrigger(container)?.value).toBe("تصنيف");
+      expect(lineForm(container)?.querySelector<HTMLInputElement>('[data-testid="line-product-name"]')?.value).toBe("");
     });
 
     it("creates a category from line-product form and keeps the purchase line", async () => {

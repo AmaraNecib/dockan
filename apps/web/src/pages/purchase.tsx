@@ -506,6 +506,7 @@ export function PurchasePage() {
   }
 
   function quickSubmit() {
+    if (categoryCreate.isPending) return;
     void quick.submit(async (fields) => {
       if (fields.categoryId === "") return { ok: false, error: t("itemsChooseCategory") };
       // the shared draft rule bounds the quick quantity too: an over-cap value
@@ -541,7 +542,7 @@ export function PurchasePage() {
     // belt for the disabled submit (#257 review round 4, F1): a create started now
     // would re-point the line the in-flight save already serialised, and its
     // product would be left off the invoice. Refuse before the write starts.
-    if (savePending) return;
+    if (savePending || categoryCreate.isPending) return;
     setLineError(null);
     const line = lines.find((entry) => entry.item.id === current.target);
     // the owner deleted the line while the form was open: nothing to land on
@@ -747,7 +748,7 @@ export function PurchasePage() {
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickUnitCost" autoComplete="off" required inputMode="numeric" value={quick.fields.unitCost} onChange={(e) => quick.setField("unitCost", e.target.value)} data-testid="quick-cost" />
                   </label>
                 </div>
-                <Button type="submit" disabled={createItem.isPending || savePending}>
+                <Button type="submit" disabled={createItem.isPending || categoryCreate.isPending || savePending}>
                   {t("purchasesQuickAddBtn")}
                 </Button>
               </form>
@@ -914,7 +915,10 @@ export function PurchasePage() {
                                     }}
                                     onCreate={(name) => {
                                       setCategoryCreateError(null);
-                                      categoryCreate.mutate({ name }, { onSuccess: (category) => patchLineDraft({ categoryId: category.id }) });
+                                      const attempt = lineAttemptRef.current;
+                                      categoryCreate.mutate({ name }, { onSuccess: (category) => {
+                                        if (attempt === lineAttemptRef.current) patchLineDraft({ categoryId: category.id });
+                                      } });
                                     }}
                                     createLabel={(name) => t("categoriesCreateInline", { name })}
                                     noMatchesLabel={t("categoriesNoMatches")}
@@ -945,7 +949,7 @@ export function PurchasePage() {
                                   </p>
                                 )}
                                 <div className="flex items-center gap-2">
-                                  <Button type="submit" disabled={createItem.isPending || savePending} data-testid="line-product-save">
+                                  <Button type="submit" disabled={createItem.isPending || categoryCreate.isPending || savePending} data-testid="line-product-save">
                                     {t("purchasesLineCreateSave")}
                                   </Button>
                                   <Button type="button" variant="outline" onClick={closeLineCreate} data-testid="line-product-cancel">

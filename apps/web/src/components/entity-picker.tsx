@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus } from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
 
 import { arabicIncludes } from "@dokan/contracts";
 import { inputClass } from "@/components/ui/input";
@@ -81,9 +82,14 @@ export function EntityPicker({
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      if (!open || matches.length === 0) return;
+      if (matches.length === 0) return;
       event.preventDefault();
       const delta = event.key === "ArrowDown" ? 1 : -1;
+      if (!open) {
+        setOpen(true);
+        setActiveId(matches[delta === 1 ? 0 : matches.length - 1]?.id ?? null);
+        return;
+      }
       const nextIndex = activeIndex === null || activeIndex < 0
         ? (delta === 1 ? 0 : matches.length - 1)
         : (activeIndex + delta + matches.length) % matches.length;
@@ -97,7 +103,8 @@ export function EntityPicker({
   }
 
   return (
-    <div className="grid gap-1 text-sm font-medium" onBlur={(event) => {
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <div className="grid gap-1 text-sm font-medium" onBlur={(event) => {
       if (event.relatedTarget !== null && event.currentTarget.contains(event.relatedTarget)) return;
       setOpen(false);
       setQuery(selected?.name ?? "");
@@ -127,11 +134,15 @@ export function EntityPicker({
             setActiveId(null);
           }}
           onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
           onKeyDown={keyDown}
           data-testid={testId}
         />
-        {open && (
-          <div className="absolute z-30 mt-1 w-full rounded-lg border bg-popover text-foreground shadow-lg" data-testid={`${testId}-menu`}>
+      </div>
+      {open && (
+        <Popover.Portal>
+          <Popover.Positioner anchor={inputRef} side="bottom" align="start" sideOffset={4} className="z-50 w-[var(--anchor-width)]">
+            <Popover.Popup initialFocus={false} finalFocus={false} className="rounded-lg border bg-popover text-foreground shadow-lg" data-testid={`${testId}-menu`}>
             <ul id={listId} role="listbox" aria-label={label} className="max-h-52 overflow-y-auto p-1">
               {matches.map((option, index) => (
                 <li key={option.id} role="presentation">
@@ -173,9 +184,11 @@ export function EntityPicker({
                 </button>
               </div>
             )}
-          </div>
-        )}
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      )}
       </div>
-    </div>
+    </Popover.Root>
   );
 }

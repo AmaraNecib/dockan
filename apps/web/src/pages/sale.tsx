@@ -448,7 +448,10 @@ export function SalePage() {
 
   return (
     <section data-testid="sale-form" onInput={(event) => {
-      if (event.target instanceof Element && event.target.closest('[data-testid="picker-dialog"]') !== null) return;
+      if (event.target instanceof Element && (
+        event.target.closest('[data-testid="picker-dialog"]') !== null ||
+        event.target.matches('[data-testid="sale-quick-category"]')
+      )) return;
       setDraftDirty(true);
     }}>
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>

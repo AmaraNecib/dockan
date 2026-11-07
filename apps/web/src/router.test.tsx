@@ -215,6 +215,23 @@ describe("sale route reset (header New Sale action)", () => {
     expect(inputByTestId("sale-customer").value).toBe("");
   });
 
+  it("does not treat canceled category search text as sale work", async () => {
+    await mountSaleRoute();
+
+    await act(async () => buttonByTestId("sale-quick-add").click());
+    await waitFor(() => document.querySelector('[data-testid="sale-quick-category"]') !== null);
+    const category = inputByTestId("sale-quick-category");
+    const originalValue = category.value;
+    await act(async () => typeInto(category, "category query only"));
+    await act(async () => category.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await waitFor(() => category.value === originalValue);
+
+    await act(async () => buttonByTestId("new-sale-button").click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
+
+    expect(document.querySelector('[data-testid="new-sale-discard-confirm"]')).toBeNull();
+  });
+
   it("restarts without a prompt when the form is empty", async () => {
     await mountSaleRoute();
 

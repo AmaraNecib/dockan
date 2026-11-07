@@ -14,6 +14,21 @@ test.use({ video: process.env.E2E_VIDEO === "1" ? "on" : "off" });
  * E2E flow: create a category, create an item with the live profit
  * preview, save it, and see it listed as low stock on the dashboard.
  */
+test("the last table row category editor opens its menu outside the scroll container", async ({ page }) => {
+  await signIn(page);
+  await openItemsTab(page, "products");
+
+  const table = page.getByRole("table");
+  const lastRow = table.getByRole("row").last();
+  await lastRow.getByRole("button", { name: "تعديل", exact: true }).click();
+  const category = lastRow.getByTestId("edit-category");
+  await category.click();
+  await expect(page.getByRole("option").first()).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await lastRow.getByTestId("edit-cancel").click();
+});
+
 test("category, item with profit preview, low-stock dashboard", async ({ page }) => {
   const stamp = Date.now();
   // 0. sign in (the session guard is part of the seam)

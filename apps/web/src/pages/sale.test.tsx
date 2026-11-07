@@ -943,7 +943,7 @@ describe("SalePage learnability (issue #94)", () => {
     const input = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-category"]');
     if (input === null) throw new Error("missing quick category picker");
     await act(async () => setElementValue(input, "السعيد"));
-    expect(host.querySelector('[data-testid="sale-quick-category-option"]')?.textContent).toBe("السعيد");
+    expect(document.querySelector('[data-testid="sale-quick-category-option"]')?.textContent).toBe("السعيد");
     await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
     await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-late");
@@ -959,9 +959,9 @@ describe("SalePage learnability (issue #94)", () => {
       setInput(host, "sale-quick-stock", "7");
     });
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
-    expect(host.querySelector('[data-testid="sale-quick-category-create"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="sale-quick-category-create"]')).not.toBeNull();
 
-    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category-create"]')?.click());
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category-create"]')?.click());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-created-2");
@@ -983,7 +983,7 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
     expect(input.value).toBe("تصنيف");
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-name"]')?.value).toBe("منتج محفوظ كمسودة");
-    expect(host.querySelector('[data-testid="sale-quick-category-create"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sale-quick-category-create"]')).toBeNull();
   });
 
   it("disables the quick-add category until the list arrives", async () => {

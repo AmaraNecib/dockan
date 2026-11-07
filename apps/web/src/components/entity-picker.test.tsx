@@ -107,7 +107,7 @@ describe("EntityPicker", () => {
     const host = await mount();
     await type(host, "سعيد");
 
-    const optionsFound = [...host.querySelectorAll('[role="option"]')].map((option) => option.textContent);
+    const optionsFound = [...document.querySelectorAll('[role="option"]')].map((option) => option.textContent);
     expect(optionsFound).toContain("السعيد");
   });
 
@@ -117,7 +117,7 @@ describe("EntityPicker", () => {
     await updateOptions(host, [{ id: "default", name: "تصنيف حالي" }, { id: "late", name: "تصنيف متأخر" }], true);
 
     expect(host.querySelector<HTMLInputElement>('[data-testid="entity"]')?.value).toBe("تصنيف متأخر");
-    expect(host.querySelector('[role="option"]')?.textContent).toBe("تصنيف متأخر");
+    expect(document.querySelector('[role="option"]')?.textContent).toBe("تصنيف متأخر");
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
 
@@ -154,12 +154,52 @@ describe("EntityPicker", () => {
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("late");
   });
 
+  it("renders the option list outside its field container", async () => {
+    const host = await mount();
+    await type(host, "منتج");
+    const menu = document.querySelector(`[data-testid="entity-menu"]`);
+    expect(menu).not.toBeNull();
+    expect(host.contains(menu)).toBe(false);
+  });
+
+  it("reopens after picking when the still-focused field is clicked", async () => {
+    const host = await mount();
+    await type(host, "آلات");
+    await press(host, "ArrowDown");
+    await press(host, "Enter");
+    const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
+    if (input === null) throw new Error("missing entity picker input");
+    expect(input.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => {
+      input.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(input.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector('[role="option"]')?.textContent).toBe("آلات التخزين");
+  });
+
+  it("reopens a dismissed search when ArrowDown is pressed again", async () => {
+    const host = await mount();
+    await type(host, "آلات");
+    await press(host, "Escape");
+    const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
+    if (input === null) throw new Error("missing entity picker input");
+    expect(input.getAttribute("aria-expanded")).toBe("false");
+
+    await press(host, "ArrowDown");
+
+    expect(input.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector('[role="option"]')?.textContent).toBe("منتج أول");
+  });
+
   it("offers an explicit create action only when there is no match", async () => {
     const create = (query: string) => { expect(query).toBe("تصنيف جديد"); };
     const host = await mount(create);
     await type(host, "تصنيف جديد");
 
-    const action = host.querySelector<HTMLButtonElement>('[data-testid="entity-create"]');
+    const action = document.querySelector<HTMLButtonElement>('[data-testid="entity-create"]');
     expect(action?.textContent).toBe("إنشاء تصنيف جديد");
     await act(async () => action?.click());
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("first");

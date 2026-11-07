@@ -53,7 +53,7 @@ test("creation: explicit zeros persist, blank is refused, keyboard entry retains
     await expect(page.getByTestId("item-sell")).toHaveValue("");
     await expect(page.getByTestId("item-barcode")).toHaveValue("");
     await expect(page.getByTestId("item-saved")).toContainText(name);
-    await expect(form.getByRole("combobox")).toContainText(category);
+    await expect(form.getByRole("combobox")).toHaveValue(category);
     expect((await catalog(page)).find((item) => item.name === name)).toMatchObject({ costPrice: cost, sellingPrice: sell, categoryId: savedCategory.id, stockOnHand: index === 2 ? 2 : 0 });
     if (index === 0) {
       await page.waitForTimeout(600);

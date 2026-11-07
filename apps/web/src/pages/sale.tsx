@@ -464,7 +464,7 @@ export function SalePage() {
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
 
       <div className="mt-4 grid gap-4">
-        <div className="grid grid-cols-2 gap-3 rounded border border-border bg-card p-4">
+        <div data-testid="sale-details-panel" className="grid grid-cols-2 gap-3 rounded border border-border bg-card p-4">
           <PartyPicker
             role="customer"
             label={t("saleCustomer")}
@@ -492,7 +492,7 @@ export function SalePage() {
           />
         </div>
 
-        <div className="rounded border border-border bg-card">
+        <div data-testid="sale-lines-panel" className="rounded border border-border bg-card">
           {/* One primary path (the list picker); creating a missing item is a
               single demoted action — the stock quantity lives on its form, so
               a first-day user is never asked to choose between two creates. */}
@@ -575,7 +575,7 @@ export function SalePage() {
 
       {/* The existing sticky bar keeps totals and checkout reachable at short heights. */}
       {lines.length > 0 && (
-        <CheckoutBar testId="sale-checkout-bar" className="mt-4">
+        <CheckoutBar testId="sale-checkout-bar" className="mx-0 mt-4">
           <div className="grid gap-3 sm:grid-cols-2 sm:items-center">
             <div data-testid="sale-discount-area" className="flex min-h-14 items-center">
               {discountExpanded ? (

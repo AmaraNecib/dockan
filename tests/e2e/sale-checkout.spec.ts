@@ -10,7 +10,7 @@ async function choosePriceMode(page: Page, itemName: string, mode: "AMOUNT" | "P
 }
 
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
-  await page.setViewportSize({ width: 800, height: 520 });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await signIn(page);
 
   const stamp = Date.now().toString();
@@ -40,6 +40,18 @@ test("sale checkout keeps the final line and focused control clear at short heig
 
   await expect(page.getByTestId("sale-add-discount")).toBeVisible();
   await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
+  const [detailsBox, linesPanelBox, desktopCheckoutBox] = await Promise.all([
+    page.getByTestId("sale-details-panel").boundingBox(),
+    page.getByTestId("sale-lines-panel").boundingBox(),
+    page.getByTestId("sale-checkout-bar").boundingBox(),
+  ]);
+  if (detailsBox === null || linesPanelBox === null || desktopCheckoutBox === null) throw new Error("Sale panels must be measurable at desktop width");
+  expect(Math.abs(detailsBox.x - linesPanelBox.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs((detailsBox.x + detailsBox.width) - (linesPanelBox.x + linesPanelBox.width))).toBeLessThanOrEqual(1);
+  expect(Math.abs(linesPanelBox.x - desktopCheckoutBox.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs((linesPanelBox.x + linesPanelBox.width) - (desktopCheckoutBox.x + desktopCheckoutBox.width))).toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ width: 800, height: 520 });
   const quantity = page.getByLabel(`${itemName}: الكمية`);
   await quantity.focus();
   await expect(quantity).toBeFocused();

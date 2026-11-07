@@ -34,7 +34,7 @@ import {
 } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 
-import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
+import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { SaleLinePriceEditor } from "@/components/catalog/sale-line-price-editor";
 import { parseSalePriceMode } from "@/lib/sale-price-editor";
 import { usePreference } from "@/lib/preferences";
@@ -137,6 +137,10 @@ export function SalePage() {
   const priceMode = usePreference("ui.sale.priceMode", "AMOUNT", parseSalePriceMode, String);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchDebounced, setSearchDebounced] = useState("");
+  const [searchActiveIndex, setSearchActiveIndex] = useState<number | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [discountType, setDiscountType] = useState<AmountKind>("");
   const [discountValue, setDiscountValue] = useState("");
@@ -173,6 +177,19 @@ export function SalePage() {
 
   const draft = useInvoiceDraft(SALE_DRAFT);
   const { lines } = draft;
+  const catalogSearch = useQuery({
+    ...orpc.catalogSearch.queryOptions({ input: { query: searchDebounced || " " }, enabled: searchDebounced.length > 0 }),
+  });
+  const searchMatches = catalogSearch.data?.matches ?? [];
+  const searchExact = catalogSearch.data?.exact ?? null;
+  const searchMatchSetKey = searchMatches.map((match) => match.item.id).join("|");
+  const visibleSearchIndex = searchActiveIndex !== null && searchActiveIndex < searchMatches.length ? searchActiveIndex : null;
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchDebounced(searchQuery.trim()), 150);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+  useEffect(() => setSearchActiveIndex(null), [searchDebounced, searchMatchSetKey]);
 
   const addLine = (item: Item) => {
     // The sale is frozen once a commit is in flight: ignore late adds (scanner,
@@ -182,6 +199,10 @@ export function SalePage() {
     setDraftDirty(true);
     draft.addItem(item);
     setPickerOpen(false);
+    setSearchQuery("");
+    setSearchDebounced("");
+    setSearchActiveIndex(null);
+    requestAnimationFrame(() => searchRef.current?.focus());
   };
 
   async function handleScan(code: string) {
@@ -283,7 +304,7 @@ export function SalePage() {
   useInvoiceEntryShortcut("sale", () => {
     if (savePending) return;
     setSavedSale(null);
-    setPickerOpen(true);
+    requestAnimationFrame(() => searchRef.current?.focus());
   });
 
   useEffect(() => {
@@ -499,6 +520,71 @@ export function SalePage() {
             <Button variant="outline" data-testid="sale-quick-add" onClick={() => openQuick()} disabled={createInvoice.isPending || quickCreatePending}>
               {t("saleQuickAdd")}
             </Button>
+          </div>
+
+          <div className="grid gap-2 border-b border-border p-4">
+            <label htmlFor="sale-search" className="text-sm font-medium">{t("itemsSearchPlaceholder")}</label>
+            <input
+              ref={searchRef}
+              id="sale-search"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls="sale-search-results"
+              aria-expanded={searchDebounced.length > 0}
+              aria-activedescendant={visibleSearchIndex !== null ? `sale-search-option-${searchMatches[visibleSearchIndex]?.item.id}` : undefined}
+              className={cn(inputClass, "w-full px-3 py-2")}
+              autoComplete="off"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  if (searchMatches.length === 0) return;
+                  event.preventDefault();
+                  const direction = event.key === "ArrowDown" ? 1 : -1;
+                  setSearchActiveIndex((current) => current === null
+                    ? (direction === 1 ? 0 : searchMatches.length - 1)
+                    : (current + direction + searchMatches.length) % searchMatches.length);
+                  return;
+                }
+                if (event.key !== "Enter" || searchQuery.trim() === "") return;
+                event.preventDefault();
+                if (searchDebounced !== searchQuery.trim() || catalogSearch.isPending || catalogSearch.isError) return;
+                if (searchExact !== null) {
+                  addLine(searchExact.item);
+                } else {
+                  const activeMatch = visibleSearchIndex === null ? undefined : searchMatches[visibleSearchIndex];
+                  if (activeMatch !== undefined) addLine(activeMatch.item);
+                  else if (searchMatches.length === 1 && searchMatches[0] !== undefined) addLine(searchMatches[0].item);
+                }
+              }}
+              data-testid="sale-search"
+            />
+            {searchDebounced.length > 0 && catalogSearch.isError && <p role="alert" className="text-sm text-destructive" data-testid="sale-search-error">{tError(catalogSearch.error.message)}</p>}
+            {searchExact !== null && (
+              <button type="button" className="w-full rounded border bg-accent p-2 text-right hover:bg-accent/80" onClick={() => addLine(searchExact.item)} data-testid="sale-search-exact">
+                {searchExact.item.name}
+              </button>
+            )}
+            {searchDebounced.length > 0 && !catalogSearch.isPending && !catalogSearch.isError && searchMatches.length === 0 && searchExact === null && (
+              <p className="text-sm text-muted-foreground" data-testid="sale-search-empty">{t("itemsSearchEmpty")}</p>
+            )}
+            {searchMatches.length > 0 && (
+              <ul id="sale-search-results" role="listbox" aria-label={t("itemsSearchPlaceholder")} className="max-h-60 overflow-y-auto">
+                {searchMatches.map((match, index) => (
+                  <li key={match.item.id} id={`sale-search-option-${match.item.id}`} role="option" aria-selected={visibleSearchIndex === index}>
+                    <button
+                      type="button"
+                      className={cn("flex w-full items-center justify-between rounded p-2 text-right", visibleSearchIndex === index ? "bg-accent ring-2 ring-inset ring-ring" : "hover:bg-accent/80")}
+                      onClick={() => addLine(match.item)}
+                      data-testid="sale-search-result"
+                    >
+                      <span>{match.item.name}</span>
+                      <span className="rounded bg-accent px-2 py-0.5 text-xs text-accent-foreground">{t(matchBadgeKey(match.matchedBy))}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}

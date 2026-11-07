@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Category, Preferences } from "@dokan/contracts";
+import type { Category, CatalogMatch, Preferences } from "@dokan/contracts";
 
 import { SaleDraftProvider } from "@/components/app/sale-draft";
 
@@ -80,11 +80,15 @@ let categoryFixtures: Category[] = [
 ];
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
 let resolveItemCreate: ((item: { id: string; name: string; sellingPrice: number }) => void) | null = null;
+let rejectItemCreate: ((error: Error) => void) | null = null;
 /** the last payload each create path received, so a test can assert what was sent */
 let lastCreateInput: CapturedItemInput | null = null;
 let lastCreateWithStockInput: CapturedItemInput | null = null;
 /** a scan code this test wants treated as unknown (catalogSearch exact: null) */
 let unknownScanCode: string | null = null;
+let catalogFixtures: Record<string, { exact: CatalogMatch | null; matches: CatalogMatch[] }> = {};
+let catalogGates: Record<string, Promise<void> | undefined> = {};
+let catalogFailures = new Set<string>();
 /** holds the category list open so the quick-add can open before it arrives */
 let categoriesGate: Promise<void> | null = null;
 let releaseCategoriesGate: (() => void) | null = null;
@@ -121,9 +125,14 @@ mock.module("@/lib/rpc", () => ({
     // ItemPickerDialog evaluates this useQuery even while closed (before its
     // `if (!open) return null` guard), so the stub must exist on mount.
     catalogSearch: {
-      queryOptions: ({ input, enabled }: { input?: unknown; enabled?: boolean } = {}) => ({
+      queryOptions: ({ input, enabled }: { input?: { query?: string }; enabled?: boolean } = {}) => ({
         queryKey: ["catalogSearch", input],
-        queryFn: async () => ({ matches: [], exact: null }),
+        queryFn: async () => {
+          const query = input?.query ?? "";
+          await catalogGates[query];
+          if (catalogFailures.has(query)) throw new Error("catalog lookup failed");
+          return catalogFixtures[query] ?? { matches: [], exact: null };
+        },
         enabled,
       }),
     },
@@ -131,8 +140,9 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: ItemMutationOptions) => ({
         mutationFn: (input: CapturedItemInput) => {
           lastCreateInput = input;
-          return new Promise<{ id: string; name: string; sellingPrice: number }>((resolve) => {
+          return new Promise<{ id: string; name: string; sellingPrice: number }>((resolve, reject) => {
             resolveItemCreate = resolve;
+            rejectItemCreate = reject;
           });
         },
         ...opts,
@@ -261,9 +271,13 @@ beforeEach(() => {
   lastInvoiceInput = null;
   resolveInvoice = null;
   resolveItemCreate = null;
+  rejectItemCreate = null;
   lastCreateInput = null;
   lastCreateWithStockInput = null;
   unknownScanCode = null;
+  catalogFixtures = {};
+  catalogGates = {};
+  catalogFailures = new Set();
   categoriesGate = null;
   releaseCategoriesGate = null;
   partyFixtures = [];
@@ -1583,5 +1597,213 @@ describe("SalePage commit order (#198)", () => {
     // the ASCII draft links to the same amount
     await act(async () => setInput(host, "sale-paid-percentage", "50"));
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+  });
+});
+
+function saleSearchMatch(id: string, name: string, price: number, matchedBy: CatalogMatch["matchedBy"] = "NAME"): CatalogMatch {
+  return {
+    item: {
+      id, name, barcode: null, categoryId: "cat-1", costPrice: 100, sellingPrice: price,
+      lowStockThreshold: 0, stockOnHand: 8, createdAt: "2026-10-01T00:00:00", updatedAt: "2026-10-01T00:00:00",
+    },
+    category: categoryFixtures[0] ?? null,
+    matchedBy,
+  };
+}
+
+async function typeSaleSearch(host: HTMLElement, query: string, waitForResult = true): Promise<void> {
+  await act(async () => setInput(host, "sale-search", query));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 180)));
+  if (!waitForResult) return;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (host.querySelector('[data-testid="sale-search-result"], [data-testid="sale-search-empty"], [data-testid="sale-search-error"]') !== null) return;
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  }
+}
+
+async function pressSaleSearchEnter(host: HTMLElement): Promise<void> {
+  await act(async () => {
+    host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+describe("SalePage persistent search (issue #396)", () => {
+  it("keeps search visible before and after the first line is added", async () => {
+    const host = await mountSale();
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')).not.toBeNull();
+    await scan("396-visible");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')).not.toBeNull();
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="sale-search"]'));
+  });
+
+  it("adds an exact search result with Enter, refocuses, and saves one line for a repeated pick", async () => {
+    const match = saleSearchMatch("searched-item", "فلتر زيت", 750, "BARCODE_EXACT");
+    catalogFixtures["88001"] = { exact: match, matches: [match] };
+    const host = await mountSale();
+
+    await typeSaleSearch(host, "88001");
+    await pressSaleSearchEnter(host);
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="sale-search"]'));
+
+    await typeSaleSearch(host, "88001");
+    await pressSaleSearchEnter(host);
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "searched-item", quantity: 2 }]);
+    await act(async () => resolveInvoice?.({ id: "inv-search", invoiceNumber: "INV-396", remainingAmount: 0, counterpartyName: null }));
+    expect(host.querySelector('[data-testid="sale-saved-number"]')?.textContent).toContain("INV-396");
+  });
+
+  it("does not choose an ambiguous result until the operator selects one", async () => {
+    const first = saleSearchMatch("ambiguous-1", "فلتر", 500);
+    const second = saleSearchMatch("ambiguous-2", "فلتر هواء", 600);
+    catalogFixtures.filter = { exact: null, matches: [first, second] };
+    const host = await mountSale();
+
+    await typeSaleSearch(host, "filter");
+    await pressSaleSearchEnter(host);
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(0);
+    await act(async () => host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await pressSaleSearchEnter(host);
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "ambiguous-1", quantity: 1 }]);
+  });
+
+  it("ignores stale results and refuses unknown and failed lookups", async () => {
+    const current = saleSearchMatch("current-item", "منتج حالي", 900);
+    const stale = saleSearchMatch("stale-item", "منتج قديم", 700);
+    catalogFixtures.stale = { exact: stale, matches: [stale] };
+    catalogFixtures.current = { exact: null, matches: [current] };
+    catalogFailures.add("broken");
+    let releaseStale!: () => void;
+    catalogGates.stale = new Promise<void>((resolve) => { releaseStale = resolve; });
+    const host = await mountSale();
+
+    await typeSaleSearch(host, "stale", false);
+    await typeSaleSearch(host, "current");
+    await pressSaleSearchEnter(host);
+    releaseStale();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(host.querySelector("tbody")?.textContent).toContain("منتج حالي");
+
+    await typeSaleSearch(host, "unknown");
+    await pressSaleSearchEnter(host);
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(host.querySelector('[data-testid="sale-search-empty"]')).not.toBeNull();
+    await typeSaleSearch(host, "broken");
+    expect(host.querySelector('[data-testid="sale-search-error"]')?.textContent).not.toBe("");
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+  });
+
+  it("Ctrl+N focuses search without replacing a populated sale draft", async () => {
+    const host = await mountSale();
+    await scan("396-shortcut");
+    await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
+    await expandDiscount(host);
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!;
+    await chooseOption(trigger, "مبلغ");
+    await act(async () => setInput(host, "sale-discount-value", "100"));
+
+    await act(async () => window.dispatchEvent(new CustomEvent("dokan:invoice-entry", { detail: "sale" })));
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="sale-search"]'));
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-customer"]')?.value).toBe("زبون محفوظ");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.value).toBe("100");
+  });
+
+  it("keeps existing lines, customer, and discount across create success and cancellation", async () => {
+    const host = await mountSale();
+    await scan("396-existing");
+    await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
+    await expandDiscount(host);
+    await chooseOption(host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!, "مبلغ");
+    await act(async () => setInput(host, "sale-discount-value", "100"));
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.click());
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-form"] button[type="button"]')?.click());
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-customer"]')?.value).toBe("زبون محفوظ");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.value).toBe("100");
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.click());
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج جديد");
+      setElementValue(host.querySelector<HTMLInputElement>('[name="quickCost"]')!, "100");
+      setElementValue(host.querySelector<HTMLInputElement>('[name="quickSell"]')!, "300");
+    });
+    await act(async () => host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await act(async () => resolveItemCreate?.({ id: "created-item", name: "منتج منشأ", sellingPrice: 300 }));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(2);
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput?.lines).toEqual([
+      { itemId: "item-396-existing", quantity: 1 },
+      { itemId: "created-item", quantity: 1 },
+    ]);
+    expect(lastInvoiceInput?.counterpartyName).toBe("زبون محفوظ");
+    expect(lastInvoiceInput?.discount).toEqual({ type: "AMOUNT", value: 100 });
+  });
+
+  it("adds a create-with-stock return without replacing the existing sale draft", async () => {
+    unknownScanCode = "UNKNOWN-396-STOCK";
+    const host = await mountSale();
+    await scan("396-existing-stock");
+    await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
+    await expandDiscount(host);
+    await chooseOption(host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!, "مبلغ");
+    await act(async () => setInput(host, "sale-discount-value", "100"));
+
+    await scan("UNKNOWN-396-STOCK");
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="scan-create-stock"]')?.click());
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج بالمخزون");
+      setElementValue(host.querySelector<HTMLInputElement>('[name="quickCost"]')!, "100");
+      setElementValue(host.querySelector<HTMLInputElement>('[name="quickSell"]')!, "300");
+      setInput(host, "sale-quick-stock", "4");
+    });
+    await act(async () => host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+
+    expect(lastCreateWithStockInput?.stockOnHand).toBe(4);
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(2);
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.lines).toEqual([
+      { itemId: "item-396-existing-stock", quantity: 1 },
+      { itemId: "item-stock-منتج بالمخزون", quantity: 1 },
+    ]);
+    expect(lastInvoiceInput?.counterpartyName).toBe("زبون محفوظ");
+    expect(lastInvoiceInput?.discount).toEqual({ type: "AMOUNT", value: 100 });
+  });
+
+  it("keeps the draft and quick-create fields when item creation fails", async () => {
+    const host = await mountSale();
+    await scan("396-failure");
+    await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
+    await expandDiscount(host);
+    await chooseOption(host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!, "مبلغ");
+    await act(async () => setInput(host, "sale-discount-value", "100"));
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.click());
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج جديد");
+      setElementValue(host.querySelector<HTMLInputElement>('[name="quickCost"]')!, "100");
+      setElementValue(host.querySelector<HTMLInputElement>('[name="quickSell"]')!, "300");
+    });
+    await act(async () => host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await act(async () => rejectItemCreate?.(new Error("create failed")));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-name"]')?.value).toBe("منتج جديد");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-customer"]')?.value).toBe("زبون محفوظ");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.value).toBe("100");
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-396-failure", quantity: 1 }]);
+    expect(lastInvoiceInput?.counterpartyName).toBe("زبون محفوظ");
+    expect(lastInvoiceInput?.discount).toEqual({ type: "AMOUNT", value: 100 });
   });
 });

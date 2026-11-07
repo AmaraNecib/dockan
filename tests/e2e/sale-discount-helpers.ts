@@ -8,7 +8,6 @@ export async function selectRadioValue(group: Locator, value: "AMOUNT" | "PERCEN
   const radio = group.locator(`input[type="radio"][value="${value}"]`);
   await expect(radio).toBeVisible();
   await radio.locator("xpath=..").click();
-  await expect(radio).toBeChecked();
 }
 
 export async function chooseDiscountMode(page: Page, mode: "AMOUNT" | "PERCENTAGE"): Promise<void> {

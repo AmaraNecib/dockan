@@ -24,7 +24,7 @@ test("the last table row category editor opens its menu outside the scroll conta
     name: `PR460-base-${stamp}`,
   });
   await callRpc<{ id: string }, { name: string }>(page, "categoriesCreate", { name: categoryName });
-  await callRpc<{ id: string }, ItemCreate>(page, "itemsCreate", {
+  const seededItem = await callRpc<{ id: string }, ItemCreate>(page, "itemsCreate", {
     name: itemName,
     categoryId: baseCategory.id,
     costPrice: 100,
@@ -38,7 +38,7 @@ test("the last table row category editor opens its menu outside the scroll conta
   const lastRow = table.getByRole("row").last();
   const seededRow = table.getByRole("row").filter({ hasText: itemName });
   await expect(lastRow).toContainText(itemName);
-  await lastRow.getByRole("button", { name: "تعديل", exact: true }).click();
+  await lastRow.getByTestId(`edit-item-${seededItem.id}`).click();
   const editor = lastRow.getByTestId("edit-category");
   await editor.click();
   const menu = page.getByTestId("edit-category-menu");
@@ -51,7 +51,7 @@ test("the last table row category editor opens its menu outside the scroll conta
   await actAndAck(page, "itemsUpdate", () => lastRow.getByTestId("edit-save").click());
   await expect(lastRow).toContainText(categoryName);
 
-  await lastRow.getByRole("button", { name: "تعديل", exact: true }).click();
+  await lastRow.getByTestId(`edit-item-${seededItem.id}`).click();
   const reopenedEditor = lastRow.getByTestId("edit-category");
   await reopenedEditor.click();
   const reopenedMenu = page.getByTestId("edit-category-menu");

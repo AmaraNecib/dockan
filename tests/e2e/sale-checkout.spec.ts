@@ -2,27 +2,11 @@ import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { saveQuickAdd } from "./rpc-helpers";
-
-async function expectDiscountControlsCollapsed(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "إضافة خصم", exact: true })).toBeVisible();
-  await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
-  await expect(page.getByTestId("sale-discount-value")).toHaveCount(0);
-}
-
-async function openDiscountControls(page: Page): Promise<void> {
-  const discountType = page.getByTestId("sale-discount-type");
-  if (!(await discountType.isVisible())) {
-    const addDiscount = page.getByRole("button", { name: "إضافة خصم", exact: true });
-    await expect(addDiscount).toBeVisible();
-    await addDiscount.click();
-  }
-  await expect(discountType).toBeVisible();
-  await expect(page.getByTestId("sale-discount-value")).toBeVisible();
-}
+import { chooseDiscountMode, expectDiscountControlsCollapsed, openDiscountControls, selectRadioValue } from "./sale-discount-helpers";
 
 async function choosePriceMode(page: Page, itemName: string, mode: "AMOUNT" | "PERCENTAGE"): Promise<void> {
-  const group = page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`);
-  await group.getByText(mode === "AMOUNT" ? "دج" : "%", { exact: true }).click();
+  const group = page.getByTestId("sale-lines").getByRole("row").filter({ hasText: itemName }).getByTestId("sale-price-mode");
+  await selectRadioValue(group, mode);
 }
 
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
@@ -54,7 +38,7 @@ test("sale checkout keeps the final line and focused control clear at short heig
     quantityLabel: "الكمية",
   });
 
-  await expect(page.getByRole("button", { name: "إضافة خصم" })).toBeVisible();
+  await expect(page.getByTestId("sale-add-discount")).toBeVisible();
   await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
   const quantity = page.getByLabel(`${itemName}: الكمية`);
   await quantity.focus();
@@ -63,11 +47,11 @@ test("sale checkout keeps the final line and focused control clear at short heig
   if (lineBox === null || checkoutBox === null) throw new Error("The final sale line or checkout bar is outside the viewport");
   expect(lineBox.y + lineBox.height).toBeLessThanOrEqual(checkoutBox.y);
 
-  const addDiscount = page.getByRole("button", { name: "إضافة خصم" });
+  const addDiscount = page.getByTestId("sale-add-discount");
   await addDiscount.focus();
   await addDiscount.press("Enter");
-  await expect(page.getByTestId("sale-discount-type")).toBeFocused();
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
+  await expect(page.getByTestId("sale-discount-value")).toBeFocused();
+  await chooseDiscountMode(page, "PERCENTAGE");
   await page.getByTestId("sale-discount-value").fill("10");
   await expect(page.getByTestId("sale-subtotal")).toContainText("1,000");
   await expect(page.getByTestId("sale-discount")).toContainText("100");
@@ -270,7 +254,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("900");
   await expectDiscountControlsCollapsed(page);
   await openDiscountControls(page);
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
+  await chooseDiscountMode(page, "AMOUNT");
   await page.getByTestId("sale-discount-value").fill("100");
   await expect(page.getByTestId("sale-subtotal")).toContainText("2,700");
   await expect(page.getByTestId("sale-total")).toContainText("2,600");
@@ -299,7 +283,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await choosePriceMode(page, secondName, "PERCENTAGE");
   await page.getByTestId("sale-lines").getByLabel(`${secondName}: قيمة تعديل السعر`).fill("80");
   await openDiscountControls(page);
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
+  await chooseDiscountMode(page, "PERCENTAGE");
   await page.getByTestId("sale-discount-value").fill("10");
   await expect(page.getByTestId("sale-subtotal")).toContainText("400");
   await expect(page.getByTestId("sale-total")).toContainText("360");
@@ -385,7 +369,7 @@ test("sale checkout: Arabic-Indic digits price the line and the discount like AS
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("٩٠٠");
   await expectDiscountControlsCollapsed(page);
   await openDiscountControls(page);
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
+  await chooseDiscountMode(page, "AMOUNT");
   await page.getByTestId("sale-discount-value").fill("١٠٠");
   await expect(page.getByTestId("sale-subtotal")).toContainText("4,500");
   await expect(page.getByTestId("sale-total")).toContainText("4,400");
@@ -445,7 +429,7 @@ test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the type
   await expect(overrideValue).toHaveValue(`${rlm}٩٠٠`);
   await expectDiscountControlsCollapsed(page);
   await openDiscountControls(page);
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
+  await chooseDiscountMode(page, "AMOUNT");
   const discountValue = page.getByTestId("sale-discount-value");
   await discountValue.fill(`${rlm}١٠٠`);
   await expect(discountValue).toHaveValue(`${rlm}١٠٠`);

@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { InvoiceDetail, Item } from "../../packages/contracts/src";
 import { signIn } from "./auth-helpers";
 import { actAndAck, callRpc, seedCategoryId } from "./rpc-helpers";
-import { chooseSelectOption } from "./select-helpers";
+import { chooseDiscountMode, expectDiscountControlsCollapsed, openDiscountControls, selectRadioValue } from "./sale-discount-helpers";
 
 let barcodeSequence = 0;
 
@@ -14,30 +14,17 @@ const evidence = process.env.PRICE_EVIDENCE === "1";
 test.use({ viewport: { width: 1920, height: 1080 }, video: evidence ? { mode: "on", size: { width: 1920, height: 1080 } } : "off" });
 
 async function choosePriceMode(group: Locator, mode: "AMOUNT" | "PERCENTAGE") {
-  await group.getByText(mode === "AMOUNT" ? "دج" : "%", { exact: true }).click();
+  await selectRadioValue(group, mode);
+}
+
+function priceModeGroup(lines: Locator, itemName: string): Locator {
+  return lines.getByRole("row").filter({ hasText: itemName }).getByTestId("sale-price-mode");
 }
 
 async function scan(page: Page, barcode: string) {
   await page.getByTestId("sale-open-picker").focus();
   await page.keyboard.type(barcode, { delay: 8 });
   await page.keyboard.press("Enter");
-}
-
-async function expectDiscountControlsCollapsed(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "إضافة خصم", exact: true })).toBeVisible();
-  await expect(page.getByTestId("sale-discount-type")).toHaveCount(0);
-  await expect(page.getByTestId("sale-discount-value")).toHaveCount(0);
-}
-
-async function openDiscountControls(page: Page): Promise<void> {
-  const discountType = page.getByTestId("sale-discount-type");
-  if (!(await discountType.isVisible())) {
-    const addDiscount = page.getByRole("button", { name: "إضافة خصم", exact: true });
-    await expect(addDiscount).toBeVisible();
-    await addDiscount.click();
-  }
-  await expect(discountType).toBeVisible();
-  await expect(page.getByTestId("sale-discount-value")).toBeVisible();
 }
 
 async function fixture(page: Page, sellingPrice = 333) {
@@ -57,9 +44,9 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   const { item, barcode } = await fixture(page);
   const lines = page.getByTestId("sale-lines");
   const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  const mode = lines.getByLabel(`${item.name}: نوع تعديل السعر`);
-  const amountRadio = mode.getByRole("radio", { name: `${item.name}: دينار جزائري (دج)` });
-  const percentageRadio = mode.getByRole("radio", { name: `${item.name}: نسبة مئوية` });
+  const mode = priceModeGroup(lines, item.name);
+  const amountRadio = mode.locator('input[type="radio"][value="AMOUNT"]');
+  const percentageRadio = mode.locator('input[type="radio"][value="PERCENTAGE"]');
   await amountRadio.focus();
   await expect(amountRadio).toBeFocused();
   const amountSegment = await mode.getByText("دج", { exact: true }).boundingBox();
@@ -103,7 +90,7 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   }
   await value.fill("80");
   await openDiscountControls(page);
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
+  await chooseDiscountMode(page, "PERCENTAGE");
   await page.getByTestId("sale-discount-value").fill("10");
   await lines.getByLabel(`${item.name}: الكمية`).fill("21");
   await page.getByTestId("sale-save").click();
@@ -136,6 +123,31 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   await testInfo.attach("persisted-sale", { body: JSON.stringify({ saved, resetSaved }, null, 2), contentType: "application/json" });
 });
 
+test("invoice with a blank discount omits discount data after persistence", async ({ page }) => {
+  await signIn(page);
+  await fixture(page, 1000);
+  await openDiscountControls(page);
+
+  const saved = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
+  expect(saved).toMatchObject({ discountType: null, discountValue: null, discountAmount: 0 });
+  const reopened = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: saved.id });
+  expect(reopened).toEqual(saved);
+});
+
+test("invoice persists an explicit zero percentage discount", async ({ page }) => {
+  await signIn(page);
+  await fixture(page, 1000);
+  await openDiscountControls(page);
+  const percentage = page.getByTestId("sale-discount-type").locator('input[value="PERCENTAGE"]');
+  await expect(percentage).toBeChecked();
+  await page.getByTestId("sale-discount-value").fill("0");
+
+  const saved = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
+  expect(saved).toMatchObject({ discountType: "PERCENTAGE", discountValue: 0, discountAmount: 0, totalAmount: 1000 });
+  const reopened = await callRpc<InvoiceDetail, object>(page, "invoicesGet", { id: saved.id });
+  expect(reopened).toEqual(saved);
+});
+
 test("resetting a sale price leaves keyboard barcode scans out of the price editor (#397)", async ({ page }) => {
   await signIn(page);
   const { item } = await fixture(page, 333);
@@ -146,8 +158,8 @@ test("resetting a sale price leaves keyboard barcode scans out of the price edit
   });
   const lines = page.getByTestId("sale-lines");
   const originalPrice = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  const priceMode = lines.getByLabel(`${item.name}: نوع تعديل السعر`);
-  const amountRadio = priceMode.getByRole("radio", { name: `${item.name}: دينار جزائري (دج)` });
+  const priceMode = priceModeGroup(lines, item.name);
+  const amountRadio = priceMode.locator('input[type="radio"][value="AMOUNT"]');
   await choosePriceMode(priceMode, "AMOUNT");
   await originalPrice.fill("301");
   const reset = lines.getByTestId("sale-price-reset");
@@ -174,7 +186,7 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   const { item, barcode } = await fixture(page, 1000);
   const lines = page.getByTestId("sale-lines");
   const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  await choosePriceMode(lines.getByLabel(`${item.name}: نوع تعديل السعر`), "AMOUNT");
+  await choosePriceMode(priceModeGroup(lines, item.name), "AMOUNT");
   await value.fill("875");
   await page.getByTestId("new-sale-button").click();
   const dialog = page.getByRole("dialog");
@@ -191,7 +203,7 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   // A scan while a mode radio has focus adds quantity without changing the edited price or saving.
   // The same barcode was just scanned; let the documented 1200ms duplicate guard expire.
   await page.waitForTimeout(1300);
-  await lines.getByRole("radio", { name: `${item.name}: دينار جزائري (دج)` }).focus();
+  await priceModeGroup(lines, item.name).locator('input[type="radio"][value="AMOUNT"]').focus();
   // Exceed CI's 250 ms VITE_SCAN_MAX_GAP_MS so editable-target handling would clear the buffer.
   await page.keyboard.type(barcode, { delay: 300 });
   await page.keyboard.press("Enter");
@@ -200,7 +212,7 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   await expect(page.getByTestId("sale-saved")).toHaveCount(0);
   await callRpc(page, "itemsUpdate", { id: item.id, sellingPrice: 1200 });
   await openDiscountControls(page);
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
+  await chooseDiscountMode(page, "AMOUNT");
   await page.getByTestId("sale-discount-value").fill("100");
   const saved = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
   expect(saved.totalAmount).toBe(1700);
@@ -225,7 +237,7 @@ if (evidence) test("sale page approval evidence: light, dark and mobile", async 
 
   const lines = page.getByTestId("sale-lines");
   const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  await expect(lines.getByRole("radio", { name: `${item.name}: نسبة مئوية` })).toBeChecked();
+  await expect(priceModeGroup(lines, item.name).locator('input[type="radio"][value="PERCENTAGE"]')).toBeChecked();
   await expect(value).toHaveValue("100");
   await expect(page.locator("html")).toHaveClass(/light/);
   await value.fill("80");
@@ -252,7 +264,7 @@ if (evidence) test("price editor user journey at reading pace (#397 evidence)", 
   const { item } = await fixture(page, 1000);
   const lines = page.getByTestId("sale-lines");
   const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  const mode = lines.getByLabel(`${item.name}: نوع تعديل السعر`);
+  const mode = priceModeGroup(lines, item.name);
   const pause = () => page.waitForTimeout(2500);
   await choosePriceMode(mode, "AMOUNT");
   await expect(value).toHaveValue("1000");
@@ -273,7 +285,7 @@ if (evidence) test("price editor user journey at reading pace (#397 evidence)", 
   await choosePriceMode(mode, "AMOUNT");
   await value.fill("900");
   await openDiscountControls(page);
-  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
+  await chooseDiscountMode(page, "AMOUNT");
   await page.getByTestId("sale-discount-value").fill("100");
   await expect(page.getByTestId("sale-total")).toContainText("800");
   await pause();

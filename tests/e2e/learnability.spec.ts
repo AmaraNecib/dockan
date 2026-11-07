@@ -161,14 +161,14 @@ for (const viewport of [
 
     // A line reveals the disclosure, while both discount fields stay unmounted
     // until requested. Expanding it moves focus to the new control.
-    const addDiscount = page.getByRole("button", { name: "إضافة خصم", exact: true });
+    const addDiscount = page.getByTestId("sale-add-discount");
     const discountType = page.getByTestId("sale-discount-type");
     const discountValue = page.getByTestId("sale-discount-value");
     await expect(addDiscount).toBeVisible();
     await expect(discountType).toHaveCount(0);
     await expect(discountValue).toHaveCount(0);
     await addDiscount.click();
-    await expect(discountType).toBeFocused();
+    await expect(discountValue).toBeFocused();
     await expect(discountValue).toBeVisible();
 
     // The finish action remains reachable without the content container

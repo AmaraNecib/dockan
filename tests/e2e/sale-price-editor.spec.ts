@@ -236,6 +236,7 @@ if (evidence) test("sale page approval evidence: light, dark and mobile", async 
   await page.screenshot({ path: ".scratch/evidence/sale-page/dark-desktop.png" });
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
   await expect(page.getByTestId("sale-save")).toBeVisible();
   await page.waitForTimeout(900);
   await page.screenshot({ path: ".scratch/evidence/sale-page/dark-mobile.png", fullPage: true });

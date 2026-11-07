@@ -100,6 +100,38 @@ describe("store pagination (issue 163)", () => {
     expect(past.total).toBe(first.total);
   });
 
+  it("filters the full joined catalogue before pagination and returns matching totals (#388)", async () => {
+    const category = await store.createCategory({ name: "بطّاريات بحث 388" });
+    const created = [];
+    for (let index = 0; index < 12; index++) {
+      created.push(await store.createItem({
+        name: `مصطفى بحث388 ${String(index).padStart(2, "0")}`,
+        barcode: `SEARCH388-${index}`,
+        categoryId: category.id,
+        costPrice: 100,
+        sellingPrice: 150,
+      }));
+    }
+
+    const first = await store.listItems({ query: "مصطفي بحث388", limit: 10, offset: 0 });
+    const second = await store.listItems({ query: "مصطفي بحث388", limit: 10, offset: 10 });
+    expect(first.total).toBe(12);
+    expect(first.items.map((item) => item.id)).toEqual(created.slice(0, 10).map((item) => item.id));
+    expect(second.total).toBe(12);
+    expect(second.items.map((item) => item.id)).toEqual([created[10]!.id, created[11]!.id]);
+    expect(second.items[0]?.categoryName).toBe(category.name);
+
+    const barcode = await store.listItems({ query: "search388-11", limit: 10, offset: 0 });
+    expect(barcode.total).toBe(1);
+    expect(barcode.items.map((item) => item.id)).toEqual([created[11]!.id]);
+    const categoryMatch = await store.listItems({ query: "بطاريات بحث 388", limit: 10, offset: 0 });
+    expect(categoryMatch.total).toBe(12);
+    const missing = await store.listItems({ query: "NO-MATCH-388", limit: 10, offset: 0 });
+    expect(missing).toEqual({ items: [], total: 0 });
+    const blank = await store.listItems({ query: "   ", limit: 10, offset: 0 });
+    expect(blank).toEqual(await store.listItems({ limit: 10, offset: 0 }));
+  });
+
   it("returns every item when no pagination is asked (internal full reads)", async () => {
     const all = await store.listItems();
     expect(all.total).toBe(all.items.length);

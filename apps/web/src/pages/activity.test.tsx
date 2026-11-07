@@ -216,11 +216,12 @@ describe("activity summary tokens render translated copy", () => {
  * carry more than one tag with different refs.
  */
 describe("activity actor snapshots", () => {
-  it("names the saved account and shows its stable ID without claiming a specific person", () => {
-    const rendered = renderNode(activityActorText(t, { actorName: "مالك الاختبار", actorId: "account-123" }));
+  it("shows the saved account name without rendering its stable ID in the activity row", () => {
+    const actorId = "4ec5f7d1-35b8-4c1c-985f-f78e9cc4cba9";
+    const rendered = renderNode(activityActorText(t, { actorName: "مالك الاختبار", actorId }));
 
     expect(rendered.textContent).toContain("حساب: مالك الاختبار");
-    expect(rendered.textContent).toContain("account-123");
+    expect(rendered.textContent).not.toContain(actorId);
     expect(rendered.textContent).not.toContain("بواسطة مالك الاختبار");
   });
 

@@ -33,6 +33,17 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   const rows = page.getByTestId("activity-table").locator("tbody tr");
   await expect(rows.first()).toContainText("إنشاء منتج");
   await expect(rows.first()).toContainText("سجل-منتج-12");
+  const actor = rows.first().getByTestId("activity-actor");
+  await expect(actor).toHaveText("مالك الاختبار");
+  await expect(actor.locator("bdi")).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const tableRegion = page.getByTestId("activity-table-region");
+  const scroll = await tableRegion.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+  expect(scroll.scrollWidth).toBeGreaterThan(scroll.clientWidth);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.setViewportSize({ width: 1280, height: 720 });
+
   // the item creation carries its related item id as a ref, and the ref is a
   // link to the record (#253) rather than a bare id
   await expect(rows.nth(1)).toContainText("إنشاء تصنيف");

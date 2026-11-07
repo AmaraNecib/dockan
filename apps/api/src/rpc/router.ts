@@ -665,7 +665,7 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
 
     // --- items (ticket 03) ---------------------------------------------------
-    itemsList: os.itemsList.handler(guardedInput(async (input) => deps.store.listItems(resolvePagination(input)))),
+    itemsList: os.itemsList.handler(guardedInput(async (input) => deps.store.listItems({ ...resolvePagination(input), query: input.query }))),
     // pickers/selects need the whole catalog; `itemsList` pages the table
     itemsAll: os.itemsAll.handler(guarded(async () => ({ items: (await deps.store.listItems()).items }))),
     itemsCreate: os.itemsCreate.handler(

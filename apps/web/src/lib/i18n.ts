@@ -293,6 +293,8 @@ const resources = {
       itemsSearchEmpty: "لا توجد نتائج مطابقة",
       itemsSearchError: "تعذّر البحث، تحقق من الاتصال",
       itemsSearchRetry: "إعادة المحاولة",
+      itemsSearchClear: "مسح البحث",
+      itemsSearchTotal: "النتائج: {{total}}",
       scanUnknownTitle: "كود غير معروف",
       scanUnknownCode: "الكود الممسوح",
       scanCreateItem: "إنشاء منتج",

@@ -42,16 +42,18 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /بطارية/ })).toBeVisible();
 
-  // 2. typed search ranks results; exact barcode shows the single hit
+  // 2. typed search filters the products table; exact barcode shows the single hit
   const search = page.getByTestId("catalog-search");
   await search.fill("6210001000017");
-  await expect(page.getByTestId("search-results")).toContainText("بطارية");
+  await expect(page.getByRole("table").getByRole("row").filter({ hasText: "بطارية" })).toHaveCount(1);
+  await expect(page.getByRole("table").getByRole("row").filter({ hasText: "زيت محرك 5W30" })).toHaveCount(0);
 
   await search.fill("زيت");
-  await expect(page.getByTestId("search-results")).toContainText("زيت محرك 5W30");
+  await expect(page.getByRole("table").getByRole("row").filter({ hasText: "زيت محرك 5W30" })).toBeVisible();
+  await expect(page.getByRole("table").getByRole("row").filter({ hasText: "بطارية" })).toHaveCount(0);
 
   await search.fill("كلمة-غير-موجودة");
-  await expect(page.getByTestId("search-results")).toContainText("لا توجد نتائج مطابقة");
+  await expect(page.getByTestId("items-search-empty")).toContainText("لا توجد نتائج مطابقة");
   await search.fill("");
 
   // 2b. the manual picker keeps the active row on the combobox and selects it

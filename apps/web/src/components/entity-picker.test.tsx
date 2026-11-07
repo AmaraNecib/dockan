@@ -136,6 +136,27 @@ describe("EntityPicker", () => {
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
 
+  it("does not let a selection update in the Escape task overwrite the saved query", async () => {
+    const host = await mount(undefined, [], true);
+    const entry = mounted.find((candidate) => candidate.host === host);
+    const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
+    if (entry === undefined || input === null) throw new Error("missing mounted picker");
+    const originalQuery = input.value;
+    await type(host, "تصنيف متأخر");
+
+    await act(async () => {
+      entry.root.render(
+        <Harness pickerOptions={[{ id: "default", name: "تصنيف حالي" }, { id: "late", name: "تصنيف متأخر" }]} autoSelectFirst />,
+      );
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(input.value).toBe(originalQuery);
+    expect(input.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
+  });
+
   it("outside blur discards ephemeral search text without changing the selection", async () => {
     const host = await mount(undefined, [], true);
     const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');

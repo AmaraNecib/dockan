@@ -45,18 +45,22 @@ export function EntityPicker({
   const [open, setOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const queryAtOpenRef = useRef(query);
+  const closePendingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const listId = `${testId}-list`;
   const inputId = `${testId}-input`;
 
   useEffect(() => {
-    if (!open) {
-      const selectedName = selected?.name ?? "";
-      setQuery(selectedName);
-      queryAtOpenRef.current = selectedName;
+    if (open) return;
+    if (closePendingRef.current) {
+      closePendingRef.current = false;
+      return;
     }
-  }, [selected?.id, selected?.name]);
+    const selectedName = selected?.name ?? "";
+    setQuery(selectedName);
+    queryAtOpenRef.current = selectedName;
+  }, [open, selected?.id, selected?.name]);
 
   const matches = useMemo(() => {
     const trimmed = query.trim();
@@ -78,6 +82,7 @@ export function EntityPicker({
   }
 
   function closeSearch() {
+    if (open) closePendingRef.current = true;
     setOpen(false);
     setQuery(queryAtOpenRef.current);
     setActiveId(null);

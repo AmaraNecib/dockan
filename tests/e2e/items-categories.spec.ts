@@ -43,6 +43,7 @@ test("the last table row category editor opens its menu outside the scroll conta
   const menu = page.getByTestId("edit-category-menu");
   await expect(menu).toBeVisible();
   expect(await menu.evaluate((element) => element.closest(".overflow-x-auto") === null)).toBe(true);
+  await editor.fill(categoryName);
   const option = menu.getByRole("option", { name: categoryName, exact: true });
   await expect(option).toBeVisible();
   await option.click();
@@ -54,6 +55,7 @@ test("the last table row category editor opens its menu outside the scroll conta
   await reopenedEditor.click();
   const reopenedMenu = page.getByTestId("edit-category-menu");
   await expect(reopenedMenu).toBeVisible();
+  await reopenedEditor.fill(`PR460-base-${stamp}`);
   await reopenedMenu.getByRole("option", { name: `PR460-base-${stamp}`, exact: true }).click();
   await actAndAck(page, "itemsUpdate", () => lastRow.getByTestId("edit-save").click());
   await page.reload();

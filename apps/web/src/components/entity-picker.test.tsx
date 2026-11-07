@@ -36,6 +36,7 @@ function Harness({
         value={selectedValue}
         onChange={setValue}
         testId="entity"
+        name="selected-item"
         onCreate={onCreate}
         createLabel={(name) => `إنشاء ${name}`}
       />
@@ -58,6 +59,7 @@ async function mount(
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   mounted.push({ root, host });
+  expect(host.querySelector('[data-testid="entity"]'), "EntityPicker renders its searchable input").not.toBeNull();
   return host;
 }
 
@@ -121,27 +123,26 @@ describe("EntityPicker", () => {
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
 
-  it("Escape restores the pre-search text when the default selection arrives mid-search", async () => {
+  it("Escape restores the current default name when it arrives mid-search", async () => {
     const host = await mount(undefined, [], true);
     const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
     if (input === null) throw new Error("missing entity picker input");
-    const originalQuery = input.value;
     await type(host, "تصنيف متأخر");
     await updateOptions(host, [{ id: "default", name: "تصنيف حالي" }, { id: "late", name: "تصنيف متأخر" }], true);
 
     await press(host, "Escape");
 
-    expect(input.value).toBe(originalQuery);
+    expect(input.value).toBe("تصنيف حالي");
+    expect(host.querySelector<HTMLInputElement>('[name="selected-item"]')?.value).toBe("default");
     expect(input.getAttribute("aria-expanded")).toBe("false");
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
 
-  it("does not let a selection update in the Escape task overwrite the saved query", async () => {
+  it("does not let a selection update in the Escape task overwrite the current name", async () => {
     const host = await mount(undefined, [], true);
     const entry = mounted.find((candidate) => candidate.host === host);
     const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
     if (entry === undefined || input === null) throw new Error("missing mounted picker");
-    const originalQuery = input.value;
     await type(host, "تصنيف متأخر");
 
     await act(async () => {
@@ -152,16 +153,16 @@ describe("EntityPicker", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(input.value).toBe(originalQuery);
+    expect(input.value).toBe("تصنيف حالي");
+    expect(host.querySelector<HTMLInputElement>('[name="selected-item"]')?.value).toBe("default");
     expect(input.getAttribute("aria-expanded")).toBe("false");
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
 
-  it("outside blur discards ephemeral search text without changing the selection", async () => {
+  it("outside blur shows the current selection without changing its id", async () => {
     const host = await mount(undefined, [], true);
     const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
     if (input === null) throw new Error("missing entity picker input");
-    const originalQuery = input.value;
     await type(host, "تصنيف متأخر");
     await updateOptions(host, [{ id: "default", name: "تصنيف حالي" }, { id: "late", name: "تصنيف متأخر" }], true);
 
@@ -170,7 +171,8 @@ describe("EntityPicker", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(input.value).toBe(originalQuery);
+    expect(input.value).toBe("تصنيف حالي");
+    expect(host.querySelector<HTMLInputElement>('[name="selected-item"]')?.value).toBe("default");
     expect(input.getAttribute("aria-expanded")).toBe("false");
     expect(host.querySelector('[data-testid="selected"]')?.textContent).toBe("default");
   });
@@ -246,6 +248,26 @@ describe("EntityPicker", () => {
 
     expect(input.getAttribute("aria-expanded")).toBe("true");
     expect(document.querySelector('[role="option"]')?.textContent).toBe("منتج أول");
+  });
+
+  it("keeps Create open when keyboard focus enters its portaled popup", async () => {
+    let created = "";
+    const host = await mount((query) => { created = query; });
+    await type(host, "تصنيف جديد");
+    const input = host.querySelector<HTMLInputElement>('[data-testid="entity"]');
+    const action = document.querySelector<HTMLButtonElement>('[data-testid="entity-create"]');
+    expect(input).not.toBeNull();
+    expect(action).not.toBeNull();
+
+    await act(async () => {
+      action?.focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(input?.getAttribute("aria-expanded")).toBe("true");
+    expect(action?.isConnected).toBe(true);
+    await act(async () => action?.click());
+    expect(created).toBe("تصنيف جديد");
   });
 
   it("offers an explicit create action only when there is no match", async () => {

@@ -44,22 +44,14 @@ export function EntityPicker({
   const [query, setQuery] = useState(selected?.name ?? "");
   const [open, setOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const queryAtOpenRef = useRef(query);
-  const closePendingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const listId = `${testId}-list`;
   const inputId = `${testId}-input`;
 
   useEffect(() => {
-    if (open) return;
-    if (closePendingRef.current) {
-      closePendingRef.current = false;
-      return;
-    }
-    const selectedName = selected?.name ?? "";
-    setQuery(selectedName);
-    queryAtOpenRef.current = selectedName;
+    if (!open) setQuery(selected?.name ?? "");
   }, [open, selected?.id, selected?.name]);
 
   const matches = useMemo(() => {
@@ -77,21 +69,18 @@ export function EntityPicker({
   }, [activeIndex]);
 
   function openSearch() {
-    if (!open) queryAtOpenRef.current = query;
     setOpen(true);
   }
 
   function closeSearch() {
-    if (open) closePendingRef.current = true;
     setOpen(false);
-    setQuery(queryAtOpenRef.current);
+    setQuery(selected?.name ?? "");
     setActiveId(null);
   }
 
   function pick(option: EntityOption) {
     onChange(option.id);
     setQuery(option.name);
-    queryAtOpenRef.current = option.name;
     setOpen(false);
     setActiveId(null);
   }
@@ -125,7 +114,10 @@ export function EntityPicker({
   return (
     <Popover.Root open={open} onOpenChange={(nextOpen) => nextOpen ? openSearch() : closeSearch()}>
       <div className="grid gap-1 text-sm font-medium" onBlur={(event) => {
-      if (event.relatedTarget !== null && event.currentTarget.contains(event.relatedTarget)) return;
+      if (
+        event.relatedTarget instanceof Node &&
+        (event.currentTarget.contains(event.relatedTarget) || popupRef.current?.contains(event.relatedTarget))
+      ) return;
       closeSearch();
     }}>
       <label htmlFor={inputId} className={hideLabel ? "sr-only" : undefined}>{label}</label>
@@ -160,7 +152,7 @@ export function EntityPicker({
       {open && (
         <Popover.Portal>
           <Popover.Positioner anchor={inputRef} side="bottom" align="start" sideOffset={4} className="z-50 w-[var(--anchor-width)]">
-            <Popover.Popup initialFocus={false} finalFocus={false} className="rounded-lg border bg-popover text-foreground shadow-lg" data-testid={`${testId}-menu`}>
+            <Popover.Popup ref={popupRef} initialFocus={false} finalFocus={false} className="rounded-lg border bg-popover text-foreground shadow-lg" data-testid={`${testId}-menu`}>
             <ul id={listId} role="listbox" aria-label={label} className="max-h-52 overflow-y-auto p-1">
               {matches.map((option, index) => (
                 <li key={option.id} role="presentation">

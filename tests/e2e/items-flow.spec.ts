@@ -1,8 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
-import { chooseSelectOption } from "./select-helpers";
+import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
 import { actAndAck, saveQuickAdd } from "./rpc-helpers";
+
+async function setDisabledInput(locator: import("@playwright/test").Locator, disabled: boolean): Promise<void> {
+  await locator.evaluate((element, nextDisabled) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error("category control is not an input");
+    element.disabled = nextDisabled;
+  }, disabled);
+}
 
 /**
  * Issue #98 — items flow. One-step item + opening stock, inline price
@@ -36,7 +43,19 @@ test("items flow: one-step stock, inline edit, and prefilled stock add", async (
   await expect(page.locator("#items-panel-add")).toBeVisible();
 
   // 1. Item + opening stock in ONE submit, no scan involved. No barcode read.
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  const category = page.getByLabel("التصنيف");
+  await setDisabledInput(category, true);
+  const chooseAfterLoad = chooseSelectOption(page, category, categoryName);
+  await expect(category).toBeDisabled();
+  await setDisabledInput(category, false);
+  await chooseAfterLoad;
+
+  await setDisabledInput(category, true);
+  const expectAfterLoad = expectSelectOption(page, category, categoryName);
+  await expect(category).toBeDisabled();
+  await setDisabledInput(category, false);
+  await expectAfterLoad;
+
   await page.getByTestId("item-name").fill(stockedName);
   await page.getByLabel("سعر الشراء (دج)").fill("100");
   await page.getByLabel("سعر البيع (دج)").fill("200");
@@ -199,7 +218,9 @@ test("sale quick-add creates a category explicitly and keeps item and customer d
   await category.fill(categoryName);
   const createCategory = page.getByTestId("sale-quick-category-create");
   await expect(createCategory).toBeVisible();
-  const createdCategory = await actAndAck<{ id: string }>(page, "categoriesCreate", () => createCategory.click());
+  await page.keyboard.press("Tab");
+  await expect(createCategory).toBeFocused();
+  const createdCategory = await actAndAck<{ id: string }>(page, "categoriesCreate", () => page.keyboard.press("Enter"));
   await expect(category).toHaveValue(categoryName);
   await expect(page.getByTestId("sale-quick-name")).toHaveValue(itemName);
   await expect(page.getByTestId("sale-quick-stock")).toHaveValue("2");

@@ -1128,6 +1128,36 @@ describe("stock form prefill", () => {
     expect(persistedItems.find((item) => item.id === "item-1")?.stockOnHand).toBe(3);
   });
 
+  it("closes a refreshed stock-item search on the item it submits", async () => {
+    const { queryClient } = await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+
+    setInput("stock-item", "no matching item");
+    const reordered = [items[1]!, items[0]!];
+    items = reordered;
+    await act(async () => {
+      queryClient.setQueryData(["itemsAll"], { items: reordered.map((item) => ({ ...item })) });
+      await settle();
+    });
+    const search = inputByTestId("stock-item");
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await settle();
+    });
+
+    expect(search.value).toBe("فلتر زيت");
+    expect(inputByTestId("stock-unit-cost").value).toBe("200");
+    setInput("stock-delta", "2");
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 1);
+
+    expect(stockInputs[0]).toMatchObject({ itemId: "item-2", delta: 2, unitCost: 200 });
+    const persistedItems = queryClient.getQueryData<{ items: FixtureItem[] }>(["itemsAll"])?.items ?? [];
+    expect(persistedItems.find((item) => item.id === "item-2")?.stockOnHand).toBe(2);
+    expect(persistedItems.find((item) => item.id === "item-1")?.stockOnHand).toBe(3);
+  });
+
   it("shows the selling price and prefills the cost from the selected item", async () => {
     await mount();
     await openAddTab();

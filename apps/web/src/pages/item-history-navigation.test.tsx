@@ -106,8 +106,8 @@ describe("item-history navigation and disclosure (issue #467)", () => {
 
     const firstToggle = page.query<HTMLButtonElement>("history-toggle-movement-a");
     const secondToggle = page.query<HTMLButtonElement>("history-toggle-movement-b");
-    expect(firstToggle, "each movement has its own disclosure button").not.toBeNull();
-    expect(secondToggle, "each movement has its own disclosure button").not.toBeNull();
+    expect(firstToggle).not.toBeNull();
+    expect(secondToggle).not.toBeNull();
     if (firstToggle === null || secondToggle === null) return;
     await act(async () => {
       firstToggle.click();
@@ -174,7 +174,7 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     await page.poll(() => page.query("history-table") !== null, "history table");
 
     const firstToggle = page.query<HTMLButtonElement>("history-toggle-movement-a");
-    expect(firstToggle, "movement details use a native disclosure button").not.toBeNull();
+    expect(firstToggle).not.toBeNull();
     if (firstToggle === null) return;
     expect(firstToggle.tagName).toBe("BUTTON");
     expect(firstToggle.type).toBe("button");
@@ -192,7 +192,7 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     expect(page.query("history-detail-row-movement-b")?.hasAttribute("hidden")).toBe(true);
 
     const secondToggle = page.query<HTMLButtonElement>("history-toggle-movement-b");
-    expect(secondToggle, "each movement has its own disclosure button").not.toBeNull();
+    expect(secondToggle).not.toBeNull();
     if (secondToggle === null) return;
     await act(async () => secondToggle.click());
     expect(page.query("history-detail-row-movement-b")?.hasAttribute("hidden")).toBe(false);

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { InvoiceDetail, Item } from "../../packages/contracts/src";
 import { signIn } from "./auth-helpers";
 import { actAndAck, callRpc, seedCategoryId } from "./rpc-helpers";
@@ -12,6 +12,10 @@ function freshBarcode() {
 
 const evidence = process.env.PRICE_EVIDENCE === "1";
 test.use({ viewport: { width: 1920, height: 1080 }, video: evidence ? { mode: "on", size: { width: 1920, height: 1080 } } : "off" });
+
+async function choosePriceMode(group: Locator, mode: "AMOUNT" | "PERCENTAGE") {
+  await group.getByText(mode === "AMOUNT" ? "دج" : "%", { exact: true }).click();
+}
 
 async function scan(page: Page, barcode: string) {
   await page.getByTestId("sale-open-picker").focus();
@@ -54,27 +58,41 @@ test("effective sale price: exact persisted amounts, percentages, reset, retry a
   const lines = page.getByTestId("sale-lines");
   const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
   const mode = lines.getByLabel(`${item.name}: نوع تعديل السعر`);
+  const amountRadio = mode.getByRole("radio", { name: `${item.name}: دينار جزائري (دج)` });
+  const percentageRadio = mode.getByRole("radio", { name: `${item.name}: نسبة مئوية` });
+  await amountRadio.focus();
+  await expect(amountRadio).toBeFocused();
+  const amountSegment = await mode.getByText("دج", { exact: true }).boundingBox();
+  const percentageSegment = await mode.getByText("%", { exact: true }).boundingBox();
+  if (amountSegment === null || percentageSegment === null) throw new Error("missing visible sale price segment");
+  expect(amountSegment.x).toBeGreaterThan(percentageSegment.x);
+  await page.keyboard.press("ArrowLeft");
+  await expect(percentageRadio).toBeChecked();
+  await expect(percentageRadio).toBeFocused();
   if (process.env.PRICE_BEFORE === "1") await lines.locator("tbody tr").first().locator("td").nth(3).screenshot({ path: ".scratch/evidence/397/before-price.png" });
-  await chooseSelectOption(page, mode, "مبلغ");
+  await choosePriceMode(mode, "AMOUNT");
   await expect(value).toHaveValue("333");
   await expect(value).toHaveAttribute("dir", "ltr");
   await value.fill("٣٠١");
   await expect(page.getByTestId("sale-total")).toContainText("301");
   // 301 cannot be represented by an integer percent of 333. Refuse instead of changing money.
-  await chooseSelectOption(page, mode, "نسبة %");
+  await choosePriceMode(mode, "PERCENTAGE");
   await expect(value).toHaveValue("٣٠١");
   await expect(lines.getByRole("alert")).toContainText("دون تغيير السعر");
+  await expect(amountRadio).toBeChecked();
+  await expect(percentageRadio).not.toBeChecked();
+  await expect(amountRadio).toBeFocused();
   await lines.getByTestId("sale-price-reset").click();
   await expect(lines.getByTestId("sale-price-reset")).toBeFocused();
   await expect(value).not.toBeFocused();
   await expect(value).toHaveValue("333");
-  await chooseSelectOption(page, mode, "نسبة %");
+  await choosePriceMode(mode, "PERCENTAGE");
   await expect(value).toHaveValue("100");
   await value.fill("٨٠");
   await expect(lines.getByTestId("sale-price-meaning")).toContainText("266");
-  await chooseSelectOption(page, mode, "مبلغ");
+  await choosePriceMode(mode, "AMOUNT");
   await expect(value).toHaveValue("266");
-  await chooseSelectOption(page, mode, "نسبة %");
+  await choosePriceMode(mode, "PERCENTAGE");
   await expect(value).toHaveValue("٨٠");
   for (const invalid of ["", "-1", "101", "NaN", "12.5"]) {
     await value.fill(invalid);
@@ -127,7 +145,7 @@ test("resetting a sale price leaves keyboard barcode scans out of the price edit
   });
   const lines = page.getByTestId("sale-lines");
   const originalPrice = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  await chooseSelectOption(page, lines.getByLabel(`${item.name}: نوع تعديل السعر`), "مبلغ");
+  await choosePriceMode(lines.getByLabel(`${item.name}: نوع تعديل السعر`), "AMOUNT");
   await originalPrice.fill("301");
   const reset = lines.getByTestId("sale-price-reset");
   await reset.click();
@@ -152,7 +170,7 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   const { item, barcode } = await fixture(page, 1000);
   const lines = page.getByTestId("sale-lines");
   const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
-  await chooseSelectOption(page, lines.getByLabel(`${item.name}: نوع تعديل السعر`), "مبلغ");
+  await choosePriceMode(lines.getByLabel(`${item.name}: نوع تعديل السعر`), "AMOUNT");
   await value.fill("875");
   await page.getByTestId("new-sale-button").click();
   const dialog = page.getByRole("dialog");
@@ -166,10 +184,10 @@ test("effective sale price: cancellation, explicit zero and catalogue changes pr
   await expectDiscountControlsCollapsed(page);
   await expect(value).toHaveValue("1000");
   await value.fill("900");
-  // A scan on the mode trigger adds quantity without changing the edited price or saving.
+  // A scan while a mode radio has focus adds quantity without changing the edited price or saving.
   // The same barcode was just scanned; let the documented 1200ms duplicate guard expire.
   await page.waitForTimeout(1300);
-  await lines.getByLabel(`${item.name}: نوع تعديل السعر`).focus();
+  await lines.getByRole("radio", { name: `${item.name}: دينار جزائري (دج)` }).focus();
   await page.keyboard.type(barcode, { delay: 8 });
   await page.keyboard.press("Enter");
   await expect(lines.getByLabel(`${item.name}: الكمية`)).toHaveValue("2");
@@ -200,13 +218,13 @@ if (evidence) test("price editor user journey at reading pace (#397 evidence)", 
   const value = lines.getByLabel(`${item.name}: قيمة تعديل السعر`);
   const mode = lines.getByLabel(`${item.name}: نوع تعديل السعر`);
   const pause = () => page.waitForTimeout(2500);
-  await chooseSelectOption(page, mode, "مبلغ");
+  await choosePriceMode(mode, "AMOUNT");
   await expect(value).toHaveValue("1000");
   await lines.locator("tbody tr td").nth(3).screenshot({ path: ".scratch/evidence/397/after-price.png" });
   await pause();
   await value.fill("800");
   await pause();
-  await chooseSelectOption(page, mode, "نسبة %");
+  await choosePriceMode(mode, "PERCENTAGE");
   await pause();
   await value.fill("75");
   await pause();
@@ -216,7 +234,7 @@ if (evidence) test("price editor user journey at reading pace (#397 evidence)", 
   await pause();
   await lines.getByTestId("sale-price-reset").click();
   await pause();
-  await chooseSelectOption(page, mode, "مبلغ");
+  await choosePriceMode(mode, "AMOUNT");
   await value.fill("900");
   await openDiscountControls(page);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");

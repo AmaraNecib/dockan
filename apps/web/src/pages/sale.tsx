@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../lib/scoped-mutation";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCcw, ScanBarcode, Trash2 } from "lucide-react";
 
@@ -140,6 +140,10 @@ export function SalePage() {
   const [searchActiveIndex, setSearchActiveIndex] = useState<number | null>(null);
   const searchRequestSeqRef = useRef(0);
   const searchRef = useRef<HTMLInputElement>(null);
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
+  useLayoutEffect(() => {
+    if (searchFocusRequest > 0) searchRef.current?.focus();
+  }, [searchFocusRequest]);
   const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [discountType, setDiscountType] = useState<AmountKind>("");
   const [discountValue, setDiscountValue] = useState("");
@@ -334,7 +338,7 @@ export function SalePage() {
   useInvoiceEntryShortcut("sale", () => {
     if (savePending) return;
     startFreshSale();
-    requestAnimationFrame(() => searchRef.current?.focus());
+    setSearchFocusRequest((request) => request + 1);
   });
 
   useEffect(() => {

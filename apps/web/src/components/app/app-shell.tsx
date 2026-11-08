@@ -109,6 +109,7 @@ function DiscardSaleDialog({ open, onOpenChange, onConfirm }: DiscardSaleDialogP
       confirmLabel={t("saleDiscardConfirm")}
       cancelLabel={t("dialogClose")}
       confirmTestId="new-sale-discard-confirm"
+      finalFocus={true}
     />
   );
 }

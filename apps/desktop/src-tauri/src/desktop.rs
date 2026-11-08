@@ -73,6 +73,7 @@ mod restore_webview_tests;
 /// (see apps/desktop/scripts/portable.mjs); an installed app never has it, so
 /// data stays in the OS app-data dir.
 pub const PORTABLE_MARKER: &str = "portable.marker";
+const PORTABLE_PROFILE_DIR: &str = "webview";
 
 /// Entropy of the one-time boot token in bytes (64 hex chars).
 const BOOT_TOKEN_LEN: usize = 32;
@@ -188,13 +189,19 @@ pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) {
         return Ok(());
     }
+    create_portable_main_window(app)?;
     match spawn_and_navigate(app) {
         Ok(()) => Ok(()),
         Err(err) => {
-            // The window is already open on the bundled UI, whose in-app
-            // error states handle a missing api; log loudly and keep going so
-            // an api hiccup never blanks out the whole app.
             eprintln!("[dokan] sidecar bootstrap failed: {err}");
+            let portable = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join(PORTABLE_MARKER).is_file()))
+                .unwrap_or(false);
+            if portable {
+                return Err(err);
+            }
+            // Installed mode keeps its existing bundled-UI error handling.
             Ok(())
         }
     }
@@ -226,6 +233,92 @@ fn runtime_data_dir(exe_dir: &Path, app_data_dir: PathBuf) -> PathBuf {
     } else {
         app_data_dir
     }
+}
+
+fn portable_webview_dir(exe_dir: &Path) -> PathBuf {
+    exe_dir.join("data").join(PORTABLE_PROFILE_DIR)
+}
+
+/// Tauri normally creates configured windows before `setup`. Portable mode
+/// must instead create the main window with the profile path selected first.
+pub(crate) fn defer_portable_main_window(
+    windows: &mut [tauri::utils::config::WindowConfig],
+    portable: bool,
+) -> Result<(), String> {
+    if !portable {
+        return Ok(());
+    }
+    let main = windows
+        .iter_mut()
+        .find(|window| window.label == "main")
+        .ok_or_else(|| "portable startup requires the configured main window".to_string())?;
+    main.create = false;
+    Ok(())
+}
+
+fn prepare_portable_directories(exe_dir: &Path) -> Result<PathBuf, String> {
+    let data_dir = exe_dir.join("data");
+    let profile_dir = portable_webview_dir(exe_dir);
+    for dir in [&data_dir, &profile_dir] {
+        std::fs::create_dir_all(dir).map_err(|error| {
+            format!("portable data is unavailable at {}: {error}", dir.display())
+        })?;
+        let probe = dir.join(format!(".dokan-write-check-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .map_err(|error| format!("portable data is not writable at {}: {error}", dir.display()))?;
+        drop(file);
+        std::fs::remove_file(&probe).map_err(|error| {
+            format!("could not clean the portable write check at {}: {error}", dir.display())
+        })?;
+    }
+    Ok(profile_dir)
+}
+
+pub(crate) fn show_portable_startup_error(message: &str) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let text: Vec<u16> = std::ffi::OsStr::new(message).encode_wide().chain(Some(0)).collect();
+        let caption: Vec<u16> = std::ffi::OsStr::new("Dokan portable startup failed")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        #[link(name = "user32")]
+        extern "system" {
+            fn MessageBoxW(window: *mut std::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+        }
+        // SAFETY: both arguments are NUL-terminated UTF-16 strings that remain alive for the call.
+        unsafe {
+            MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10);
+        }
+    }
+    #[cfg(not(windows))]
+    eprintln!("[dokan] portable startup failed: {message}");
+}
+
+fn create_portable_main_window(app: &App) -> Result<(), Box<dyn std::error::Error>> {
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .ok_or("current exe has no parent directory")?
+        .to_path_buf();
+    if !exe_dir.join(PORTABLE_MARKER).is_file() {
+        return Ok(());
+    }
+    let profile_dir = prepare_portable_directories(&exe_dir)?;
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .ok_or("portable startup requires the configured main window")?;
+    tauri::WebviewWindowBuilder::from_config(app, config)?
+        .data_directory(profile_dir)
+        .build()?;
+    Ok(())
 }
 
 fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
@@ -1450,6 +1543,42 @@ mod tests {
             "marker present: data must resolve next to the exe"
         );
         let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    #[test]
+    fn portable_startup_defers_window_creation_until_profile_path_is_selected() {
+        let mut windows = vec![serde_json::from_value(serde_json::json!({"label":"main"})).unwrap()];
+        defer_portable_main_window(&mut windows, true).unwrap();
+        assert!(!windows[0].create);
+
+        let mut installed = vec![serde_json::from_value(serde_json::json!({"label":"main"})).unwrap()];
+        defer_portable_main_window(&mut installed, false).unwrap();
+        assert!(installed[0].create);
+    }
+
+    #[test]
+    fn portable_directories_include_a_writable_webview_profile() {
+        let root = std::env::temp_dir().join(format!("dokan-portable-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(PORTABLE_MARKER), "").unwrap();
+        let profile = prepare_portable_directories(&root).unwrap();
+        assert_eq!(profile, root.join("data").join(PORTABLE_PROFILE_DIR));
+        assert!(profile.is_dir());
+        assert!(root.join("data").is_dir());
+        assert!(!root.join("data").join(format!(".dokan-write-check-{}", std::process::id())).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn portable_directory_failure_is_an_error_instead_of_a_profile_fallback() {
+        let root = std::env::temp_dir().join(format!("dokan-portable-unwritable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("data"), "not a directory").unwrap();
+        let result = prepare_portable_directories(&root);
+        assert!(result.unwrap_err().contains("portable data is unavailable"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1709,9 +1709,9 @@ async function typeSaleSearch(host: HTMLElement, query: string, waitForResult = 
   }
 }
 
-async function pressSaleSearchEnter(host: HTMLElement): Promise<void> {
+async function pressSaleSearchEnter(host: HTMLElement, repeat = false): Promise<void> {
   await act(async () => {
-    host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, repeat }));
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
@@ -1725,6 +1725,18 @@ describe("SalePage persistent search (issue #396)", () => {
     expect(document.activeElement).toBe(host.querySelector('[data-testid="sale-search"]'));
   });
 
+  it("resolves Enter against a barcode typed before the debounce and adds its exact result", async () => {
+    const match = saleSearchMatch("immediate-scan-item", "مسح فوري", 650, "BARCODE_EXACT");
+    catalogFixtures["88002"] = { exact: match, matches: [match] };
+    const host = await mountSale();
+
+    await act(async () => setInput(host, "sale-search", "88002"));
+    await pressSaleSearchEnter(host);
+
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(host.querySelector("tbody")?.textContent).toContain("مسح فوري");
+  });
+
   it("adds an exact search result with Enter, refocuses, and saves one line for a repeated pick", async () => {
     const match = saleSearchMatch("searched-item", "فلتر زيت", 750, "BARCODE_EXACT");
     catalogFixtures["88001"] = { exact: match, matches: [match] };
@@ -1736,6 +1748,8 @@ describe("SalePage persistent search (issue #396)", () => {
     expect(document.activeElement).toBe(host.querySelector('[data-testid="sale-search"]'));
 
     await typeSaleSearch(host, "88001");
+    await pressSaleSearchEnter(host, true);
+    expect(host.querySelector<HTMLInputElement>('[name="quantity-searched-item"]')?.value).toBe("1");
     await pressSaleSearchEnter(host);
     expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
     await act(async () => saveButton(host).click());
@@ -1743,6 +1757,26 @@ describe("SalePage persistent search (issue #396)", () => {
     expect(lastInvoiceInput?.lines).toEqual([{ itemId: "searched-item", quantity: 2 }]);
     await act(async () => resolveInvoice?.({ id: "inv-search", invoiceNumber: "INV-396", remainingAmount: 0, counterpartyName: null }));
     expect(host.querySelector('[data-testid="sale-saved-number"]')?.textContent).toContain("INV-396");
+  });
+
+  it("does not let a lookup started before Save add a line to the next invoice", async () => {
+    const host = await mountSale();
+    await scan("396-late-save");
+    const lateMatch = saleSearchMatch("late-search-item", "نتيجة بعد الحفظ", 400);
+    catalogFixtures["late-result"] = { exact: lateMatch, matches: [lateMatch] };
+    let releaseLookup!: () => void;
+    catalogGates["late-result"] = new Promise<void>((resolve) => { releaseLookup = resolve; });
+
+    await act(async () => setInput(host, "sale-search", "late-result"));
+    await pressSaleSearchEnter(host);
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-396-late-save", quantity: 1 }]);
+    await act(async () => resolveInvoice?.({ id: "inv-late-search", invoiceNumber: "INV-LATE", remainingAmount: 0, counterpartyName: null }));
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-new"]')?.click());
+
+    releaseLookup();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(0);
   });
 
   it("does not choose an ambiguous result until the operator selects one", async () => {

@@ -1,13 +1,132 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { InvoiceDetail, Item } from "../../packages/contracts/src/core";
 import { signIn } from "./auth-helpers";
+import { actAndAck, callRpc, saveQuickAdd, seedCategoryId } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
-import { saveQuickAdd } from "./rpc-helpers";
 import { chooseDiscountMode, expectDiscountControlsCollapsed, openDiscountControls, selectRadioValue } from "./sale-discount-helpers";
 
 async function choosePriceMode(page: Page, itemName: string, mode: "AMOUNT" | "PERCENTAGE"): Promise<void> {
   const group = page.getByTestId("sale-lines").getByRole("row").filter({ hasText: itemName }).getByTestId("sale-price-mode");
   await selectRadioValue(group, mode);
 }
+
+test("persistent sale search keeps the real invoice draft through scans, create, cancel, and failure (#396)", async ({ page }) => {
+  test.setTimeout(60_000);
+  await signIn(page);
+  const stamp = Date.now().toString();
+  const categoryId = await seedCategoryId(page, `بحث بيع ${stamp}`);
+  const categories = await callRpc<{ items: Array<{ id: string; name: string }> }, object>(page, "categoriesList", {});
+  const category = categories.items.find((candidate) => candidate.id === categoryId);
+  if (category === undefined) throw new Error("the seeded sale category was not returned by categoriesList");
+  const barcode = `SALE-396-${stamp}`;
+  const known = await callRpc<Item, object>(page, "itemsCreateWithStock", {
+    name: `باركود ${stamp}`, categoryId, costPrice: 300, sellingPrice: 1000, barcode, stockOnHand: 10,
+  });
+  const ambiguousQuery = `AMBIG-396-${stamp}`;
+  const ambiguousFirst = await callRpc<Item, object>(page, "itemsCreateWithStock", {
+    name: `${ambiguousQuery}-Alpha`, categoryId, costPrice: 100, sellingPrice: 500, stockOnHand: 3,
+  });
+  await callRpc<Item, object>(page, "itemsCreateWithStock", {
+    name: `${ambiguousQuery}-Beta`, categoryId, costPrice: 100, sellingPrice: 600, stockOnHand: 3,
+  });
+  const customerName = `زبون-${stamp}`;
+  const customer = await callRpc<{ id: string; name: string }, { name: string }>(page, "customersCreate", { name: customerName });
+
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  const search = page.getByTestId("sale-search");
+  await search.fill(barcode);
+  await search.press("Enter");
+  const knownQuantity = page.getByTestId("sale-lines").getByLabel(`${known.name}: الكمية`);
+  await expect(knownQuantity).toHaveValue("1");
+  await expect(search).toBeFocused();
+
+  // A second deliberate Enter is another scan; a repeated/held key event is not.
+  await search.fill(barcode);
+  await search.press("Enter");
+  await expect(knownQuantity).toHaveValue("2");
+  await search.fill(`UNKNOWN-396-${stamp}`);
+  await search.press("Enter");
+  await expect(page.getByTestId("sale-search-empty")).toBeVisible();
+  await expect(knownQuantity).toHaveValue("2");
+
+  await search.fill(ambiguousQuery);
+  await expect(page.getByTestId("sale-search-result")).toHaveCount(2);
+  await search.press("ArrowDown");
+  await search.press("Enter");
+  await expect(page.getByTestId("sale-lines").getByLabel(`${ambiguousFirst.name}: الكمية`)).toHaveValue("1");
+
+  await page.getByTestId("sale-customer").fill(customerName);
+  await expect(page.getByTestId("sale-customer-option").first()).toContainText(customerName);
+  await page.getByTestId("sale-customer-option").first().click();
+  await page.getByTestId("sale-add-discount").click();
+  await chooseDiscountMode(page, "AMOUNT");
+  await page.getByTestId("sale-discount-value").fill("100");
+
+  // Closing an unused quick-add must not discard the existing sale state.
+  await page.getByTestId("sale-quick-add").click();
+  await page.getByTestId("sale-quick-name").fill(`إلغاء ${stamp}`);
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "إغلاق", exact: true }).click();
+  await expect(knownQuantity).toHaveValue("2");
+  await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
+  await expect(page.getByTestId("sale-discount-value")).toHaveValue("100");
+
+  // Unknown scan offers explicit create-with-stock. A failed real request keeps
+  // the form and invoice draft; retrying the same form returns the server item.
+  const newBarcode = `NEW-396-${stamp}`;
+  await search.focus();
+  await page.keyboard.type(newBarcode, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create-stock").click();
+  const quick = page.getByTestId("sale-quick-form");
+  const createdName = `إنشاء ${stamp}`;
+  await expect(page.getByTestId("sale-quick-category")).toBeEnabled();
+  await expect(page.getByTestId("sale-quick-category")).toHaveValue(category.name);
+  await page.getByTestId("sale-quick-name").fill(createdName);
+  await page.getByLabel("سعر الشراء (دج)").fill("100");
+  await page.getByLabel("سعر البيع (دج)").fill("300");
+  await page.getByTestId("sale-quick-stock").fill("4");
+
+  let failedRequest = () => {};
+  const failedRequestSeen = new Promise<void>((resolve) => { failedRequest = resolve; });
+  await page.route("**/api/rpc/itemsCreateWithStock", async (route) => {
+    failedRequest();
+    await route.abort("failed");
+  });
+  try {
+    await quick.getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+    await failedRequestSeen;
+    await expect(page.getByTestId("sale-error")).toBeVisible();
+    await expect(quick).toBeVisible();
+    await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
+    await expect(page.getByTestId("sale-discount-value")).toHaveValue("100");
+    await expect(knownQuantity).toHaveValue("2");
+  } finally {
+    await page.unroute("**/api/rpc/itemsCreateWithStock");
+  }
+
+  const created = await actAndAck<Item>(page, "itemsCreateWithStock", async () => {
+    await quick.getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+    await expect(page.getByTestId("sale-error")).toHaveCount(0);
+  });
+  await expect(page.getByTestId("sale-lines").getByLabel(`${createdName}: الكمية`)).toHaveAttribute("name", `quantity-${created.id}`);
+  await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
+  await expect(page.getByTestId("sale-discount-value")).toHaveValue("100");
+
+  const invoice = await actAndAck<InvoiceDetail>(page, "invoicesCreate", () => page.getByTestId("sale-save").click());
+  const persisted = await callRpc<InvoiceDetail, { id: string }>(page, "invoicesGet", { id: invoice.id });
+  expect(persisted.kind).toBe("SALE");
+  expect(persisted.counterpartyId).toBe(customer.id);
+  expect(persisted.discountType).toBe("AMOUNT");
+  expect(persisted.discountValue).toBe(100);
+  expect(persisted.totalAmount).toBe(2700);
+  expect(persisted.lines.map(({ itemId, quantity }) => ({ itemId, quantity }))).toEqual([
+    { itemId: known.id, quantity: 2 },
+    { itemId: ambiguousFirst.id, quantity: 1 },
+    { itemId: created.id, quantity: 1 },
+  ]);
+});
 
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });

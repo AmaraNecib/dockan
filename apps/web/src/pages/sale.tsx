@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCcw, ScanBarcode, Trash2 } from "lucide-react";
 
-import type { Category, InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
+import type { CatalogMatch, Category, InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
@@ -138,6 +138,7 @@ export function SalePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchDebounced, setSearchDebounced] = useState("");
   const [searchActiveIndex, setSearchActiveIndex] = useState<number | null>(null);
+  const searchRequestSeqRef = useRef(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [discountType, setDiscountType] = useState<AmountKind>("");
@@ -181,6 +182,7 @@ export function SalePage() {
   // whose captured copy would be stale, so they cannot mutate the cart once a
   // commit has started.
   const commitRef = useRef(false);
+  const completedInvoiceRef = useRef(false);
 
   const draft = useInvoiceDraft(SALE_DRAFT);
   const { lines } = draft;
@@ -200,10 +202,9 @@ export function SalePage() {
   useEffect(() => setSearchActiveIndex(null), [searchDebounced, searchMatchSetKey]);
 
   const addLine = (item: Item) => {
-    // The sale is frozen once a commit is in flight: ignore late adds (scanner,
-    // an already-open dialog, or a quick-add that settles after Save) so the
-    // cart cannot drift from the request.
-    if (commitRef.current) return;
+    // Freeze additions while committing and after the server has completed the
+    // invoice. Old asynchronous lookups must not leak into the next draft.
+    if (commitRef.current || completedInvoiceRef.current) return;
     setDraftDirty(true);
     draft.addItem(item);
     setPickerOpen(false);
@@ -248,6 +249,12 @@ export function SalePage() {
   const createInvoice = useMutation(
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
+        completedInvoiceRef.current = true;
+        searchRequestSeqRef.current += 1;
+        scanSeqRef.current += 1;
+        setSearchQuery("");
+        setSearchDebounced("");
+        setSearchActiveIndex(null);
         commitRef.current = false;
         // The confirmation card opens the invoice the server actually wrote;
         // its id and remaining amount are authoritative, unlike cart-price math
@@ -309,9 +316,19 @@ export function SalePage() {
     if (discardGuard.blocked) setPickerOpen(false);
   }, [discardGuard.blocked]);
 
+  function startFreshSale() {
+    searchRequestSeqRef.current += 1;
+    scanSeqRef.current += 1;
+    completedInvoiceRef.current = false;
+    setSavedSale(null);
+    setSearchQuery("");
+    setSearchDebounced("");
+    setSearchActiveIndex(null);
+  }
+
   useInvoiceEntryShortcut("sale", () => {
     if (savePending) return;
-    setSavedSale(null);
+    startFreshSale();
     requestAnimationFrame(() => searchRef.current?.focus());
   });
 
@@ -469,7 +486,7 @@ export function SalePage() {
             <Link to="/invoices/$invoiceId/print" params={{ invoiceId: savedSale.id }} data-testid="sale-print">{t("savedPrint")}</Link>
           </Button>
           <SuccessCardSpacer />
-          <Button variant="ghost" onClick={() => setSavedSale(null)} data-testid="sale-new">{t("saleNew")}</Button>
+          <Button variant="ghost" onClick={startFreshSale} data-testid="sale-new">{t("saleNew")}</Button>
         </SuccessCard>
       </section>
     );
@@ -548,7 +565,10 @@ export function SalePage() {
               className={cn(inputClass, "w-full px-3 py-2")}
               autoComplete="off"
               value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+              onChange={(event) => {
+                searchRequestSeqRef.current += 1;
+                setSearchQuery(event.target.value);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                   if (searchMatches.length === 0) return;
@@ -561,14 +581,34 @@ export function SalePage() {
                 }
                 if (event.key !== "Enter" || searchQuery.trim() === "") return;
                 event.preventDefault();
-                if (searchDebounced !== searchQuery.trim() || catalogSearch.isPending || catalogSearch.isError) return;
-                if (searchExact !== null) {
-                  addLine(searchExact.item);
-                } else {
-                  const activeMatch = visibleSearchIndex === null ? undefined : searchMatches[visibleSearchIndex];
+                // A held Enter is not another scan. Separate physical scan
+                // commits still reach this handler after the prior lookup ends.
+                if (event.repeat) return;
+                const submittedQuery = searchQuery.trim();
+                const requestSeq = ++searchRequestSeqRef.current;
+                const addSubmittedResult = (result: { exact: CatalogMatch | null; matches: CatalogMatch[] }) => {
+                  if (requestSeq !== searchRequestSeqRef.current || searchRef.current?.value.trim() !== submittedQuery || commitRef.current) return;
+                  const exact = result.exact;
+                  if (exact !== null) {
+                    addLine(exact.item);
+                    return;
+                  }
+                  const activeMatch = searchReady && searchDebounced === submittedQuery && visibleSearchIndex !== null
+                    ? result.matches[visibleSearchIndex]
+                    : undefined;
                   if (activeMatch !== undefined) addLine(activeMatch.item);
-                  else if (searchMatches.length === 1 && searchMatches[0] !== undefined) addLine(searchMatches[0].item);
+                  else if (result.matches.length === 1 && result.matches[0] !== undefined) addLine(result.matches[0].item);
+                };
+                if (searchReady && !catalogSearch.isPending && !catalogSearch.isError) {
+                  addSubmittedResult({ exact: searchExact, matches: searchMatches });
+                  return;
                 }
+                void queryClient.fetchQuery(orpc.catalogSearch.queryOptions({ input: { query: submittedQuery } }))
+                  .then(addSubmittedResult)
+                  .catch((err) => {
+                    if (requestSeq !== searchRequestSeqRef.current || searchRef.current?.value.trim() !== submittedQuery || commitRef.current) return;
+                    setError(tError(err instanceof Error ? err.message : undefined));
+                  });
               }}
               data-testid="sale-search"
             />

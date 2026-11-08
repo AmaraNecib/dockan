@@ -1717,6 +1717,32 @@ async function pressSaleSearchEnter(host: HTMLElement, repeat = false): Promise<
 }
 
 describe("SalePage persistent search (issue #396)", () => {
+  it("honors an explicitly highlighted match instead of an exact barcode sibling", async () => {
+    const exact = saleSearchMatch("exact-sibling", "باركود مطابق", 750, "BARCODE_EXACT");
+    const selected = saleSearchMatch("selected-sibling", "منتج مختار", 900);
+    catalogFixtures.mixed = { exact, matches: [selected, exact] };
+    const host = await mountSale();
+    await typeSaleSearch(host, "mixed");
+    await act(async () => host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await pressSaleSearchEnter(host);
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "selected-sibling", quantity: 1 }]);
+  });
+
+  it("scrolls the highlighted search option into view", async () => {
+    const match = saleSearchMatch("scroll-result", "منتج قابل للتمرير", 500);
+    catalogFixtures.scroll = { exact: null, matches: [match] };
+    const host = await mountSale();
+    await typeSaleSearch(host, "scroll");
+    const option = host.querySelector<HTMLElement>('[role="option"][id="sale-search-option-scroll-result"]')!;
+    const scroll = mock(() => {});
+    option.scrollIntoView = scroll;
+    await act(async () => host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    expect(option.getAttribute("aria-selected")).toBe("true");
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+  });
+
   it("keeps search visible before and after the first line is added", async () => {
     const host = await mountSale();
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-search"]')).not.toBeNull();

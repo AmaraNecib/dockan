@@ -200,6 +200,11 @@ export function SalePage() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
   useEffect(() => setSearchActiveIndex(null), [searchDebounced, searchMatchSetKey]);
+  useEffect(() => {
+    if (visibleSearchIndex === null) return;
+    const itemId = searchMatches[visibleSearchIndex]?.item.id;
+    document.getElementById(`sale-search-option-${itemId}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [visibleSearchIndex, searchMatchSetKey]);
 
   const addLine = (item: Item) => {
     // Freeze additions while committing and after the server has completed the
@@ -588,15 +593,11 @@ export function SalePage() {
                 const requestSeq = ++searchRequestSeqRef.current;
                 const addSubmittedResult = (result: { exact: CatalogMatch | null; matches: CatalogMatch[] }) => {
                   if (requestSeq !== searchRequestSeqRef.current || searchRef.current?.value.trim() !== submittedQuery || commitRef.current) return;
-                  const exact = result.exact;
-                  if (exact !== null) {
-                    addLine(exact.item);
-                    return;
-                  }
                   const activeMatch = searchReady && searchDebounced === submittedQuery && visibleSearchIndex !== null
                     ? result.matches[visibleSearchIndex]
                     : undefined;
                   if (activeMatch !== undefined) addLine(activeMatch.item);
+                  else if (result.exact !== null) addLine(result.exact.item);
                   else if (result.matches.length === 1 && result.matches[0] !== undefined) addLine(result.matches[0].item);
                 };
                 if (searchReady && !catalogSearch.isPending && !catalogSearch.isError) {

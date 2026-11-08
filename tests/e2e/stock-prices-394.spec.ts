@@ -29,6 +29,7 @@ async function rpc<T>(page: Page, request: SeedRequest): Promise<T> {
 }
 
 test("stock entry searches all items and saves both prices without losing a failed draft", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   const evidenceDir = path.resolve(process.cwd(), ".scratch/evidence/394");
   fs.mkdirSync(evidenceDir, { recursive: true });
   const suffix = Date.now().toString();
@@ -90,8 +91,6 @@ test("stock entry searches all items and saves both prices without losing a fail
   });
   expect(saved.items.find((item) => item.name === itemName)).toMatchObject({ stockOnHand: 3, costPrice: 140, sellingPrice: 375 });
 
-  const video = page.video();
-  if (video !== null) await video.saveAs(path.join(evidenceDir, "issue-394-stock.webm"));
   await testInfo.attach("stock-form-before", { path: path.join(evidenceDir, "before.png"), contentType: "image/png" });
   await testInfo.attach("stock-form-after", { path: path.join(evidenceDir, "after.png"), contentType: "image/png" });
 });

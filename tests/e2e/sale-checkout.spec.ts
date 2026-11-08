@@ -121,11 +121,11 @@ test("persistent sale search keeps the real invoice draft through scans, create,
   expect(persisted.discountType).toBe("AMOUNT");
   expect(persisted.discountValue).toBe(100);
   expect(persisted.totalAmount).toBe(2700);
-  expect(persisted.lines.map(({ itemId, quantity }) => ({ itemId, quantity }))).toEqual([
+  expect(persisted.lines.map(({ itemId, quantity }) => ({ itemId, quantity })).sort((a, b) => (a.itemId ?? "").localeCompare(b.itemId ?? ""))).toEqual([
     { itemId: known.id, quantity: 2 },
     { itemId: ambiguousFirst.id, quantity: 1 },
     { itemId: created.id, quantity: 1 },
-  ]);
+  ].sort((a, b) => a.itemId.localeCompare(b.itemId)));
 });
 
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {

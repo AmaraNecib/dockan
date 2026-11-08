@@ -1505,12 +1505,9 @@ describe("stock form prefill", () => {
     const message = el<HTMLElement>('[data-testid="stock-error"]').textContent ?? "";
     // the raw code must not reach the owner: the message says what happened
     expect(message).not.toContain("STOCK_ADJUSTMENT_DUPLICATE");
-    expect(message).toContain("لم يُطبَّق مرتين");
-    // the escape the copy offers is WAIT. "Change the reason" was removed: a
-    // reason typed only to get past the guard lands in the permanent ledger
-    // (apps/api/src/lib/stock-adjustment.ts, why the window is short), so pin
-    // both the clause that must stay and the one that must not come back.
-    expect(message).toContain("أعد المحاولة بعد قليل");
+    expect(message).toContain("لم تُضف الكمية مرة أخرى");
+    expect(message).toContain("ابدأ إدخالاً جديداً");
+    // Keep the draft available and tell the operator how to separate a new receipt.
     expect(message).not.toContain("غيّر سبب");
     expect(inputByTestId("stock-delta").value).toBe("5");
     expect(inputByTestId("stock-unit-cost").value).toBe("999");

@@ -68,6 +68,11 @@ test.describe("item history 399", () => {
     await expect(factsHelp).toHaveJSProperty("open", true);
     await expect(factsHelp).toContainText("إجمالي التكلفة");
     await expect(factsHelp).toContainText("تكلفة الوحدة المقربة");
+    const factsPanel = detail.locator("[data-testid^='history-detail-']").first();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const narrowFactsBox = await factsPanel.boundingBox();
+    expect(narrowFactsBox?.width).toBeLessThanOrEqual(240);
+    await page.setViewportSize({ width: 1920, height: 1080 });
     await factsHelpSummary.click();
     await expect(factsHelp).toHaveJSProperty("open", false);
     await factsHelpSummary.tap();

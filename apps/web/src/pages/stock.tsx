@@ -515,7 +515,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                   </TableRow>
                   <TableRow hidden={!expanded} data-testid={`history-detail-row-${movement.id}`}>
                     <TableCell colSpan={5} className="whitespace-normal bg-muted/30 p-4 align-top">
-                      <div id={detailId} data-testid={`history-detail-${movement.id}`} className="max-w-4xl space-y-3">
+                      <div id={detailId} data-testid={`history-detail-${movement.id}`} className="w-full max-w-[min(56rem,calc(100vw-10rem))] space-y-3">
                         <div className="grid gap-4 sm:grid-cols-2">
                           <section>
                             <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">

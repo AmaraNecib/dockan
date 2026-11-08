@@ -37,9 +37,10 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
 } from 'node:fs'
-import { join, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 /** The repo root the CLI acts on; a test points it at a temp tree. */
 const resolveRoot = (): string => {
@@ -129,6 +130,59 @@ const isSymlink = (path: string): boolean => {
   } catch {
     return false
   }
+}
+
+const isWithin = (parent: string, candidate: string): boolean => {
+  const pathFromParent = relative(parent, candidate)
+  return (
+    pathFromParent === '' ||
+    (pathFromParent !== '..' &&
+      !pathFromParent.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromParent))
+  )
+}
+
+/** Resolve a path that may not exist yet through its nearest existing parent. */
+const resolveWithMissingTail = (path: string): string => {
+  if (existsSync(path)) return realpathSync(path)
+  const parent = resolve(path, '..')
+  if (parent === path) throw new Error(`no existing parent for ${path}`)
+  return join(resolveWithMissingTail(parent), basename(path))
+}
+
+/** Validate both trees before reading, walking, creating, copying, or pruning. */
+const mirrorRootProblems = (
+  root: string,
+  agentsDir: string,
+  claudeDir: string,
+): string[] => {
+  const problems: string[] = []
+  for (const [ancestor, message] of [
+    [join(root, '.agents'), '.agents is a symlink'],
+    [join(root, '.claude'), '.claude is a symlink'],
+    [agentsDir, '.agents/skills is a symlink (mirror source)'],
+    [claudeDir, '.claude/skills is a symlink (npx skills add writes absolute links)'],
+  ] as const) {
+    if (isSymlink(ancestor)) problems.push(message)
+  }
+  if (problems.length > 0) return problems
+
+  try {
+    const realRoot = realpathSync(root)
+    const realAgents = resolveWithMissingTail(agentsDir)
+    const realClaude = resolveWithMissingTail(claudeDir)
+    if (!isWithin(realRoot, realAgents))
+      problems.push('.agents/skills resolves outside the selected root')
+    if (!isWithin(realRoot, realClaude))
+      problems.push('.claude/skills resolves outside the selected root')
+    if (isWithin(realAgents, realClaude) || isWithin(realClaude, realAgents))
+      problems.push('.agents/skills and .claude/skills resolve to overlapping paths')
+  } catch (error) {
+    problems.push(
+      `could not resolve mirror roots: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+  return problems
 }
 
 /** Problems that make `source` and `dest` non-equivalent, as human strings. */
@@ -252,15 +306,9 @@ export type CheckResult = { names: string[]; problems: string[] }
  */
 export const runCheck = (root: string): CheckResult => {
   const { agentsDir, claudeDir, lockFile } = paths(root)
+  const problems = mirrorRootProblems(root, agentsDir, claudeDir)
+  if (problems.length > 0) return { names: [], problems }
   const names = Object.keys(readLock(lockFile).skills).sort()
-  const problems: string[] = []
-  // The roots themselves are the one depth the per-skill walk cannot see.
-  if (isSymlink(agentsDir))
-    problems.push('.agents/skills is a symlink (mirror source)')
-  if (isSymlink(claudeDir))
-    problems.push(
-      '.claude/skills is a symlink (npx skills add writes absolute links)',
-    )
   // A linked root already fails the gate; comparing through it would only add
   // noise (every source "missing", or the mirror resolving to the source).
   if (problems.length === 0) {
@@ -348,15 +396,11 @@ const main = () => {
     process.exit(0)
   }
 
-  // A linked root would make `dest` resolve back into the source tree, so a
-  // sync could `rmSync` the source of truth before copying it.
-  for (const dir of [agentsDir, claudeDir]) {
-    if (isSymlink(dir)) {
-      console.error(
-        `refusing to sync: ${relative(root, dir).split(sep).join('/')} is a symlink (replace it with a real directory)`,
-      )
-      process.exit(1)
-    }
+  const rootProblems = mirrorRootProblems(root, agentsDir, claudeDir)
+  if (rootProblems.length > 0) {
+    console.error('refusing to sync: unsafe mirror roots:')
+    for (const problem of rootProblems) console.error(`  - ${problem}`)
+    process.exit(1)
   }
 
   let names: string[]

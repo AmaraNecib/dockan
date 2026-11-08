@@ -484,6 +484,83 @@ describe('skills:check CLI (SKILLS_MIRROR_ROOT)', () => {
 })
 
 describe('skills:check CLI — hardening edges', () => {
+  it('rejects an external .claude ancestor in check and sync before pruning its target', () => {
+    withTempRoot((root) => {
+      const external = mkdtempSync(join(tmpdir(), 'skills-external-claude-'))
+      try {
+        mkdirSync(join(external, 'skills', 'demo'), { recursive: true })
+        writeFileSync(join(external, 'skills', 'demo', 'SKILL.md'), '# outside\n')
+        writeFileSync(join(external, 'skills', 'keep.txt'), 'sentinel\n')
+        rmSync(join(root, '.claude'), { recursive: true, force: true })
+        symlinkSync(external, join(root, '.claude'), 'junction')
+
+        const check = runCli(root)
+        expect(check.status).toBe(1)
+        expect(check.stderr).toContain('.claude is a symlink')
+
+        const sync = runCli(root, [])
+        expect(sync.status).toBe(1)
+        expect(sync.stderr).toContain('.claude is a symlink')
+        expect(readFileSync(join(external, 'skills', 'keep.txt'), 'utf8')).toBe(
+          'sentinel\n',
+        )
+        expect(readFileSync(join(external, 'skills', 'demo', 'SKILL.md'), 'utf8')).toBe(
+          '# outside\n',
+        )
+      } finally {
+        rmSync(external, { recursive: true, force: true })
+      }
+    })
+  })
+
+  it('rejects an external .agents ancestor in check and sync without traversing or rewriting it', () => {
+    withTempRoot((root) => {
+      const external = mkdtempSync(join(tmpdir(), 'skills-external-agents-'))
+      try {
+        mkdirSync(join(external, 'skills', 'demo'), { recursive: true })
+        writeFileSync(join(external, 'skills', 'demo', 'SKILL.md'), '# outside source\n')
+        writeFileSync(join(external, 'skills', 'sentinel.txt'), 'source sentinel\n')
+        rmSync(join(root, '.agents'), { recursive: true, force: true })
+        symlinkSync(external, join(root, '.agents'), 'junction')
+
+        const check = runCli(root)
+        expect(check.status).toBe(1)
+        expect(check.stderr).toContain('.agents is a symlink')
+
+        const sync = runCli(root, [])
+        expect(sync.status).toBe(1)
+        expect(sync.stderr).toContain('.agents is a symlink')
+        expect(readFileSync(join(external, 'skills', 'sentinel.txt'), 'utf8')).toBe(
+          'source sentinel\n',
+        )
+        expect(readFileSync(join(root, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8')).toBe(
+          '# demo\n',
+        )
+      } finally {
+        rmSync(external, { recursive: true, force: true })
+      }
+    })
+  })
+
+  it('rejects .claude pointing at .agents before sync can delete the source skill', () => {
+    withTempRoot((root) => {
+      const source = join(root, '.agents')
+      rmSync(join(root, '.claude'), { recursive: true, force: true })
+      symlinkSync(source, join(root, '.claude'), 'junction')
+
+      const check = runCli(root)
+      expect(check.status).toBe(1)
+      expect(check.stderr).toContain('.claude is a symlink')
+
+      const sync = runCli(root, [])
+      expect(sync.status).toBe(1)
+      expect(sync.stderr).toContain('.claude is a symlink')
+      expect(readFileSync(join(source, 'skills', 'demo', 'SKILL.md'), 'utf8')).toBe(
+        '# demo\n',
+      )
+    })
+  })
+
   it('fails closed on a link inside a locked skill tree', () => {
     withTempRoot((root) => {
       symlinkSync(
@@ -646,12 +723,9 @@ describe('skills:check CLI — hardening edges', () => {
     })
   })
 
-  it('syncs a clean temp root and exits 0', () => {
+  it('syncs a clean temp root with no existing .claude destination', () => {
     withTempRoot((root) => {
-      rmSync(join(root, '.claude', 'skills', 'demo'), {
-        recursive: true,
-        force: true,
-      })
+      rmSync(join(root, '.claude'), { recursive: true, force: true })
       const result = runCli(root, [])
       expect(result.status).toBe(0)
       expect(result.stdout).toContain('synced 1 skill(s)')

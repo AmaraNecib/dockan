@@ -26,7 +26,7 @@ test("persistent sale search keeps the real invoice draft through scans, create,
   const ambiguousFirst = await callRpc<Item, object>(page, "itemsCreateWithStock", {
     name: `${ambiguousQuery}-Alpha`, categoryId, costPrice: 100, sellingPrice: 500, stockOnHand: 3,
   });
-  await callRpc<Item, object>(page, "itemsCreateWithStock", {
+  const ambiguousSecond = await callRpc<Item, object>(page, "itemsCreateWithStock", {
     name: `${ambiguousQuery}-Beta`, categoryId, costPrice: 100, sellingPrice: 600, stockOnHand: 3,
   });
   const customerName = `زبون-${stamp}`;
@@ -126,6 +126,11 @@ test("persistent sale search keeps the real invoice draft through scans, create,
     { itemId: ambiguousFirst.id, quantity: 1 },
     { itemId: created.id, quantity: 1 },
   ].sort((a, b) => a.itemId.localeCompare(b.itemId)));
+  const inventory = await callRpc<{ items: Item[] }, object>(page, "itemsAll", {});
+  expect(inventory.items.find((item) => item.id === known.id)?.stockOnHand).toBe(8);
+  expect(inventory.items.find((item) => item.id === ambiguousFirst.id)?.stockOnHand).toBe(2);
+  expect(inventory.items.find((item) => item.id === created.id)?.stockOnHand).toBe(3);
+  expect(inventory.items.find((item) => item.id === ambiguousSecond.id)?.stockOnHand).toBe(3);
 });
 
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {

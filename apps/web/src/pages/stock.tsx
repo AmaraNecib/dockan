@@ -60,6 +60,7 @@ export function StockForm() {
   // overwritten.
   const prefilledRef = useRef<{ itemId: string; cost: string } | null>(null);
   const sellingPrefilledRef = useRef<{ itemId: string; price: string } | null>(null);
+  const movementIdRef = useRef(crypto.randomUUID());
   /** a movement invalidates the list; the cached cost is stale until the
    * refetch that follows it lands */
   const freshAfterRef = useRef(0);
@@ -80,6 +81,7 @@ export function StockForm() {
 
   useEffect(() => {
     if (selectedItem === null) return;
+    if (items.dataUpdatedAt < freshAfterRef.current) return;
     const nextPrice = String(selectedItem.sellingPrice);
     const previous = sellingPrefilledRef.current;
     const selectionChanged = previous === null || previous.itemId !== selectedItemId;
@@ -100,6 +102,7 @@ export function StockForm() {
         // let the next refetch re-prefill the (possibly changed) average cost
         prefilledRef.current = null;
         sellingPrefilledRef.current = null;
+        movementIdRef.current = crypto.randomUUID();
         freshAfterRef.current = Date.now();
         // the items table (paginated, so its key carries the page), the
         // low-stock badge, the item pickers (itemsAll) and the dashboard all
@@ -136,6 +139,7 @@ export function StockForm() {
       return;
     }
     void adjust.mutate({
+      movementId: movementIdRef.current,
       itemId: selectedItemId,
       delta: parsedDelta,
       unitCost: parsedUnitCost === null ? undefined : parsedUnitCost,

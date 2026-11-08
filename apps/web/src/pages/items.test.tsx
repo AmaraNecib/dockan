@@ -58,6 +58,7 @@ interface CapturedUpdateInput {
 
 /** Captured manual stock movement. */
 interface CapturedStockInput {
+  movementId?: string;
   itemId?: string;
   delta?: number;
   unitCost?: number;
@@ -1317,6 +1318,28 @@ describe("stock form prefill", () => {
     const persistedItems = queryClient.getQueryData<{ items: FixtureItem[] }>(["itemsAll"])?.items ?? [];
     expect(persistedItems.find((item) => item.id === "item-2")?.stockOnHand).toBe(2);
     expect(persistedItems.find((item) => item.id === "item-1")?.stockOnHand).toBe(3);
+  });
+
+  it("waits for the post-save refetch before prefilling the next selling price", async () => {
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-selling-price").value === "150");
+    setInput("stock-delta", "1");
+    setInput("stock-selling-price", "375");
+    itemsGate = new Promise<void>((resolve) => { releaseItemsGate = resolve; });
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 1);
+    expect(stockInputs[0]?.movementId).toMatch(/^[0-9a-f-]{36}$/i);
+    await settle();
+    expect(inputByTestId("stock-selling-price").value).toBe("");
+
+    act(() => releaseItemsGate?.());
+    await waitFor(() => inputByTestId("stock-selling-price").value === "375");
+    setInput("stock-delta", "1");
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 2);
+    expect(stockInputs[1]?.sellingPrice).toBe(375);
+    expect(stockInputs[1]?.movementId).not.toBe(stockInputs[0]?.movementId);
   });
 
   it("shows the selling price and prefills the cost from the selected item", async () => {

@@ -37,6 +37,7 @@ export type StockPostingTx = Pick<
 
 export interface StockMovementSpec {
   itemId: string;
+  movementId?: string;
   kind: MovementKind;
   /** signed quantity: positive = stock in, negative = stock out */
   delta: number;
@@ -178,6 +179,7 @@ async function postOne(
   const projection = projectLedger([...existing, candidate], { fallbackUnitCost });
 
   const movement = await tx.insertStockMovement({
+    id: spec.movementId,
     itemId: spec.itemId,
     kind: spec.kind,
     delta: spec.delta,

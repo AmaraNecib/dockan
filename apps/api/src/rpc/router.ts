@@ -809,6 +809,9 @@ export function createRpcRouter(deps: RpcDeps) {
         if (input.delta < 0 && input.sellingPrice !== undefined) {
           throw new ORPCError("BAD_REQUEST", { message: "STOCK_PRICE_UPDATE_REQUIRES_INFLOW" });
         }
+        if (input.sellingPrice !== undefined && input.movementId === undefined) {
+          throw new ORPCError("BAD_REQUEST", { message: "STOCK_ENTRY_ID_REQUIRED" });
+        }
         // #295 — a money path that READS before it WRITES takes the write
         // lock first (the same reason the sale, payment and return paths use
         // `withTransactionImmediate`): the guard below compares the request
@@ -823,6 +826,9 @@ export function createRpcRouter(deps: RpcDeps) {
         // it is pinned as the CALL — `router.test.ts` "opens the guard's read
         // under the write lock" fails if this becomes `withTransaction`.
         return deps.store.withTransactionImmediate(async (tx) => {
+          if (input.movementId !== undefined && await tx.getStockMovementById(input.movementId) !== undefined) {
+            throw new ORPCError("CONFLICT", { message: "STOCK_ADJUSTMENT_DUPLICATE" });
+          }
           const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);
           if (item === undefined) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
@@ -878,6 +884,7 @@ export function createRpcRouter(deps: RpcDeps) {
           // inserts the movement, and replays the ADR-0002 average into the
           // cache. No per-call-site special-casing.
           const posted = await postStock(tx, {
+            movementId: input.movementId,
             itemId: item.id,
             kind: input.kind,
             delta: input.delta,

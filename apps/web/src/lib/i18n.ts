@@ -569,12 +569,9 @@ const resources = {
       ITEM_NOT_FOUND: "المنتج غير موجود",
       ITEM_ERROR: "تعذّر حفظ المنتج",
       STOCK_NEGATIVE: "الكمية غير متوفرة في المخزون",
-      // #295 — the same stock adjustment was posted twice (a second window, a
-      // double-clicked save, a re-sent request). The first one stands, and the
-      // escape is WAIT: telling the owner to change the reason would write a
-      // reason typed only to get past the guard into the permanent ledger
-      // (apps/api/src/lib/stock-adjustment.ts, why the window is short).
-      STOCK_ADJUSTMENT_DUPLICATE: "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين. أعد المحاولة بعد قليل.",
+      // A reused movement identity is refused even when the payload differs.
+      STOCK_ADJUSTMENT_DUPLICATE: "هذا الإيصال سبق تسجيله. لم تُضف الكمية مرة أخرى. ابدأ إدخالاً جديداً إذا كان إيصالاً مختلفاً.",
+      STOCK_ENTRY_ID_REQUIRED: "تعذّر حفظ الإيصال. ابدأ إدخالاً جديداً ثم أعد المحاولة.",
       STOCK_PRICE_UPDATE_REQUIRES_INFLOW: "يمكن تعديل سعر البيع عند إضافة المخزون فقط.",
       // ticket 29 — purchase intake + deferred linking
       purchasesTitle: "فاتورة شراء جديدة",

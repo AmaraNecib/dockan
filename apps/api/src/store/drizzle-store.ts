@@ -1955,12 +1955,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
 
     // --- stock ledger (ticket 27) --------------------------------------------
+    async getStockMovementById(movementId) {
+      const rows = await db.select().from(stockMovements).where(eq(stockMovements.id, movementId)).limit(1);
+      return rows.length === 0 ? undefined : firstRowOf(rows);
+    },
     async insertStockMovement(movement) {
       const row = firstRowOf(
         await db
           .insert(stockMovements)
           .values({
-            id: id(),
+            id: movement.id ?? id(),
             itemId: movement.itemId,
             kind: movement.kind,
             delta: movement.delta,

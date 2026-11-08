@@ -1530,6 +1530,8 @@ export const settingsUpdateInputSchema = z.object({
 
 export const stockAddManualInputSchema = z.object({
   itemId: idSchema,
+  /** Durable identity for a stock-entry attempt. */
+  movementId: idSchema.optional(),
   /** signed; nonzero; magnitude-capped so sqlite INTEGER + JS number stay exact */
   delta: z.number().int().refine((v) => v !== 0 && Math.abs(v) <= 1_000_000, "delta must be a nonzero integer within ±1,000,000"),
   unitCost: dinarsSchema.optional(),

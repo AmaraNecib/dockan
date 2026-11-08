@@ -1,10 +1,9 @@
 import { useId, useRef, useState } from "react";
+import { RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { saleOverrideInvalid, saleUnitPrice, type SaleDraftLine } from "@/lib/invoice-draft";
+import { saleOverrideInvalid, type SaleDraftLine } from "@/lib/invoice-draft";
 import { salePriceInput, switchSalePriceMode, type SalePriceMode, type SalePriceOverride } from "@/lib/sale-price-editor";
 import { cn } from "@/lib/utils";
 
@@ -19,13 +18,17 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
   const [chosenMode, setChosenMode] = useState<SalePriceMode | null>(null);
   const [switchError, setSwitchError] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const amountRadio = useRef<HTMLInputElement>(null);
+  const percentageRadio = useRef<HTMLInputElement>(null);
   const previousPercentage = useRef<string | undefined>(undefined);
-  const meaningId = useId();
+  const modeGroupId = useId();
+  const invalidId = useId();
   const errorId = useId();
   const mode = chosenMode ?? (line.overrideType || preferredMode);
   const invalid = saleOverrideInvalid(line);
 
   function reset() {
+    (mode === "AMOUNT" ? amountRadio : percentageRadio).current?.focus();
     onChange({ overrideType: "", overrideValue: "" });
     setSwitchError(false);
     previousPercentage.current = undefined;
@@ -35,7 +38,11 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
     if (value !== "AMOUNT" && value !== "PERCENTAGE") return;
     if (value === mode) return;
     const override = switchSalePriceMode(line, value, previousPercentage.current);
-    if (override === null) { setSwitchError(true); return; }
+    if (override === null) {
+      setSwitchError(true);
+      (mode === "AMOUNT" ? amountRadio : percentageRadio).current?.focus();
+      return;
+    }
     if (line.overrideType === "PERCENTAGE") previousPercentage.current = line.overrideValue;
     onChange(override);
     setChosenMode(value);
@@ -43,21 +50,31 @@ export function SaleLinePriceEditor({ line, preferredMode, onMode, onChange, dis
     onMode(value);
   }
 
-  return <div className="grid gap-2 min-w-64">
-    <div className="flex flex-wrap items-center gap-2">
-      <input ref={input} className={cn(inputClass, "w-28 px-2 py-1")} autoComplete="off" inputMode="numeric" dir="ltr"
+  const restoreLabel = `${t("saleResetPrice")} ${line.item.name}`;
+
+  return <div className="grid min-w-0 gap-1">
+    <div className="flex items-center justify-start gap-1">
+      <input ref={input} data-testid="sale-price-value" className={cn(inputClass, "w-20 px-2 py-1")} autoComplete="off" inputMode="numeric" dir="ltr"
         value={salePriceInput(line, mode)} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`}
-        aria-invalid={invalid || undefined} aria-describedby={`${meaningId}${switchError ? ` ${errorId}` : ""}`}
+        aria-invalid={invalid || undefined} aria-describedby={[invalid ? invalidId : "", switchError ? errorId : ""].filter(Boolean).join(" ") || undefined}
         onChange={(event) => { setChosenMode(mode); setSwitchError(false); onChange({ overrideType: mode, overrideValue: event.target.value }); }} disabled={disabled} />
-      <Select value={mode} onValueChange={selectMode} disabled={disabled} items={[{ value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}>
-        <SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger>
-        <SelectContent><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent>
-      </Select>
-      <Button type="button" variant="ghost" size="sm" data-testid="sale-price-reset" onClick={reset} disabled={disabled}>{t("saleResetPrice")}</Button>
+      <div role="radiogroup" aria-label={`${line.item.name}: ${t("saleOverrideType")}`} data-testid="sale-price-mode" className="inline-flex overflow-hidden rounded-md border border-input">
+        <label className="relative cursor-pointer">
+          <input ref={amountRadio} type="radio" name={modeGroupId} value="AMOUNT" aria-label={`${line.item.name}: ${t("saleOverrideDzd")}`} checked={mode === "AMOUNT"} onChange={() => selectMode("AMOUNT")} disabled={disabled} className="peer sr-only" />
+          <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">{t("saleOverrideDzdShort")}</span>
+        </label>
+        <label className="relative cursor-pointer border-s border-input">
+          <input ref={percentageRadio} type="radio" name={modeGroupId} value="PERCENTAGE" aria-label={`${line.item.name}: ${t("saleOverridePercentAccessible")}`} checked={mode === "PERCENTAGE"} onChange={() => selectMode("PERCENTAGE")} disabled={disabled} className="peer sr-only" />
+          <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">%</span>
+        </label>
+      </div>
+      {line.overrideType !== "" && (
+        <Button type="button" variant="ghost" size="icon-sm" data-testid="sale-price-reset" aria-label={restoreLabel} title={t("saleResetPrice")} onClick={reset} disabled={disabled}>
+          <RotateCcw size={14} aria-hidden="true" />
+        </Button>
+      )}
     </div>
-    <span id={meaningId} data-testid="sale-price-meaning" className="text-xs text-muted-foreground">
-      {mode === "PERCENTAGE" ? t("salePriceShare") : t("salePricePerUnit")} {invalid ? t("salePriceUnusable") : <Amount value={saleUnitPrice(line)} />}
-    </span>
+    {invalid && <span id={invalidId} className="text-xs text-destructive">{t("salePriceUnusable")}</span>}
     {switchError && <span id={errorId} role="alert" className="text-xs text-destructive">{t("salePriceSwitchRefused")}</span>}
   </div>;
 }

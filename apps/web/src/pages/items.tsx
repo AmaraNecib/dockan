@@ -2,6 +2,7 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Pencil } from "lucide-react";
 
 import { Link } from "@tanstack/react-router";
 import type { ItemListItem, ItemCreate, ItemUpdate } from "@dokan/contracts";
@@ -17,13 +18,13 @@ import { inputClass } from "@/components/ui/input";
 import { Pager } from "@/components/ui/pager";
 import { useRpc } from "../lib/rpc-context";
 import { tError } from "../lib/i18n";
-import { usePagination } from "../hooks/use-pagination";
+import { usePagination, type Pagination } from "../hooks/use-pagination";
 import { normalizeBarcode } from "@dokan/contracts";
 import { draftBlank, parseLooseNumber } from "@/lib/amount-parse";
 import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { hotCounterRefresh } from "../lib/freshness";
-import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
+import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { StockForm } from "./stock";
 
@@ -83,6 +84,22 @@ export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
   const { rpcClient } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const pager = usePagination();
+  const [searchText, setSearchText] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchQuery(searchText.trim()), 150);
+    return () => clearTimeout(timer);
+  }, [searchText]);
+  useEffect(() => {
+    pager.reset();
+  }, [pager.reset, searchQuery]);
+
+  function changeSearch(value: string) {
+    setSearchText(value);
+    pager.reset();
+  }
 
   /** table first: browsing is the default; adding is a deliberate step */
   const [tab, setTab] = useState<ItemsTab>("products");
@@ -217,10 +234,12 @@ export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
       </div>
 
       <div role="tabpanel" id="items-panel-products" aria-labelledby="items-tab-products" hidden={tab !== "products"}>
-        <CatalogSearch />
+        <CatalogSearch query={searchText} onQueryChange={changeSearch} />
         <ItemList
           refreshMs={refreshMs}
           scanNonce={scanNonce}
+          searchQuery={searchQuery}
+          pager={pager}
           onAddItem={() => {
             selectTab("add");
             // the action unmounts the button that was clicked; hand focus to the
@@ -257,69 +276,45 @@ export function ItemsPage({ refreshMs }: { refreshMs?: number } = {}) {
   );
 }
 
-function CatalogSearch() {
-  const { orpc } = useRpc();
+function CatalogSearch({ query, onQueryChange }: { query: string; onQueryChange: (value: string) => void }) {
   const { t } = useTranslation();
-  const [query, setQuery] = useState("");
-  const [debounced, setDebounced] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(query.trim()), 150);
-    return () => clearTimeout(timer);
-  }, [query]);
-
-  const search = useQuery({
-    ...orpc.catalogSearch.queryOptions({ input: { query: debounced || " " }, enabled: debounced.length > 0 }),
-  });
+  const inputRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="mt-4 rounded border bg-card p-3">
-      <input
-        className={cn(inputClass, "w-full")}
-        placeholder={t("itemsSearchPlaceholder")}
-        aria-label={t("itemsSearchPlaceholder")}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        data-testid="catalog-search"
-      />
-      {search.isError && (
-        <div className="mt-2 flex items-center justify-between rounded border bg-destructive/10 p-2 text-sm text-destructive">
-          <span>{t("itemsSearchError")}</span>
-          <button type="button" className="underline" onClick={() => void search.refetch()}>
-            {t("itemsSearchRetry")}
-          </button>
-        </div>
-      )}
-      {debounced.length > 0 && !search.isError && (
-        <ul className="mt-2" data-testid="search-results">
-          {search.data?.exact && (
-            <li className="flex items-center justify-between rounded bg-accent p-2 font-semibold">
-              <span>{search.data.exact.item.name}</span>
-              <span dir="ltr" className="font-mono text-xs">
-                {search.data.exact.item.barcode}
-              </span>
-            </li>
-          )}
-          {(search.data?.matches ?? []).map((match) => (
-            <li key={match.item.id} className="flex items-center justify-between p-2">
-              <span>{match.item.name}</span>
-              <span className="flex items-center gap-2">
-                {match.item.barcode && (
-                  <span dir="ltr" className="font-mono text-xs text-muted-foreground">
-                    {match.item.barcode}
-                  </span>
-                )}
-                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">{t(matchBadgeKey(match.matchedBy))}</span>
-              </span>
-            </li>
-          ))}
-          {debounced.length > 0 && !search.isPending && !search.isError && !search.data?.exact && (search.data?.matches.length ?? 0) === 0 && (
-            <li className="p-2 text-sm text-muted-foreground">{t("itemsSearchEmpty")}</li>
-          )}
-        </ul>
-      )}
-      <button type="button" className="mt-2 text-sm text-muted-foreground underline" onClick={() => setPickerOpen(true)} data-testid="open-picker">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          ref={inputRef}
+          type="search"
+          className={cn(inputClass, "min-w-0 flex-1")}
+          placeholder={t("itemsSearchPlaceholder")}
+          aria-label={t("itemsSearchPlaceholder")}
+          aria-controls="items-table-results"
+          maxLength={200}
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          data-testid="catalog-search"
+        />
+        {query.length > 0 && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              onQueryChange("");
+              inputRef.current?.focus();
+            }}
+          >
+            {t("itemsSearchClear")}
+          </Button>
+        )}
+      </div>
+      <button
+        type="button"
+        className="mt-2 rounded text-sm text-muted-foreground underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        onClick={() => setPickerOpen(true)}
+        data-testid="open-picker"
+      >
         {t("itemsOpenPicker")}
       </button>
       <ItemPickerDialog
@@ -637,15 +632,14 @@ function ItemForm({
   );
 }
 
-function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAddItem: () => void; refreshMs?: number }) {
+function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { scanNonce: number; onAddItem: () => void; refreshMs?: number; searchQuery: string; pager: Pagination }) {
   const { orpc } = useRpc();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const pager = usePagination();
   // #295 — the stock on hand is a hot counter: it moves with every sale in
   // every window, so the table re-reads it on the bounded tick instead of
   // waiting for a focus event that a second window never sends.
-  const items = useQuery({ ...orpc.itemsList.queryOptions({ input: { ...pager.pagination } }), ...hotCounterRefresh(refreshMs) });
+  const items = useQuery({ ...orpc.itemsList.queryOptions({ input: { ...pager.pagination, query: searchQuery || undefined } }), ...hotCounterRefresh(refreshMs) });
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [draft, setDraft] = useState<ItemEditDraft | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
@@ -874,18 +868,63 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
     }
   }
 
-  // first load: skeleton rows matching the table shape so layout does not jump
-  if (items.isPending || !items.data) {
+  // #295 — keep the edited row reachable when its query result no longer
+  // contains it, including while a search excludes it.
+  const renderedRows = liveDraftRow !== null && !draftRowOnPage ? [...pageItems, liveDraftRow] : pageItems;
+
+  if (items.isError && !items.data && renderedRows.length === 0) {
     return (
-      <div className="mt-6 grid gap-3 rounded border bg-card p-3">
-        {[0, 1, 2, 3].map((row) => (
-          <Skeleton key={row} className="h-6 w-full" />
-        ))}
+      <div id="items-table-results" className="mt-4 rounded border bg-card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded border bg-destructive/10 p-2 text-sm text-destructive" role="alert">
+          <span>{t("itemsSearchError")}</span>
+          <Button type="button" variant="outline" onClick={() => void items.refetch()}>
+            {t("itemsSearchRetry")}
+          </Button>
+        </div>
       </div>
     );
   }
 
-  if (items.data.total === 0) {
+  // first load or a new query: retain the search control above and announce
+  // progress without exposing placeholder rows as product results.
+  if ((items.isPending || !items.data) && renderedRows.length === 0) {
+    return (
+      <div id="items-table-results" className="mt-6 grid gap-3 rounded border bg-card p-3" aria-busy="true">
+        <p className="text-sm text-muted-foreground" role="status" aria-live="polite" data-testid="items-search-loading">
+          {t("itemsLoading")}
+        </p>
+        <div aria-hidden="true" className="grid gap-3">
+          {[0, 1, 2, 3].map((row) => (
+            <Skeleton key={row} className="h-6 w-full" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const noMatches = searchQuery !== "" && items.data?.total === 0;
+  if (noMatches && items.data && renderedRows.length === 0) {
+    return (
+      <div id="items-table-results" className="mt-4 rounded border bg-card p-3">
+        <p className="text-sm text-muted-foreground" role="status" data-testid="items-search-total">
+          {t("itemsSearchTotal", { total: items.data.total })}
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground" role="status" data-testid="items-search-empty">
+          {t("itemsSearchEmpty")}
+        </p>
+        {items.isError && (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-3 rounded border bg-destructive/10 p-2 text-sm text-destructive" role="alert">
+            <span>{t("itemsSearchError")}</span>
+            <Button type="button" variant="outline" onClick={() => void items.refetch()}>
+              {t("itemsSearchRetry")}
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (items.data?.total === 0 && searchQuery === "" && renderedRows.length === 0) {
     // a fresh install has no item category, and the add form requires one it
     // cannot create. A failed category read is the same dead end. In both cases
     // point at the categories screen instead of opening a form the owner cannot
@@ -896,42 +935,56 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
     const hintKey = categoriesUnavailable ? "itemsEmptyCategoriesUnavailableHint" : noCategories ? "itemsEmptyNoCategoryHint" : "itemsEmptyHint";
     const actionKey = categoriesUnavailable ? "itemsEmptyCategoriesUnavailableAction" : "itemsEmptyNoCategoryAction";
     return (
-      <EmptyState
-        testId="items-empty"
-        card
-        className="mt-6"
-        title={t(titleKey)}
-        hint={t(hintKey)}
-        action={
-          noCategories || categoriesUnavailable ? (
-            <Button asChild size="lg" variant="outline">
-              <Link to="/categories" data-testid="items-empty-action">
-                {t(actionKey)}
-              </Link>
-            </Button>
-          ) : (
-            <Button size="lg" onClick={onAddItem} data-testid="items-empty-action">
-              {t("itemsEmptyAction")}
-            </Button>
-          )
-        }
-      />
+      <div id="items-table-results">
+        <EmptyState
+          testId="items-empty"
+          card
+          className="mt-6"
+          title={t(titleKey)}
+          hint={t(hintKey)}
+          action={
+            noCategories || categoriesUnavailable ? (
+              <Button asChild size="lg" variant="outline">
+                <Link to="/categories" data-testid="items-empty-action">
+                  {t(actionKey)}
+                </Link>
+              </Button>
+            ) : (
+              <Button size="lg" onClick={onAddItem} data-testid="items-empty-action">
+                {t("itemsEmptyAction")}
+              </Button>
+            )
+          }
+        />
+      </div>
     );
   }
 
-  // #295 — a poll can take the edited row OFF the page. The tick re-reads the
-  // list every five seconds, the page is one window of a name-ordered list, and
-  // an item created in the other window can sort ahead of the last row. The
-  // editor is rendered from these rows, so the draft's row is shown even while
-  // the page does not hold it: Save and Cancel stay reachable while
-  // `draftDirty` keeps every other Edit control disabled. The row shown is the
-  // LIVE one (`liveDraftRow`, read above) — its stock number and low-stock
-  // badge move on every poll instead of freezing at the value the edit began
-  // with.
-  const renderedRows = liveDraftRow !== null && !draftRowOnPage ? [...pageItems, liveDraftRow] : pageItems;
-
   return (
-    <>
+    <div id="items-table-results" aria-busy={items.isFetching}>
+      {items.isError && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border bg-destructive/10 p-2 text-sm text-destructive" role="alert">
+          <span>{t("itemsSearchError")}</span>
+          <Button type="button" variant="outline" onClick={() => void items.refetch()}>
+            {t("itemsSearchRetry")}
+          </Button>
+        </div>
+      )}
+      {items.isPending && (
+        <p className="mt-4 text-sm text-muted-foreground" role="status" aria-live="polite" data-testid="items-search-loading">
+          {t("itemsLoading")}
+        </p>
+      )}
+      {searchQuery !== "" && items.data && (
+        <p className="mt-4 text-sm text-muted-foreground" role="status" data-testid="items-search-total">
+          {t("itemsSearchTotal", { total: items.data.total })}
+        </p>
+      )}
+      {noMatches && (
+        <p className="mt-2 text-sm text-muted-foreground" role="status" data-testid="items-search-empty">
+          {t("itemsSearchEmpty")}
+        </p>
+      )}
       {editError && (
         <p className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="items-edit-error">
           {editError}
@@ -1101,14 +1154,16 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
                       <button
                         type="button"
                         id={`edit-button-${item.id}`}
-                        className="rounded text-muted-foreground underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+                        className="grid size-8 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
                         onClick={() => beginEdit(item)}
                         disabled={update.isPending || draftDirty}
                         data-testid={`edit-item-${item.id}`}
+                        aria-label={t("itemsEdit")}
+                        title={t("itemsEdit")}
                       >
-                        {t("itemsEdit")}
+                        <Pencil size={16} aria-hidden="true" />
                       </button>
-                      <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="text-muted-foreground underline hover:text-foreground">
+                      <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="rounded text-muted-foreground underline hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
                         {t("historyLink")}
                       </Link>
                     </div>
@@ -1120,14 +1175,16 @@ function ItemList({ scanNonce, onAddItem, refreshMs }: { scanNonce: number; onAd
         </tbody>
       </table>
       </div>
-      <Pager
-        total={items.data.total}
-        pageSize={pager.pageSize}
-        offset={pager.offset}
-        onOffsetChange={pager.setOffset}
-        onPageSizeChange={pager.setPageSize}
-        testId="items-pager"
-      />
-    </>
+      {items.data && items.data.total > 0 && (
+        <Pager
+          total={items.data.total}
+          pageSize={pager.pageSize}
+          offset={pager.offset}
+          onOffsetChange={pager.setOffset}
+          onPageSizeChange={pager.setPageSize}
+          testId="items-pager"
+        />
+      )}
+    </div>
   );
 }

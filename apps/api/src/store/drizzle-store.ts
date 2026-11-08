@@ -21,6 +21,7 @@ import type {
   InvoiceListFilters,
   Item,
   ItemCreate,
+  ItemListInput,
   ItemUpdate,
   OnboardingProgress,
   PaginationInput,
@@ -46,7 +47,7 @@ import type {
   SupplierEntryKind,
   SupplierReturnRecord,
 } from "@dokan/contracts";
-import { expenseRefundSchema, MAX_EXPENSE_AMOUNT, arabicIncludes, foldArabic, ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
+import { expenseRefundSchema, MAX_EXPENSE_AMOUNT, arabicIncludes, foldArabic, FUZZY_MATCH_MIN_SCORE, fuzzySearchScore, ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SnapshotPersistenceError } from "../db/encrypted-connection";
 import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
@@ -1868,12 +1869,27 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
 
     // --- items ---------------------------------------------------------------
-    async listItems(pagination) {
+    async listItems(pagination?: ItemListInput) {
       const query = db
         .select({ ...itemCols, categoryName: categories.name })
         .from(items)
         .leftJoin(categories, eq(items.categoryId, categories.id))
-        .orderBy(items.name);
+        .orderBy(items.name, items.id);
+      const search = pagination?.query?.trim() ?? "";
+      if (search !== "") {
+        // Filter the joined catalogue before slicing so a match past page one
+        // is reachable and total counts matches, not the unfiltered table.
+        const rows = await query;
+        const upperSearch = search.toUpperCase();
+        const matched = rows.filter((item) => {
+          if (item.barcode?.toUpperCase().includes(upperSearch)) return true;
+          if (arabicIncludes(item.name, search) || (item.categoryName !== null && arabicIncludes(item.categoryName, search))) return true;
+          return fuzzySearchScore(item.name, search) > FUZZY_MATCH_MIN_SCORE ||
+            (item.categoryName !== null && fuzzySearchScore(item.categoryName, search) > FUZZY_MATCH_MIN_SCORE);
+        });
+        const { limit, offset } = resolvePagination(pagination);
+        return { items: matched.slice(offset, offset + limit), total: matched.length };
+      }
       if (pagination === undefined) {
         const rows = await query;
         return { items: rows, total: rows.length };
@@ -1885,7 +1901,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .select({ ...itemCols, categoryName: categories.name })
           .from(items)
           .leftJoin(categories, eq(items.categoryId, categories.id))
-          .orderBy(items.name)
+          .orderBy(items.name, items.id)
           .limit(limit)
           .offset(offset),
       ]);
@@ -3425,13 +3441,15 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return true;
     },
     // --- activities + settings ----------------------------------------------
-    async insertActivity(activity: { type: Activity["type"]; summary: string; ref?: string | null }) {
+    async insertActivity(activity: { type: Activity["type"]; summary: string; ref?: string | null; actorId?: string | null; actorName?: string | null }) {
       const value: (typeof activities.$inferInsert) & { ref: string | null } = {
         id: id(),
         at: now(),
         type: activity.type,
         summary: activity.summary,
         ref: activity.ref ?? null,
+        actorId: activity.actorId ?? null,
+        actorName: activity.actorName ?? null,
       };
       await db.insert(activities).values(value).run();
     },

@@ -47,8 +47,8 @@ describe(".cell-ltr utility (issue #166)", () => {
   });
 
   it("applies the utility to every audited cell (invoice, phone, ref, return, print)", () => {
-    // exact per-file counts: a dropped class on one of party-detail's two cells
-    // must fail, not be masked by the other
+    // Exact per-file counts keep one cell's class from being masked by another.
+    // Activity now needs it only on the reference cell; actor UUIDs are hidden.
     const expected = {
       "pages/party-detail.tsx": 3,
       "pages/invoice.tsx": 1,

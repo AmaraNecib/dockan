@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { arabicIncludes, type ItemListInput } from "@dokan/contracts";
 import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -103,6 +104,10 @@ let resolveCreateWithStock: (() => void) | null = null;
 let itemsGate: Promise<void> | null = null;
 /** counts the items-list reads, so the hot-counter tick is observable */
 let itemsListFetches = 0;
+let itemsListFailsFor: string | null = null;
+let heldSearchQuery: string | null = null;
+let heldSearchSignal: AbortSignal | null = null;
+let releaseHeldSearch: (() => void) | null = null;
 /** ids the paged read leaves out: what a row moving off the page looks like to
  * the table, while the catalog read still holds the row (#295 round 4) */
 let pageOmitsIds: string[] = [];
@@ -126,16 +131,30 @@ mock.module("@/lib/rpc", () => ({
     itemsList: {
       // clone on each fetch so a refetch yields new object identities, exactly
       // like the JSON boundary — this is what exercises the prefill ref guard
-      queryOptions: () => ({
-        queryKey: ["items"],
-        queryFn: async () => {
+      queryOptions: ({ input }: { input: ItemListInput }) => ({
+        queryKey: ["items", input],
+        queryFn: async ({ signal }: { signal: AbortSignal }) => {
           // the stale-cache test holds this open to make the window observable
           if (itemsGate !== null) await itemsGate;
+          if (input.query === heldSearchQuery) {
+            heldSearchSignal = signal;
+            await new Promise<void>((resolve) => {
+              releaseHeldSearch = resolve;
+            });
+          }
           itemsListFetches += 1;
+          if (input.query === itemsListFailsFor) throw new Error("ITEMS_LIST_FAILED");
           // the page is ONE window of the list: `pageOmitsIds` is a row the
           // page no longer holds (it still exists, it sorted away)
-          const page = items.filter((item) => !pageOmitsIds.includes(item.id));
-          return { items: page.map((item) => ({ ...item })), total: items.length };
+          const query = input.query?.trim() ?? "";
+          const matches = items.filter((item) => query === "" ||
+            arabicIncludes(item.name, query) ||
+            (item.categoryName !== null && arabicIncludes(item.categoryName, query)) ||
+            item.barcode?.toUpperCase().includes(query.toUpperCase()));
+          const page = matches.filter((item) => !pageOmitsIds.includes(item.id));
+          const offset = input.offset ?? 0;
+          const limit = input.limit ?? 10;
+          return { items: page.slice(offset, offset + limit).map((item) => ({ ...item })), total: matches.length };
         },
       }),
       queryKey: () => ["items"],
@@ -403,6 +422,10 @@ beforeEach(() => {
   resolveCreateWithStock = null;
   itemsGate = null;
   itemsListFetches = 0;
+  itemsListFailsFor = null;
+  heldSearchQuery = null;
+  heldSearchSignal = null;
+  releaseHeldSearch = null;
   pageOmitsIds = [];
   stockRefuses = null;
   releaseItemsGate = null;
@@ -425,6 +448,138 @@ afterEach(() => {
  * clicking into it: no focus event fires on a window that is visible but
  * unfocused, so the tick is what carries the change.
  */
+describe("products table search (#388)", () => {
+  it("finds a barcode match beyond page one and resets paging", async () => {
+    const target = baseItem({ id: "row-23", name: "مصباح بعيد", barcode: "ITEM-FULL-388" });
+    items = Array.from({ length: 24 }, (_, index) => baseItem({
+      id: `row-${index}`,
+      name: `عنصر ${String(index).padStart(2, "0")}`,
+      barcode: index === 23 ? target.barcode : null,
+    }));
+    items[23] = target;
+    await mount();
+
+    click("items-pager-next");
+    await waitFor(() => document.querySelector('[data-testid="edit-item-row-10"]') !== null);
+    const editButton = el<HTMLButtonElement>('[data-testid="edit-item-row-10"]');
+    expect(editButton.getAttribute("aria-label")).toBe(i18n.t("itemsEdit"));
+    expect(editButton.querySelector("svg")).not.toBeNull();
+    setInput("catalog-search", "item-full-388");
+    await waitFor(() => document.querySelector('[data-testid="edit-item-row-23"]') !== null);
+    expect(el<HTMLElement>('[data-testid="items-search-total"]').textContent).toContain("1");
+  });
+
+  it("resets pagination when the query changes and when it is cleared", async () => {
+    items = Array.from({ length: 24 }, (_, index) => baseItem({
+      id: `row-${index}`,
+      name: `بطارية ${String(index).padStart(2, "0")}`,
+    }));
+    await mount();
+    click("items-pager-next");
+    await waitFor(() => document.querySelector<HTMLElement>('[data-testid="items-pager-page-2"]')?.getAttribute("aria-current") === "page");
+
+    setInput("catalog-search", "البطارية");
+    await waitFor(() => document.querySelector('[data-testid="items-search-total"]') !== null);
+    expect(el<HTMLElement>('[data-testid="items-search-total"]').textContent).toContain("24");
+    expect(document.querySelector<HTMLElement>('[data-testid="items-pager-page-1"]')?.getAttribute("aria-current")).toBe("page");
+    click("items-pager-next");
+    await waitFor(() => document.querySelector<HTMLElement>('[data-testid="items-pager-page-2"]')?.getAttribute("aria-current") === "page");
+
+    const clear = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === i18n.t("itemsSearchClear"));
+    if (clear === undefined) throw new Error("missing clear search button");
+    act(() => clear.click());
+    await waitFor(() => document.querySelector<HTMLElement>('[data-testid="items-pager-page-1"]')?.getAttribute("aria-current") === "page");
+    await waitFor(() => document.querySelector('[data-testid="items-search-total"]') === null);
+    expect(document.activeElement).toBe(inputByTestId("catalog-search"));
+  });
+
+  it("keeps a dirty edit reachable when its row no longer matches", async () => {
+    await mount();
+    click("edit-item-item-1");
+    setInput("edit-name", "بطارية قيد التعديل");
+    setInput("catalog-search", "NO-MATCH-388");
+    await waitFor(() => document.querySelector('[data-testid="items-search-empty"]') !== null);
+
+    expect(inputByTestId("edit-name").value).toBe("بطارية قيد التعديل");
+    expect(document.querySelector('[data-off-page="true"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="edit-cancel"]')).not.toBeNull();
+    click("edit-cancel");
+    expect(updateInputs).toHaveLength(0);
+  });
+
+  it("keeps dirty edit controls visible while a new search loads or fails", async () => {
+    await mount();
+    click("edit-item-item-1");
+    setInput("edit-name", "بطارية قيد التعديل");
+    itemsGate = new Promise<void>((resolve) => {
+      releaseItemsGate = resolve;
+    });
+    itemsListFailsFor = "FAIL-DRAFT-388";
+    setInput("catalog-search", "FAIL-DRAFT-388");
+    await waitFor(() => document.querySelector('[data-testid="items-search-loading"]') !== null);
+    expect(inputByTestId("edit-name").value).toBe("بطارية قيد التعديل");
+    expect(document.querySelector('[data-testid="edit-save"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="edit-cancel"]')).not.toBeNull();
+
+    act(() => releaseItemsGate?.());
+    await waitFor(() => document.querySelector('[role="alert"]')?.textContent?.includes(i18n.t("itemsSearchError")) === true);
+    expect(inputByTestId("edit-name").value).toBe("بطارية قيد التعديل");
+    expect(document.querySelector('[data-testid="edit-save"]')).not.toBeNull();
+    click("edit-cancel");
+    expect(document.querySelector('[data-testid="edit-name"]')).toBeNull();
+    expect(updateInputs).toHaveLength(0);
+  });
+
+  it("keeps the search input available while results load", async () => {
+    await mount();
+    itemsGate = new Promise<void>((resolve) => {
+      releaseItemsGate = resolve;
+    });
+    setInput("catalog-search", "بطارية");
+    await waitFor(() => document.querySelector('[data-testid="items-search-loading"]') !== null);
+    expect(inputByTestId("catalog-search").disabled).toBe(false);
+    act(() => releaseItemsGate?.());
+    await waitFor(() => document.querySelector('[data-testid="items-search-total"]') !== null);
+  });
+
+  it("retries a failed search without removing its input", async () => {
+    await mount();
+    itemsListFailsFor = "FAIL-388";
+    setInput("catalog-search", "FAIL-388");
+    await waitFor(() => document.querySelector('[role="alert"]')?.textContent?.includes(i18n.t("itemsSearchError")) === true);
+    expect(inputByTestId("catalog-search").value).toBe("FAIL-388");
+    expect(inputByTestId("catalog-search").disabled).toBe(false);
+
+    itemsListFailsFor = null;
+    const retry = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === i18n.t("itemsSearchRetry"));
+    if (retry === undefined) throw new Error("missing search retry button");
+    act(() => retry.click());
+    await waitFor(() => document.querySelector('[data-testid="items-search-empty"]') !== null);
+    expect(el<HTMLElement>('[data-testid="items-search-total"]').textContent).toContain("0");
+    expect(el<HTMLElement>('[data-testid="items-search-empty"]').textContent).toContain(i18n.t("itemsSearchEmpty"));
+  });
+
+  it("cancels an obsolete request and keeps the latest query result visible", async () => {
+    const target = baseItem({ id: "latest-row", name: "مصباح مطلوب", barcode: "LATEST-388" });
+    items = [target, baseItem({ id: "other-row", name: "عنصر آخر" })];
+    heldSearchQuery = "OLD-388";
+    await mount();
+
+    setInput("catalog-search", "OLD-388");
+    await waitFor(() => heldSearchSignal !== null);
+    setInput("catalog-search", "latest-388");
+    await waitFor(() => document.querySelector('[data-testid="edit-item-latest-row"]') !== null);
+    expect(heldSearchSignal?.aborted).toBe(true);
+
+    act(() => releaseHeldSearch?.());
+    await settle();
+    expect(document.querySelector('[data-testid="edit-item-latest-row"]')).not.toBeNull();
+    expect(el<HTMLElement>('[data-testid="items-search-total"]').textContent).toContain("1");
+  });
+});
+
 describe("items list hot counter (#295)", () => {
   it("polls the items list so the stock column converges without an invalidation", async () => {
     await mount({ refreshMs: 20 }); // 20ms refresh keeps the test fast
@@ -510,7 +665,9 @@ describe("items list hot counter (#295)", () => {
     // window that is visible but unfocused never sends a focus event. This
     // pins the wiring, not the runtime effect — happy-dom has no hidden tab,
     // so the behaviour is measured in the e2e (#295).
-    const observer = queryClient.getQueryCache().find({ queryKey: ["items"] })?.observers[0];
+    const observer = queryClient.getQueryCache().findAll({ queryKey: ["items"] })
+      .flatMap((query) => query.observers)
+      .find((candidate) => candidate.options.refetchInterval === 20);
     expect(observer?.options.refetchInterval).toBe(20);
     expect(observer?.options.refetchIntervalInBackground).toBe(true);
   });

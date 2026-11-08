@@ -115,6 +115,22 @@ describe("use-barcode-scanner", () => {
     expect(scanner.codes).toEqual([]); // half-bursts never leak into forms
   });
 
+  it("commits a slow scan while a radio input is focused", () => {
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    document.body.appendChild(radio);
+    radio.focus();
+    expect(document.activeElement).toBe(radio);
+
+    for (const key of ["1", "2", "3"]) {
+      keydown(key, radio);
+      advance(SCAN_MAX_GAP_MS + 30);
+    }
+    keydown("Enter", radio);
+
+    expect(scanner.codes).toEqual(["123"]);
+  });
+
   it("commits a tight burst inside an editable field exactly once", () => {
     const input = focusInput();
     for (const key of ["1", "2", "3"]) {

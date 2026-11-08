@@ -113,7 +113,7 @@ test("sale → debt-defaulted return → stock back (marked) + voucher route + r
   await expect(itemRow.getByTestId("stock-after-cell")).toContainText("2");
   await itemRow.getByRole("link", { name: "السجل" }).click();
   await expect(page.getByTestId("history-table")).toBeVisible();
-  const movementRows = page.getByTestId("history-table").locator("tbody tr");
+  const movementRows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   // opening +2, sale −1, return +1: the last movement carries the visible
   // return marker and the stock is back at 2
   await expect(movementRows).toHaveCount(3);

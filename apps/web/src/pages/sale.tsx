@@ -3,7 +3,7 @@ import { useMutation } from "../lib/scoped-mutation";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ScanBarcode, X } from "lucide-react";
+import { RotateCcw, ScanBarcode, Trash2 } from "lucide-react";
 
 import type { Category, InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
@@ -11,7 +11,6 @@ import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { cn } from "@/lib/utils";
@@ -28,7 +27,6 @@ import {
   resolveInitialPaid,
   saleOverrideInvalid,
   saleUnitPrice,
-  toAmountKind,
   type AmountKind,
   type SaleDraftLine,
 } from "@/lib/invoice-draft";
@@ -134,7 +132,7 @@ export function SalePage() {
       onError: (err) => setCategoryCreateError(tError(err.message)),
     }),
   );
-  const priceMode = usePreference("ui.sale.priceMode", "AMOUNT", parseSalePriceMode, String);
+  const priceMode = usePreference("ui.sale.priceMode", "PERCENTAGE", parseSalePriceMode, String);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -145,9 +143,18 @@ export function SalePage() {
   const [discountType, setDiscountType] = useState<AmountKind>("");
   const [discountValue, setDiscountValue] = useState("");
   const [discountExpanded, setDiscountExpanded] = useState(false);
-  const discountTypeRef = useRef<HTMLButtonElement>(null);
+  const discountValueRef = useRef<HTMLInputElement>(null);
+  const addDiscountRef = useRef<HTMLButtonElement>(null);
+  const refocusAddDiscount = useRef(false);
   useEffect(() => {
-    if (discountExpanded) discountTypeRef.current?.focus();
+    if (discountExpanded) {
+      discountValueRef.current?.focus();
+      return;
+    }
+    if (refocusAddDiscount.current) {
+      refocusAddDiscount.current = false;
+      addDiscountRef.current?.focus();
+    }
   }, [discountExpanded]);
   const [error, setError] = useState<string | null>(null);
   /** the saved sale whose completion card is shown; the server's response is
@@ -338,7 +345,7 @@ export function SalePage() {
     // would otherwise fail the amount-vs-total check and mask the real problem.
     const parsedDiscount = parseLooseNumber(discountValue);
     const discountInvalid =
-      discountType !== "" &&
+      discountType !== "" && !draftBlank(discountValue) &&
       (!Number.isFinite(parsedDiscount) ||
         (discountType === "AMOUNT" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0)) ||
         (discountType === "PERCENTAGE" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0 || parsedDiscount > 100)));
@@ -376,7 +383,7 @@ export function SalePage() {
       initialPaid: resolvedInitialPaid(paid),
       lines: invoiceLines,
     };
-    if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
+    if (discountType !== "" && !draftBlank(discountValue)) invoiceInput.discount = { type: discountType, value: enteredDiscount };
     setSubmittedNotice(liveNotice);
     commitRef.current = true;
     setSavePending(true);
@@ -479,7 +486,8 @@ export function SalePage() {
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
 
       <div className="mt-4 grid gap-4">
-        <div className="grid grid-cols-2 gap-3 rounded border border-border bg-card p-4">
+        <div data-testid="sale-details-panel" className="grid grid-cols-1 gap-3 rounded border border-border bg-card p-4 md:grid-cols-3">
+          <div className="md:col-span-1">
           <PartyPicker
             role="customer"
             label={t("saleCustomer")}
@@ -491,6 +499,8 @@ export function SalePage() {
             disabled={createInvoice.isPending}
             testId="sale-customer"
           />
+          </div>
+          <div className="md:col-span-2">
           <AmountPercentageInput
             referenceTotal={total > 0 ? total : null}
             value={{ amount: payment.amount, percentage: payment.percentage }}
@@ -502,12 +512,14 @@ export function SalePage() {
             amountTestId="sale-paid"
             percentageTestId="sale-paid-percentage"
             referenceTestId="sale-paid-reference"
+            showReference={false}
             percentageInvalid={percentageDraftInvalid(payment.percentage)}
             disabled={createInvoice.isPending}
           />
+          </div>
         </div>
 
-        <div className="rounded border border-border bg-card">
+        <div data-testid="sale-lines-panel" className="rounded border border-border bg-card">
           {/* One primary path (the list picker); creating a missing item is a
               single demoted action — the stock quantity lives on its form, so
               a first-day user is never asked to choose between two creates. */}
@@ -646,7 +658,7 @@ export function SalePage() {
             ) : (
               <table className="w-full" data-testid="sale-lines">
                 <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><SaleLinePriceEditor line={line} preferredMode={priceMode.value} onMode={(mode) => priceMode.setValue(mode)} onChange={(override) => { draft.patch(line.item.id, override); setDraftDirty(true); }} disabled={createInvoice.isPending} /></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); setDiscountExpanded(false); } setDraftDirty(lines.length > 1 || anyTyped([customer.name, last ? "" : discountValue, payment.amount, payment.percentage]) || (!last && discountType !== "") || quickDraft); }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
+                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><SaleLinePriceEditor line={line} preferredMode={priceMode.value} onMode={(mode) => priceMode.setValue(mode)} onChange={(override) => { draft.patch(line.item.id, override); setDraftDirty(true); }} disabled={createInvoice.isPending} /></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 focus-visible:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); setDiscountExpanded(false); } setDraftDirty(lines.length > 1 || anyTyped([customer.name, last ? "" : discountValue, payment.amount, payment.percentage]) || (!last && discountType !== "") || quickDraft); }} disabled={createInvoice.isPending}><Trash2 size={16} aria-hidden="true" data-testid="sale-remove-trash-icon" /></button></td></tr>; })}</tbody>
               </table>
             )}
           </div>
@@ -655,19 +667,87 @@ export function SalePage() {
 
       {/* The existing sticky bar keeps totals and checkout reachable at short heights. */}
       {lines.length > 0 && (
-        <CheckoutBar testId="sale-checkout-bar" className="mt-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            {discountExpanded ? (
-              <div className="flex flex-wrap items-end gap-3">
-                <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => { setDiscountType(toAmountKind(value ?? "")); setDraftDirty(true); }} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger ref={discountTypeRef} className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
-                <label className="grid gap-1 text-sm font-medium">{t("saleDiscountValue")}<input className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm" name="discountValue" autoComplete="off" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label>
-              </div>
-            ) : (
-              <Button type="button" variant="outline" size="sm" data-testid="sale-add-discount" onClick={() => setDiscountExpanded(true)} disabled={createInvoice.isPending}>
-                {t("saleAddDiscount")}
-              </Button>
-            )}
-            <dl data-testid="sale-totals" className="grid gap-1 text-end text-sm">
+        <CheckoutBar testId="sale-checkout-bar" className="mx-0 mt-4">
+          <div className="grid gap-3 sm:grid-cols-2 sm:items-center">
+            <div data-testid="sale-discount-area" className="flex min-h-14 items-center">
+              {discountExpanded ? (
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="grid gap-1 text-sm font-medium">
+                    {t("saleDiscountValue")}
+                    <input
+                      ref={discountValueRef}
+                      className={cn(inputClass, "w-20 px-2 py-1")}
+                      name="discountValue"
+                      autoComplete="off"
+                      inputMode="numeric"
+                      dir="ltr"
+                      value={discountValue}
+                      onChange={(event) => { setDiscountValue(event.target.value); setDraftDirty(true); }}
+                      disabled={createInvoice.isPending}
+                      data-testid="sale-discount-value"
+                    />
+                  </label>
+                  <div
+                    role="radiogroup"
+                    aria-label={t("saleDiscountType")}
+                    data-testid="sale-discount-type"
+                    className="inline-flex overflow-hidden rounded-md border border-input"
+                  >
+                    <label className="relative cursor-pointer">
+                      <input
+                        type="radio"
+                        name="discountType"
+                        value="AMOUNT"
+                        aria-label={`${t("saleDiscountType")}: ${t("saleDiscountAmount")} (${t("saleOverrideDzd")})`}
+                        checked={discountType === "AMOUNT"}
+                        onChange={() => { setDiscountType("AMOUNT"); setDraftDirty(true); }}
+                        disabled={createInvoice.isPending}
+                        className="peer sr-only"
+                      />
+                      <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">
+                        {t("saleOverrideDzdShort")}
+                      </span>
+                    </label>
+                    <label className="relative cursor-pointer border-s border-input">
+                      <input
+                        type="radio"
+                        name="discountType"
+                        value="PERCENTAGE"
+                        aria-label={`${t("saleDiscountType")}: ${t("saleDiscountPercentage")}`}
+                        checked={discountType === "PERCENTAGE"}
+                        onChange={() => { setDiscountType("PERCENTAGE"); setDraftDirty(true); }}
+                        disabled={createInvoice.isPending}
+                        className="peer sr-only"
+                      />
+                      <span className="block px-2 py-1 text-xs text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">%</span>
+                    </label>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    data-testid="sale-discount-reset"
+                    aria-label={t("saleNoDiscount")}
+                    title={t("saleNoDiscount")}
+                    onClick={() => {
+                      refocusAddDiscount.current = true;
+                      setDiscountType("");
+                      setDiscountValue("");
+                      setDiscountExpanded(false);
+                      setDraftDirty(true);
+                    }}
+                    disabled={createInvoice.isPending}
+                  >
+                    <RotateCcw size={14} aria-hidden="true" />
+                  </Button>
+                </div>
+              ) : (
+                <Button ref={addDiscountRef} type="button" variant="outline" size="sm" data-testid="sale-add-discount" onClick={() => { setDiscountType("PERCENTAGE"); setDiscountValue(""); setDiscountExpanded(true); setDraftDirty(true); }} disabled={createInvoice.isPending}>
+                  {t("saleAddDiscount")}
+                </Button>
+              )}
+            </div>
+            <dl data-testid="sale-totals" className="grid gap-1 text-end text-sm sm:border-s sm:border-border sm:ps-4">
               <div className="flex items-baseline justify-between gap-6"><dt className="text-muted-foreground">{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div>
               {discountAmount > 0 && <div className="flex items-baseline justify-between gap-6"><dt className="text-muted-foreground">{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={-discountAmount} /></dd></div>}
               <div className="flex items-baseline justify-between gap-6 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div>

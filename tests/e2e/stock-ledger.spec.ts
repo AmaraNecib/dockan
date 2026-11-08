@@ -103,7 +103,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
     .getByRole("link", { name: "السجل" })
     .click();
   await expect(page.getByTestId("history-table")).toBeVisible();
-  const rows = page.getByTestId("history-table").locator("tbody tr");
+  const rows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("+6");
   await expect(page.getByTestId("stock-after").last()).toHaveText("6");
@@ -151,7 +151,7 @@ test("an edited cost survives the next inflow and shows as a correction movement
   // edit the cost to 300
   await openItemsTab(page, "products");
   const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
-  await row.getByRole("button", { name: "تعديل" }).click();
+  await row.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-cost").fill("300");
   await page.getByTestId("edit-save").click();
   await expect(row).toContainText("300");
@@ -159,13 +159,17 @@ test("an edited cost survives the next inflow and shows as a correction movement
   // the history records the edit as a zero-quantity correction
   await row.getByRole("link", { name: "السجل" }).click();
   await expect(page.getByTestId("history-table")).toBeVisible();
-  const historyRows = page.getByTestId("history-table").locator("tbody tr");
+  const historyRows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   await expect(historyRows).toHaveCount(2);
-  await expect(historyRows.last()).toContainText("تصحيح تكلفة يدوي");
-  await expect(historyRows.last()).toContainText("300");
-  // a zero-quantity correction is not a stock loss: neutral delta styling
-  await expect(historyRows.last().getByRole("cell").nth(2)).toHaveClass(/text-muted-foreground/);
-  await expect(historyRows.last().getByRole("cell").nth(2)).not.toHaveClass(/text-destructive/);
+  const correctionRow = historyRows.last();
+  await expect(correctionRow).toContainText("تصحيح تكلفة يدوي");
+  const correctionTestId = await correctionRow.getAttribute("data-testid");
+  if (!correctionTestId) throw new Error("Cost-correction movement row is missing its identity");
+  const correctionId = correctionTestId.slice("history-movement-row-".length);
+  await correctionRow.getByRole("button", { name: "عرض التفاصيل" }).click();
+  await expect(page.getByTestId(`history-detail-${correctionId}`)).toContainText("300");
+  // a zero-quantity correction remains explicitly neutral, never a stock loss
+  await expect(historyRows.last().getByRole("cell").nth(2)).toHaveAttribute("data-delta-state", "neutral");
 
   // a later inflow replays the ledger: (10×300 + 10×200) / 20 = 250
   await page.goto("/items");
@@ -216,14 +220,14 @@ test("a future-dated purchase recorded before a cost correction is flagged as su
   await page.goto("/items");
   await openItemsTab(page, "products");
   const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
-  await row.getByRole("button", { name: "تعديل" }).click();
+  await row.getByTestId(/^edit-item-/).click();
   await page.getByTestId("edit-cost").fill("300");
   await page.getByTestId("edit-save").click();
   await expect(row).toContainText("300");
 
   await row.getByRole("link", { name: "السجل" }).click();
   await expect(page.getByTestId("history-table")).toBeVisible();
-  const rows = page.getByTestId("history-table").locator("tbody tr");
+  const rows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   await expect(rows).toHaveCount(3);
   // the issue's inversion: the correction is drawn ABOVE the future-dated row
   const texts = await rows.allInnerTexts();
@@ -279,7 +283,7 @@ test("a superseded row is badged even when its correction is on a prior page", a
   await page.goto(`/items/${item.id}/history`);
   await expect(page.getByTestId("history-table")).toBeVisible();
 
-  const rows = page.getByTestId("history-table").locator("tbody tr");
+  const rows = page.getByTestId("history-table").locator('[data-testid^="history-movement-row-"]');
   // page 1 draws the correction, but the row it supersedes is not on this page
   await expect(rows).toHaveCount(2);
   await expect(page.getByTestId("history-superseded")).toHaveCount(0);

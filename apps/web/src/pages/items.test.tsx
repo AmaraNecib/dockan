@@ -1514,6 +1514,54 @@ describe("stock form prefill", () => {
     expect(inputByTestId("stock-selling-price").value).toBe("777");
   });
 
+  it("starts a distinct receipt only through the explicit duplicate recovery action", async () => {
+    stockRefuses = "STOCK_ADJUSTMENT_DUPLICATE";
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-selling-price").value === "150");
+    setInput("stock-delta", "5");
+    setInput("stock-selling-price", "777");
+    click("stock-save");
+    await waitFor(() => document.querySelector('[data-testid="stock-error"]') !== null);
+    const refusedId = stockInputs[0]?.movementId;
+    expect(refusedId).toBeDefined();
+    expect(document.querySelector('[data-testid="stock-new-entry"]')).not.toBeNull();
+
+    click("stock-new-entry");
+    await waitFor(() => inputByTestId("stock-selling-price").value === "150");
+    expect(inputByTestId("stock-delta").value).toBe("");
+    expect(document.activeElement).toBe(inputByTestId("stock-delta"));
+    expect(stockInputs).toHaveLength(1);
+    expect(document.querySelector('[data-testid="stock-error"]')).toBeNull();
+
+    stockRefuses = null;
+    setInput("stock-delta", "2");
+    click("stock-save");
+    await waitFor(() => document.querySelector('[data-testid="stock-done"]') !== null);
+    expect(stockInputs[1]?.movementId).not.toBe(refusedId);
+    expect(firstFixtureItem().stockOnHand).toBe(5);
+  });
+
+  it("keeps the same receipt identity after an uncertain failure and draft edits", async () => {
+    stockRefuses = "NETWORK_ERROR";
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-selling-price").value === "150");
+    setInput("stock-delta", "5");
+    click("stock-save");
+    await waitFor(() => document.querySelector('[data-testid="stock-error"]') !== null);
+    const uncertainId = stockInputs[0]?.movementId;
+    expect(uncertainId).toBeDefined();
+    expect(document.querySelector('[data-testid="stock-new-entry"]')).toBeNull();
+    setInput("stock-delta", "2");
+    setInput("stock-selling-price", "777");
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 2);
+    expect(stockInputs[1]?.movementId).toBe(uncertainId);
+    expect(inputByTestId("stock-selling-price").value).toBe("777");
+    expect(firstFixtureItem().stockOnHand).toBe(3);
+  });
+
   it("refreshes a prefilled cost when the item's known cost changes, without clobbering a typed value", async () => {
     const { queryClient } = await mount();
     await openAddTab();

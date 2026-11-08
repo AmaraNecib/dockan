@@ -98,6 +98,37 @@ test("stock entry searches all items and saves both prices without losing a fail
   });
   expect(saved.items.find((item) => item.name === itemName)).toMatchObject({ stockOnHand: 3, costPrice: 140, sellingPrice: 375 });
 
+  await expect(page.getByTestId("stock-selling-price")).toHaveValue("375");
+  await page.getByTestId("stock-delta").fill("4");
+  await page.getByTestId("stock-unit-cost").fill("150");
+  await page.getByTestId("stock-selling-price").fill("400");
+  // Commit through the real API, then hide its response from the form.
+  await page.route("**/api/rpc/stockAddManual", async (route) => {
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    await route.abort();
+  }, { times: 1 });
+  await page.getByTestId("stock-save").click();
+  await expect(page.getByTestId("stock-error")).toBeVisible();
+  await expect(page.getByTestId("stock-new-entry")).toHaveCount(0);
+  await page.unroute("**/api/rpc/stockAddManual");
+  await page.getByTestId("stock-save").click();
+  await expect(page.getByTestId("stock-new-entry")).toBeVisible();
+  await expect(page.getByTestId("stock-delta")).toHaveValue("4");
+  const afterRetry = await rpc<{ items: Array<{ name: string; stockOnHand: number; sellingPrice: number }> }>(page, { procedure: "itemsAll" });
+  expect(afterRetry.items.find((item) => item.name === itemName)).toMatchObject({ stockOnHand: 7, sellingPrice: 400 });
+  await form.screenshot({ path: path.join(evidenceDir, "duplicate-recovery.png") });
+
+  await page.getByTestId("stock-new-entry").press("Enter");
+  await expect(page.getByTestId("stock-delta")).toHaveValue("");
+  await expect(page.getByTestId("stock-delta")).toBeFocused();
+  await expect(page.getByTestId("stock-selling-price")).toHaveValue("400");
+  await page.getByTestId("stock-delta").fill("2");
+  await page.getByTestId("stock-save").click();
+  await expect(page.getByTestId("stock-done")).toBeVisible();
+  const afterNewReceipt = await rpc<{ items: Array<{ name: string; stockOnHand: number; sellingPrice: number }> }>(page, { procedure: "itemsAll" });
+  expect(afterNewReceipt.items.find((item) => item.name === itemName)).toMatchObject({ stockOnHand: 9, sellingPrice: 400 });
+
   await testInfo.attach("stock-form-before", { path: path.join(evidenceDir, "before.png"), contentType: "image/png" });
   await testInfo.attach("stock-form-after", { path: path.join(evidenceDir, "after.png"), contentType: "image/png" });
 });

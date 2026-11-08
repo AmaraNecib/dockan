@@ -323,6 +323,7 @@ const resources = {
       stockSellingPriceInvalid: "أدخل سعر بيع صحيحاً (عدد صحيح 0 أو أكثر)",
       stockReason: "السبب (اختياري)",
       stockAddBtn: "تسجيل",
+      stockNewEntry: "بدء إيصال جديد ومسح الحقول",
       stockAdded: "تم تسجيل الحركة",
       historyLink: "السجل",
       historyTitle: "سجل المنتج",

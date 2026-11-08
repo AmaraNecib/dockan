@@ -61,6 +61,7 @@ export function StockForm() {
   const prefilledRef = useRef<{ itemId: string; cost: string } | null>(null);
   const sellingPrefilledRef = useRef<{ itemId: string; price: string } | null>(null);
   const movementIdRef = useRef(crypto.randomUUID());
+  const quantityRef = useRef<HTMLInputElement>(null);
   /** a movement invalidates the list; the cached cost is stale until the
    * refetch that follows it lands */
   const freshAfterRef = useRef(0);
@@ -112,6 +113,22 @@ export function StockForm() {
       onError: (err) => setError(tError(err.message)),
     }),
   );
+
+  function startNewEntry() {
+    movementIdRef.current = crypto.randomUUID();
+    setDelta("");
+    setUnitCost("");
+    setSellingPrice("");
+    setReason("");
+    setError(null);
+    setDone(false);
+    prefilledRef.current = null;
+    sellingPrefilledRef.current = null;
+    freshAfterRef.current = Date.now();
+    adjust.reset();
+    void queryClient.invalidateQueries();
+    quantityRef.current?.focus();
+  }
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -178,6 +195,7 @@ export function StockForm() {
           <input
             className={inputClass}
             name="stockDelta"
+            ref={quantityRef}
             autoComplete="off"
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
@@ -214,6 +232,11 @@ export function StockForm() {
         <p className="text-sm text-destructive" role="alert" data-testid="stock-error">
           {error}
         </p>
+      )}
+      {adjust.error?.message === "STOCK_ADJUSTMENT_DUPLICATE" && (
+        <Button type="button" variant="outline" onClick={startNewEntry} disabled={adjust.isPending} data-testid="stock-new-entry">
+          {t("stockNewEntry")}
+        </Button>
       )}
       {done && adjust.isSuccess && (
         <p className="text-sm text-success" data-testid="stock-done">

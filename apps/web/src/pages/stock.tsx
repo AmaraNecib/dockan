@@ -38,7 +38,6 @@ export function StockForm() {
   const [itemId, setItemId] = useState("");
   const [delta, setDelta] = useState("");
   const [unitCost, setUnitCost] = useState("");
-  const [sellingPrice, setSellingPrice] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -59,7 +58,6 @@ export function StockForm() {
   // holds that prefilled value, so a value the operator typed is never
   // overwritten.
   const prefilledRef = useRef<{ itemId: string; cost: string } | null>(null);
-  const sellingPrefilledRef = useRef<{ itemId: string; price: string } | null>(null);
   /** a movement invalidates the list; the cached cost is stale until the
    * refetch that follows it lands */
   const freshAfterRef = useRef(0);
@@ -78,28 +76,15 @@ export function StockForm() {
     setUnitCost(nextCost);
   }, [selectedItemId, selectedItem, unitCost, items.dataUpdatedAt]);
 
-  useEffect(() => {
-    if (selectedItem === null) return;
-    const nextPrice = String(selectedItem.sellingPrice);
-    const previous = sellingPrefilledRef.current;
-    const selectionChanged = previous === null || previous.itemId !== selectedItemId;
-    const untouched = previous !== null && sellingPrice === previous.price;
-    if (!selectionChanged && !(untouched && previous.price !== nextPrice)) return;
-    sellingPrefilledRef.current = { itemId: selectedItemId, price: nextPrice };
-    setSellingPrice(nextPrice);
-  }, [selectedItemId, selectedItem, sellingPrice, items.dataUpdatedAt]);
-
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
       onSuccess: () => {
         setDelta("");
         setUnitCost("");
-        setSellingPrice("");
         setReason("");
         setDone(true);
         // let the next refetch re-prefill the (possibly changed) average cost
         prefilledRef.current = null;
-        sellingPrefilledRef.current = null;
         freshAfterRef.current = Date.now();
         // the items table (paginated, so its key carries the page), the
         // low-stock badge, the item pickers (itemsAll) and the dashboard all
@@ -124,22 +109,16 @@ export function StockForm() {
       setError(t("stockQuantityInvalid"));
       return;
     }
-    // a removal cannot carry receipt prices; the api records only an outflow.
+    // a removal cannot carry a unit cost: the api takes one only for stock in
     const parsedUnitCost = parsedDelta > 0 ? parseWholeNumber(unitCost) : null;
     if (parsedDelta > 0 && !draftBlank(unitCost) && parsedUnitCost === null) {
       setError(t("stockUnitCostInvalid"));
-      return;
-    }
-    const parsedSellingPrice = parsedDelta > 0 ? parseWholeNumber(sellingPrice) : null;
-    if (parsedDelta > 0 && parsedSellingPrice === null) {
-      setError(t("stockSellingPriceInvalid"));
       return;
     }
     void adjust.mutate({
       itemId: selectedItemId,
       delta: parsedDelta,
       unitCost: parsedUnitCost === null ? undefined : parsedUnitCost,
-      sellingPrice: parsedSellingPrice === null ? undefined : parsedSellingPrice,
       reason: reason === "" ? undefined : reason,
     });
   }
@@ -155,19 +134,11 @@ export function StockForm() {
         testId="stock-item"
         noMatchesLabel={t("itemsSearchEmpty")}
       />
-      <label className="grid gap-1">
-        {t("stockSellingPrice")}
-        <input
-          className={inputClass}
-          name="stockSellingPrice"
-          autoComplete="off"
-          value={sellingPrice}
-          onChange={(e) => setSellingPrice(e.target.value)}
-          inputMode="numeric"
-          disabled={isRemoval}
-          data-testid="stock-selling-price"
-        />
-      </label>
+      {selectedItem && (
+        <p className="text-sm text-muted-foreground" data-testid="stock-selling-price">
+          {t("stockSellingPrice")}: <Amount value={selectedItem.sellingPrice} className="text-foreground" />
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
           {t("stockQuantity")}

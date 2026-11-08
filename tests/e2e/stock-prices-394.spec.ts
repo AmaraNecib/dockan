@@ -53,6 +53,7 @@ test("stock entry searches all items and saves both prices without losing a fail
   const form = page.getByTestId("stock-form");
   const picker = page.getByTestId("stock-item");
   await picker.fill(`الات التخزين 394-${suffix}`);
+  await expect(page.getByRole("option", { name: itemName, exact: true })).toBeVisible();
   await picker.press("ArrowDown");
   await picker.press("Enter");
   await expect(picker).toHaveValue(itemName);

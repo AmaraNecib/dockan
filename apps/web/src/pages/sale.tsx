@@ -333,12 +333,12 @@ export function SalePage() {
     setSearchQuery("");
     setSearchDebounced("");
     setSearchActiveIndex(null);
+    setSearchFocusRequest((request) => request + 1);
   }
 
   useInvoiceEntryShortcut("sale", () => {
     if (savePending) return;
     startFreshSale();
-    setSearchFocusRequest((request) => request + 1);
   });
 
   useEffect(() => {

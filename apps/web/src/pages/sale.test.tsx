@@ -1785,6 +1785,19 @@ describe("SalePage persistent search (issue #396)", () => {
     expect(host.querySelector('[data-testid="sale-saved-number"]')?.textContent).toContain("INV-396");
   });
 
+  it("focuses search when New Sale is clicked after saving", async () => {
+    const host = await mountSale();
+    await scan("396-new-focus");
+    await act(async () => saveButton(host).click());
+    await act(async () => resolveInvoice?.({ id: "inv-new-focus", invoiceNumber: "INV-NEW", remainingAmount: 0, counterpartyName: null }));
+    const newSale = host.querySelector<HTMLButtonElement>('[data-testid="sale-new"]')!;
+    newSale.focus();
+    await act(async () => newSale.click());
+    const search = host.querySelector<HTMLInputElement>('[data-testid="sale-search"]');
+    expect(search).not.toBeNull();
+    expect(document.activeElement).toBe(search);
+  });
+
   it("does not let a lookup started before Save add a line to the next invoice", async () => {
     const host = await mountSale();
     await scan("396-late-save");

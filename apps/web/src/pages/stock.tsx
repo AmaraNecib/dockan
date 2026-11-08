@@ -518,42 +518,49 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                       <div id={detailId} data-testid={`history-detail-${movement.id}`} className="max-w-4xl space-y-3">
                         <div className="grid gap-4 sm:grid-cols-2">
                           <section>
-                            <h3 className="mb-2 text-xs font-semibold text-muted-foreground">{t("historyAmounts")}</h3>
-                            <dl className="grid grid-cols-2 gap-x-5 gap-y-2 text-sm">
-                              <div>
-                                <dt className="text-xs text-muted-foreground">{t("stockSellingPrice")}</dt>
-                                <dd data-testid={`history-selling-price-${movement.id}`}>
+                            <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                              <h3 className="text-xs font-semibold text-muted-foreground">{t("historyAmounts")}</h3>
+                              <details data-testid="history-facts-help" className="min-w-0 text-xs text-muted-foreground">
+                                <summary className="min-h-8 cursor-pointer rounded px-1 py-1 text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+                                  {t("historyFactsHelpLabel")}
+                                </summary>
+                                <p className="mt-1 max-w-prose leading-relaxed">{t("historyFactsHint")}</p>
+                              </details>
+                            </div>
+                            <dl className="space-y-2 text-sm">
+                              <div data-testid={`history-fact-selling-price-${movement.id}`} className="flex min-w-0 items-start justify-between gap-4">
+                                <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("stockSellingPrice")}</dt>
+                                <dd data-testid={`history-selling-price-${movement.id}`} className="shrink-0 text-left">
                                   {movement.details?.sellingPrice == null ? t("historyUnavailable") : <Amount value={movement.details.sellingPrice} />}
                                 </dd>
                               </div>
-                              <div>
-                                <dt className="text-xs text-muted-foreground">{t("stockUnitCost")}</dt>
-                                <dd>
+                              <div data-testid={`history-fact-unit-cost-${movement.id}`} className="flex min-w-0 items-start justify-between gap-4">
+                                <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("stockUnitCost")}</dt>
+                                <dd className="shrink-0 text-left">
                                   <HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} />
                                 </dd>
                               </div>
-                              <div>
-                                <dt className="text-xs text-muted-foreground">{t("historySaleTotal")}</dt>
-                                <dd data-testid={`history-sale-total-${movement.id}`}>
+                              <div data-testid={`history-fact-sale-total-${movement.id}`} className="flex min-w-0 items-start justify-between gap-4">
+                                <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("historySaleTotal")}</dt>
+                                <dd data-testid={`history-sale-total-${movement.id}`} className="shrink-0 text-left">
                                   {movement.details?.saleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.saleTotal} />}
                                 </dd>
                               </div>
-                              <div>
-                                <dt className="text-xs text-muted-foreground">{t("historyNetSaleTotal")}</dt>
-                                <dd>
+                              <div data-testid={`history-fact-net-sale-total-${movement.id}`} className="flex min-w-0 items-start justify-between gap-4">
+                                <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("historyNetSaleTotal")}</dt>
+                                <dd className="shrink-0 text-left">
                                   {movement.details?.netSaleTotal == null ? t("historyUnavailable") : <Amount value={movement.details.netSaleTotal} />}
                                 </dd>
                               </div>
-                              <div>
-                                <dt className="text-xs text-muted-foreground">{t("historyCostTotal")}</dt>
-                                <dd data-testid={`history-cost-total-${movement.id}`}>
+                              <div data-testid={`history-fact-cost-total-${movement.id}`} className="flex min-w-0 items-start justify-between gap-4">
+                                <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("historyCostTotal")}</dt>
+                                <dd data-testid={`history-cost-total-${movement.id}`} className="shrink-0 text-left">
                                   {movement.details?.cost?.total == null ? t("historyUnavailable") : <Amount value={movement.details.cost.total} />}
                                 </dd>
                               </div>
                             </dl>
                           </section>
                           <div className="space-y-3">
-                            <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">{t("historyFactsHint")}</p>
                             <dl className="text-sm">
                               <dt className="text-xs text-muted-foreground">{t("historyRecordedAt")}</dt>
                               <dd className="break-words">{formatDateTime(movement.createdAt)}</dd>

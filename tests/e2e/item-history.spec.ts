@@ -34,7 +34,7 @@ async function seedHistory(page: Page, name: string) {
   return { item, invoice };
 }
 
-test.use({ viewport: { width: 1920, height: 1080 }, video: { mode: "on", size: { width: 1920, height: 1080 } } });
+test.use({ viewport: { width: 1920, height: 1080 }, hasTouch: true, video: { mode: "on", size: { width: 1920, height: 1080 } } });
 
 test.describe("item history 399", () => {
 
@@ -57,6 +57,24 @@ test.describe("item history 399", () => {
     await expect(detail.getByTestId(/^history-selling-price-/)).toContainText("300");
     await expect(detail.getByTestId(/^history-cost-total-/)).toContainText("700");
     await expect(detail.getByTestId(/^history-sale-total-/)).toContainText("1,800");
+    const costFact = detail.getByTestId(/^history-fact-cost-total-/);
+    await expect(costFact.locator("dt")).toHaveText("إجمالي تكلفة وحدات الحركة");
+    await expect(costFact.locator("dd")).toContainText("700");
+    const factsHelp = detail.getByTestId("history-facts-help");
+    const factsHelpSummary = factsHelp.getByText("عن هذه القيم");
+    await expect(factsHelp).toHaveJSProperty("open", false);
+    await factsHelpSummary.focus();
+    await page.keyboard.press("Enter");
+    await expect(factsHelp).toHaveJSProperty("open", true);
+    await expect(factsHelp).toContainText("إجمالي التكلفة");
+    await expect(factsHelp).toContainText("تكلفة الوحدة المقربة");
+    await factsHelpSummary.click();
+    await expect(factsHelp).toHaveJSProperty("open", false);
+    await factsHelpSummary.tap();
+    await expect(factsHelp).toHaveJSProperty("open", true);
+    await factsHelpSummary.tap();
+    await expect(factsHelp).toHaveJSProperty("open", false);
+    await disclosure.focus();
     await page.keyboard.press("Space");
     await expect(disclosure).toHaveAttribute("aria-expanded", "false");
     await expect(detail).toBeHidden();
@@ -83,6 +101,30 @@ test.describe("item history 399", () => {
     await page.getByRole("navigation", { name: "مسار المنتج" }).getByRole("link", { name: "المنتجات", exact: true }).click();
     await expect(page).toHaveURL(/\/items$/);
     if (process.env.HISTORY_399_EVIDENCE) await page.waitForTimeout(7_000);
+  });
+
+  test("does not reconstruct an unavailable exact total from rounded unit cost", async ({ page }) => {
+    test.setTimeout(60_000);
+    await signIn(page);
+    const { item } = await seedHistory(page, "بطارية إجمالي غير متوفر 470");
+    await page.route("**/api/rpc/itemsHistory", async (route) => {
+      const response = await route.fetch();
+      // SAFETY: itemsHistory returns its declared movement list in the successful RPC `json` envelope.
+      const payload = await response.json() as { json: { movements: ItemHistoryMovement[] } };
+      const sale = payload.json.movements.find((movement) => movement.kind === "SALE");
+      if (!sale?.details?.cost) throw new Error("Expected the real sale movement and recorded cost details");
+      sale.details.cost.unitCost = 117;
+      sale.details.cost.total = null;
+      await route.fulfill({ response, body: JSON.stringify(payload) });
+    });
+    await page.goto(`/items/${item.id}/history`);
+    await expect(page.getByTestId("history-table")).toBeVisible();
+    const saleRow = page.getByTestId("history-table").locator("tbody tr[data-testid^='history-movement-row-']").filter({ hasText: "-6" });
+    await saleRow.getByRole("button").click();
+    const detail = saleRow.locator("xpath=following-sibling::tr[1]");
+    const exactCost = detail.getByTestId(/^history-cost-total-/);
+    await expect(exactCost).toContainText("غير متوفر في السجل");
+    await expect(exactCost).not.toContainText("702");
   });
 
   test("failed history read is explicit, retry recovers, leaving a pending read is safe", async ({ page }) => {

@@ -1808,8 +1808,7 @@ describe("SalePage persistent search (issue #396)", () => {
     await scan("396-shortcut");
     await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
     await expandDiscount(host);
-    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!;
-    await chooseOption(trigger, "مبلغ");
+    await chooseDiscountMode(host, "AMOUNT");
     await act(async () => setInput(host, "sale-discount-value", "100"));
 
     await act(async () => window.dispatchEvent(new CustomEvent("dokan:invoice-entry", { detail: "sale" })));
@@ -1824,7 +1823,7 @@ describe("SalePage persistent search (issue #396)", () => {
     await scan("396-existing");
     await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
     await expandDiscount(host);
-    await chooseOption(host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!, "مبلغ");
+    await chooseDiscountMode(host, "AMOUNT");
     await act(async () => setInput(host, "sale-discount-value", "100"));
 
     await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.click());
@@ -1859,7 +1858,7 @@ describe("SalePage persistent search (issue #396)", () => {
     await scan("396-existing-stock");
     await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
     await expandDiscount(host);
-    await chooseOption(host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!, "مبلغ");
+    await chooseDiscountMode(host, "AMOUNT");
     await act(async () => setInput(host, "sale-discount-value", "100"));
 
     await scan("UNKNOWN-396-STOCK");
@@ -1888,7 +1887,7 @@ describe("SalePage persistent search (issue #396)", () => {
     await scan("396-failure");
     await act(async () => setInput(host, "sale-customer", "زبون محفوظ"));
     await expandDiscount(host);
-    await chooseOption(host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]')!, "مبلغ");
+    await chooseDiscountMode(host, "AMOUNT");
     await act(async () => setInput(host, "sale-discount-value", "100"));
     await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.click());
     await act(async () => {

@@ -806,6 +806,9 @@ export function createRpcRouter(deps: RpcDeps) {
         if (input.kind === "PURCHASE" && input.delta <= 0) {
           throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_REQUIRES_INFLOW" });
         }
+        if (input.delta < 0 && input.sellingPrice !== undefined) {
+          throw new ORPCError("BAD_REQUEST", { message: "STOCK_PRICE_UPDATE_REQUIRES_INFLOW" });
+        }
         // #295 — a money path that READS before it WRITES takes the write
         // lock first (the same reason the sale, payment and return paths use
         // `withTransactionImmediate`): the guard below compares the request
@@ -883,6 +886,15 @@ export function createRpcRouter(deps: RpcDeps) {
             ref: null,
             occurredAt: input.occurredAt,
           });
+          if (input.sellingPrice !== undefined && input.sellingPrice !== item.sellingPrice) {
+            const updated = await tx.updateItem(item.id, { id: item.id, sellingPrice: input.sellingPrice });
+            if (updated === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+            await insertSessionActivity(tx, session, {
+              type: "ITEM_UPDATED",
+              summary: `STOCK_SELLING_PRICE_CHANGED ${item.sellingPrice} ${input.sellingPrice} ${item.name}`,
+              ref: item.id,
+            });
+          }
           await insertSessionActivity(tx, session, { type: "STOCK_ADJUSTED", summary: `STOCK_ADJUSTED ${item.name}`, ref: item.id });
           return posted.movement;
         });

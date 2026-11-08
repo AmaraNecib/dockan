@@ -73,6 +73,7 @@ const resources = {
       activityItemCreatedWithStock: "إنشاء منتج {{name}} بمخزون أولي {{stock}}",
       activityItemUpdated: "تعديل منتج {{name}}",
       activityItemCostCorrected: "تصحيح تكلفة منتج {{name}} إلى <money/>",
+      activitySellingPriceChanged: "تغيير سعر بيع {{name}} من <old/> إلى <new/>",
       activityStockAdjusted: "تسوية مخزون {{name}}",
       activityStockLinked: "ربط مخزون سابق بفاتورة {{number}}",
       activityPurchaseCorrected: "تصحيح شراء {{name}}",
@@ -318,7 +319,8 @@ const resources = {
       stockQuantityInvalid: "أدخل كمية صحيحة غير صفرية",
       stockRemovalNoCost: "الإخراج لا يسجل تكلفة وحدة",
       stockUnitCost: "تكلفة الوحدة (دج)",
-      stockSellingPrice: "سعر البيع",
+      stockSellingPrice: "سعر البيع الحالي (دج)",
+      stockSellingPriceInvalid: "أدخل سعر بيع صحيحاً (عدد صحيح 0 أو أكثر)",
       stockReason: "السبب (اختياري)",
       stockAddBtn: "تسجيل",
       stockAdded: "تم تسجيل الحركة",
@@ -573,6 +575,7 @@ const resources = {
       // reason typed only to get past the guard into the permanent ledger
       // (apps/api/src/lib/stock-adjustment.ts, why the window is short).
       STOCK_ADJUSTMENT_DUPLICATE: "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين. أعد المحاولة بعد قليل.",
+      STOCK_PRICE_UPDATE_REQUIRES_INFLOW: "يمكن تعديل سعر البيع عند إضافة المخزون فقط.",
       // ticket 29 — purchase intake + deferred linking
       purchasesTitle: "فاتورة شراء جديدة",
       purchasesNew: "شراء جديد",

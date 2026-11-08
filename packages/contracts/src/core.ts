@@ -81,6 +81,7 @@ export const activitySummaryTags = [
   "ITEM_CREATED_WITH_STOCK",
   "ITEM_UPDATED",
   "ITEM_COST_CORRECTED",
+  "STOCK_SELLING_PRICE_CHANGED",
   "STOCK_ADJUSTED",
   "STOCK_LINKED",
   "PURCHASE_CORRECTED",
@@ -1532,6 +1533,8 @@ export const stockAddManualInputSchema = z.object({
   /** signed; nonzero; magnitude-capped so sqlite INTEGER + JS number stay exact */
   delta: z.number().int().refine((v) => v !== 0 && Math.abs(v) <= 1_000_000, "delta must be a nonzero integer within ±1,000,000"),
   unitCost: dinarsSchema.optional(),
+  /** Optional current-price edit recorded with the receipt in the same unit. */
+  sellingPrice: dinarsSchema.optional(),
   reason: z.string().trim().optional(),
   /** Algeria-local moment; defaults to now at the api */
   occurredAt: localDateTimeSchema.optional(),

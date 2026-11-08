@@ -61,6 +61,7 @@ interface CapturedStockInput {
   itemId?: string;
   delta?: number;
   unitCost?: number;
+  sellingPrice?: number;
 }
 
 const categories: CategoryFixture[] = [
@@ -242,6 +243,7 @@ mock.module("@/lib/rpc", () => ({
           const item = items.find((candidate) => candidate.id === input.itemId);
           if (item === undefined || input.delta === undefined) throw new Error("invalid stock adjustment fixture");
           item.stockOnHand += input.delta;
+          if (input.sellingPrice !== undefined) item.sellingPrice = input.sellingPrice;
           return { id: "movement-1" };
         },
         ...opts,
@@ -1272,15 +1274,15 @@ describe("stock form prefill", () => {
     click("stock-item-option");
 
     await waitFor(() => inputByTestId("stock-unit-cost").value === "850");
-    expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("1,250");
-
+    expect(inputByTestId("stock-selling-price").value).toBe("1250");
+    setInput("stock-selling-price", "1400");
     setInput("stock-delta", "4");
     click("stock-save");
     await waitFor(() => stockInputs.length === 1);
     await waitFor(() => queryClient.getQueryData<{ items: FixtureItem[] }>(["itemsAll"])?.items.find((item) => item.id === "item-late")?.stockOnHand === 7);
 
     const persistedItems = queryClient.getQueryData<{ items: FixtureItem[] }>(["itemsAll"])?.items ?? [];
-    expect(stockInputs[0]).toMatchObject({ itemId: "item-late", delta: 4, unitCost: 850 });
+    expect(stockInputs[0]).toMatchObject({ itemId: "item-late", delta: 4, unitCost: 850, sellingPrice: 1400 });
     expect(persistedItems.find((item) => item.id === "item-late")?.stockOnHand).toBe(7);
     expect(persistedItems.find((item) => item.id === "item-1")?.stockOnHand).toBe(3);
   });
@@ -1305,6 +1307,8 @@ describe("stock form prefill", () => {
 
     expect(search.value).toBe("فلتر زيت");
     expect(inputByTestId("stock-unit-cost").value).toBe("200");
+    expect(inputByTestId("stock-selling-price").value).toBe("300");
+    expect(stockInputs).toHaveLength(0);
     setInput("stock-delta", "2");
     click("stock-save");
     await waitFor(() => stockInputs.length === 1);
@@ -1320,14 +1324,14 @@ describe("stock form prefill", () => {
     await openAddTab();
 
     await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
-    expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("150");
+    expect(inputByTestId("stock-selling-price").value).toBe("150");
 
     setInput("stock-item", "فلتر زيت");
     await waitFor(() => document.querySelector('[data-testid="stock-item-option"]') !== null);
     click("stock-item-option");
 
     await waitFor(() => inputByTestId("stock-unit-cost").value === "200");
-    expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("300");
+    expect(inputByTestId("stock-selling-price").value).toBe("300");
   });
 
   it("submits a hand-edited unit cost and survives a refetch", async () => {
@@ -1349,6 +1353,27 @@ describe("stock form prefill", () => {
     click("stock-save");
     await waitFor(() => stockInputs.length === 1);
     expect(stockInputs[0]).toMatchObject({ itemId: "item-1", delta: 4, unitCost: 999 });
+  });
+
+  it("refreshes an untouched selling-price prefill without overwriting a typed price", async () => {
+    const { queryClient } = await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-selling-price").value === "150");
+
+    firstFixtureItem().sellingPrice = 180;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["itemsAll"] });
+      await settle();
+    });
+    await waitFor(() => inputByTestId("stock-selling-price").value === "180");
+
+    setInput("stock-selling-price", "999");
+    firstFixtureItem().sellingPrice = 200;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["itemsAll"] });
+      await settle();
+    });
+    expect(inputByTestId("stock-selling-price").value).toBe("999");
   });
 
   it("rejects a non-numeric unit cost without calling the server", async () => {
@@ -1450,6 +1475,8 @@ describe("stock form prefill", () => {
     await mount();
     await openAddTab();
     setInput("stock-delta", "5");
+    setInput("stock-unit-cost", "999");
+    setInput("stock-selling-price", "777");
     click("stock-save");
     await waitFor(() => document.querySelector('[data-testid="stock-error"]') !== null);
     const message = el<HTMLElement>('[data-testid="stock-error"]').textContent ?? "";
@@ -1462,6 +1489,9 @@ describe("stock form prefill", () => {
     // both the clause that must stay and the one that must not come back.
     expect(message).toContain("أعد المحاولة بعد قليل");
     expect(message).not.toContain("غيّر سبب");
+    expect(inputByTestId("stock-delta").value).toBe("5");
+    expect(inputByTestId("stock-unit-cost").value).toBe("999");
+    expect(inputByTestId("stock-selling-price").value).toBe("777");
   });
 
   it("refreshes a prefilled cost when the item's known cost changes, without clobbering a typed value", async () => {

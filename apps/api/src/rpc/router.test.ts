@@ -5992,3 +5992,87 @@ describe("invoice list search contract", () => {
     expect(invoiceListInputSchema.safeParse({ search: "x".repeat(201) }).success).toBe(false);
   });
 });
+
+describe("stock entry prices (issue 394)", () => {
+  it("saves receipt cost and current selling price together without changing an old invoice", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: `stock-prices-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 250 });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const oldSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+
+    await client.stockAddManual({
+      itemId: item.id,
+      delta: 3,
+      unitCost: 140,
+      sellingPrice: 375,
+      kind: "PURCHASE",
+      reason: "supplier receipt",
+    });
+
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 7, costPrice: 117, sellingPrice: 375 });
+    expect((await client.invoicesGet({ id: oldSale.id })).lines[0]).toMatchObject({ unitPrice: 250, defaultUnitPrice: 250, costAtSale: 100 });
+    const activity = (await client.activitiesList({ limit: 500 })).items.filter((row) => row.ref === item.id && row.summary.includes("STOCK_SELLING_PRICE_CHANGED"));
+    expect(activity).toHaveLength(1);
+    expect(activity[0]?.summary).toContain("250 375");
+  });
+
+  it("accepts explicit zero receipt cost and selling price", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: `stock-zero-prices-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 250 });
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 0, sellingPrice: 0, kind: "PURCHASE" });
+
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 2, costPrice: 0, sellingPrice: 0 });
+    expect((await client.itemsHistory({ itemId: item.id })).movements[0]).toMatchObject({ delta: 2, unitCost: 0 });
+  });
+
+  it("rejects price edits on negative adjustments without creating a cost layer", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: `stock-outflow-price-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 250 });
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+
+    await expect(client.stockAddManual({ itemId: item.id, delta: -1, unitCost: 900, sellingPrice: 400 })).rejects.toThrow(/STOCK_PRICE_UPDATE_REQUIRES_INFLOW/);
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 2, sellingPrice: 250, costPrice: 100 });
+    expect((await client.itemsHistory({ itemId: item.id })).movements).toHaveLength(1);
+  });
+
+  it("rejects unauthenticated receipt price edits", async () => {
+    await expect(unauthed.stockAddManual({ itemId: "00000000-0000-4000-8000-000000000001", delta: 1, unitCost: 100, sellingPrice: 200 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("rolls back both requested prices and stock when the audit write fails", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: `stock-atomic-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 250 });
+    const failingStore: StorePort = {
+      ...store,
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransactionImmediate((realTx: StorePort) => fn({
+          ...realTx,
+          insertActivity: async () => { throw new Error("audit-boom"); },
+        })),
+    };
+    const failingClient = clientForStore(failingStore);
+
+    await expect(failingClient.stockAddManual({
+      itemId: item.id,
+      delta: 2,
+      unitCost: 150,
+      sellingPrice: 400,
+      kind: "PURCHASE",
+    })).rejects.toThrow();
+
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 0, costPrice: 100, sellingPrice: 250 });
+    expect((await client.itemsHistory({ itemId: item.id })).movements).toHaveLength(0);
+  });
+
+  it("does not duplicate receipt stock or audit activity when a successful request is retried", async () => {
+    const category = (await client.categoriesList()).items[0]!;
+    const item = await client.itemsCreate({ name: `stock-retry-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 250 });
+    const input: Parameters<typeof client.stockAddManual>[0] = { itemId: item.id, delta: 2, unitCost: 125, sellingPrice: 300, kind: "PURCHASE", reason: "retry receipt" };
+    await client.stockAddManual(input);
+    await expect(client.stockAddManual(input)).rejects.toThrow(/STOCK_ADJUSTMENT_DUPLICATE/);
+
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 2, sellingPrice: 300 });
+    expect((await client.itemsHistory({ itemId: item.id })).movements.filter((row) => row.kind === "PURCHASE")).toHaveLength(1);
+    expect((await client.activitiesList({ limit: 500 })).items.filter((row) => row.ref === item.id && row.summary.includes("STOCK_SELLING_PRICE_CHANGED"))).toHaveLength(1);
+  });
+});

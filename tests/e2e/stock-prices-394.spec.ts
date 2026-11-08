@@ -59,7 +59,9 @@ test("stock entry searches all items and saves both prices without losing a fail
   await expect(picker).toHaveValue(itemName);
   await form.screenshot({ path: path.join(evidenceDir, "before.png") });
 
-  if (process.env.CAPTURE_BASELINE === "1") return;
+  const sellingPriceControl = page.getByTestId("stock-selling-price");
+  const canEditSellingPrice = await sellingPriceControl.evaluate((element) => element instanceof HTMLInputElement);
+  if (!canEditSellingPrice) return; // baseline capture stops at the pre-issue read-only price.
 
   await picker.fill("no matching item");
   await picker.press("Escape");

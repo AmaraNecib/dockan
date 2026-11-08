@@ -66,10 +66,15 @@ test("stock entry searches all items and saves both prices without losing a fail
     return; // baseline capture stops at the pre-issue read-only price.
   }
 
+  let stockRequests = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/rpc/stockAddManual")) stockRequests += 1;
+  });
   await picker.fill("no matching item");
   await picker.press("Escape");
   await expect(picker).toHaveValue(itemName);
   await expect(page.getByTestId("stock-delta")).toHaveValue("");
+  expect(stockRequests).toBe(0);
 
   await page.getByTestId("stock-delta").fill("3");
   await page.getByTestId("stock-unit-cost").fill("140");
@@ -82,10 +87,12 @@ test("stock entry searches all items and saves both prices without losing a fail
   await expect(page.getByTestId("stock-delta")).toHaveValue("3");
   await expect(page.getByTestId("stock-unit-cost")).toHaveValue("140");
   await expect(page.getByTestId("stock-selling-price")).toHaveValue("375");
+  expect(stockRequests).toBe(1);
   await page.unroute("**/api/rpc/stockAddManual");
 
   await page.getByTestId("stock-save").click();
   await expect(page.getByTestId("stock-done")).toBeVisible();
+  expect(stockRequests).toBe(2);
   const saved = await rpc<{ items: Array<{ id: string; name: string; stockOnHand: number; costPrice: number; sellingPrice: number }> }>(page, {
     procedure: "itemsAll",
   });

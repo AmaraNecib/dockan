@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { performance } from "node:perf_hooks";
 import { z } from "zod";
 
 const SHA = /^[a-f0-9]{40}$/u;
@@ -135,27 +136,79 @@ export function writeArchiveSafely(file: string, rows: ExportRecord[], hooks: { 
   }
 }
 
-function gh(args: string[]): string {
-  const result = spawnSync("gh", args, { encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024, windowsHide: true });
-  if (result.error || result.status !== 0) throw new Error("GitHub read failed or timed out; no archive was changed");
-  return result.stdout;
+type GithubStage = "run_metadata" | "artifact_download";
+type GithubProcessResult = Pick<SpawnSyncReturns<string>, "error" | "status" | "signal" | "stdout" | "stderr">;
+type GithubCommandDependencies = {
+  spawn?: (command: string, args: string[], options: { encoding: "utf8"; timeout: number; maxBuffer: number; windowsHide: boolean }) => GithubProcessResult;
+  now?: () => number;
+  writeDiagnostic?: (line: string) => void;
+};
+const PROCESS_ERROR_CODES = new Set(["ETIMEDOUT", "ENOENT", "ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"]);
+const SIGNALS = new Set(["SIGTERM", "SIGINT", "SIGKILL", "SIGABRT"]);
+function getProcessErrorCode(result: GithubProcessResult): string | undefined {
+  // SAFETY: spawnSync exposes OS process failures as ErrnoException; callers only serialize allowlisted codes.
+  return (result.error as NodeJS.ErrnoException | null)?.code;
 }
-export function readRunAttempt(repo: string, runId: number, attempt?: number, read: (args: string[]) => string = gh) {
+function githubFailureCategory(result: GithubProcessResult): string {
+  const processErrorCode = getProcessErrorCode(result);
+  const statuses = [...(result.stderr ?? "").matchAll(/(?:^|\b)HTTP(?:\/\d(?:\.\d)?)?\s+(\d{3})\b/gu)].map((match) => match[1]);
+  const transports = [...(result.stderr ?? "").matchAll(/\b(ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN)\b/gu)].map((match) => match[1]);
+  // Accept one complete gh status-error line, not HTTP codes quoted in unrelated output.
+  const statusError = /^gh: [^\r\n]+ \(HTTP (401|403|404|429|5\d\d)\)$/u.exec((result.stderr ?? "").trim())?.[1];
+  const transportError = /^(?:connect|read|write) (ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN)$/u.test((result.stderr ?? "").trim());
+  if (processErrorCode === "ETIMEDOUT" && statuses.length === 0 && transports.length === 0) return "timeout";
+  if (processErrorCode === "ENOENT" && statuses.length === 0 && transports.length === 0) return "missing_tool";
+  if (["ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"].includes(processErrorCode ?? "") && statuses.length === 0) return "network";
+  if (processErrorCode === undefined && statuses.length === 1 && transports.length === 0 && statusError) {
+    const status = statusError;
+    if (status === "401" || status === "403") return "access_denied";
+    if (status === "404") return "not_found";
+    if (status === "429") return "rate_limited";
+    return "server_error";
+  }
+  if (processErrorCode === undefined && statuses.length === 0 && transports.length === 1 && transportError) return "network";
+  return "unknown";
+}
+export function runGithubCommand(stage: GithubStage, args: string[], dependencies: GithubCommandDependencies = {}): string {
+  const run = dependencies.spawn ?? ((command, commandArgs, options) => spawnSync(command, commandArgs, options));
+  const now = dependencies.now ?? (() => performance.now());
+  const writeDiagnostic = dependencies.writeDiagnostic ?? ((line) => console.error(line));
+  const start = now();
+  const result = run("gh", args, { encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024, windowsHide: true });
+  const elapsed = now() - start;
+  if (result.error || result.status !== 0) {
+    const errorCode = getProcessErrorCode(result);
+    const diagnostic = {
+      schemaVersion: 1,
+      stage,
+      elapsedMs: Number.isFinite(elapsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.round(elapsed))) : 0,
+      exitCode: Number.isSafeInteger(result.status) ? result.status : null,
+      processErrorCode: errorCode && PROCESS_ERROR_CODES.has(errorCode) ? errorCode : null,
+      signal: result.signal && SIGNALS.has(result.signal) ? result.signal : null,
+      category: githubFailureCategory(result),
+    };
+    writeDiagnostic(`BROWSER_CI_DIAGNOSTIC ${JSON.stringify(diagnostic)}`);
+    throw new Error("GitHub read failed or timed out; no archive was changed");
+  }
+  return result.stdout ?? "";
+}
+export function readRunAttempt(repo: string, runId: number, attempt?: number, read?: (args: string[]) => string, dependencies: GithubCommandDependencies = {}) {
   if (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt < 1)) throw new Error("attempt must be a positive integer");
   const args = ["run", "view", String(runId), "--repo", repo, ...(attempt === undefined ? [] : ["--attempt", String(attempt)]), "--json", "databaseId,attempt,event,headSha,status,conclusion,jobs"];
-  const info = z.object({ databaseId: z.number().int(), attempt: z.number().int().positive(), event: z.string(), headSha: z.string(), status: z.string(), conclusion: z.string().nullable(), jobs: z.array(z.object({ databaseId: z.number().int(), name: z.string(), conclusion: z.string().nullable(), startedAt: z.string(), completedAt: z.string() })) }).parse(JSON.parse(read(args)));
+  const readOutput = read ?? ((commandArgs: string[]) => runGithubCommand("run_metadata", commandArgs, dependencies));
+  const info = z.object({ databaseId: z.number().int(), attempt: z.number().int().positive(), event: z.string(), headSha: z.string(), status: z.string(), conclusion: z.string().nullable(), jobs: z.array(z.object({ databaseId: z.number().int(), name: z.string(), conclusion: z.string().nullable(), startedAt: z.string(), completedAt: z.string() })) }).parse(JSON.parse(readOutput(args)));
   if (info.databaseId !== runId) throw new Error("run metadata did not match requested run");
   if (attempt !== undefined && info.attempt !== attempt) throw new Error("run metadata did not match requested attempt");
   return info;
 }
-function exportRun(repo: string, runId: number, archive: string, scope: "full" | "selected" | "unknown", selectedFiles: string[], attempt?: number): void {
-  const info = readRunAttempt(repo, runId, attempt);
+export function exportRun(repo: string, runId: number, archive: string, scope: "full" | "selected" | "unknown", selectedFiles: string[], attempt?: number, dependencies: GithubCommandDependencies = {}): void {
+  const info = readRunAttempt(repo, runId, attempt, undefined, dependencies);
   const jobs = info.jobs.filter((job) => /^playwright e2e$/iu.test(job.name));
   if (jobs.length !== 1) throw new Error("browser job missing or ambiguous; no archive was changed");
   const job = jobs[0]; if (!job) throw new Error("browser job missing; no archive was changed"); const artifact = `playwright-e2e-manifest-${runId}-${info.attempt}`;
   const directory = path.join(os.tmpdir(), `browser-ci-export-${process.pid}-${Date.now()}`); mkdirSync(directory, { mode: 0o700 });
   try {
-    gh(["run", "download", String(runId), "--repo", repo, "--name", artifact, "--dir", directory]);
+    runGithubCommand("artifact_download", ["run", "download", String(runId), "--repo", repo, "--name", artifact, "--dir", directory], dependencies);
     const entries = readdirSync(directory);
     const manifestPath = path.join(directory, "manifest.json");
     if (entries.length !== 1 || entries[0] !== "manifest.json" || !existsSync(manifestPath) || lstatSync(manifestPath).isSymbolicLink() || !statSync(manifestPath).isFile()) throw new Error("unique manifest artifact missing or unsafe; no archive was changed");
@@ -170,7 +223,7 @@ function exportRun(repo: string, runId: number, archive: string, scope: "full" |
 }
 function main(): void {
   const argv = process.argv.slice(2);
-  if (argv.includes("--help")) { console.log("Usage: bun scripts/browser-ci-export.ts --repo owner/name --archive /explicit/path.jsonl --scope full|selected|unknown [--selected-file PATH ...] --run ID [--run ID ...] [--attempt NUMBER]\nManual export only. Missed exports are unrecoverable after five-day artifact expiry. No automatic coverage claim."); return; }
+  if (argv.includes("--help")) { console.log("Usage: bun scripts/browser-ci-export.ts --repo owner/name --archive /explicit/path.jsonl --scope full|selected|unknown [--selected-file PATH ...] --run ID [--run ID ...] [--attempt NUMBER]\nManual durable-archive export. Successful e2e runs also retain a separate per-run summary artifact for 30 days; it is not a durable archive or full-coverage claim. Manual exports must happen before the source manifest expires after five days."); return; }
   let repo = ""; let archive = ""; let scope: "full" | "selected" | "unknown" = "unknown"; let attempt: number | undefined; const selectedFiles: string[] = []; const runs: number[] = [];
   for (let i = 0; i < argv.length; i++) { const option = argv[i]; const value = argv[++i]; if (!value) throw new Error("missing option value"); if (option === "--repo") repo = value; else if (option === "--archive") archive = value; else if (option === "--run") runs.push(Number(value)); else if (option === "--attempt") { if (attempt !== undefined) throw new Error("provide --attempt only once"); attempt = Number(value); if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error("attempt must be a positive integer"); } else if (option === "--scope") { const parsedScope = z.enum(["full", "selected", "unknown"]).safeParse(value); if (!parsedScope.success) throw new Error("scope must be full, selected or unknown"); scope = parsedScope.data; } else if (option === "--selected-file") selectedFiles.push(value); else throw new Error(`unknown option or invalid value ${option}`); }
   if (!safeRepo(repo) || !path.isAbsolute(archive) || !runs.length || runs.some((id) => !Number.isSafeInteger(id) || id < 1)) throw new Error("provide --repo owner/name, an explicit absolute --archive path and positive --run IDs");

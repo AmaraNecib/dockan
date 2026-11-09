@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createExportRecord, mergeArchive, readRunAttempt, writeArchiveSafely, type ExportRecord } from "./browser-ci-export";
+import { createExportRecord, exportRun, mergeArchive, readRunAttempt, runGithubCommand, writeArchiveSafely, type ExportRecord } from "./browser-ci-export";
 
 const tmp: string[] = [];
 afterEach(() => { for (const dir of tmp.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -16,6 +16,116 @@ const manifest = (overrides: { complete?: boolean; phase?: string; provenance?: 
 function record(value = manifest(), digest = "f".repeat(64), scope: "full" | "selected" | "unknown" = "full"): ExportRecord {
   return createExportRecord({ repository: "owner/repo", runId: 12, attempt: 2, jobId: 99, event: "pull_request", workflowHeadSha: "a".repeat(40), jobConclusion: "success", startedAt: "2026-01-01T00:00:00Z", completedAt: "2026-01-01T00:00:03Z", scope, selectedFiles: scope === "selected" ? ["tests/e2e/a.spec.ts"] : [], manifest: value, artifactDigest: digest, exportedAt: "2026-01-02T00:00:00Z" });
 }
+
+describe("browser CI subprocess diagnostics", () => {
+  test("emits an allowlisted diagnostic for subprocess failures and keeps the generic error", () => {
+    const stderr: string[] = [];
+    expect(() => runGithubCommand("artifact_download", ["download", "SECRET_ARG"], {
+      spawn: () => ({ error: Object.assign(new Error("TOKEN_SENTINEL"), { code: "ETIMEDOUT" }), status: null, signal: "SIGTERM", stdout: "STDOUT_SENTINEL", stderr: "STDERR_SENTINEL" }),
+      now: (() => { let value = 10; return () => (value += 20); })(),
+      writeDiagnostic: (line) => stderr.push(line),
+    })).toThrow("GitHub read failed or timed out; no archive was changed");
+    expect(stderr).toHaveLength(1);
+    expect(stderr[0]).toBe('BROWSER_CI_DIAGNOSTIC {"schemaVersion":1,"stage":"artifact_download","elapsedMs":20,"exitCode":null,"processErrorCode":"ETIMEDOUT","signal":"SIGTERM","category":"timeout"}');
+    expect(stderr.join(" ")).not.toMatch(/SENTINEL|SECRET_ARG|TOKEN/u);
+  });
+  test("classifies only explicit supported failure signatures", () => {
+    const cases = [
+      [{ error: Object.assign(new Error(), { code: "ENOENT" }), status: null, signal: null, stdout: "", stderr: "" }, "missing_tool", "ENOENT"],
+      [{ error: Object.assign(new Error(), { code: "ETIMEDOUT" }), status: null, signal: null, stdout: "", stderr: "HTTP 403" }, "unknown", "ETIMEDOUT"],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Requires authentication (HTTP 401)" }, "access_denied", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Forbidden (HTTP 403)" }, "access_denied", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 403 followed by HTTP 503" }, "unknown", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 403 ECONNRESET" }, "unknown", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Not Found (HTTP 404)" }, "not_found", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Too Many Requests (HTTP 429)" }, "rate_limited", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Service Unavailable (HTTP 503)" }, "server_error", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "connect ECONNRESET" }, "network", null],
+      [{ error: undefined, status: 7, signal: null, stdout: "", stderr: "permission denied" }, "unknown", null],
+      [{ error: undefined, status: null, signal: "SIGINT", stdout: "", stderr: "" }, "unknown", null],
+    ] as const;
+    for (const [processResult, category, processErrorCode] of cases) {
+      const lines: string[] = [];
+      expect(() => runGithubCommand("run_metadata", [], { spawn: () => processResult, now: () => 0, writeDiagnostic: (line) => lines.push(line) })).toThrow("GitHub read failed or timed out; no archive was changed");
+      const parsed = JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""));
+      expect(parsed).toMatchObject({ stage: "run_metadata", category, processErrorCode });
+      expect(parsed.signal).toBe(processResult.signal);
+      expect(parsed.exitCode).toBe(processResult.status);
+    }
+  });
+  test("ignores incidental HTTP and transport mentions outside supported error forms", () => {
+    for (const stderr of [
+      "see HTTP 403 in the request log", "HTTP 403", "quoted HTTP 401", "quoted HTTP 404",
+      "quoted HTTP 429", "quoted HTTP 503", "see ECONNRESET in the request log",
+      "context\ngh: Forbidden (HTTP 403)", "gh: previous HTTP 503 (HTTP 403)",
+    ]) {
+      const lines: string[] = [];
+      expect(() => runGithubCommand("run_metadata", [], {
+        spawn: () => ({ error: undefined, status: 1, signal: null, stdout: "", stderr }),
+        now: () => 0,
+        writeDiagnostic: (line) => lines.push(line),
+      })).toThrow("GitHub read failed or timed out; no archive was changed");
+      expect(JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""))).toMatchObject({ category: "unknown" });
+    }
+  });
+  test("the default metadata reader labels run_metadata without invoking gh", () => {
+    const lines: string[] = [];
+    expect(() => readRunAttempt("owner/repo", 12, undefined, undefined, {
+      spawn: () => ({ error: undefined, status: 1, signal: null, stdout: "", stderr: "ambiguous" }),
+      now: () => 5,
+      writeDiagnostic: (line) => lines.push(line),
+    })).toThrow("GitHub read failed or timed out; no archive was changed");
+    expect(JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""))).toMatchObject({ stage: "run_metadata", category: "unknown" });
+  });
+  test("artifact failure keeps the archive untouched and removes its owned temp directory", () => {
+    const archive = path.join(dir(), "archive.jsonl");
+    const lines: string[] = [];
+    let downloadDirectory = "";
+    const metadata = JSON.stringify({ databaseId: 12, attempt: 2, event: "pull_request", headSha: "a".repeat(40), status: "completed", conclusion: "success", jobs: [{ databaseId: 99, name: "playwright e2e", conclusion: "success", startedAt: "2035-06-01T00:00:00Z", completedAt: "2035-06-01T00:00:03Z" }] });
+    expect(() => exportRun("owner/repo", 12, archive, "full", [], undefined, {
+      spawn: (_command, args) => {
+        if (args[1] === "view") return { error: undefined, status: 0, signal: null, stdout: metadata, stderr: "" };
+        downloadDirectory = args[args.indexOf("--dir") + 1] ?? "";
+        return { error: undefined, status: 7, signal: null, stdout: "", stderr: "generic failure" };
+      },
+      now: () => 100,
+      writeDiagnostic: (line) => lines.push(line),
+    })).toThrow("GitHub read failed or timed out; no archive was changed");
+    expect(JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""))).toMatchObject({ stage: "artifact_download", category: "unknown" });
+    expect(existsSync(archive)).toBe(false);
+    expect(downloadDirectory).not.toBe("");
+    expect(existsSync(downloadDirectory)).toBe(false);
+  });
+  test("sanitizes unexpected process metadata and bounds elapsed time", () => {
+    const lines: string[] = [];
+    expect(() => runGithubCommand("run_metadata", [], {
+      spawn: () => ({ error: Object.assign(new Error("PRIVATE_ERROR"), { code: "PRIVATE_CODE" }), status: 1, signal: "SIGUSR1" as const, stdout: "PRIVATE_STDOUT", stderr: "PRIVATE_STDERR" }),
+      now: (() => { let tick = 0; return () => (tick++ === 0 ? 10 : 50_010); })(),
+      writeDiagnostic: (line) => lines.push(line),
+    })).toThrow("GitHub read failed or timed out; no archive was changed");
+    const serialized = lines.join(" ");
+    expect(serialized).not.toMatch(/PRIVATE/u);
+    expect(JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""))).toMatchObject({ elapsedMs: 50_000, processErrorCode: null, signal: null, category: "unknown" });
+  });
+  test("keeps subprocess limits and generic failure exit behavior", () => {
+    let options: { timeout: number; maxBuffer: number } | undefined;
+    const lines: string[] = [];
+    expect(() => runGithubCommand("run_metadata", [], {
+      spawn: (_command, _args, receivedOptions) => { options = receivedOptions; return { error: undefined, status: 1, signal: null, stdout: "", stderr: "generic failure" }; },
+      now: () => 0,
+      writeDiagnostic: (line) => lines.push(line),
+    })).toThrow("GitHub read failed or timed out; no archive was changed");
+    expect(options).toMatchObject({ timeout: 20_000, maxBuffer: 1024 * 1024 });
+    expect(JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""))).toMatchObject({ category: "unknown", exitCode: 1 });
+  });
+  test("success is silent and preserves stdout", () => {
+    const lines: string[] = [];
+    expect(runGithubCommand("run_metadata", [], { spawn: () => ({ error: undefined, status: 0, signal: null, stdout: "ok", stderr: "" }), now: () => 0, writeDiagnostic: (line) => lines.push(line) })).toBe("ok");
+    expect(lines).toEqual([]);
+    expect(() => runGithubCommand("run_metadata", [], { spawn: () => ({ error: undefined, status: 1, signal: null, stdout: "", stderr: "generic failure" }), now: () => 0, writeDiagnostic: (line) => lines.push(line) })).toThrow("GitHub read failed or timed out; no archive was changed");
+    expect(JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""))).toMatchObject({ category: "unknown", exitCode: 1 });
+  });
+});
 
 describe("browser CI durable export", () => {
   test("binds the manifest to repository, run and attempt; mismatch is unavailable", () => {

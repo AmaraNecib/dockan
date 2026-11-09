@@ -1342,6 +1342,37 @@ describe("stock form prefill", () => {
     expect(stockInputs[1]?.movementId).not.toBe(stockInputs[0]?.movementId);
   });
 
+  for (const reset of ["save", "new receipt"] as const) {
+    it(`preserves both typed prices during the delayed refresh after ${reset}`, async () => {
+      const { queryClient } = await mount();
+      await openAddTab();
+      await waitFor(() => inputByTestId("stock-selling-price").value === "150");
+      setInput("stock-delta", "1");
+      setInput("stock-selling-price", "375");
+      if (reset === "new receipt") stockRefuses = "STOCK_ADJUSTMENT_DUPLICATE";
+      itemsGate = new Promise<void>((resolve) => { releaseItemsGate = resolve; });
+      click("stock-save");
+      await waitFor(() => stockInputs.length === 1);
+      if (reset === "new receipt") {
+        await waitFor(() => document.querySelector('[data-testid="stock-new-entry"]') !== null);
+        click("stock-new-entry");
+        stockRefuses = null;
+      }
+      await waitFor(() => inputByTestId("stock-selling-price").value === "");
+      setInput("stock-unit-cost", "280");
+      setInput("stock-selling-price", "500");
+      act(() => releaseItemsGate?.());
+      await waitFor(() => !queryClient.isFetching({ queryKey: ["itemsAll"] }));
+      await flush();
+      expect(inputByTestId("stock-unit-cost").value).toBe("280");
+      expect(inputByTestId("stock-selling-price").value).toBe("500");
+      setInput("stock-delta", "2");
+      click("stock-save");
+      await waitFor(() => stockInputs.length === 2);
+      expect(stockInputs[1]).toMatchObject({ unitCost: 280, sellingPrice: 500 });
+    });
+  }
+
   it("shows the selling price and prefills the cost from the selected item", async () => {
     await mount();
     await openAddTab();
@@ -1507,6 +1538,7 @@ describe("stock form prefill", () => {
     expect(message).not.toContain("STOCK_ADJUSTMENT_DUPLICATE");
     expect(message).toContain("لم تُضف الكمية مرة أخرى");
     expect(message).toContain("ابدأ إدخالاً جديداً");
+    expect(message).toContain("10 ثوانٍ");
     // Keep the draft available and tell the operator how to separate a new receipt.
     expect(message).not.toContain("غيّر سبب");
     expect(inputByTestId("stock-delta").value).toBe("5");

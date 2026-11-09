@@ -1,6 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-
 import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { openItemsTab } from "./items-helpers";
@@ -30,8 +27,8 @@ async function rpc<T>(page: Page, request: SeedRequest): Promise<T> {
 
 test("stock entry searches all items and saves both prices without losing a failed draft", async ({ page }, testInfo) => {
   test.setTimeout(60_000);
-  const evidenceDir = path.resolve(process.cwd(), ".scratch/evidence/394");
-  fs.mkdirSync(evidenceDir, { recursive: true });
+  const afterPath = testInfo.outputPath("after.png");
+  const recoveryPath = testInfo.outputPath("duplicate-recovery.png");
   const suffix = Date.now().toString();
   await signIn(page);
   const categories = await rpc<{ items: Array<{ id: string }> }>(page, { procedure: "categoriesList", input: {} });
@@ -59,12 +56,7 @@ test("stock entry searches all items and saves both prices without losing a fail
   await picker.press("Enter");
   await expect(picker).toHaveValue(itemName);
 
-  const sellingPriceControl = page.getByTestId("stock-selling-price");
-  const canEditSellingPrice = await sellingPriceControl.evaluate((element) => element instanceof HTMLInputElement);
-  if (!canEditSellingPrice) {
-    await form.screenshot({ path: path.join(evidenceDir, "before.png") });
-    return; // baseline capture stops at the pre-issue read-only price.
-  }
+  await expect(page.getByTestId("stock-selling-price")).toBeEditable();
 
   let stockRequests = 0;
   page.on("request", (request) => {
@@ -79,7 +71,7 @@ test("stock entry searches all items and saves both prices without losing a fail
   await page.getByTestId("stock-delta").fill("3");
   await page.getByTestId("stock-unit-cost").fill("140");
   await page.getByTestId("stock-selling-price").fill("375");
-  await form.screenshot({ path: path.join(evidenceDir, "after.png") });
+  await form.screenshot({ path: afterPath });
 
   await page.route("**/api/rpc/stockAddManual", (route) => route.abort(), { times: 1 });
   await page.getByTestId("stock-save").click();
@@ -117,7 +109,7 @@ test("stock entry searches all items and saves both prices without losing a fail
   await expect(page.getByTestId("stock-delta")).toHaveValue("4");
   const afterRetry = await rpc<{ items: Array<{ name: string; stockOnHand: number; sellingPrice: number }> }>(page, { procedure: "itemsAll" });
   expect(afterRetry.items.find((item) => item.name === itemName)).toMatchObject({ stockOnHand: 7, sellingPrice: 400 });
-  await form.screenshot({ path: path.join(evidenceDir, "duplicate-recovery.png") });
+  await form.screenshot({ path: recoveryPath });
 
   await page.getByTestId("stock-new-entry").press("Enter");
   await expect(page.getByTestId("stock-delta")).toHaveValue("");
@@ -129,6 +121,6 @@ test("stock entry searches all items and saves both prices without losing a fail
   const afterNewReceipt = await rpc<{ items: Array<{ name: string; stockOnHand: number; sellingPrice: number }> }>(page, { procedure: "itemsAll" });
   expect(afterNewReceipt.items.find((item) => item.name === itemName)).toMatchObject({ stockOnHand: 9, sellingPrice: 400 });
 
-  await testInfo.attach("stock-form-before", { path: path.join(evidenceDir, "before.png"), contentType: "image/png" });
-  await testInfo.attach("stock-form-after", { path: path.join(evidenceDir, "after.png"), contentType: "image/png" });
+  await testInfo.attach("stock-form-after", { path: afterPath, contentType: "image/png" });
+  await testInfo.attach("stock-duplicate-recovery", { path: recoveryPath, contentType: "image/png" });
 });

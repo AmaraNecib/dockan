@@ -319,7 +319,8 @@ const resources = {
       stockQuantityInvalid: "أدخل كمية صحيحة غير صفرية",
       stockRemovalNoCost: "الإخراج لا يسجل تكلفة وحدة",
       stockUnitCost: "تكلفة الوحدة (دج)",
-      stockSellingPrice: "سعر البيع الحالي (دج)",
+      stockSellingPrice: "سعر البيع (دج)",
+      stockCurrentSellingPrice: "سعر البيع الحالي (دج)",
       stockSellingPriceInvalid: "أدخل سعر بيع صحيحاً (عدد صحيح 0 أو أكثر)",
       stockReason: "السبب (اختياري)",
       stockAddBtn: "تسجيل",
@@ -571,7 +572,7 @@ const resources = {
       ITEM_ERROR: "تعذّر حفظ المنتج",
       STOCK_NEGATIVE: "الكمية غير متوفرة في المخزون",
       // A reused movement identity is refused even when the payload differs.
-      STOCK_ADJUSTMENT_DUPLICATE: "هذا الإيصال سبق تسجيله. لم تُضف الكمية مرة أخرى. ابدأ إدخالاً جديداً إذا كان إيصالاً مختلفاً.",
+      STOCK_ADJUSTMENT_DUPLICATE: "هذا الإيصال أو إدخال مطابق له سبق تسجيله. لم تُضف الكمية مرة أخرى. إذا كان إيصالاً مختلفاً، انتظر 10 ثوانٍ ثم ابدأ إدخالاً جديداً وأعد إدخال بياناته.",
       STOCK_ENTRY_ID_REQUIRED: "تعذّر حفظ الإيصال. ابدأ إدخالاً جديداً ثم أعد المحاولة.",
       STOCK_PRICE_UPDATE_REQUIRES_INFLOW: "يمكن تعديل سعر البيع عند إضافة المخزون فقط.",
       // ticket 29 — purchase intake + deferred linking

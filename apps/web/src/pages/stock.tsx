@@ -100,9 +100,9 @@ export function StockForm() {
         setSellingPrice("");
         setReason("");
         setDone(true);
-        // let the next refetch re-prefill the (possibly changed) average cost
-        prefilledRef.current = null;
-        sellingPrefilledRef.current = null;
+        // Blank is the new prefill, so edits made before the refresh survive it.
+        prefilledRef.current = { itemId: selectedItemId, cost: "" };
+        sellingPrefilledRef.current = { itemId: selectedItemId, price: "" };
         movementIdRef.current = crypto.randomUUID();
         freshAfterRef.current = Date.now();
         // the items table (paginated, so its key carries the page), the
@@ -122,8 +122,8 @@ export function StockForm() {
     setReason("");
     setError(null);
     setDone(false);
-    prefilledRef.current = null;
-    sellingPrefilledRef.current = null;
+    prefilledRef.current = { itemId: selectedItemId, cost: "" };
+    sellingPrefilledRef.current = { itemId: selectedItemId, price: "" };
     freshAfterRef.current = Date.now();
     adjust.reset();
     void queryClient.invalidateQueries();
@@ -177,7 +177,7 @@ export function StockForm() {
         noMatchesLabel={t("itemsSearchEmpty")}
       />
       <label className="grid gap-1">
-        {t("stockSellingPrice")}
+        {t("stockCurrentSellingPrice")}
         <input
           className={inputClass}
           name="stockSellingPrice"

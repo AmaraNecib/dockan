@@ -25,6 +25,7 @@ export interface DiscardDraftDialogProps {
    * dialog only asks for the element (WCAG 2.4.3).
    */
   finalFocus?: ComponentProps<typeof DialogPopup>["finalFocus"];
+  openerRef?: { current: HTMLElement | null };
 }
 
 /**
@@ -47,26 +48,32 @@ export function DiscardDraftDialog({
   confirmTestId,
   cancelTestId,
   finalFocus,
+  openerRef,
 }: DiscardDraftDialogProps) {
-  const popupRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement | null>(null);
   const returnTarget = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open || openerRef) return;
     const active = document.activeElement;
     if (active instanceof HTMLElement && !popupRef.current?.contains(active)) {
       returnTarget.current = active;
     }
-  }, [open]);
+  }, [open, openerRef]);
 
   function restoreOpeningFocus() {
     const popup = popupRef.current;
     const active = document.activeElement;
-    // A closing popup can reopen before unmount. Base UI's boolean fallback
-    // still remembers its first opening, so capture each opening ourselves.
-    // An explicit target must also respect focus acquired during the exit.
+    // A closing popup can reopen before unmount. Use the latest caller-captured
+    // opener, or capture each open transition when the caller has no opener ref.
+    // Do not override focus acquired by a newer control during the exit.
     if (active !== document.body && active instanceof HTMLElement && !popup?.contains(active)) return false;
-    return returnTarget.current?.isConnected ? returnTarget.current : false;
+    const target = openerRef?.current ?? returnTarget.current;
+    return target?.isConnected ? target : false;
   }
+
+  const resolvedFinalFocus = finalFocus === undefined || finalFocus === true
+    ? restoreOpeningFocus
+    : finalFocus;
 
   // Escape is Base UI's job, and the layer stack already knows which dialog is on
   // top — that is the whole reason this component owns no key handler.
@@ -81,11 +88,7 @@ export function DiscardDraftDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup
-        ref={popupRef}
-        className="max-w-sm"
-        finalFocus={finalFocus === undefined || finalFocus === true ? restoreOpeningFocus : finalFocus}
-      >
+      <DialogPopup ref={popupRef} className="max-w-sm" finalFocus={resolvedFinalFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

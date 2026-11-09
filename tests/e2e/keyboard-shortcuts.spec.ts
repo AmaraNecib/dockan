@@ -273,7 +273,7 @@ test("reopening purchase discard during its exit restores the latest field on ca
   const stock = page.getByTestId("sale-quick-stock");
   await stock.fill("7");
 
-  // Keep the first closing popup alive while the operator resumes entry.
+  // Hold the real exit animation so close/reopen reuses the same popup node.
   await page.addStyleTag({
     content: '[data-slot="dialog-popup"][data-closed] { animation-play-state: paused !important; }',
   });
@@ -282,6 +282,9 @@ test("reopening purchase discard during its exit restores the latest field on ca
     has: page.getByTestId("new-sale-discard-confirm"),
   });
   await expect(discard).toBeVisible();
+  const firstPopup = await discard.elementHandle();
+  if (!firstPopup) throw new Error("discard popup did not render");
+
   await page.keyboard.press("Escape");
   await expect(discard).toHaveAttribute("data-closed", "");
   expect(await discard.evaluate((element) =>
@@ -298,6 +301,11 @@ test("reopening purchase discard during its exit restores the latest field on ca
   await expect(discard).toHaveCount(1);
   await page.keyboard.press("Control+b");
   await expect(discard).not.toHaveAttribute("data-closed", "");
+  const reopenedPopup = await discard.elementHandle();
+  if (!reopenedPopup) throw new Error("reopened discard popup did not render");
+  expect(await reopenedPopup.evaluate((element, original) => element === original, firstPopup)).toBe(true);
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+
   await page.keyboard.press("Escape");
   await expect(discard).toHaveAttribute("data-closed", "");
   await discard.evaluate((element) => {

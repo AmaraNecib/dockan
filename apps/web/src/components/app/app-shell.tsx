@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
@@ -46,6 +46,7 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
   const navigate = useNavigate();
   const { draftDirtyRef, savePending, savePendingRef } = useSaleDraft();
   const [discardOpen, setDiscardOpen] = useState(false);
+  const discardOpenerRef = useRef<HTMLElement | null>(null);
 
   function goToNewSale() {
     void navigate({
@@ -55,9 +56,10 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
     });
   }
 
-  function handleNewSale() {
+  function handleNewSale(opener: HTMLElement) {
     if (savePendingRef.current) return;
     if (draftDirtyRef.current) {
+      discardOpenerRef.current = opener;
       setDiscardOpen(true);
       return;
     }
@@ -70,13 +72,14 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
         data-testid="new-sale-button"
         aria-label={t("saleNew")}
         className="gap-1.5"
-        onClick={handleNewSale}
+        onClick={(event) => handleNewSale(event.currentTarget)}
         disabled={savePending}
       >
         <ShoppingBag size={18} />
         <span className="hidden sm:inline">{t("saleNew")}</span>
       </Button>
       <DiscardSaleDialog
+        openerRef={discardOpenerRef}
         open={discardOpen}
         onOpenChange={setDiscardOpen}
         onConfirm={() => {
@@ -90,12 +93,13 @@ function NewSaleAction({ activeKey }: NewSaleActionProps) {
 }
 
 interface DiscardSaleDialogProps {
+  openerRef: { current: HTMLElement | null };
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }
 
-function DiscardSaleDialog({ open, onOpenChange, onConfirm }: DiscardSaleDialogProps) {
+function DiscardSaleDialog({ openerRef, open, onOpenChange, onConfirm }: DiscardSaleDialogProps) {
   const { t } = useTranslation();
   // the shared dialog (#321): the sale screen's question and its answers are
   // unchanged, only the markup moved
@@ -110,6 +114,7 @@ function DiscardSaleDialog({ open, onOpenChange, onConfirm }: DiscardSaleDialogP
       cancelLabel={t("dialogClose")}
       confirmTestId="new-sale-discard-confirm"
       finalFocus={true}
+      openerRef={openerRef}
     />
   );
 }
@@ -124,6 +129,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const { draftDirtyRef, savePendingRef } = useSaleDraft();
   const [purchaseDiscardOpen, setPurchaseDiscardOpen] = useState(false);
+  const purchaseDiscardOpenerRef = useRef<HTMLElement | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
@@ -162,6 +168,12 @@ export function AppShell() {
       return;
     }
     if (activeKey === "sale" && draftDirtyRef.current) {
+      const activeElement = document.activeElement;
+      if (!purchaseDiscardOpen) {
+        purchaseDiscardOpenerRef.current = activeElement instanceof HTMLElement && activeElement !== document.body
+          ? activeElement
+          : null;
+      }
       setPurchaseDiscardOpen(true);
       return;
     }
@@ -245,12 +257,14 @@ export function AppShell() {
       </div>
 
       <DiscardDraftDialog
+        openerRef={purchaseDiscardOpenerRef}
         title={t("saleToPurchaseDiscardTitle")}
         description={t("saleToPurchaseDiscardDesc")}
         confirmLabel={t("saleToPurchaseDiscardConfirm")}
         cancelLabel={t("dialogClose")}
         confirmTestId="new-sale-discard-confirm"
-        // The shared dialog restores this opening's field unless newer work owns focus.
+        // The shared wrapper restores this invocation's opener unless another
+        // control takes focus while the popup exits.
         finalFocus={true}
         open={purchaseDiscardOpen}
         onOpenChange={setPurchaseDiscardOpen}

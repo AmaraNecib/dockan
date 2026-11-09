@@ -25,12 +25,18 @@ export function CategoriesPage() {
   const [editName, setEditName] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [retryingCategories, setRetryingCategories] = useState(false);
   const visibleCategories = useMemo(
     () => categories.data?.items.filter((category) => search.trim() === "" || arabicIncludes(category.name, search.trim())) ?? [],
     [categories.data?.items, search],
   );
   /** the empty state's action focuses the add field instead of faking a step */
   const nameRef = useRef<HTMLInputElement>(null);
+
+  const retryCategories = () => {
+    setRetryingCategories(true);
+    void categories.refetch().finally(() => setRetryingCategories(false));
+  };
 
   const refreshCategoryLabels = () => {
     void queryClient.invalidateQueries({ queryKey: orpc.categoriesList.queryKey() });
@@ -116,7 +122,21 @@ export function CategoriesPage() {
       {error && <p className="mt-2 text-sm text-destructive" role="alert">{error}</p>}
       {notice && <p className="mt-2 text-sm text-success" role="status">{notice}</p>}
 
-      {categories.isPending || !categories.data ? (
+      {!categories.data && (categories.isError || retryingCategories) ? (
+        <div className="mt-4 grid gap-2 rounded border border-destructive/20 bg-destructive/10 p-3" data-testid="categories-error">
+          <p className="text-sm text-destructive" role="alert">{t("categoriesLoadError")}</p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={categories.isFetching}
+            onClick={retryCategories}
+            data-testid="categories-retry"
+          >
+            {t("itemsSearchRetry")}
+          </Button>
+        </div>
+      ) : categories.isPending || !categories.data ? (
         <div className="mt-4 grid gap-3 rounded border bg-card p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-6 w-full" />

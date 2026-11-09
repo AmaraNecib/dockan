@@ -12,6 +12,10 @@ interface Category {
 }
 
 let categories: Category[] = [];
+let categoriesListFails = false;
+let categoriesListReads = 0;
+let categoriesListGate: Promise<void> | null = null;
+let releaseCategoriesList: (() => void) | null = null;
 let created: Array<{ name: string }> = [];
 let categoryRenameFails = false;
 let categoryDeleteFails = false;
@@ -31,7 +35,12 @@ mock.module("@/lib/rpc", () => ({
     categoriesList: {
       queryOptions: () => ({
         queryKey: [["categoriesList"]],
-        queryFn: async () => ({ items: categories }),
+        queryFn: async () => {
+          categoriesListReads += 1;
+          if (categoriesListGate !== null) await categoriesListGate;
+          if (categoriesListFails) throw new Error("CATEGORIES_LIST_FAILED");
+          return { items: categories };
+        },
       }),
       queryKey: () => [["categoriesList"]],
     },
@@ -105,14 +114,34 @@ async function submitForm(form: HTMLFormElement): Promise<void> {
 async function mount() {
   const page = await mountWithProviders(<CategoriesPage />);
   await page.poll(
-    () => page.query("categories-empty") !== null || page.container.querySelector("ul") !== null,
+    () => page.query("categories-empty") !== null || page.container.querySelector("ul") !== null || page.container.querySelector('[role="alert"]') !== null,
     "categories settled",
   );
   return page;
 }
 
+async function mountWithFailedCategoriesRead() {
+  categoriesListFails = true;
+  categoriesListGate = new Promise((resolve) => { releaseCategoriesList = resolve; });
+  const page = await mountWithProviders(<CategoriesPage />);
+  await page.poll(() => categoriesListReads > 0, "initial category read starts");
+  await act(async () => {
+    releaseCategoriesList?.();
+    await page.poll(
+      () => page.queryClient.getQueryState([["categoriesList"]])?.status === "error",
+      "initial category read fails",
+    );
+  });
+  categoriesListGate = null;
+  return page;
+}
+
 beforeEach(() => {
   categories = [];
+  categoriesListFails = false;
+  categoriesListReads = 0;
+  categoriesListGate = null;
+  releaseCategoriesList = null;
   created = [];
   categoryRenameFails = false;
   categoryDeleteFails = false;
@@ -132,6 +161,86 @@ afterEach(async () => {
 });
 
 describe("CategoriesPage management (#389)", () => {
+  it("announces a failed initial category read instead of leaving skeletons", async () => {
+    const page = await mountWithFailedCategoriesRead();
+
+    expect(page.container.querySelector('[role="alert"]')?.textContent).toBe(i18n.t("categoriesLoadError"));
+  });
+
+  it("keeps the pending skeleton distinct from empty while the first read is held", async () => {
+    categoriesListGate = new Promise((resolve) => { releaseCategoriesList = resolve; });
+    const page = await mountWithProviders(<CategoriesPage />);
+    await page.poll(() => categoriesListReads > 0, "initial category read starts");
+
+    expect(page.container.querySelectorAll(".animate-pulse").length).toBe(3);
+    expect(page.query("categories-empty")).toBeNull();
+    expect(page.container.querySelector('[role="alert"]')).toBeNull();
+
+    releaseCategoriesList?.();
+    await page.poll(() => page.query("categories-empty") !== null, "empty categories load");
+  });
+
+  it("holds Retry while fetching, exposes a repeated failure, then recovers to categories", async () => {
+    const page = await mountWithFailedCategoriesRead();
+
+    const retry = [...page.container.querySelectorAll("button")].find((button) => button.textContent === i18n.t("itemsSearchRetry"));
+    expect(retry).not.toBeUndefined();
+    expect(retry?.disabled).toBe(false);
+
+    categoriesListGate = new Promise((resolve) => { releaseCategoriesList = resolve; });
+    await act(async () => {
+      retry?.click();
+      await page.poll(() => retry?.disabled === true, "retry starts and disables its button");
+    });
+
+    await act(async () => {
+      releaseCategoriesList?.();
+      await page.poll(() => retry?.disabled === false, "repeated category read failure settles");
+    });
+    expect(page.container.querySelector('[role="alert"]')?.textContent).toBe(i18n.t("categoriesLoadError"));
+
+    categoriesListFails = false;
+    categoriesListGate = null;
+    categories = [{ id: "cat-recovered", name: "عام" }];
+    await act(async () => {
+      retry?.click();
+      await page.poll(
+        () => page.container.querySelector("li")?.textContent?.includes("عام") === true,
+        "retry recovers categories",
+      );
+    });
+    expect(page.container.querySelector('[role="alert"]')).toBeNull();
+    expect(categoriesListReads).toBe(3);
+  });
+
+  it("keeps cached categories visible when a background refetch fails", async () => {
+    categories = [{ id: "cat-cached", name: "المحفوظ" }];
+    const page = await mount();
+    categoriesListFails = true;
+    categoriesListGate = new Promise((resolve) => { releaseCategoriesList = resolve; });
+    let refetch!: Promise<void>;
+    await act(async () => {
+      refetch = page.queryClient.invalidateQueries({ queryKey: [["categoriesList"]] });
+      await page.poll(
+        () => page.queryClient.getQueryState([["categoriesList"]])?.fetchStatus === "fetching",
+        "background categories refetch starts",
+      );
+    });
+    await act(async () => {
+      releaseCategoriesList?.();
+      await refetch;
+      await page.poll(
+        () => page.queryClient.getQueryState([["categoriesList"]])?.status === "error",
+        "background categories refetch fails",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(page.container.textContent).toContain("المحفوظ");
+    expect(page.container.querySelector('[role="alert"]')).toBeNull();
+    expect(page.container.querySelectorAll(".animate-pulse")).toHaveLength(0);
+  });
+
   it("renames a category with the same ID and keeps the edit available after a save failure", async () => {
     categories = [{ id: "cat-stable", name: "قديم" }];
     const page = await mount();

@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import { useRef, type ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "@/components/ui/dialog";
@@ -25,6 +25,7 @@ export interface DiscardDraftDialogProps {
    * dialog only asks for the element (WCAG 2.4.3).
    */
   finalFocus?: ComponentProps<typeof DialogPopup>["finalFocus"];
+  openerRef?: { current: HTMLElement | null };
 }
 
 /**
@@ -47,7 +48,23 @@ export function DiscardDraftDialog({
   confirmTestId,
   cancelTestId,
   finalFocus,
+  openerRef,
 }: DiscardDraftDialogProps) {
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const resolvedFinalFocus = openerRef
+    ? () => {
+        const opener = openerRef.current;
+        if (!opener?.isConnected) return false;
+
+        const activeElement = document.activeElement;
+        const focusStayedInDialog = activeElement instanceof HTMLElement
+          && popupRef.current?.contains(activeElement);
+        if (activeElement !== document.body && !focusStayedInDialog) return false;
+
+        return opener;
+      }
+    : finalFocus;
+
   // Escape is Base UI's job, and the layer stack already knows which dialog is on
   // top — that is the whole reason this component owns no key handler.
   //
@@ -61,7 +78,7 @@ export function DiscardDraftDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-sm" finalFocus={finalFocus}>
+      <DialogPopup ref={popupRef} className="max-w-sm" finalFocus={resolvedFinalFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

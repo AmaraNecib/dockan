@@ -137,7 +137,7 @@ test("diagnostics keeps synthetic multiline stacks local without widening nearby
         await page.setViewportSize(viewport);
         const timestampBounds = await page.evaluate(async () => {
           await document.fonts.ready;
-          const timestamp = document.querySelector('[data-testid="diagnostics-row"] time');
+          const timestamp = document.querySelector<HTMLTimeElement>('[data-testid="diagnostics-row"] time');
           const header = timestamp?.parentElement;
           const text = timestamp?.firstChild;
           if (!timestamp || !header || !text || text.nodeType !== Node.TEXT_NODE) {

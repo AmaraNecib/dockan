@@ -815,7 +815,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
     // create rejects a blank cost outright, so edit must too: silently writing
     // 0 moves purchase cost, average cost and profit on a select-all + Enter
     const costPrice = draft.row.costPriceKnown === false && draftBlank(draft.cost) ? null : parseWholeNumber(draft.cost);
-    if (costPrice === null && draft.row.costPriceKnown !== false) {
+    if (costPrice === null && !(draft.row.costPriceKnown === false && draftBlank(draft.cost))) {
       setEditError(t("itemsCostInvalid"));
       return;
     }

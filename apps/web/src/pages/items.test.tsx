@@ -1911,6 +1911,36 @@ describe("inline item edit", () => {
     expect(updateInputs[0]).toMatchObject({ id: "item-1", name: "بطارية بإدخال" });
   });
 
+  it("keeps invalid unknown-cost drafts open, permits blank omission, and accepts explicit zero", async () => {
+    items = [baseItem({ costPrice: 0, costPriceKnown: false })];
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "abc");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(document.querySelector('[data-testid="edit-cost"]')).not.toBeNull();
+    expect(inputByTestId("edit-cost").value).toBe("abc");
+    expect(updateInputs).toHaveLength(0);
+    setInput("edit-cost", "-1");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(inputByTestId("edit-cost").value).toBe("-1");
+    expect(updateInputs).toHaveLength(0);
+
+    setInput("edit-cost", "");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') === null);
+    expect(updateInputs).toHaveLength(0);
+
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "0");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toMatchObject({ id: "item-1", costPrice: 0 });
+  });
+
   it("rejects a non-numeric cost instead of silently zeroing it", async () => {
     await mount();
     click("edit-item-item-1");

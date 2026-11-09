@@ -169,6 +169,8 @@ async function uninvoicedAvailability(store: StorePort, itemId: string): Promise
   const movements = await store.listStockMovements(itemId);
   const consumed = new Map<string, number>();
   for (const link of await store.listStockLinksByItem(itemId)) {
+    const invoice = await store.getInvoiceDetail(link.invoiceId);
+    if (invoice?.kind !== "PURCHASE") continue;
     consumed.set(link.movementId, (consumed.get(link.movementId) ?? 0) + link.quantity);
   }
   let available = 0;
@@ -186,7 +188,9 @@ async function uninvoicedAvailability(store: StorePort, itemId: string): Promise
 async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: string): Promise<number> {
   let total = 0;
   for (const link of await store.listStockLinksByItem(itemId)) {
-    if (link.invoiceId === invoiceId) total += link.quantity;
+    if (link.invoiceId !== invoiceId) continue;
+    const invoice = await store.getInvoiceDetail(link.invoiceId);
+    if (invoice?.kind === "PURCHASE") total += link.quantity;
   }
   return total;
 }
@@ -796,7 +800,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- catalog search + scanning (ticket 28) --------------------------------
     catalogSearch: os.catalogSearch.handler(
       guardedInput(async ({ query, limit }) => {
-        const [items, categories] = await Promise.all([deps.store.listItems(), deps.store.listCategories()]);
+        const [items, categories] = await Promise.all([deps.store.listItems({ query, limit: 100000, offset: 0 }), deps.store.listCategories()]);
         return rankCatalog(items.items, categories, query, limit);
       }),
     ),
@@ -837,7 +841,7 @@ export function createRpcRouter(deps: RpcDeps) {
           if (item === undefined) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
           }
-          if (input.delta > 0 && input.kind === "PURCHASE" && input.unitCost === undefined && input.costPending !== true &&
+          if (input.delta > 0 && input.unitCost === undefined && input.costPending !== true &&
               (item.costPriceKnown === false || (await itemStockProjection(tx, item.id, { fallbackUnitCost: item.costPrice })).layers.some((layer) => layer.costPending === true))) {
             throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_COST_REQUIRED_WHILE_PENDING" });
           }
@@ -2203,6 +2207,8 @@ export function createRpcRouter(deps: RpcDeps) {
             const movements = await tx.listStockMovements(allocation.itemId);
             const alreadyLinked = new Map<string, number>();
             for (const link of await tx.listStockLinksByItem(allocation.itemId)) {
+              const linkedInvoice = await tx.getInvoiceDetail(link.invoiceId);
+              if (linkedInvoice?.kind !== "PURCHASE") continue;
               alreadyLinked.set(link.movementId, (alreadyLinked.get(link.movementId) ?? 0) + link.quantity);
             }
             for (const movement of movements) {

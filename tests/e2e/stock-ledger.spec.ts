@@ -12,9 +12,10 @@ type SeedRequest =
     }
   | {
       procedure: "stockAddManual";
-      input: { itemId: string; delta: number; unitCost?: number; kind?: "PURCHASE" | "MANUAL_ADJUSTMENT"; occurredAt?: string };
+      input: { itemId: string; delta: number; unitCost?: number; costPending?: boolean; kind?: "PURCHASE" | "MANUAL_ADJUSTMENT"; occurredAt?: string };
     }
   | { procedure: "itemsUpdate"; input: { id: string; costPrice?: number } }
+  | { procedure: "invoicesCreate"; input: { kind: "SALE"; lines: Array<{ itemId: string; quantity: number }> } }
   | { procedure: "preferencesSet"; input: { key: string; value: string } };
 
 /** Call one oRPC procedure from the page and return its declared output. */
@@ -118,6 +119,45 @@ test("add stock manually, item history shows movements with derived stock", asyn
   // …and the rejected delta changed nothing
   await openItemsTab(page, "products");
   await expect((await manualStockRow(page)).getByTestId("stock-after-cell")).toHaveText("6");
+});
+
+test("unknown-cost item edits reject invalid values, allow blank, and accept explicit zero", async ({ page }) => {
+  const stamp = Date.now().toString();
+  const itemName = `تكلفة مجهولة-${stamp}`;
+  await signIn(page);
+  const categories = await rpc<{ items: Array<{ id: string }> }>(page, { procedure: "categoriesList", input: {} });
+  const item = await rpc<{ id: string }>(page, {
+    procedure: "itemsCreate",
+    input: { name: itemName, categoryId: categories.items[0]!.id, costPrice: 0, sellingPrice: 200, lowStockThreshold: 0 },
+  });
+  await rpc(page, { procedure: "stockAddManual", input: { itemId: item.id, delta: 1, costPending: true, kind: "PURCHASE" } });
+  await rpc(page, { procedure: "invoicesCreate", input: { kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] } });
+
+  await page.goto("/items");
+  await openItemsTab(page, "products");
+  const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
+  await row.getByTestId(/^edit-item-/).click();
+  const cost = page.getByTestId("edit-cost");
+  await expect(cost).toHaveValue("");
+  await cost.fill("abc");
+  await page.getByTestId("edit-save").click();
+  await expect(page.getByTestId("items-edit-error")).toBeVisible();
+  await expect(cost).toHaveValue("abc");
+
+  await cost.fill("-1");
+  await page.getByTestId("edit-save").click();
+  await expect(page.getByTestId("items-edit-error")).toBeVisible();
+  await expect(cost).toHaveValue("-1");
+
+  await cost.fill("");
+  await page.getByTestId("edit-save").click();
+  await expect(cost).toHaveCount(0);
+
+  await row.getByTestId(/^edit-item-/).click();
+  await page.getByTestId("edit-cost").fill("0");
+  await page.getByTestId("edit-save").click();
+  await expect(page.getByTestId("edit-cost")).toHaveCount(0);
+  await expect(row).toContainText("0");
 });
 
 /**

@@ -201,9 +201,13 @@ async function postOne(
   // write, outflows included. No per-insertion-position special-casing.
   candidate.id = movement.id;
   const pendingRemains = projection.layers.some((layer) => layer.costPending === true);
-  const hasReliableRemainingCosts = projection.layers.every((layer) => {
+  const needsCostRecovery = !cache.costPriceKnown && !pendingRemains;
+  const movementById = needsCostRecovery
+    ? new Map([...existing, candidate].flatMap((entry) => entry.id === undefined ? [] : [[entry.id, entry] as const]))
+    : undefined;
+  const hasReliableRemainingCosts = needsCostRecovery && projection.layers.every((layer) => {
     if (layer.costPending === true || layer.movementId === undefined) return false;
-    const source = [...existing, candidate].find((entry) => entry.id === layer.movementId);
+    const source = movementById?.get(layer.movementId);
     return source !== undefined && source.unitCost !== null;
   });
   const explicitCorrection = spec.reason === COST_CORRECTION_REASON && spec.delta === 0 && spec.unitCost !== undefined && spec.unitCost !== null;
@@ -212,8 +216,12 @@ async function postOne(
   if (explicitCorrection) {
     costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
     costPriceKnown = true;
-  } else if (pendingRemains) {
+  } else if (spec.delta > 0 && spec.costPending === true && cache.stockOnHand === 0 && !explicitCorrection) {
+    // A pending opening layer has no trusted basis. An explicit correction
+    // remains trusted even while pending quantity remains.
     costPriceKnown = false;
+  } else if (!costPriceKnown && pendingRemains) {
+    // Keep the untrusted cache unchanged while any unknown FIFO quantity remains.
   } else if (!costPriceKnown) {
     if (projection.layers.length > 0 && hasReliableRemainingCosts) {
       const knownQuantity = projection.layers.reduce((sum, layer) => sum + layer.quantity, 0);
@@ -224,7 +232,10 @@ async function postOne(
       costPrice = spec.unitCost;
       costPriceKnown = true;
     }
-  } else {
+  } else if (spec.delta > 0 || existing.some((entry) => entry.occurredAt > occurredAt)) {
+    // Ordinary outflows do not change the trusted average. Backdated writes
+    // still require ledger replay because their position changes historical
+    // stock valuation.
     costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
   }
   state.appended.set(spec.itemId, [...(state.appended.get(spec.itemId) ?? []), candidate]);

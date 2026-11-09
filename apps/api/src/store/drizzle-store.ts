@@ -1916,9 +1916,14 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const withPendingProjection = async (rows: Array<Omit<ItemListItem, "costPending">>): Promise<ItemListItem[]> => {
         if (rows.length === 0) return [];
         const itemIds = rows.map((row) => row.id);
+        const pendingItemRows = await db.selectDistinct({ itemId: stockMovements.itemId })
+          .from(stockMovements)
+          .where(and(inArray(stockMovements.itemId, itemIds), eq(stockMovements.costPending, true)));
+        const pendingItemIds = pendingItemRows.map(({ itemId }) => itemId);
+        if (pendingItemIds.length === 0) return rows.map((row) => ({ ...row, costPending: false, costPriceKnown: row.costPriceKnown ?? true }));
         const movements = await db.select({ ...movementCols, seq: sql<number>`rowid` })
           .from(stockMovements)
-          .where(inArray(stockMovements.itemId, itemIds))
+          .where(inArray(stockMovements.itemId, pendingItemIds))
           .orderBy(stockMovements.occurredAt, sql`rowid`);
         const byItem = new Map<string, typeof movements>();
         for (const movement of movements) {

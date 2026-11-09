@@ -52,6 +52,7 @@ interface CapturedItemInput {
   sellingPrice: number;
   barcode?: string;
   stockOnHand?: number;
+  costPending?: boolean;
 }
 
 /** PartyPicker create options (issue 120); the picker passes callbacks per call. */
@@ -1259,6 +1260,18 @@ describe("SalePage quick-add stock (issue #119)", () => {
     expect(lastCreateInput).not.toHaveProperty("stockOnHand");
   });
 
+  it("refuses a blank selling price instead of creating a free item", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    await fillQuick(host, "5");
+    await setNamed(host, "quickSell", "");
+    await submitQuick(host);
+
+    expect(lastCreateInput).toBeNull();
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(host.querySelector('[data-testid="sale-quick-form"]')).not.toBeNull();
+  });
+
   it("creates with opening stock when a positive quantity is typed", async () => {
     const host = await mountSale();
     await openQuick(host);
@@ -1270,6 +1283,20 @@ describe("SalePage quick-add stock (issue #119)", () => {
     // the settled create added the line and closed the one form
     expect(host.querySelector('[data-testid="sale-quick-form"]')).toBeNull();
     expect(host.querySelector('[data-testid="sale-lines"]')?.textContent).toContain("منتج سريع");
+  });
+
+  it("creates stocked unknown-scan items with an explicit pending-cost marker", async () => {
+    unknownScanCode = "UNKNOWN-PENDING-COST";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-PENDING-COST", "scan-create-stock");
+    await fillQuick(host, "5");
+    await setNamed(host, "quickCost", "");
+    const pendingLabel = [...host.querySelectorAll("label")].find((label) => label.textContent?.includes(i18n.t("saleCostPending")));
+    if (pendingLabel === undefined) throw new Error("missing pending-cost choice");
+    await act(async () => pendingLabel.querySelector("input")?.click());
+    await submitQuick(host);
+
+    expect(lastCreateWithStockInput).toMatchObject({ stockOnHand: 5, costPrice: 0, sellingPrice: 200, costPending: true });
   });
 
   it("refuses a stock quantity it cannot read and sends nothing", async () => {

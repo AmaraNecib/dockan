@@ -173,6 +173,7 @@ export function SalePage() {
   // choice promises an opening movement, so its path refuses a blank/zero
   // quantity; the plain create keeps blank = no opening stock (stock 0).
   const [quickStockRequired, setQuickStockRequired] = useState(false);
+  const [quickCostPending, setQuickCostPending] = useState(false);
   const quickStockRef = useRef<HTMLInputElement>(null);
   // Monotonic focus request. A later unknown scan can choose "create with
   // stock" while this same form is already open, when `quickOpen` never
@@ -423,6 +424,7 @@ export function SalePage() {
     if (quickCreatePending || createInvoice.isPending) return;
     quickCategoryDefaultAtOpen.current = quickCategoryDefault;
     setQuickStockRequired(withStock);
+    setQuickCostPending(false);
     if (withStock) setQuickStockFocusRequest((request) => request + 1);
     setCategoryCreateError(null);
     quick.openForm({ barcode: code, categoryId: quickCategoryDefault });
@@ -446,7 +448,7 @@ export function SalePage() {
       // that rule, the messages stay here
       const stock = resolveOpeningStock(fields.stock, quickStockRequired);
       if (!categoryId) return { ok: false, error: t("itemsChooseCategory") };
-      if (fields.name.trim() === "" || !Number.isInteger(cost) || cost < 0 || !Number.isInteger(sell) || sell < 0) {
+      if (fields.name.trim() === "" || (!quickCostPending && (fields.cost.trim() === "" || !Number.isInteger(cost) || cost < 0)) || fields.sell.trim() === "" || !Number.isInteger(sell) || sell < 0) {
         return { ok: false, error: t("saleQuickInvalid") };
       }
       if (!stock.ok) {
@@ -455,7 +457,7 @@ export function SalePage() {
       const input = {
         name: fields.name.trim(),
         categoryId,
-        costPrice: cost,
+        costPrice: quickCostPending ? 0 : cost,
         sellingPrice: sell,
         barcode: fields.barcode.trim() === "" ? undefined : fields.barcode.trim(),
       };
@@ -463,7 +465,7 @@ export function SalePage() {
         setSavePending(true);
         if (stock.value > 0) {
           createWithStock.mutate(
-            { ...input, stockOnHand: stock.value },
+            { ...input, stockOnHand: stock.value, costPending: quickCostPending },
             { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) },
           );
           return;
@@ -673,7 +675,8 @@ export function SalePage() {
                   disabled={quickCategoriesLoading || quickCreatePending}
                   testId="sale-quick-category"
                 />
-                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending || quickCostPending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required={!quickCostPending} /></label>
+                {quickStockRequired && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={quickCostPending} disabled={quickCreatePending} onChange={(event) => setQuickCostPending(event.target.checked)} />{t("saleCostPending")}</label>}
                 <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">
                   {quickStockRequired ? t("saleQuickStockRequired") : t("saleQuickStock")}

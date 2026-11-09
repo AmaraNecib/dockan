@@ -64,6 +64,18 @@ describe("projectLedger — FIFO consumption", () => {
     const p = projectLedger([m("MANUAL_ADJUSTMENT", 4)], { fallbackUnitCost: 250 });
     expect(p.layers).toEqual([{ quantity: 4, unitCost: 250 }]);
   });
+
+  it("keeps pending-cost layers distinct from known zero-cost layers", () => {
+    const movements = [
+      m("PURCHASE", 2, 0),
+      { ...m("PURCHASE", 3, null, "2025-01-02T10:00:00"), costPending: true },
+    ];
+    expect(projectLedger(movements).layers).toEqual([
+      { quantity: 2, unitCost: 0 },
+      { quantity: 3, unitCost: null, costPending: true },
+    ]);
+    expect(fifoOutflowCost(movements, 3)).toEqual({ totalCost: 0, unitCost: 0, costPending: true });
+  });
 });
 
 describe("fifoOutflowCost", () => {

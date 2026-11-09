@@ -351,6 +351,7 @@ const lineCols = {
   unitPrice: invoiceLines.unitPrice,
   costAtSale: invoiceLines.costAtSale,
   cogsExact: invoiceLines.cogsExact,
+  costPending: invoiceLines.costPending,
   total: invoiceLines.total,
   discountAllocated: invoiceLines.discountAllocated,
   netTotal: invoiceLines.netTotal,
@@ -401,6 +402,7 @@ const movementCols = {
   kind: stockMovements.kind,
   delta: stockMovements.delta,
   unitCost: stockMovements.unitCost,
+  costPending: stockMovements.costPending,
   reason: stockMovements.reason,
   ref: stockMovements.ref,
   returnMark: stockMovements.returnMark,
@@ -474,6 +476,7 @@ const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
     unitPrice: r.unitPrice,
     costAtSale: r.costAtSale,
     cogsExact: r.cogsExact,
+    costPending: r.costPending,
     total: r.total,
     discountAllocated: r.discountAllocated ?? 0,
     netTotal: r.netTotal ?? r.total,
@@ -481,7 +484,7 @@ const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
 const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
 const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
-  ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, returnMark: r.returnMark, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
+  ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, costPending: r.costPending, reason: r.reason, ref: r.ref, returnMark: r.returnMark, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
 /** The movement rows carry return_mark; the contracts shape exposes it as returnMark. */
 const toReturn = (r: (typeof returns.$inferSelect) & { invoice_number: string; invoice_date: string; counterparty_name: string | null }): ReturnDetail =>
   ({
@@ -1415,6 +1418,31 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }
   };
 
+  /** Add pending-cost columns atomically. Old NULL costs retain their legacy fallback semantics. */
+  const ensurePendingCostColumns = (): void => {
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      assertSchemaVersionSupported(conn.raw);
+      // SAFETY: PRAGMA table_info returns rows with a string `name` column.
+      const movementRows = conn.raw.query("PRAGMA table_info(stock_movements)").all() as Array<{ name: string }>;
+      const movementNames = new Set(movementRows.map((row) => row.name));
+      if (movementRows.length > 0 && !movementNames.has("cost_pending")) {
+        conn.raw.exec("ALTER TABLE stock_movements ADD COLUMN cost_pending INTEGER NOT NULL DEFAULT 0");
+      }
+      // SAFETY: PRAGMA table_info returns rows with a string `name` column.
+      const lineRows = conn.raw.query("PRAGMA table_info(invoice_lines)").all() as Array<{ name: string }>;
+      const lineNames = new Set(lineRows.map((row) => row.name));
+      if (lineRows.length > 0 && !lineNames.has("cost_pending")) {
+        conn.raw.exec("ALTER TABLE invoice_lines ADD COLUMN cost_pending INTEGER NOT NULL DEFAULT 0");
+      }
+      stampSchemaVersion(conn.raw);
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      conn.raw.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
   /**
    * Issue 400 migration slice: add nullable actor snapshots without inventing
    * an owner for historical or system events. Column changes and the version
@@ -1466,6 +1494,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureSupplierAdjustmentDedupKeyColumn();
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
+    ensurePendingCostColumns();
     ensureSaleColumns();
     // issue 120: point legacy typed-name invoices at real party records (once).
     // Deliberately fail-loud like every other migration in this file: a failed
@@ -1969,6 +1998,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             kind: movement.kind,
             delta: movement.delta,
             unitCost: movement.unitCost ?? null,
+            costPending: movement.costPending ?? false,
             reason: movement.reason ?? null,
             ref: movement.ref ?? null,
             returnMark: movement.returnMark ?? null,
@@ -2241,7 +2271,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
                l.id AS lineId, l.quantity AS quantity,
                l.cost_at_sale AS costAtSale, l.cogs_exact AS cogsExact,
-               l.net_total AS netTotal
+               l.cost_pending AS costPending, l.net_total AS netTotal
         FROM invoice_lines l
         JOIN invoices i ON i.id = l.invoice_id
         WHERE i.kind = 'SALE'
@@ -2275,12 +2305,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       for (const line of lines) {
         const perLineStats = statsByLine.get(line.lineId);
         if (perLineStats === undefined) {
-          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact, netTotal: line.netTotal });
+          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact, costPending: Boolean(line.costPending), netTotal: line.netTotal });
           continue;
         }
         const booked = bookSaleLineForReturns(line, perLineStats);
         if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
-        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact, netTotal: booked.netTotal });
+        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact, costPending: Boolean(line.costPending), netTotal: booked.netTotal });
       }
       return rows;
     },
@@ -3046,6 +3076,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             // rows where cost was the unit cost). The sale router always
             // passes the true layer-sum snapshot.
             cogsExact: line.cogsExact ?? line.quantity * line.costAtSale,
+            costPending: line.costPending ?? false,
           })
           .returning(),
       );

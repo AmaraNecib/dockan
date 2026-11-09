@@ -534,13 +534,13 @@ describe("barcodes (ticket 28)", () => {
       legacy.raw.exec("INSERT INTO categories VALUES ('legacy-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
       legacy.raw.exec("INSERT INTO items VALUES ('legacy-item', 'منتج قديم', 'legacy-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
       legacy.raw.exec("INSERT INTO invoices VALUES ('legacy-invoice', 'INV-LEGACY', 'SALE', NULL, NULL, '2026-01-01', 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
-      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-line', 'legacy-invoice', 'legacy-item', 'منتج قديم', 1, 200, 100, 200)");
+      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-line', 'legacy-invoice', 'legacy-item', 'منتج قديم', 1, 200, 0, 200)");
 
       const legacyStore = createDrizzleStore(legacy);
       await legacyStore.setup();
       const detail = await legacyStore.getInvoiceDetail("legacy-invoice");
       expect(detail).toMatchObject({ subtotalAmount: 200, discountType: null, discountValue: null, discountAmount: 0 });
-      expect(detail?.lines[0]).toMatchObject({ defaultUnitPrice: 200, discountAllocated: 0, netTotal: 200 });
+      expect(detail?.lines[0]).toMatchObject({ defaultUnitPrice: 200, costAtSale: 0, costPending: false, discountAllocated: 0, netTotal: 200 });
     } finally {
       legacy.close();
       for (let attempt = 0; attempt < 5; attempt++) {

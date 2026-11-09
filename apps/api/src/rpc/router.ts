@@ -711,6 +711,7 @@ export function createRpcRouter(deps: RpcDeps) {
               kind: "MANUAL_ADJUSTMENT",
               delta: input.stockOnHand,
               unitCost: input.costPrice,
+              costPending: input.costPending,
               reason: "opening",
               ref: null,
               occurredAt: item.createdAt,
@@ -806,6 +807,9 @@ export function createRpcRouter(deps: RpcDeps) {
         if (input.kind === "PURCHASE" && input.delta <= 0) {
           throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_REQUIRES_INFLOW" });
         }
+        if (input.costPending === true && (input.kind !== "PURCHASE" || input.delta <= 0 || input.unitCost !== undefined)) {
+          throw new ORPCError("BAD_REQUEST", { message: "PENDING_COST_REQUIRES_UNPRICED_PURCHASE" });
+        }
         if (input.delta < 0 && input.sellingPrice !== undefined) {
           throw new ORPCError("BAD_REQUEST", { message: "STOCK_PRICE_UPDATE_REQUIRES_INFLOW" });
         }
@@ -856,6 +860,7 @@ export function createRpcRouter(deps: RpcDeps) {
             kind: input.kind,
             delta: input.delta,
             unitCost: expressUnitCost(input.delta, input.unitCost, item.costPrice),
+            costPending: input.costPending === true,
             reason,
             occurredAt: input.occurredAt ?? null,
             // an adjustment the owner typed has no origin document; the rows
@@ -889,6 +894,7 @@ export function createRpcRouter(deps: RpcDeps) {
             kind: input.kind,
             delta: input.delta,
             unitCost: input.unitCost,
+            costPending: input.costPending === true,
             reason,
             ref: null,
             occurredAt: input.occurredAt,
@@ -1543,6 +1549,9 @@ export function createRpcRouter(deps: RpcDeps) {
               const outflow = posted.outflowCost;
               if (outflow === null) throw new Error("SALE movement returned no outflow cost");
               const { unitCost: costAtSale, totalCost: cogsExact } = outflow;
+              for (const consumed of outflow.consumedMovements ?? []) {
+                await tx.insertStockLink({ invoiceId: invoice.id, movementId: consumed.movementId, quantity: consumed.quantity });
+              }
               const inserted = await tx.insertInvoiceLine({
                 invoiceId: invoice.id,
                 itemId: item.id,
@@ -1552,6 +1561,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 unitPrice: calculated.unitPrice,
                 costAtSale,
                 cogsExact,
+                costPending: outflow.costPending,
                 total: calculated.grossTotal,
                 discountAllocated: calculated.discountAllocated,
                 netTotal: calculated.netTotal,
@@ -1912,7 +1922,8 @@ export function createRpcRouter(deps: RpcDeps) {
               itemId: item.id,
               kind: "SALE",
               delta: lineRefund.quantity,
-              unitCost: item.costPrice,
+              unitCost: line.costPending === true ? null : item.costPrice,
+              costPending: line.costPending === true,
               // visible marker in the item history: this stock-in is a return.
               // Locale-neutral key; the ui translates it (the ref carries the
               // return number).

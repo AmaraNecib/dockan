@@ -76,8 +76,11 @@ import type { Database } from "bun:sqlite";
  * Version 10 (issue 400, migration slice): activities gain nullable `actor_id`
  * and `actor_name` snapshots. Existing rows remain NULL because the actor
  * cannot be reconstructed safely; older builds must refuse this shape.
+ *
+ * Version 11 (issue 392): stock movements and sale lines gain an explicit
+ * pending-cost marker. Existing numeric zero and legacy null semantics remain unchanged.
  */
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 11;
 
 /**
  * A database written by a newer app. The older build cannot know what the

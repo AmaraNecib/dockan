@@ -326,6 +326,8 @@ export const invoiceLineSchema = z.object({
    * report sums this instead of quantity × costAtSale, whose per-unit rounding
    * drifts by up to half a DZD per unit — see docs/adr/0005) */
   cogsExact: dinarsSchema,
+  /** true when any consumed FIFO layer has unknown purchase cost */
+  costPending: z.boolean().optional(),
   /** gross line total before the invoice-level discount */
   total: dinarsSchema,
   /** proportional share of the invoice discount for item reporting */
@@ -392,6 +394,8 @@ export const stockMovementSchema = z.object({
   delta: z.number().int(),
   /** per-unit cost of an inflow; null for outflows */
   unitCost: dinarsSchema.nullable(),
+  /** Explicit pending receipt; legacy null-cost movements remain legacy-known fallback. */
+  costPending: z.boolean().optional(),
   reason: z.string().nullable(),
   /** linked invoice id when the movement originates from one */
   ref: z.string().nullable(),
@@ -612,6 +616,8 @@ export const profitReportOutputSchema = z.object({
   operatingExpenses: z.number().int(),
   ownerWithdrawals: z.number().int(),
   resultAfterExpenses: z.number().int(),
+  /** true when reported sales include COGS with unresolved receipt costs */
+  provisional: z.boolean().optional(),
   byCategory: z.array(expenseCategoryTotalSchema),
 });
 
@@ -1105,6 +1111,8 @@ export const itemCreateInputSchema = z.object({
 /** create item + initial stock in one unit (unknown-scan "create with stock") */
 export const itemCreateWithStockInputSchema = itemCreateInputSchema.extend({
   stockOnHand: z.number().int().min(1),
+  /** When true, initial stock has no known purchase basis. */
+  costPending: z.boolean().default(false),
 });
 
 export const itemUpdateInputSchema = z.object({
@@ -1535,6 +1543,8 @@ export const stockAddManualInputSchema = z.object({
   /** signed; nonzero; magnitude-capped so sqlite INTEGER + JS number stay exact */
   delta: z.number().int().refine((v) => v !== 0 && Math.abs(v) <= 1_000_000, "delta must be a nonzero integer within ±1,000,000"),
   unitCost: dinarsSchema.optional(),
+  /** Purchase receipt has no known unit cost yet. */
+  costPending: z.boolean().optional(),
   /** Optional current-price edit recorded with the receipt in the same unit. */
   sellingPrice: dinarsSchema.optional(),
   reason: z.string().trim().optional(),
@@ -1684,7 +1694,7 @@ export const itemHistoryDetailsSchema = z.object({
   sellingPrice: dinarsSchema.nullable(),
   saleTotal: dinarsSchema.nullable(),
   netSaleTotal: dinarsSchema.nullable(),
-  cost: z.object({ unitCost: dinarsSchema.nullable(), total: dinarsSchema.nullable() }).nullable(),
+  cost: z.object({ unitCost: dinarsSchema.nullable(), total: dinarsSchema.nullable(), costPending: z.boolean().optional() }).nullable(),
   documents: z.array(z.object({ id: idSchema, number: z.string() })),
 });
 

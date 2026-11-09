@@ -593,7 +593,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                               <div data-testid={`history-fact-unit-cost-${movement.id}`} className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
                                 <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("stockUnitCost")}</dt>
                                 <dd className="shrink-0 text-left">
-                                  <HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} />
+                                  {movement.details?.cost?.costPending ? t("historyCostPending") : <HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} />}
                                 </dd>
                               </div>
                               <div data-testid={`history-fact-sale-total-${movement.id}`} className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">

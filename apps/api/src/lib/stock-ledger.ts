@@ -19,11 +19,14 @@ export type MovementKind = (typeof movementKinds)[number];
 export const COST_CORRECTION_REASON = "COST_CORRECTION";
 
 export interface LedgerMovement {
+  id?: string;
   kind: MovementKind;
   /** signed quantity: positive = stock in, negative = stock out */
   delta: number;
   /** per-unit cost of an inflow; null for outflows */
   unitCost: number | null;
+  /** Explicit unknown purchase basis; unlike legacy null, never use cached-cost fallback. */
+  costPending?: boolean;
   /** locale-neutral audit reason; identifies a cost correction (see above) */
   reason?: string | null;
   occurredAt: string;
@@ -33,7 +36,9 @@ export interface LedgerMovement {
 
 export interface FifoLayer {
   quantity: number;
-  unitCost: number;
+  unitCost: number | null;
+  costPending?: boolean;
+  movementId?: string;
 }
 
 /** Exact layer cost of one outflow: `totalCost` before rounding, plus the
@@ -42,6 +47,8 @@ export interface FifoLayer {
 export interface FifoOutflowCost {
   totalCost: number;
   unitCost: number;
+  costPending?: boolean;
+  consumedMovements?: Array<{ movementId: string; quantity: number }>;
 }
 
 export interface LedgerProjection {
@@ -88,12 +95,17 @@ export function projectLedger(
   let stockOnHand = 0;
   for (const movement of ordered(movements)) {
     if (movement.delta > 0) {
-      const unitCost = movement.unitCost ?? opts.fallbackUnitCost ?? 0;
+      const costPending = movement.costPending === true;
+      const unitCost = costPending ? null : (movement.unitCost ?? opts.fallbackUnitCost ?? 0);
       const last = layers.at(-1);
-      if (last !== undefined && last.unitCost === unitCost) {
+      if (last !== undefined && last.unitCost === unitCost && (last.costPending === true) === costPending &&
+          movement.id === last.movementId) {
         last.quantity += movement.delta;
       } else {
-        layers.push({ quantity: movement.delta, unitCost });
+        const layer: FifoLayer = { quantity: movement.delta, unitCost: costPending ? null : unitCost };
+        if (costPending) layer.costPending = true;
+        if (movement.id !== undefined) layer.movementId = movement.id;
+        layers.push(layer);
       }
       stockOnHand += movement.delta;
     } else if (movement.delta < 0) {
@@ -163,13 +175,20 @@ export function fifoOutflowCost(
   }
   let remaining = quantity;
   let totalCost = 0;
+  let costPending = false;
+  const consumedMovements: Array<{ movementId: string; quantity: number }> = [];
   for (const layer of projection.layers) {
     const take = Math.min(layer.quantity, remaining);
-    totalCost += take * layer.unitCost;
+    if (layer.costPending) costPending = true;
+    else totalCost += take * (layer.unitCost ?? 0);
+    if (layer.movementId !== undefined) consumedMovements.push({ movementId: layer.movementId, quantity: take });
     remaining -= take;
     if (remaining === 0) break;
   }
-  return { totalCost, unitCost: Math.round(totalCost / quantity) };
+  const result: FifoOutflowCost = { totalCost, unitCost: Math.round(totalCost / quantity) };
+  if (consumedMovements.length > 0) result.consumedMovements = consumedMovements;
+  if (costPending) result.costPending = true;
+  return result;
 }
 
 /**
@@ -387,7 +406,7 @@ export function weightedAverageCost(
           average,
           quantity,
           movement.delta,
-          movement.unitCost ?? opts.fallbackUnitCost ?? 0,
+          movement.costPending === true ? 0 : (movement.unitCost ?? opts.fallbackUnitCost ?? 0),
         );
       }
       quantity += movement.delta;

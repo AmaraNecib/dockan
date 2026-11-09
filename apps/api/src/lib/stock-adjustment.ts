@@ -74,6 +74,7 @@ export interface StockAdjustment {
    * part of the identity".
    */
   readonly unitCost: number | undefined;
+  readonly costPending?: boolean;
   readonly reason: string | null;
   /**
    * What the request is ABOUT: null for an adjustment the owner typed, and
@@ -154,6 +155,8 @@ export function matchesAdjustment(request: StockAdjustment, recorded: StockMovem
   // request never refuses against it
   if (request.ref !== recorded.ref) return false;
   if (request.delta !== recorded.delta) return false;
+  if (request.costPending === true && recorded.costPending !== true) return false;
+  if (request.costPending !== true && recorded.costPending === true) return false;
   if (request.unitCost !== undefined && request.unitCost !== recorded.unitCost) return false;
   if (request.reason !== recorded.reason) return false;
   // a server-stamped date is not part of the identity; a caller-supplied one is

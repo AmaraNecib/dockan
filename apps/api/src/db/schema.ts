@@ -97,6 +97,7 @@ export const invoiceLines = sqliteTable("invoice_lines", {
   /** exact total COGS of this line's consumed layers (unrounded FIFO sum);
    * legacy rows carry quantity × cost_at_sale via the cogsExactV1 backfill */
   cogsExact: integer("cogs_exact").notNull().default(0),
+  costPending: integer("cost_pending", { mode: "boolean" }).notNull().default(false),
   total: integer("total").notNull(),
   discountAllocated: integer("discount_allocated").notNull().default(0),
   netTotal: integer("net_total").notNull().default(0),
@@ -244,6 +245,7 @@ export const stockMovements = sqliteTable("stock_movements", {
   /** signed: positive = stock in, negative = stock out */
   delta: integer("delta").notNull(),
   unitCost: integer("unit_cost"),
+  costPending: integer("cost_pending", { mode: "boolean" }).notNull().default(false),
   reason: text("reason"),
   ref: text("ref"),
   /** non-null only for return-originated movements: PENDING until reviewed */
@@ -252,8 +254,7 @@ export const stockMovements = sqliteTable("stock_movements", {
   createdAt: text("created_at").notNull(),
 });
 
-/** Purchase-invoice linkage (ticket 29). Appends attribution records between an
- * invoice and earlier uninvoiced PURCHASE movements; never rewrites the ledger. */
+/** Append-only attribution from invoice lines to the stock movements they consume. */
 export const stockLinks = sqliteTable("stock_links", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
@@ -522,13 +523,13 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS return_debt_applications (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_id TEXT NOT NULL REFERENCES invoices(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_invoice ON return_debt_applications(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_return ON return_debt_applications(return_id)`,
-  `CREATE TABLE IF NOT EXISTS invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, default_unit_price INTEGER NOT NULL DEFAULT 0, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, cogs_exact INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL, discount_allocated INTEGER NOT NULL DEFAULT 0, net_total INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, default_unit_price INTEGER NOT NULL DEFAULT 0, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, cogs_exact INTEGER NOT NULL DEFAULT 0, cost_pending INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL, discount_allocated INTEGER NOT NULL DEFAULT 0, net_total INTEGER NOT NULL DEFAULT 0)`,
   // Item history filters invoice lines by item_id. SCHEMA_DDL runs at every
   // setup, so existing databases gain this index without a version migration.
   `CREATE INDEX IF NOT EXISTS idx_invoice_lines_item ON invoice_lines(item_id)`,
   `CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), amount INTEGER NOT NULL, method TEXT NOT NULL, note TEXT, paid_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT, actor_id TEXT, actor_name TEXT)`,
-  `CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id), kind TEXT NOT NULL, delta INTEGER NOT NULL, unit_cost INTEGER, reason TEXT, ref TEXT, return_mark TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id), kind TEXT NOT NULL, delta INTEGER NOT NULL, unit_cost INTEGER, cost_pending INTEGER NOT NULL DEFAULT 0, reason TEXT, ref TEXT, return_mark TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   // #295 — the repeat-window read filters `item_id = ? AND created_at > ?`
   // (drizzle-store.ts `listStockMovementsSince`), and that read runs while the
   // manual adjustment HOLDS THE WRITE LOCK. Without this index every

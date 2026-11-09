@@ -1812,6 +1812,38 @@ describe("sale checkout (ticket 30)", () => {
     expect(history.movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
   });
 
+  it("persists pending receipt cost separately from zero and snapshots partial FIFO uncertainty", async () => {
+    const item = await makeSaleItem("بيع-تكلفة-معلقة", 250, 600);
+    await client.stockAddManual({ itemId: item.id, delta: 5, costPending: true, kind: "PURCHASE" });
+    await expect(client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] })).rejects.toThrow(/STOCK_NEGATIVE/);
+    const beforeSale = await client.itemsHistory({ itemId: item.id });
+    expect(beforeSale.stockOnHand).toBe(5);
+    expect(beforeSale.movements.filter((movement) => movement.kind === "SALE")).toHaveLength(0);
+
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(sale.lines[0]).toMatchObject({ costAtSale: 0, cogsExact: 0, costPending: true });
+    const reread = await client.invoicesGet({ id: sale.id });
+    expect(reread.lines[0]?.costPending).toBe(true);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(3);
+    const receipt = history.movements.find((movement) => movement.delta === 5);
+    expect(receipt?.costPending).toBe(true);
+    expect(receipt?.details?.documents).toContainEqual({ id: sale.id, number: sale.invoiceNumber });
+    expect(history.movements.find((movement) => movement.kind === "SALE")?.details?.cost).toEqual({ unitCost: null, total: null, costPending: true });
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(3);
+  });
+
+  it("keeps known-zero and pending FIFO layers distinct through a mixed sale", async () => {
+    const item = await makeSaleItem("بيع-صفر-ومعلق", 250, 600);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 0, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 2, costPending: true, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    expect(sale.lines[0]).toMatchObject({ cogsExact: 0, costPending: true });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(1);
+    expect(history.movements.filter((movement) => movement.delta > 0).map((movement) => movement.costPending)).toEqual([false, true]);
+  });
+
   it("keeps the live ADR-0002 cache unchanged while later sales cost from remaining FIFO layers", async () => {
     const item = await makeSaleItem("بيع-طبقات-متتابع", 100, 300);
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
@@ -1923,6 +1955,18 @@ describe("sale checkout (ticket 30)", () => {
     const report = await client.reportsProfit(window);
     // the report sums the exact layer snapshot, not 6 × 117 = 702
     expect(report.cogs - baseline.cogs).toBe(700);
+  });
+
+  it("marks profit provisional when a sale consumed pending-cost FIFO stock", async () => {
+    const item = await makeSaleItem("بيع-ربح-مؤقت", 250, 600);
+    const window = { preset: "CUSTOM" as const, customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`, customTo: `${item.createdAt.slice(0, 10)}T23:59:59` };
+    const baseline = await client.reportsProfit(window);
+    await client.stockAddManual({ itemId: item.id, delta: 5, costPending: true, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(sale.lines[0]?.costPending).toBe(true);
+    const report = await client.reportsProfit(window);
+    expect(report.provisional).toBe(true);
+    expect(report.revenue - baseline.revenue).toBe(1_200);
   });
 
   it("dates an explicit-invoiceDate sale's movements at the invoice business date", async () => {

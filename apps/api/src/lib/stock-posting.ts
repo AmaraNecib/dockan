@@ -47,6 +47,8 @@ export interface StockMovementSpec {
    * a misleading "fact"); a zero-delta cost correction passes the new cost.
    */
   unitCost?: number | null;
+  /** Explicitly unknown cost; bypasses legacy cached-cost fallback. */
+  costPending?: boolean;
   reason?: string | null;
   ref?: string | null;
   returnMark?: ReturnMark | null;
@@ -158,7 +160,7 @@ async function postOne(
 
   const unitCost =
     spec.delta > 0
-      ? (spec.unitCost ?? cache.costPrice)
+      ? (spec.costPending === true ? null : (spec.unitCost ?? cache.costPrice))
       : spec.delta < 0
         ? null
         : (spec.unitCost ?? null);
@@ -169,6 +171,7 @@ async function postOne(
     unitCost,
     reason: spec.reason ?? null,
     occurredAt,
+    costPending: spec.costPending === true,
     seq: undefined,
   };
 
@@ -184,6 +187,7 @@ async function postOne(
     kind: spec.kind,
     delta: spec.delta,
     unitCost,
+    costPending: spec.costPending === true,
     reason: spec.reason ?? null,
     ref: spec.ref ?? null,
     returnMark: spec.returnMark ?? null,
@@ -192,7 +196,10 @@ async function postOne(
 
   // ADR-0002/0005: the average is replayed from the full ledger after ANY
   // write, outflows included. No per-insertion-position special-casing.
-  const costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+  const containsPendingCost = [...existing, candidate].some((movement) => movement.costPending === true);
+  const costPrice = containsPendingCost
+    ? cache.costPrice
+    : weightedAverageCost([...existing, candidate], { fallbackUnitCost });
   state.appended.set(spec.itemId, [...(state.appended.get(spec.itemId) ?? []), candidate]);
   cache.stockOnHand = projection.stockOnHand;
   cache.costPrice = costPrice;

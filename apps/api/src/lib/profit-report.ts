@@ -22,6 +22,7 @@ export interface ProfitSaleLine {
   costAtSale: number;
   /** exact total COGS of the layers this line consumed (unrounded FIFO sum) */
   cogsExact: number;
+  costPending?: boolean;
   /** line revenue after its allocated share of the invoice discount */
   netTotal: number;
 }
@@ -79,6 +80,7 @@ export function computeProfitReport(input: {
 
   let revenue = 0;
   let cogs = 0;
+  let provisional = false;
   for (const line of saleLines) {
     if (!dateInRange(line.invoiceDate, range)) continue;
     // SAFETY: money is whole DZD integers from the persisted line snapshots;
@@ -86,6 +88,7 @@ export function computeProfitReport(input: {
     // realistic shop volumes
     revenue += line.netTotal;
     cogs += line.cogsExact;
+    provisional ||= line.costPending === true;
   }
 
   const buckets = new Map<string, { total: number; count: number }>();
@@ -149,6 +152,7 @@ export function computeProfitReport(input: {
     operatingExpenses,
     ownerWithdrawals,
     resultAfterExpenses,
+    provisional,
     byCategory,
   };
 }

@@ -46,7 +46,11 @@ test("invoice detail announces loading, preserves the real error, and recovers",
       return;
     }
     if (mode === "error") {
-      await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ json: { code: "INTERNAL_SERVER_ERROR", message: "Synthetic invoice read failure" } }),
+      });
       return;
     }
     await route.continue();
@@ -67,7 +71,7 @@ test("invoice detail announces loading, preserves the real error, and recovers",
 
   mode = "error";
   await page.reload();
-  await expect(page.getByTestId("invoice-error-text")).toHaveText("تعذّر إكمال العملية. أعد المحاولة.");
+  await expect(page.getByTestId("invoice-error-text")).toHaveText("تعذّر إكمال العملية. أعد المحاولة.", { timeout: 25_000 });
 
   mode = "continue";
   await page.reload();

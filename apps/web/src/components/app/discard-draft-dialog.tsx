@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import { useLayoutEffect, useRef, type ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "@/components/ui/dialog";
@@ -48,6 +48,26 @@ export function DiscardDraftDialog({
   cancelTestId,
   finalFocus,
 }: DiscardDraftDialogProps) {
+  const popupRef = useRef<HTMLDivElement>(null);
+  const returnTarget = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !popupRef.current?.contains(active)) {
+      returnTarget.current = active;
+    }
+  }, [open]);
+
+  function restoreOpeningFocus() {
+    const popup = popupRef.current;
+    const active = document.activeElement;
+    // A closing popup can reopen before unmount. Base UI's boolean fallback
+    // still remembers its first opening, so capture each opening ourselves.
+    // An explicit target must also respect focus acquired during the exit.
+    if (active !== document.body && active instanceof HTMLElement && !popup?.contains(active)) return false;
+    return returnTarget.current?.isConnected ? returnTarget.current : false;
+  }
+
   // Escape is Base UI's job, and the layer stack already knows which dialog is on
   // top — that is the whole reason this component owns no key handler.
   //
@@ -61,7 +81,11 @@ export function DiscardDraftDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-sm" finalFocus={finalFocus}>
+      <DialogPopup
+        ref={popupRef}
+        className="max-w-sm"
+        finalFocus={finalFocus === undefined || finalFocus === true ? restoreOpeningFocus : finalFocus}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

@@ -1,10 +1,19 @@
+import { writeFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import type { InvoiceDetail, Item } from "../../packages/contracts/src/core";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { actAndAck, callRpc, rpcOutput, seedCategoryId, waitForRpc } from "./rpc-helpers";
 
-type FocusDiagnosticTarget = { id: string | null; testId: string | null; role: string | null };
+type FocusDiagnosticTarget = {
+  tagName: string;
+  id: string | null;
+  testId: string | null;
+  role: string | null;
+  slot: string | null;
+  inputType: string | null;
+  connected: boolean;
+};
 type FocusDiagnosticEvent = {
   time: number;
   type: string;
@@ -15,11 +24,14 @@ type FocusDiagnosticEvent = {
   target?: FocusDiagnosticTarget | null;
   active?: FocusDiagnosticTarget | null;
   dialogOpen?: boolean;
+  dialogs?: Array<{ id: string; closed: boolean; animations: string[] }>;
+  stack?: string;
 };
 type FocusDiagnostic = {
   entries: FocusDiagnosticEvent[];
   listeners: Array<[string, EventListener]>;
   record: (entry: Omit<FocusDiagnosticEvent, "time">) => void;
+  checkpoint: (name: string) => void;
   start: () => void;
   stop: () => void;
 };
@@ -51,26 +63,47 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
       const identify = (element: Element | null): FocusDiagnosticTarget | null => {
         if (!element) return null;
         return {
+          tagName: element.tagName,
           id: element.id || null,
           testId: element.getAttribute("data-testid"),
           role: element.getAttribute("role"),
+          slot: element.getAttribute("data-slot"),
+          inputType: element.getAttribute("type"),
+          connected: element.isConnected,
         };
       };
       const record = (entry: Omit<FocusDiagnosticEvent, "time">) => {
         if (!active) return;
-        entries.push({ time: performance.now(), ...entry });
-        if (entries.length > 200) entries.shift();
+        const dialogs = [...document.querySelectorAll('[data-slot="dialog-popup"]')];
+        entries.push({
+          time: performance.now(),
+          active: identify(document.activeElement),
+          dialogOpen: dialogs.some((dialog) => !dialog.hasAttribute("data-closed")),
+          dialogs: dialogs.map((dialog) => ({
+            id: dialog.id,
+            closed: dialog.hasAttribute("data-closed"),
+            animations: dialog.getAnimations().map((animation) => animation.playState),
+          })),
+          ...entry,
+        });
+        if (entries.length > 500) entries.shift();
       };
       const listeners: Array<[string, EventListener]> = [];
       Object.defineProperty(window, "__saleFocusDiagnostic", { value: {
         entries, record, listeners,
+        checkpoint: (name) => record({ type: "checkpoint", name }),
         start: () => { active = true; },
         stop: () => { active = false; },
       } satisfies FocusDiagnostic });
-      for (const type of ["focusin", "focusout", "keydown", "keyup"] as const) {
+      const nativeFocus = HTMLElement.prototype.focus;
+      HTMLElement.prototype.focus = function (options) {
+        record({ type: "focus-call", target: identify(this), stack: new Error().stack });
+        nativeFocus.call(this, options);
+      };
+      for (const type of ["focusin", "focusout", "keydown", "keyup", "animationstart", "animationend", "animationcancel"] as const) {
         const listener: EventListener = (event) => {
           const target = event.target instanceof Element ? event.target : null;
-          const active = document.activeElement;
+          if (event.type.startsWith("animation") && target?.getAttribute("data-slot") !== "dialog-popup") return;
           record({
             type,
             key: event instanceof KeyboardEvent && ["Control", "Meta", "n", "b", "Escape", "Tab"].includes(event.key)
@@ -79,8 +112,6 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
             ctrlKey: event instanceof KeyboardEvent ? event.ctrlKey : undefined,
             metaKey: event instanceof KeyboardEvent ? event.metaKey : undefined,
             target: identify(target),
-            active: identify(active),
-            dialogOpen: Boolean(document.querySelector('[role="dialog"]')),
           });
         };
         listeners.push([type, listener]);
@@ -91,13 +122,7 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
     const mark = async (name: string) => page.evaluate((name) => {
       const diagnostic = window.__saleFocusDiagnostic;
       if (name === "start-focus-window") diagnostic?.start();
-      diagnostic?.record({ type: "checkpoint", name,
-        active: diagnostic ? (document.activeElement instanceof Element ? {
-          id: document.activeElement.id || null,
-          testId: document.activeElement.getAttribute("data-testid"),
-          role: document.activeElement.getAttribute("role"),
-        } : null) : null,
-        dialogOpen: Boolean(document.querySelector('[role="dialog"]')) });
+      diagnostic?.checkpoint(name);
     }, name);
     await signIn(page);
     await expect(page.getByRole("button", { name: "اختصارات لوحة المفاتيح" })).toHaveAttribute("title", /\(\?\)$/);
@@ -214,25 +239,75 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
         const entries = await page.evaluate(() => {
           const diagnostic = window.__saleFocusDiagnostic;
           if (!diagnostic) return [];
+          diagnostic.checkpoint("finally");
           diagnostic.stop();
           for (const [type, listener] of diagnostic.listeners) {
             document.removeEventListener(type, listener, true);
           }
           return diagnostic.entries;
         });
+        const diagnosticPath = info.outputPath("sale-focus-diagnostics.json");
+        await writeFile(diagnosticPath, JSON.stringify({
+          browser: { name: browser.browserType().name(), version: browser.version() },
+          platform: process.platform,
+          events: entries,
+        }, null, 2));
         await info.attach("sale-focus-diagnostics.json", {
-          body: JSON.stringify({
-            browser: { name: browser.browserType().name(), version: browser.version() },
-            platform: process.platform,
-            events: entries,
-          }, null, 2),
+          path: diagnosticPath,
           contentType: "application/json",
         });
-      } catch {
-        // Preserve the test's original assertion or runtime failure.
+      } catch (error) {
+        // Preserve the original failure, but make an evidence gap visible.
+        console.error("Sale focus diagnostic collection failed", error);
       }
     }
   }
+});
+
+test("reopening purchase discard during its exit restores the latest field on cancellation", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  const saleUrl = page.url();
+  await page.getByTestId("sale-quick-add").click();
+  const stock = page.getByTestId("sale-quick-stock");
+  await stock.fill("7");
+
+  // Keep the first closing popup alive while the operator resumes entry.
+  await page.addStyleTag({
+    content: '[data-slot="dialog-popup"][data-closed] { animation-play-state: paused !important; }',
+  });
+  await page.keyboard.press("Control+b");
+  const discard = page.getByRole("dialog").filter({
+    has: page.getByTestId("new-sale-discard-confirm"),
+  });
+  await expect(discard).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(discard).toHaveAttribute("data-closed", "");
+  expect(await discard.evaluate((element) =>
+    element.getAnimations().map((animation) => animation.playState),
+  )).toEqual(["paused"]);
+
+  await stock.fill("");
+  const customer = page.getByTestId("sale-customer");
+  await customer.fill("مسودة الاختصار");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+n");
+  const search = page.getByTestId("sale-search");
+  await expect(search).toBeFocused();
+  await expect(discard).toHaveCount(1);
+  await page.keyboard.press("Control+b");
+  await expect(discard).not.toHaveAttribute("data-closed", "");
+  await page.keyboard.press("Escape");
+  await expect(discard).toHaveAttribute("data-closed", "");
+  await discard.evaluate((element) => {
+    for (const animation of element.getAnimations()) animation.finish();
+  });
+  await expect(discard).toHaveCount(0);
+  await expect(page).toHaveURL(saleUrl);
+  await expect(customer).toHaveValue("مسودة الاختصار");
+  await expect(stock).toHaveValue("");
+  await expect(search).toBeFocused();
 });
 
 test("a closing purchase-discard popup cannot take focus from the newer picker", async ({ page }) => {

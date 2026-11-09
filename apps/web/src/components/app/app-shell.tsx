@@ -250,8 +250,7 @@ export function AppShell() {
         confirmLabel={t("saleToPurchaseDiscardConfirm")}
         cancelLabel={t("dialogClose")}
         confirmTestId="new-sale-discard-confirm"
-        // Boolean return-focus restores the original field only as a fallback.
-        // An explicit callback would override Base UI's newer-focus protection.
+        // The shared dialog restores this opening's field unless newer work owns focus.
         finalFocus={true}
         open={purchaseDiscardOpen}
         onOpenChange={setPurchaseDiscardOpen}

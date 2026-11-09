@@ -7,6 +7,7 @@ import path from "node:path";
 
 import { createEncryptedConnection } from "../../db/encrypted-connection";
 import { SCHEMA_DDL } from "../../db/schema";
+import { CURRENT_SCHEMA_VERSION } from "../schema-version";
 import { createDrizzleStore } from "../../store/drizzle-store";
 import { AppLogger } from "../logger";
 import { classifyPlaintextCleanup } from "./cleanup-status";
@@ -368,7 +369,7 @@ describe("VaultManager", () => {
         const store = createDrizzleStore(connection);
         await store.setup();
         const history = await store.getExpenseRefundHistory("expense");
-        expect(connection.raw.query("PRAGMA user_version").get()).toEqual({ user_version: 10 });
+        expect(connection.raw.query("PRAGMA user_version").get()).toEqual({ user_version: CURRENT_SCHEMA_VERSION });
         expect(history?.expense.original.amount).toBe(1000);
         expect(history?.refundableAmount).toBe(700);
         expect(history?.refunds).toEqual([{

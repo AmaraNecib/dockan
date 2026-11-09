@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { readSchemaVersion } from "../lib/schema-version";
+import { CURRENT_SCHEMA_VERSION, readSchemaVersion } from "../lib/schema-version";
 import { readSnapshotFence } from "../lib/vault/format";
 import { sealSnapshot } from "./snapshot-durability";
 import { openVaultStore } from "./vault-store";
@@ -108,7 +108,7 @@ describe("openVaultStore composes the connection and the store", () => {
     // Do not run setup again: that would repair an upgrade that was never saved.
     const reopened = openVaultStore(input);
     try {
-      expect(readSchemaVersion(reopened.conn.raw)).toBe(10);
+      expect(readSchemaVersion(reopened.conn.raw)).toBe(CURRENT_SCHEMA_VERSION);
       expect(await reopened.store.listActivities({ limit: 10 })).toEqual({
         total: 1,
         items: [{

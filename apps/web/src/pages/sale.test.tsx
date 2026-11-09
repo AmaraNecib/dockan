@@ -804,7 +804,11 @@ describe("SalePage commit states (greptile round-2)", () => {
     await act(async () => {
       host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج سريع");
+      setInput(host, "sale-quick-cost", "0");
+      setInput(host, "sale-quick-sell", "700");
+    });
     await act(async () => {
       host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -821,7 +825,11 @@ describe("SalePage commit states (greptile round-2)", () => {
     await act(async () => {
       host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج سريع");
+      setInput(host, "sale-quick-cost", "0");
+      setInput(host, "sale-quick-sell", "700");
+    });
 
     // commit the sale; the quick form stays open while the request is in flight
     await act(async () => {

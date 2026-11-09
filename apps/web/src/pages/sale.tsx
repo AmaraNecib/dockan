@@ -448,7 +448,7 @@ export function SalePage() {
       // that rule, the messages stay here
       const stock = resolveOpeningStock(fields.stock, quickStockRequired);
       if (!categoryId) return { ok: false, error: t("itemsChooseCategory") };
-      if (fields.name.trim() === "" || (!quickCostPending && (fields.cost.trim() === "" || !Number.isInteger(cost) || cost < 0)) || fields.sell.trim() === "" || !Number.isInteger(sell) || sell < 0) {
+      if (fields.name.trim() === "" || (!quickCostPending && (draftBlank(fields.cost) || !Number.isInteger(cost) || cost < 0)) || draftBlank(fields.sell) || !Number.isInteger(sell) || sell < 0) {
         return { ok: false, error: t("saleQuickInvalid") };
       }
       if (!stock.ok) {
@@ -675,9 +675,9 @@ export function SalePage() {
                   disabled={quickCategoriesLoading || quickCreatePending}
                   testId="sale-quick-category"
                 />
-                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending || quickCostPending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required={!quickCostPending} /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" data-testid="sale-quick-cost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending || quickCostPending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required={!quickCostPending} /></label>
                 {quickStockRequired && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={quickCostPending} disabled={quickCreatePending} onChange={(event) => setQuickCostPending(event.target.checked)} />{t("saleCostPending")}</label>}
-                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" data-testid="sale-quick-sell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">
                   {quickStockRequired ? t("saleQuickStockRequired") : t("saleQuickStock")}
                   <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.stock} onChange={(event) => quick.setField("stock", event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />

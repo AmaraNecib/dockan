@@ -1926,11 +1926,19 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           bucket.push(movement);
           byItem.set(movement.itemId, bucket);
         }
-        return rows.map((row) => ({
-          ...row,
-          costPending: projectLedger((byItem.get(row.id) ?? []).map((movement) => ({ ...movement, seq: Number(movement.seq) })), { fallbackUnitCost: row.costPrice }).layers.some((layer) => layer.costPending === true),
-          costPriceKnown: row.costPriceKnown ?? true,
-        }));
+        return rows.map((row) => {
+          const itemMovements = byItem.get(row.id) ?? [];
+          // Most list reads need no ledger replay. In particular, transaction
+          // snapshots can temporarily contain a sale movement before its paired
+          // stock update. Only replay when this item's history records pending
+          // cost, the fact this projection exists to expose.
+          const hasPendingCostFact = itemMovements.some((movement) => movement.costPending === true);
+          return {
+            ...row,
+            costPending: hasPendingCostFact && projectLedger(itemMovements.map((movement) => ({ ...movement, seq: Number(movement.seq) })), { fallbackUnitCost: row.costPrice }).layers.some((layer) => layer.costPending === true),
+            costPriceKnown: row.costPriceKnown ?? true,
+          };
+        });
       };
       const query = db
         .select({ ...itemCols, categoryName: categories.name })

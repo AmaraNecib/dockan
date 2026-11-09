@@ -89,11 +89,9 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
         ? recordedSaleCogs : null;
       const safeSaleTotal = sale !== undefined && Number.isSafeInteger(sale.total) ? sale.total : null;
       const safeNetSaleTotal = sale !== undefined && Number.isSafeInteger(sale.netTotal) ? sale.netTotal : null;
-      const cost = {
-        unitCost: recordedCost,
-        total: costPending ? null : sale === undefined ? safeInflowTotal : safeSaleCogs,
-        costPending,
-      };
+      const cost = costPending
+        ? { unitCost: recordedCost, total: null, costPending: true }
+        : { unitCost: recordedCost, total: sale === undefined ? safeInflowTotal : safeSaleCogs };
       return { ...row, supersededBySeq: superseded[index] ?? null, details: {
         sellingPrice: sale?.unitPrice ?? null,
         saleTotal: safeSaleTotal,

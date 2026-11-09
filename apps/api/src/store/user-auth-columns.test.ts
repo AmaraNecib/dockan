@@ -7,7 +7,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { createAuth } from "../auth/auth";
 import { openConnection, type Connection } from "../db/connection";
-import { readSchemaVersion } from "../lib/schema-version";
+import { CURRENT_SCHEMA_VERSION, readSchemaVersion } from "../lib/schema-version";
 import { createDrizzleStore } from "./drizzle-store";
 
 /**
@@ -109,7 +109,7 @@ describe("#362 the user table gains better-auth's email columns", () => {
     expect(verifiedColumn?.notnull).toBe(1);
     expect(verifiedColumn?.dflt_value).toBe("0");
 
-    expect(readSchemaVersion(conn.raw)).toBe(10); // Schema 10 adds activity actor snapshots; keep the expected version literal.
+    expect(readSchemaVersion(conn.raw)).toBe(CURRENT_SCHEMA_VERSION); // The upgrade reaches the current schema after applying all migrations.
 
     // Idempotence is proven HERE: a second setup() that re-ran an ALTER would
     // throw "duplicate column name" and never reach the next line.

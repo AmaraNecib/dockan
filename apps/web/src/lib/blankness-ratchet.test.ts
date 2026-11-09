@@ -94,6 +94,8 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/sale.tsx::savedSale.counterpartyName.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::customer.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::fields.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/sale.tsx::fields.cost.trim() === \"\"", { verdict: "draftBlank", reason: "converted (#244): blank is invalid; do not silently submit zero cost" }],
+  ["pages/sale.tsx::fields.sell.trim() === \"\"", { verdict: "draftBlank", reason: "converted (#244): blank is invalid; do not silently submit zero selling price" }],
   ["pages/sale.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/sale.tsx::searchQuery.trim() === \"\"", { verdict: "raw", reason: "catalogue name or barcode query is text, not a numeric draft" }],
   ["pages/stock.tsx::unitCost.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → no unit cost (api falls back to the known cost)" }],

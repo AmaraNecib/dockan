@@ -441,6 +441,8 @@ const resources = {
       itemsThresholdInvalid: "أدخل حد تنبيهاً صحيحاً (عدد صحيح 0 أو أكثر)",
       stockUnitCostInvalid: "أدخل تكلفة وحدة صحيحة (عدد صحيح 0 أو أكثر)",
       stockPendingCostRequired: "أدخل تكلفة الشراء قبل تسجيل الوارد؛ التكلفة السابقة غير معروفة.",
+      PENDING_COST_REQUIRES_UNPRICED_PURCHASE: "يمكن تسجيل التكلفة المعلّقة لوارد شراء غير مسعّر فقط.",
+      PURCHASE_COST_REQUIRED_WHILE_PENDING: "أدخل تكلفة الشراء لأن تكلفة المخزون الحالي غير معروفة.",
       itemsChooseCategory: "اختر تصنيفاً أو أنشئه أولاً",
       itemsProfitPerUnit: "الربح لكل وحدة: <money/>",
       // the same sentence doubles as the products-table column header, where an

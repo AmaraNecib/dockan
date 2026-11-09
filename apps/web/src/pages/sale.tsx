@@ -694,7 +694,7 @@ export function SalePage() {
                       </div>
                     )}
                   </legend>
-                  <input className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" data-testid="sale-quick-cost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending || quickCostPending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required={!quickCostPending} />
+                  <input className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" aria-label={t("itemsCost")} data-testid="sale-quick-cost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending || quickCostPending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required={!quickCostPending} />
                 </fieldset>
                 <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" data-testid="sale-quick-sell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">

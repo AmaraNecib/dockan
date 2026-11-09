@@ -733,10 +733,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
         },
         name: current.name.trim() === current.baseline.name ? row.name : current.name,
         categoryId: current.categoryId === current.baseline.categoryId ? row.categoryId : current.categoryId,
-        cost:
-          row.costPriceKnown === false && current.row.costPriceKnown !== false && !current.costEdited
-            ? ""
-            : current.cost.trim() === String(current.baseline.costPrice) ? String(row.costPrice) : current.cost,
+        cost: current.costEdited ? current.cost : row.costPriceKnown === false ? "" : String(row.costPrice),
         sell: current.sell.trim() === String(current.baseline.sellingPrice) ? String(row.sellingPrice) : current.sell,
         threshold: current.threshold.trim() === String(current.baseline.lowStockThreshold) ? String(row.lowStockThreshold) : current.threshold,
       };

@@ -1746,6 +1746,49 @@ describe("inline item edit", () => {
 
   });
 
+  it.each([false, true])("refreshes untouched cost when trust returns, initially unknown=%s", async (initiallyUnknown) => {
+    firstFixtureItem().costPriceKnown = !initiallyUnknown;
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    if (!initiallyUnknown) {
+      firstFixtureItem().costPriceKnown = false;
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["items"] });
+        await settle();
+      });
+    }
+    await waitFor(() => inputByTestId("edit-cost").value === "");
+    setInput("edit-name", "اسم بعد الاستعادة");
+    firstFixtureItem().costPrice = 175;
+    firstFixtureItem().costPriceKnown = true;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    await waitFor(() => inputByTestId("edit-cost").value === "175");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toEqual({ id: "item-1", name: "اسم بعد الاستعادة" });
+  });
+
+  it.each(["0", "77", "abc", ""])("preserves owner cost text %j when trust returns", async (text) => {
+    firstFixtureItem().costPriceKnown = false;
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "123");
+    setInput("edit-cost", text);
+    firstFixtureItem().costPrice = 175;
+    firstFixtureItem().costPriceKnown = true;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    expect(inputByTestId("edit-cost").value).toBe(text);
+    expect(updateInputs).toHaveLength(0);
+  });
+
   it("keeps a zero-price item editable (sale quick-add creates selling 0)", async () => {
     firstFixtureItem().sellingPrice = 0;
     await mount();

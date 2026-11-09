@@ -1317,6 +1317,7 @@ describe("SalePage quick-add stock (issue #119)", () => {
     const cost = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost']");
     const knownMode = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost-known']");
     const pendingMode = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost-pending']");
+    expect(cost?.getAttribute("aria-label")).toBe(i18n.t("itemsCost"));
     expect(knownMode?.checked).toBe(true);
     expect(cost?.value).toBe("0");
     await act(async () => pendingMode?.click());

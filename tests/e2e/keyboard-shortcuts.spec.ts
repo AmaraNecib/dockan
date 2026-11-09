@@ -4,6 +4,31 @@ import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { actAndAck, callRpc, rpcOutput, seedCategoryId, waitForRpc } from "./rpc-helpers";
 
+type FocusDiagnosticTarget = { id: string | null; testId: string | null; role: string | null };
+type FocusDiagnosticEvent = {
+  time: number;
+  type: string;
+  name?: string;
+  key?: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  target?: FocusDiagnosticTarget | null;
+  active?: FocusDiagnosticTarget | null;
+  dialogOpen?: boolean;
+};
+type FocusDiagnostic = {
+  entries: FocusDiagnosticEvent[];
+  listeners: Array<[string, EventListener]>;
+  record: (entry: Omit<FocusDiagnosticEvent, "time">) => void;
+  start: () => void;
+  stop: () => void;
+};
+declare global {
+  interface Window {
+    __saleFocusDiagnostic?: FocusDiagnostic;
+  }
+}
+
 // The evidence surface is the help dialog, not the whole desktop.
 test.use({ video: "on" });
 
@@ -15,106 +40,199 @@ async function pick(page: Page, name: string, kind: "sale" | "purchase") {
   await expect(page.getByTestId(`${kind}-lines`)).toContainText(name);
 }
 
-test("workflow shortcuts respect dialogs, typed drafts, cancellation and existing keys", async ({ page }, info) => {
+test("workflow shortcuts respect dialogs, typed drafts, cancellation and existing keys", async ({ page, browser }, info) => {
   // This covers both draft guards, dialog refusal and help evidence in one journey.
   test.setTimeout(60_000);
-  await signIn(page);
-  await expect(page.getByRole("button", { name: "اختصارات لوحة المفاتيح" })).toHaveAttribute("title", /\(\?\)$/);
-  await expect(page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" })).toHaveAttribute("title", /Ctrl\/⌘\+Shift\+B/);
-  await page.getByRole("button", { name: "اختصارات لوحة المفاتيح" }).click();
-  const help = page.getByRole("dialog", { name: "اختصارات لوحة المفاتيح" });
-  await expect(help).toBeVisible();
-  await help.screenshot({ path: info.outputPath("shortcuts-help.png") });
-  await page.keyboard.press("Control+n");
-  await page.keyboard.press("Control+b");
-  await expect(page).toHaveURL(/\/$/);
-  await expect(help).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(help).toBeHidden();
-  await page.keyboard.press("Control+n");
-  await expect(page.getByTestId("sale-form")).toBeVisible();
+  let diagnosticInstalled = false;
+  try {
+    await page.addInitScript(() => {
+      const entries: FocusDiagnosticEvent[] = [];
+      let active = false;
+      const identify = (element: Element | null): FocusDiagnosticTarget | null => {
+        if (!element) return null;
+        return {
+          id: element.id || null,
+          testId: element.getAttribute("data-testid"),
+          role: element.getAttribute("role"),
+        };
+      };
+      const record = (entry: Omit<FocusDiagnosticEvent, "time">) => {
+        if (!active) return;
+        entries.push({ time: performance.now(), ...entry });
+        if (entries.length > 200) entries.shift();
+      };
+      const listeners: Array<[string, EventListener]> = [];
+      Object.defineProperty(window, "__saleFocusDiagnostic", { value: {
+        entries, record, listeners,
+        start: () => { active = true; },
+        stop: () => { active = false; },
+      } satisfies FocusDiagnostic });
+      for (const type of ["focusin", "focusout", "keydown", "keyup"] as const) {
+        const listener: EventListener = (event) => {
+          const target = event.target instanceof Element ? event.target : null;
+          const active = document.activeElement;
+          record({
+            type,
+            key: event instanceof KeyboardEvent && ["Control", "Meta", "n", "b", "Escape", "Tab"].includes(event.key)
+              ? event.key
+              : undefined,
+            ctrlKey: event instanceof KeyboardEvent ? event.ctrlKey : undefined,
+            metaKey: event instanceof KeyboardEvent ? event.metaKey : undefined,
+            target: identify(target),
+            active: identify(active),
+            dialogOpen: Boolean(document.querySelector('[role="dialog"]')),
+          });
+        };
+        listeners.push([type, listener]);
+        document.addEventListener(type, listener, true);
+      }
+    });
+    diagnosticInstalled = true;
+    const mark = async (name: string) => page.evaluate((name) => {
+      const diagnostic = window.__saleFocusDiagnostic;
+      if (name === "start-focus-window") diagnostic?.start();
+      diagnostic?.record({ type: "checkpoint", name,
+        active: diagnostic ? (document.activeElement instanceof Element ? {
+          id: document.activeElement.id || null,
+          testId: document.activeElement.getAttribute("data-testid"),
+          role: document.activeElement.getAttribute("role"),
+        } : null) : null,
+        dialogOpen: Boolean(document.querySelector('[role="dialog"]')) });
+    }, name);
+    await signIn(page);
+    await expect(page.getByRole("button", { name: "اختصارات لوحة المفاتيح" })).toHaveAttribute("title", /\(\?\)$/);
+    await expect(page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" })).toHaveAttribute("title", /Ctrl\/⌘\+Shift\+B/);
+    await page.getByRole("button", { name: "اختصارات لوحة المفاتيح" }).click();
+    const help = page.getByRole("dialog", { name: "اختصارات لوحة المفاتيح" });
+    await expect(help).toBeVisible();
+    await help.screenshot({ path: info.outputPath("shortcuts-help.png") });
+    await page.keyboard.press("Control+n");
+    await page.keyboard.press("Control+b");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(help).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(help).toBeHidden();
+    await page.keyboard.press("Control+n");
+    await expect(page.getByTestId("sale-form")).toBeVisible();
 
-  await page.getByTestId("new-sale-button").click();
-  await expect(page).toHaveURL(/\/sale\?fresh=[1-9]\d*$/);
-  const saleUrl = page.url();
-  await expect(page.getByTestId("sale-open-picker")).toHaveAttribute("title", /\(Ctrl\+N\)$/);
-  const customer = page.getByTestId("sale-customer");
-  await page.keyboard.press("Escape");
-  await page.getByTestId("sale-quick-add").click();
-  const quick = page.getByTestId("sale-quick-form");
-  await expect(customer).toHaveValue("");
-  await expect(page.getByTestId("sale-lines")).toHaveCount(0);
-  await expect(quick.getByTestId("sale-quick-name")).toHaveValue("");
-  await expect(quick.getByTestId("sale-quick-barcode")).toHaveValue("");
-  await expect(quick.locator('[name="quickCost"]')).toHaveValue("");
-  await expect(quick.locator('[name="quickSell"]')).toHaveValue("");
-  const stock = quick.getByTestId("sale-quick-stock");
-  await stock.fill("7");
-  await page.keyboard.press("Control+b");
-  await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page).toHaveURL(saleUrl);
-  await expect(stock).toHaveValue("7");
-  await stock.fill("");
-  await customer.fill("مسودة الاختصار");
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("Control+n");
-  const saleSearch = page.getByTestId("sale-search");
-  await expect(saleSearch).toBeFocused();
-  await expect(customer).toHaveValue("مسودة الاختصار");
-  await page.keyboard.press("Control+b");
-  const saleDiscard = page.getByRole("dialog").filter({ has: page.getByTestId("new-sale-discard-confirm") });
-  await expect(saleDiscard).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(saleDiscard).toBeHidden();
-  await expect(page).toHaveURL(saleUrl);
-  await expect(customer).toHaveValue("مسودة الاختصار");
-  await expect(saleSearch).toBeFocused();
+    await page.getByTestId("new-sale-button").click();
+    await expect(page).toHaveURL(/\/sale\?fresh=[1-9]\d*$/);
+    const saleUrl = page.url();
+    await expect(page.getByTestId("sale-open-picker")).toHaveAttribute("title", /\(Ctrl\+N\)$/);
+    const customer = page.getByTestId("sale-customer");
+    await page.keyboard.press("Escape");
+    await page.getByTestId("sale-quick-add").click();
+    const quick = page.getByTestId("sale-quick-form");
+    await expect(customer).toHaveValue("");
+    await expect(page.getByTestId("sale-lines")).toHaveCount(0);
+    await expect(quick.getByTestId("sale-quick-name")).toHaveValue("");
+    await expect(quick.getByTestId("sale-quick-barcode")).toHaveValue("");
+    await expect(quick.locator('[name="quickCost"]')).toHaveValue("");
+    await expect(quick.locator('[name="quickSell"]')).toHaveValue("");
+    const stock = quick.getByTestId("sale-quick-stock");
+    await stock.fill("7");
+    await page.keyboard.press("Control+b");
+    await expect(page.getByTestId("new-sale-discard-confirm")).toBeVisible();
+    await mark("start-focus-window");
+    await mark("before-first-discard-escape");
+    await page.keyboard.press("Escape");
+    await mark("after-first-discard-escape");
+    await expect(page).toHaveURL(saleUrl);
+    await expect(stock).toHaveValue("7");
+    await stock.fill("");
+    await customer.fill("مسودة الاختصار");
+    await page.keyboard.press("Escape");
+    await mark("before-ctrl-n");
+    await page.keyboard.press("Control+n");
+    await mark("after-ctrl-n");
+    const saleSearch = page.getByTestId("sale-search");
+    await expect(saleSearch).toBeFocused();
+    await expect(customer).toHaveValue("مسودة الاختصار");
+    await mark("before-second-ctrl-b");
+    await page.keyboard.press("Control+b");
+    await mark("after-second-ctrl-b");
+    const saleDiscard = page.getByRole("dialog").filter({ has: page.getByTestId("new-sale-discard-confirm") });
+    await expect(saleDiscard).toBeVisible();
+    await mark("before-second-escape");
+    await page.keyboard.press("Escape");
+    await mark("after-second-escape");
+    await expect(saleDiscard).toBeHidden();
+    await mark("dialog-hidden");
+    await expect(page).toHaveURL(saleUrl);
+    await expect(customer).toHaveValue("مسودة الاختصار");
+    await expect(saleSearch).toBeFocused();
+    await mark("focus-assertion-settled");
+    await page.evaluate(() => window.__saleFocusDiagnostic?.stop());
 
-  await customer.focus();
-  await page.keyboard.press("Control+b");
-  const discard = page.getByRole("dialog");
-  await expect(discard).toBeVisible();
-  await expect(discard).toContainText("فتح المشتريات؟");
-  await expect(discard).toContainText("سيتم فقدان مسودة البيع غير المحفوظة");
-  await page.keyboard.press("Control+n");
-  await page.keyboard.press("Escape");
-  await expect(discard).toBeHidden();
-  await expect(customer).toHaveValue("مسودة الاختصار");
-  await expect(customer).toBeFocused();
-  await page.keyboard.press("Control+b");
-  await page.getByTestId("new-sale-discard-confirm").click();
-  await expect(page.getByTestId("purchase-form")).toBeVisible();
+    await customer.focus();
+    await page.keyboard.press("Control+b");
+    const discard = page.getByRole("dialog");
+    await expect(discard).toBeVisible();
+    await expect(discard).toContainText("فتح المشتريات؟");
+    await expect(discard).toContainText("سيتم فقدان مسودة البيع غير المحفوظة");
+    await page.keyboard.press("Control+n");
+    await page.keyboard.press("Escape");
+    await expect(discard).toBeHidden();
+    await expect(customer).toHaveValue("مسودة الاختصار");
+    await expect(customer).toBeFocused();
+    await page.keyboard.press("Control+b");
+    await page.getByTestId("new-sale-discard-confirm").click();
+    await expect(page.getByTestId("purchase-form")).toBeVisible();
 
-  await expect(page.getByTestId("purchase-open-picker")).toHaveAttribute("title", /\(Ctrl\+B\)$/);
-  const supplier = page.getByTestId("purchase-supplier");
-  await supplier.fill("مسودة المورد");
-  await page.keyboard.press("Escape");
-  await supplier.focus();
-  await page.keyboard.press("Control+n");
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(supplier).toHaveValue("مسودة المورد");
-  await supplier.focus();
-  await page.keyboard.press("Control+n");
-  await page.getByTestId("purchase-discard-confirm").click();
-  await expect(page.getByTestId("sale-form")).toBeVisible();
+    await expect(page.getByTestId("purchase-open-picker")).toHaveAttribute("title", /\(Ctrl\+B\)$/);
+    const supplier = page.getByTestId("purchase-supplier");
+    await supplier.fill("مسودة المورد");
+    await page.keyboard.press("Escape");
+    await supplier.focus();
+    await page.keyboard.press("Control+n");
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(supplier).toHaveValue("مسودة المورد");
+    await supplier.focus();
+    await page.keyboard.press("Control+n");
+    await page.getByTestId("purchase-discard-confirm").click();
+    await expect(page.getByTestId("sale-form")).toBeVisible();
 
-  const sidebar = page.getByRole("complementary", { name: "التنقل الرئيسي" });
-  const width = await sidebar.evaluate((element) => element.getBoundingClientRect().width);
-  await customer.focus();
-  await page.keyboard.press("Control+Shift+b");
-  await expect.poll(() => sidebar.evaluate((element) => element.getBoundingClientRect().width)).not.toBe(width);
-  await expect(page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" })).toBeEnabled();
-  await page.keyboard.press("Control+Shift+b");
-  await expect.poll(() => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBe(width);
-  await page.getByRole("heading", { name: "فاتورة بيع جديدة", exact: true }).click();
-  await page.keyboard.press("?");
-  await expect(help).toBeVisible();
-  await expect(help).toContainText("Ctrl+N");
-  await expect(help).toContainText("Ctrl+B");
-  await expect(help).not.toContainText("Ctrl/⌘ + K");
-  await help.screenshot({ path: info.outputPath("shortcuts-help-active.png") });
+    const sidebar = page.getByRole("complementary", { name: "التنقل الرئيسي" });
+    const width = await sidebar.evaluate((element) => element.getBoundingClientRect().width);
+    await customer.focus();
+    await page.keyboard.press("Control+Shift+b");
+    await expect.poll(() => sidebar.evaluate((element) => element.getBoundingClientRect().width)).not.toBe(width);
+    await expect(page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" })).toBeEnabled();
+    await page.keyboard.press("Control+Shift+b");
+    await expect.poll(() => sidebar.evaluate((element) => element.getBoundingClientRect().width)).toBe(width);
+    await page.getByRole("heading", { name: "فاتورة بيع جديدة", exact: true }).click();
+    await page.keyboard.press("?");
+    await expect(help).toBeVisible();
+    await expect(help).toContainText("Ctrl+N");
+    await expect(help).toContainText("Ctrl+B");
+    await expect(help).not.toContainText("Ctrl/⌘ + K");
+    await help.screenshot({ path: info.outputPath("shortcuts-help-active.png") });
+  } finally {
+    if (diagnosticInstalled) {
+      try {
+        const entries = await page.evaluate(() => {
+          const diagnostic = window.__saleFocusDiagnostic;
+          if (!diagnostic) return [];
+          diagnostic.stop();
+          for (const [type, listener] of diagnostic.listeners) {
+            document.removeEventListener(type, listener, true);
+          }
+          return diagnostic.entries;
+        });
+        await info.attach("sale-focus-diagnostics.json", {
+          body: JSON.stringify({
+            browser: { name: browser.browserType().name(), version: browser.version() },
+            platform: process.platform,
+            events: entries,
+          }, null, 2),
+          contentType: "application/json",
+        });
+      } catch {
+        // Preserve the test's original assertion or runtime failure.
+      }
+    }
+  }
 });
 
 test("a closing purchase-discard popup cannot take focus from the newer picker", async ({ page }) => {

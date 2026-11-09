@@ -235,6 +235,50 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   }
 });
 
+test("reopening a mounted purchase-discard popup restores the current opener", async ({ page }) => {
+  await signIn(page);
+  await page.keyboard.press("Control+n");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+  const stock = page.getByTestId("sale-quick-stock");
+  await stock.fill("7");
+
+  // Hold the real exit animation so close/reopen reuses the same popup node.
+  await page.addStyleTag({
+    content: '[data-slot="dialog-popup"][data-closed] { animation-play-state: paused !important; }',
+  });
+  await page.keyboard.press("Control+b");
+  const discard = page.getByRole("dialog").filter({
+    has: page.getByTestId("new-sale-discard-confirm"),
+  });
+  await expect(discard).toBeVisible();
+  const firstPopup = await discard.elementHandle();
+  expect(firstPopup).not.toBeNull();
+
+  await page.keyboard.press("Escape");
+  await expect(discard).toHaveAttribute("data-closed", "");
+  expect(await discard.evaluate((element) =>
+    element.getAnimations().map((animation) => animation.playState),
+  )).toEqual(["paused"]);
+
+  await page.keyboard.press("Control+n");
+  const search = page.getByTestId("sale-search");
+  await expect(search).toBeFocused();
+  await page.keyboard.press("Control+b");
+  await expect(discard).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  expect(await firstPopup!.evaluate((element) => element.isConnected)).toBe(true);
+
+  await page.keyboard.press("Escape");
+  await expect(discard).toHaveAttribute("data-closed", "");
+  await discard.evaluate((element) => {
+    for (const animation of element.getAnimations()) animation.finish();
+  });
+  await expect(discard).toHaveCount(0);
+  await expect(search).toBeFocused();
+  await expect(stock).toHaveValue("7");
+});
+
 test("a closing purchase-discard popup cannot take focus from the newer picker", async ({ page }) => {
   await signIn(page);
   await page.keyboard.press("Control+n");

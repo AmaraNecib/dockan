@@ -135,6 +135,32 @@ test("diagnostics keeps synthetic multiline stacks local without widening nearby
       await page.evaluate((isDark) => document.documentElement.classList.toggle("dark", isDark), dark);
       for (const viewport of [{ width: 1000, height: 600 }, { width: 390, height: 844 }]) {
         await page.setViewportSize(viewport);
+        const timestampBounds = await page.evaluate(async () => {
+          await document.fonts.ready;
+          const timestamp = document.querySelector('[data-testid="diagnostics-row"] time');
+          const header = timestamp?.parentElement;
+          const text = timestamp?.firstChild;
+          if (!timestamp || !header || !text || text.nodeType !== Node.TEXT_NODE) {
+            throw new Error("Expected diagnostics timestamp text in its row header");
+          }
+          timestamp.style.fontFamily = '"Liberation Mono", monospace';
+          const range = document.createRange();
+          range.selectNodeContents(timestamp);
+          const boxes = Array.from(range.getClientRects());
+          const headerBounds = header.getBoundingClientRect();
+          return {
+            text: timestamp.textContent,
+            direction: getComputedStyle(timestamp).direction,
+            left: Math.min(...boxes.map((box) => box.left)),
+            right: Math.max(...boxes.map((box) => box.right)),
+            headerLeft: headerBounds.left,
+            headerRight: headerBounds.right,
+          };
+        });
+        expect(timestampBounds.text).toBe("2035-06-01T10:01:00.000Z");
+        expect(timestampBounds.direction).toBe("ltr");
+        expect(timestampBounds.left).toBeGreaterThanOrEqual(timestampBounds.headerLeft);
+        expect(timestampBounds.right).toBeLessThanOrEqual(timestampBounds.headerRight);
         const measured = await page.evaluate(() => {
           const main = document.querySelector("main");
           const listElement = document.querySelector('[data-testid="diagnostics-list"]');

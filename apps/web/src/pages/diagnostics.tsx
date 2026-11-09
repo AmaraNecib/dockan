@@ -54,7 +54,7 @@ function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
   return (
     <article className="min-w-0 rounded border bg-card p-3" data-testid="diagnostics-row">
       <header className="flex flex-wrap items-center gap-2 text-sm">
-        <time className="font-mono text-xs text-muted-foreground" dir="ltr">
+        <time className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] font-mono text-xs text-muted-foreground" dir="ltr">
           {row.ts}
         </time>
         <span className={`rounded px-1.5 py-0.5 text-xs ${levelStyle[row.level]}`}>{row.level}</span>

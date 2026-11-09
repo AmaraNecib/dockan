@@ -44,7 +44,7 @@ pub fn run() {
     if portable {
         if let Err(error) = desktop::defer_portable_main_window(&mut context.config_mut().app.windows, true) {
             desktop::show_portable_startup_error(&error);
-            return;
+            std::process::exit(1);
         }
     }
     let built = app_builder()
@@ -63,7 +63,7 @@ pub fn run() {
         Ok(app) => app,
         Err(error) if portable => {
             desktop::show_portable_startup_error(&error.to_string());
-            return;
+            std::process::exit(1);
         }
         Err(error) => panic!("error while building Dokan: {error}"),
     };

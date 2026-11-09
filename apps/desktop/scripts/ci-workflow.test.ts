@@ -717,34 +717,44 @@ describe("PR CI workflow", () => {
   });
 
   itShell("exports one sanitized summary only after successful e2e", () => {
-    const jobName = "browser_summary";
-    const lines = jobLines(WORKFLOW_SOURCE, jobName);
-    expect(lines.length).toBeGreaterThan(0);
-    expect(lines).toContain("    needs: e2e");
-    expect(lines).toContain("    if: ${{ needs.e2e.result == 'success' }}");
-    const jobs = Bun.YAML.parse(WORKFLOW_SOURCE) as { jobs: Record<string, { permissions?: Record<string, string> }> };
-    expect(jobs.jobs[jobName]?.permissions).toEqual({ contents: "read", actions: "read" });
-    expect(jobLines(WORKFLOW_SOURCE, "acceptance").join("\n")).not.toContain("browser_summary");
+    const assertContract = (source: string) => {
+      const jobName = "browser_summary";
+      const lines = jobLines(source, jobName);
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines).toContain("    needs: e2e");
+      expect(lines).toContain("    if: ${{ needs.e2e.result == 'success' }}");
+      // SAFETY: fixture YAML is checked through its job shape and exact permissions below.
+      const jobs = Bun.YAML.parse(source) as { jobs: Record<string, { permissions?: Record<string, string> }> };
+      expect(jobs.jobs[jobName]?.permissions).toEqual({ contents: "read", actions: "read" });
+      expect(jobLines(source, "acceptance").join("\n")).not.toContain("browser_summary");
+      expect(lines.join("\n")).not.toContain("continue-on-error:");
 
-    const steps = parseSteps(WORKFLOW_SOURCE, jobName);
-    const run = stepNamed(steps, "Export sanitized browser summary");
-    expect(run.env.get("GH_TOKEN")).toBe("${{ github.token }}");
-    expect([...run.env.keys()]).toEqual(["GH_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]);
-    expect(run.run).toContain('--repo "$GITHUB_REPOSITORY"');
-    expect(run.run).toContain('--run "$GITHUB_RUN_ID"');
-    expect(run.run).toContain('--attempt "$GITHUB_RUN_ATTEMPT"');
-    expect(run.run).toContain('--archive "$RUNNER_TEMP/browser-ci-summary.jsonl"');
-    expect(run.run).toContain("--scope unknown");
-    expect(run.run.match(/bun scripts\/browser-ci-export\.ts/gu)).toHaveLength(1);
+      const steps = parseSteps(source, jobName);
+      expect(steps.filter((step) => step.env.has("GH_TOKEN"))).toHaveLength(1);
+      const run = stepNamed(steps, "Export sanitized browser summary");
+      expect(run.env.get("GH_TOKEN")).toBe("${{ github.token }}");
+      expect([...run.env.keys()]).toEqual(["GH_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]);
+      expect(run.run).toContain('--repo "$GITHUB_REPOSITORY"');
+      expect(run.run).toContain('--run "$GITHUB_RUN_ID"');
+      expect(run.run).toContain('--attempt "$GITHUB_RUN_ATTEMPT"');
+      expect(run.run).toContain('--archive "$RUNNER_TEMP/browser-ci-summary.jsonl"');
+      expect(run.run).toContain("--scope unknown");
+      expect(run.run.match(/bun scripts\/browser-ci-export\.ts/gu)).toHaveLength(1);
 
-    const upload = stepNamed(steps, "Upload browser CI summary");
-    expect(upload.condition).toBe("success()");
-    expect(upload.uses).toBe(`actions/upload-artifact@${actionRefs(WORKFLOW_SOURCE).find((ref) => ref.name === "actions/upload-artifact")?.revision}`);
-    expect(upload.with.get("name")).toBe("browser-ci-summary-${{ github.run_id }}-${{ github.run_attempt }}");
-    expect(upload.with.get("path")).toBe("${{ runner.temp }}/browser-ci-summary.jsonl");
-    expect(upload.with.get("if-no-files-found")).toBe("error");
-    expect(upload.with.get("retention-days")).toBe("30");
-    expect(steps.indexOf(upload)).toBeGreaterThan(steps.indexOf(run));
+      const upload = stepNamed(steps, "Upload browser CI summary");
+      expect(upload.condition).toBe("success()");
+      expect(upload.uses).toBe(`actions/upload-artifact@${actionRefs(source).find((ref) => ref.name === "actions/upload-artifact")?.revision}`);
+      expect(upload.with.get("name")).toBe("browser-ci-summary-${{ github.run_id }}-${{ github.run_attempt }}");
+      expect(upload.with.get("path")).toBe("${{ runner.temp }}/browser-ci-summary.jsonl");
+      expect(upload.with.get("if-no-files-found")).toBe("error");
+      expect(upload.with.get("retention-days")).toBe("30");
+      expect(steps.indexOf(upload)).toBeGreaterThan(steps.indexOf(run));
+      return { run, upload };
+    };
+    const { run, upload } = assertContract(WORKFLOW_SOURCE);
+    const shellFile = (file: string) => process.platform === "win32"
+      ? file.replace(/\\/gu, "/").replace(/^([A-Za-z]):/u, (_, drive: string) => `/${drive.toLowerCase()}`)
+      : file;
 
     const root = mkdtempSync(path.join(tmpdir(), "ci-browser-summary-"));
     try {
@@ -753,6 +763,7 @@ describe("PR CI workflow", () => {
       const executable = path.join(bin, "bun");
       writeFileSync(executable, [
         "#!/bin/sh",
+        'printf "invoked\\n" >> "$CAPTURE_CALLS"',
         'printf "%s\\n" "$@" > "$CAPTURE_ARGS"',
         'if [ "${EXPORT_FAIL:-}" = yes ]; then exit 23; fi',
         'while [ "$#" -gt 0 ]; do if [ "$1" = --archive ]; then shift; printf \'{"runId":812,"attempt":3,"scope":"unknown"}\\n\' > "$1"; exit 0; fi; shift; done',
@@ -761,15 +772,16 @@ describe("PR CI workflow", () => {
       ].join("\n"), { mode: 0o700 });
       const archive = path.join(root, "runner-temp", "browser-ci-summary.jsonl");
       mkdirSync(path.dirname(archive));
-      const execute = (extra: Record<string, string> = {}) => execFileSync(shellPath(), ["-euo", "pipefail", "-c", run.run], {
+      const execute = (extra: Record<string, string> = {}) => execFileSync(shellPath(), ["-euo", "pipefail", "-c", 'export PATH="$STUB_BIN:$PATH"\n' + run.run], {
         cwd: root,
         encoding: "utf8",
-        env: shellEnv({ PATH: `${bin}:${process.env.PATH ?? ""}`, RUNNER_TEMP: path.dirname(archive), GITHUB_REPOSITORY: "owner/repo", GITHUB_RUN_ID: "812", GITHUB_RUN_ATTEMPT: "3", GH_TOKEN: "TOKEN_SENTINEL", CAPTURE_ARGS: path.join(root, "args"), ...extra }),
+        env: shellEnv({ STUB_BIN: shellFile(bin), RUNNER_TEMP: shellFile(path.dirname(archive)), GITHUB_REPOSITORY: "owner/repo", GITHUB_RUN_ID: "812", GITHUB_RUN_ATTEMPT: "3", GH_TOKEN: "TOKEN_SENTINEL", CAPTURE_ARGS: shellFile(path.join(root, "args")), CAPTURE_CALLS: shellFile(path.join(root, "calls")), ...extra }),
       });
       execute();
       expect(readFileSync(path.join(root, "args"), "utf8").trim().split("\n")).toEqual([
-        "scripts/browser-ci-export.ts", "--repo", "owner/repo", "--run", "812", "--attempt", "3", "--archive", archive, "--scope", "unknown",
+        "scripts/browser-ci-export.ts", "--repo", "owner/repo", "--run", "812", "--attempt", "3", "--archive", shellFile(archive), "--scope", "unknown",
       ]);
+      expect(readFileSync(path.join(root, "calls"), "utf8")).toBe("invoked\n");
       expect(readFileSync(archive, "utf8")).toBe('{"runId":812,"attempt":3,"scope":"unknown"}\n');
       expect(readFileSync(path.join(root, "args"), "utf8")).not.toContain("TOKEN_SENTINEL");
       rmSync(archive);
@@ -781,10 +793,19 @@ describe("PR CI workflow", () => {
       rmSync(root, { recursive: true, force: true });
     }
 
-    // These mutations must break the contract checks, not pass on comments or a no-op run.
-    expect(jobLines(WORKFLOW_SOURCE.replace("needs: e2e", "needs: checks"), jobName)).not.toContain("    needs: e2e");
-    expect(run.run.replace("--scope unknown", "--scope full")).not.toContain("--scope unknown");
-    expect(upload.with.get("retention-days")).not.toBe("5");
+    // Mutants must fail the same contract assertions that accept the checked-in workflow.
+    const mutations: [string, string][] = [
+      ["  browser_summary:", "  missing_summary:"],
+      ["    needs: e2e", "    needs: checks"],
+      ["    if: ${{ needs.e2e.result == 'success' }}", "    if: ${{ always() }}"],
+      ["      actions: read", "      actions: write"],
+      ["--scope unknown", "--scope full"],
+      ["          retention-days: 30", "          retention-days: 5"],
+    ];
+    for (const [original, replacement] of mutations) {
+      expect(WORKFLOW_SOURCE).toContain(original);
+      expect(() => assertContract(WORKFLOW_SOURCE.replace(original, replacement))).toThrow();
+    }
   });
 
   it("keeps the root `test` script running the scripts suite (#231)", () => {
@@ -827,7 +848,7 @@ describe("PR CI workflow", () => {
     // assertions below pin its keys.
     const doc = Bun.YAML.parse(WORKFLOW_SOURCE) as { jobs?: object };
     expect(doc.jobs).toBeDefined();
-    expect(Object.keys(doc.jobs ?? {}).sort()).toEqual(["acceptance", "changes", "checks", "e2e", "rust"]);
+    expect(Object.keys(doc.jobs ?? {}).sort()).toEqual(["acceptance", "browser_summary", "changes", "checks", "e2e", "rust"]);
   });
 
   it("builds the web frontend before cargo, because build.rs requires it", () => {

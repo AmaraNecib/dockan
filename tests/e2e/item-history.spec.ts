@@ -132,6 +132,64 @@ test.describe("item history 399", () => {
     await expect(exactCost).not.toContainText("702");
   });
 
+  test("large recorded amounts and long document codes stay inside narrow facts", async ({ page }) => {
+    test.setTimeout(60_000);
+    await signIn(page);
+    const { item, invoice } = await seedHistory(page, "اختبار التفاف القيم 470");
+    const history = await rpc<{ movements: ItemHistoryMovement[] }>(page, { procedure: "itemsHistory", input: { itemId: item.id } });
+    const sale = history.movements.find((movement) => movement.kind === "SALE");
+    if (!sale?.details?.cost) throw new Error("Expected recorded sale facts");
+    // Synthetic display extremes retain the real invoice destination, not new relationships.
+    sale.details.sellingPrice = Number.MAX_SAFE_INTEGER;
+    sale.details.saleTotal = Number.MAX_SAFE_INTEGER;
+    sale.details.netSaleTotal = Number.MAX_SAFE_INTEGER;
+    sale.details.cost.unitCost = Number.MAX_SAFE_INTEGER;
+    sale.details.cost.total = null;
+    const documentCode = `INV-${"9876543210".repeat(4)}`;
+    sale.details.documents = [{ id: invoice.id, number: documentCode }];
+    await page.route("**/api/rpc/itemsHistory", (route) => route.fulfill({ json: { json: history } }));
+    await page.goto(`/items/${item.id}/history`);
+    await page.getByTestId(`history-toggle-${sale.id}`).click();
+    const panel = page.getByTestId(`history-detail-${sale.id}`);
+    await expect(panel.getByTestId(/^history-cost-total-/)).toHaveText("غير متوفر في السجل");
+    await expect(panel.getByTestId(/^history-selling-price-/)).toContainText("9,007,199,254,740,991");
+    await expect(panel.getByRole("link", { name: documentCode })).toHaveAttribute("href", `/invoices/${invoice.id}`);
+    await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
+    for (const width of [1920, 390]) {
+      await page.setViewportSize({ width, height: 1080 });
+      await panel.scrollIntoViewIfNeeded();
+      await expect(panel.locator("dt")).toHaveCount(6);
+      await expect.poll(() => panel.evaluate((root) => {
+        const bounds = root.getBoundingClientRect();
+        const failures: string[] = [];
+        for (const row of root.querySelectorAll("[data-testid^='history-fact-']")) {
+          const rect = row.getBoundingClientRect();
+          if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1) failures.push("fact escapes panel");
+          const label = row.querySelector("dt");
+          const value = row.querySelector("dd");
+          if (!label || !value) { failures.push("missing label or value"); continue; }
+          const labelRange = document.createRange();
+          labelRange.selectNodeContents(label);
+          const valueRange = document.createRange();
+          valueRange.selectNodeContents(value);
+          for (const a of labelRange.getClientRects()) {
+            for (const b of valueRange.getClientRects()) {
+              if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) failures.push("label overlaps value");
+            }
+          }
+        }
+        for (const element of root.querySelectorAll("dt, dd, a")) {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          for (const rect of range.getClientRects()) {
+            if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1) failures.push("text escapes panel");
+          }
+        }
+        return failures;
+      }), { message: `Recorded facts stay contained without overlap at ${width}px` }).toEqual([]);
+    }
+  });
+
   test("failed history read is explicit, retry recovers, leaving a pending read is safe", async ({ page }) => {
     await signIn(page);
     test.setTimeout(60_000);

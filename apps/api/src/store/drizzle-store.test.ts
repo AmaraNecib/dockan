@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
+import { stockMovements } from "../db/schema";
 import { localDateTime, localDate } from "../lib/logger";
 import { supplierBalance, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createDrizzleStore, backfillReturnDebtApplications, seedExpenseCategories } from "./drizzle-store";
@@ -59,6 +60,53 @@ const removeTempDirRetry = (dir: string): void => {
     }
   }
 };
+
+describe("catalog pending-cost projection", () => {
+  it("skips full history reads without pending matches and projects matching pending history", async () => {
+    const category = await store.createCategory({ name: `catalog-${Date.now()}` });
+    const plain = await store.createItem({ name: `ZEBRAnomatch-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150 });
+    const pending = await store.createItem({ name: `PENGUINpending-${Date.now()}`, categoryId: category.id, costPrice: 0, sellingPrice: 150 });
+    await store.insertStockMovement({
+      itemId: pending.id,
+      kind: "PURCHASE",
+      delta: 1,
+      unitCost: null,
+      costPending: true,
+      reason: null,
+      ref: null,
+      occurredAt: stamp(),
+    });
+
+    const originalSelect = conn.db.select;
+    let historyReads = 0;
+    const instrumentedSelect = (...args: Parameters<typeof conn.db.select>) => {
+      const query = originalSelect.apply(conn.db, args);
+      const isFullMovementProjection = args[0] !== undefined && Object.keys(args[0]).length > 1;
+      const originalFrom = query.from.bind(query);
+      type FromTable = Parameters<typeof query.from>[0];
+      Object.defineProperty(query, "from", {
+        configurable: true,
+        value: (table: FromTable) => {
+          if (table === stockMovements && isFullMovementProjection) historyReads += 1;
+          return originalFrom(table);
+        },
+      });
+      return query;
+    };
+    Object.defineProperty(conn.db, "select", { configurable: true, value: instrumentedSelect });
+    try {
+      const plainResult = await store.listItems({ query: plain.name, limit: 10, offset: 0 });
+      expect(plainResult.items.find((row) => row.id === plain.id)?.costPending).toBe(false);
+      expect(historyReads).toBe(0);
+
+      const pendingResult = await store.listItems({ query: pending.name, limit: 10, offset: 0 });
+      expect(pendingResult.items.find((row) => row.id === pending.id)?.costPending).toBe(true);
+      expect(historyReads).toBe(1);
+    } finally {
+      Object.defineProperty(conn.db, "select", { configurable: true, value: originalSelect });
+    }
+  });
+});
 
 describe("category management (#389)", () => {
   it("renames a category without changing its id or an assigned item's category", async () => {

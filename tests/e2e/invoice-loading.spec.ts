@@ -67,7 +67,7 @@ test("invoice detail announces loading, preserves the real error, and recovers",
   releaseHeld();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
   await expect(page.getByTestId("invoice-number")).toHaveText(invoice.invoiceNumber);
-  await page.getByTestId("invoice-page").screenshot({ path: testInfo.outputPath("invoice-loading-loaded.png") });
+  await page.getByTestId("invoice-page").locator("h1").screenshot({ path: testInfo.outputPath("invoice-loading-loaded.png") });
 
   mode = "error";
   await page.reload();

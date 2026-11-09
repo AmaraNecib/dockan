@@ -239,6 +239,7 @@ const resources = {
       settingsGettingStartedFailed: "تعذّر حفظ اختيارك. أعد المحاولة.",
       settingsGettingStartedUnavailable: "تعذّر تحميل هذا الإعداد. أعد المحاولة.",
       categoriesTitle: "التصنيفات",
+      categoriesLoadError: "تعذّر تحميل التصنيفات، تحقق من الاتصال ثم أعد المحاولة.",
       categoriesNewName: "اسم تصنيف جديد",
       categoriesAdd: "إضافة",
       categoriesEmpty: "لا توجد تصنيفات بعد",

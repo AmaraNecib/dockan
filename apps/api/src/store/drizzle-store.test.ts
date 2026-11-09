@@ -702,10 +702,10 @@ describe("barcodes (ticket 28)", () => {
       // post-heal modern rows must survive later setup calls: a zero default
       // price is real for the item, and a fully discounted line's net zero is
       // real too — the restricted WHERE clauses and the marker keep them.
-      // (The table now carries cogs_exact, appended by the first setup; the
-      // value 1×100 is the true layer sum for this 1-unit line.)
+      // Name the columns because setup adds fields with migration defaults.
+      // The value 1×100 is the true layer sum for this 1-unit line.
       interrupted.raw.exec("INSERT INTO invoices VALUES ('modern-invoice', 'INV-MODERN', 'SALE', NULL, NULL, '2026-02-01', 700, 'PERCENTAGE', 100, 700, 0, 0, 0, NULL, '2026-02-01T00:00:00', '2026-02-01T00:00:00')");
-      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0, 100)");
+      interrupted.raw.exec("INSERT INTO invoice_lines (id, invoice_id, item_id, description, quantity, default_unit_price, unit_price, cost_at_sale, total, discount_allocated, net_total, cogs_exact) VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0, 100)");
       await interruptedStore.setup();
       const modern = await interruptedStore.getInvoiceDetail("modern-invoice");
       expect(modern?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 700, netTotal: 0 });

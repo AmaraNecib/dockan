@@ -1049,7 +1049,7 @@ export function InvoicePage() {
   const detail = useQuery(orpc.invoicesGet.queryOptions({ input: { id: invoiceId } }));
 
   if (detail.isPending) {
-    return <p className="text-sm text-muted-foreground">{t("activityError")}</p>;
+    return <p role="status" aria-live="polite" className="text-sm text-muted-foreground" data-testid="invoice-loading">{t("invoiceLoading")}</p>;
   }
   if (detail.isError || detail.data === undefined) {
     const detailError = detail.error instanceof Error ? detail.error.message : undefined;

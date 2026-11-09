@@ -20,6 +20,7 @@ let failInvoicesPay = false;
 let lastPayInput: { invoiceId: string; amount: number; method: string; note?: string } | null = null;
 /** the detail the page-level notes test serves */
 let invoiceDetail: InvoiceDetail | undefined;
+let invoiceQueryFn: (() => Promise<InvoiceDetail | undefined>) | undefined;
 /** this invoice's returns for the panel mounted inside the page */
 let invoiceReturns: ReturnDetail[] = [];
 /** #256 round 4 — the customer's unpaid invoices, as `debtsByParty` returns them */
@@ -40,7 +41,7 @@ mock.module("@tanstack/react-router", () => routerMock(routeParams));
 mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesGet: {
-      queryOptions: ({ input }: { input: { id: string } }) => ({ queryKey: ["invoicesGet", input], queryFn: async () => invoiceDetail }),
+      queryOptions: ({ input }: { input: { id: string } }) => ({ queryKey: ["invoicesGet", input], queryFn: () => invoiceQueryFn?.() ?? Promise.resolve(invoiceDetail) }),
       queryKey: ({ input }: { input: { id: string } }) => ["invoicesGet", input],
     },
     invoicesList: { queryKey: () => ["invoicesList"] },
@@ -124,6 +125,7 @@ beforeEach(() => {
   failInvoicesPay = false;
   lastPayInput = null;
   invoiceDetail = undefined;
+  invoiceQueryFn = undefined;
   invoiceReturns = [];
   partyDebtInvoices = [];
   applyPayment = null;
@@ -176,6 +178,29 @@ async function renderPageWithClient(invoice: InvoiceDetail): Promise<QueryClient
   throw new Error("InvoicePage did not settle");
 }
 
+async function mountPageWithClient(client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
+  const root = createRoot(host);
+  roots.push(root);
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={client}>
+        <InvoicePage />
+      </QueryClientProvider>,
+    );
+  });
+  return client;
+}
+
+async function waitForSelector(selector: string) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (host.querySelector(selector) !== null) return;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  throw new Error(`InvoicePage did not render ${selector}`);
+}
+
 /** Sets a controlled input through the native setter + input event so React's
  * onChange fires (plain .value assignment is ignored by React's tracker). */
 function typeInto(input: HTMLInputElement, text: string) {
@@ -200,6 +225,50 @@ async function flushAsync() {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 }
+
+describe("InvoicePage loading and read recovery (#479)", () => {
+  it("shows loading while uncached, preserves cached content during refetch, and recovers from a real error", async () => {
+    let resolveFirst!: (invoice: InvoiceDetail) => void;
+    invoiceQueryFn = () => new Promise((resolve) => { resolveFirst = resolve; });
+    const client = await mountPageWithClient();
+
+    const status = host.querySelector('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+    expect(status?.textContent).toBe(i18n.t("invoiceLoading"));
+    expect(status?.textContent).not.toBe(i18n.t("activityError"));
+    expect(host.querySelector('[data-testid="invoice-error"]')).toBeNull();
+
+    await act(async () => { resolveFirst(makeInvoice(600)); });
+    await waitForSelector('[data-testid="invoice-page"]');
+    expect(host.querySelector('[data-testid="invoice-number"]')?.textContent).toBe("INV-0001");
+
+    let resolveRefetch!: (invoice: InvoiceDetail) => void;
+    invoiceQueryFn = () => new Promise((resolve) => { resolveRefetch = resolve; });
+    act(() => { void client.invalidateQueries({ queryKey: ["invoicesGet", { id: routeParams.invoiceId }] }); });
+    expect(host.querySelector('[data-testid="invoice-page"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="invoice-error"]')).toBeNull();
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    await act(async () => { resolveRefetch({ ...makeInvoice(500), invoiceNumber: "INV-0002" }); });
+    await waitForSelector('[data-testid="invoice-number"]');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(host.querySelector('[data-testid="invoice-number"]')?.textContent).toBe("INV-0002");
+
+    act(() => { for (const root of roots) root.unmount(); });
+    roots = [];
+    host.replaceChildren();
+    invoiceQueryFn = () => Promise.reject(new Error("INVOICE_READ_FAILED"));
+    const errorClient = await mountPageWithClient();
+    await waitForSelector('[data-testid="invoice-error"]');
+    expect(host.querySelector('[data-testid="invoice-error-text"]')?.textContent).toBe(i18n.t("errorGeneric"));
+
+    invoiceQueryFn = () => Promise.resolve({ ...makeInvoice(400), invoiceNumber: "INV-0003" });
+    await act(async () => { await errorClient.refetchQueries({ queryKey: ["invoicesGet", { id: routeParams.invoiceId }] }); });
+    await waitForSelector('[data-testid="invoice-page"]');
+    expect(host.querySelector('[data-testid="invoice-number"]')?.textContent).toBe("INV-0003");
+    expect(host.querySelector('[data-testid="invoice-error"]')).toBeNull();
+  });
+});
 
 describe("paymentAmountError (invoice instalment boundary)", () => {
   it("accepts an exact-remaining payment (boundary)", () => {

@@ -760,6 +760,7 @@ const resources = {
       invoicesEmptyClearFilters: "مسح التصفية",
       invoicesOpen: "فتح",
       invoiceTitle: "الفاتورة",
+      invoiceLoading: "جارٍ تحميل الفاتورة",
       invoiceBack: "رجوع للفواتير",
       invoiceNumber: "رقم الفاتورة",
       invoiceKind: "النوع",

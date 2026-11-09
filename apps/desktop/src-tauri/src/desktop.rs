@@ -189,17 +189,20 @@ pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) {
         return Ok(());
     }
-    create_portable_main_window(app)?;
-    match spawn_and_navigate(app) {
+    let portable = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(PORTABLE_MARKER).is_file()))
+        .unwrap_or(false);
+    let startup = create_portable_main_window(app).and_then(|()| spawn_and_navigate(app));
+    match startup {
         Ok(()) => Ok(()),
         Err(err) => {
-            eprintln!("[dokan] sidecar bootstrap failed: {err}");
-            let portable = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(|dir| dir.join(PORTABLE_MARKER).is_file()))
-                .unwrap_or(false);
+            eprintln!("[dokan] startup failed: {err}");
             if portable {
-                return Err(err);
+                // Tauri 2.11 panics on setup-hook errors after the event loop starts.
+                // Show the portable diagnostic here instead of returning Err to Tauri.
+                show_portable_startup_error(&err.to_string());
+                std::process::exit(1);
             }
             // Installed mode keeps its existing bundled-UI error handling.
             Ok(())

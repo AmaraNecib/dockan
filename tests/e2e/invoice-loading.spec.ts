@@ -54,7 +54,7 @@ test("invoice detail announces loading, preserves the real error, and recovers",
 
   await page.goto(`/invoices/${invoice.id}`);
   await heldRequest;
-  const loading = page.getByRole("status");
+  const loading = page.getByTestId("invoice-loading");
   await expect(loading).toHaveText("جارٍ تحميل الفاتورة");
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");

@@ -277,6 +277,7 @@ const resources = {
       itemsStockInvalid: "أدخل مخزوناً افتتاحياً صحيحاً (أرقام فقط)",
       itemsNoChanges: "لا توجد تغييرات لحفظها",
       itemsStock: "المخزون",
+      itemsOutOfStock: "نفد المخزون",
       itemsLowBadge: "منخفض",
       itemsEmpty: "لا توجد منتجات بعد",
       itemsEmptyHint: "أنشئ أول منتج بأسعار الشراء والبيع ليظهر في القائمة.",

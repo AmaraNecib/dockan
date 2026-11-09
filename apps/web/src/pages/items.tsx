@@ -1016,6 +1016,12 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
             // the draft's own row, shown even when the page no longer holds it
             const offPage = editing && !pageItems.some((row) => row.id === item.id);
             const draftProfit = editing ? profitPreview(draft.cost, draft.sell) : null;
+            const stockStatus =
+              item.stockOnHand === 0
+                ? { label: t("itemsOutOfStock"), className: "border-destructive/30 bg-destructive/10 text-destructive", testId: "out-of-stock" }
+                : item.stockOnHand > 0 && item.stockOnHand <= item.lowStockThreshold
+                  ? { label: t("itemsLowBadge"), className: "border-warning/30 bg-warning/10 text-warning", testId: "low-stock" }
+                  : null;
             return (
               <tr key={item.id} className="border-b last:border-0" data-editing={editing ? "true" : undefined} data-off-page={offPage ? "true" : undefined}>
                 <td className="p-3">
@@ -1106,7 +1112,15 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
                 </td>
                 <td className="p-3">
                   <span data-testid="stock-after-cell">
-                    {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-destructive">{t("itemsLowBadge")}</span>}
+                    <bdi dir="ltr">{item.stockOnHand}</bdi>{" "}
+                    {stockStatus !== null && (
+                      <span
+                        className={`rounded border px-2 py-0.5 text-xs font-semibold ${stockStatus.className}`}
+                        data-stock-status={stockStatus.testId}
+                      >
+                        {stockStatus.label}
+                      </span>
+                    )}
                   </span>
                 </td>
                 <td className="p-3">

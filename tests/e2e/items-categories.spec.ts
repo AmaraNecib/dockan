@@ -102,12 +102,12 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   // HTTP success and the oRPC success envelope.
   await actAndAck(page, "itemsCreate", () => page.getByRole("button", { name: "حفظ" }).click());
 
-  // 3. The item appears in the list with a low badge (stock 0 <= threshold 5)
+  // 3. The item appears with out-of-stock text because its quantity is zero.
   await openItemsTab(page, "products");
   const batteryRow = page.getByRole("row", { name: new RegExp(`بطارية-${stamp}`) });
   await expect(batteryRow).toBeVisible();
   await expect(batteryRow).toContainText(`زيوت-${stamp}`); // category NAME, not a UUID
-  await expect(batteryRow.getByText("منخفض")).toBeVisible();
+  await expect(batteryRow.locator('[data-stock-status="out-of-stock"]')).toHaveText("نفد المخزون");
 
   // 4. The dashboard lists it under low stock
   await page.goto("/");

@@ -138,8 +138,9 @@ test("quick-create cost modes stay keyboard accessible and aligned in Arabic RTL
   const stamp = Date.now().toString();
   await page.goto("/sale");
   const search = page.getByTestId("sale-search");
-  await search.fill(`UNKNOWN-UI-${stamp}`);
-  await search.press("Enter");
+  await search.focus();
+  await page.keyboard.type(`UNKNOWN-UI-${stamp}`, { delay: 8 });
+  await page.keyboard.press("Enter");
   await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
   await page.getByTestId("scan-create-stock").click();
 

@@ -52,7 +52,7 @@ function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
     );
   }
   return (
-    <article className="rounded border bg-card p-3" data-testid="diagnostics-row">
+    <article className="min-w-0 rounded border bg-card p-3" data-testid="diagnostics-row">
       <header className="flex flex-wrap items-center gap-2 text-sm">
         <time className="font-mono text-xs text-muted-foreground" dir="ltr">
           {row.ts}
@@ -79,9 +79,9 @@ function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
       </header>
       <p className="mt-1.5 text-sm text-foreground">{logMessageCopy(t, row.event, row.message)}</p>
       {row.stack && (
-        <details className="mt-1.5">
+        <details className="mt-1.5 min-w-0">
           <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">{t("diagnosticsStack")}</summary>
-          <pre dir="ltr" className="mt-1.5 overflow-x-auto rounded bg-accent p-2 font-mono text-xs text-muted-foreground">
+          <pre dir="ltr" className="mt-1.5 max-w-full overflow-x-auto rounded bg-accent p-2 font-mono text-xs text-muted-foreground">
             {row.stack}
           </pre>
         </details>
@@ -135,7 +135,7 @@ export function DiagnosticsPage() {
           hint={t("diagnosticsEmptyHint")}
         />
       ) : (
-        <div className="mt-4 grid gap-2" data-testid="diagnostics-list">
+        <div className="mt-4 grid min-w-0 gap-2" data-testid="diagnostics-list">
           {/* the api tail is newest-last (chronological); the viewer shows newest first.
               Keys come from the RAW (unreversed) index so an appended line — the only
               change a refetch can make — never remounts every existing row. */}

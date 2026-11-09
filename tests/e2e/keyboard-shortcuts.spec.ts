@@ -253,7 +253,7 @@ test("reopening a mounted purchase-discard popup restores the current opener", a
   });
   await expect(discard).toBeVisible();
   const firstPopup = await discard.elementHandle();
-  expect(firstPopup).not.toBeNull();
+  if (!firstPopup) throw new Error("discard popup did not render");
 
   await page.keyboard.press("Escape");
   await expect(discard).toHaveAttribute("data-closed", "");
@@ -267,7 +267,7 @@ test("reopening a mounted purchase-discard popup restores the current opener", a
   await page.keyboard.press("Control+b");
   await expect(discard).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(1);
-  expect(await firstPopup!.evaluate((element) => element.isConnected)).toBe(true);
+  expect(await firstPopup.evaluate((element) => element.isConnected)).toBe(true);
 
   await page.keyboard.press("Escape");
   await expect(discard).toHaveAttribute("data-closed", "");

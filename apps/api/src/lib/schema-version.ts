@@ -79,8 +79,12 @@ import type { Database } from "bun:sqlite";
  *
  * Version 11 (issue 392): stock movements and sale lines gain an explicit
  * pending-cost marker. Existing numeric zero and legacy null semantics remain unchanged.
+ *
+ * Version 12 (issue 392 bounded fix): items gain `cost_price_known`. Existing
+ * caches retain the legacy known default; new pending receipts make the cache
+ * untrusted until a known basis can be derived or explicitly entered.
  */
-export const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;
 
 /**
  * A database written by a newer app. The older build cannot know what the

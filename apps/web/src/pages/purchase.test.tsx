@@ -1271,6 +1271,39 @@ describe("PurchasePage quantity draft (#146)", () => {
       });
     }
 
+    it("requires a typed cost for an untrusted item and saves an intentional zero", async () => {
+      catalogMatches = [{ item: { ...catalogItem("pending-item", "مخزون معلّق", 0), costPriceKnown: false, costPending: true }, category: null, matchedBy: "NAME" }];
+      const { container } = await mountPage();
+      await pickAppend(container, "مخزون معلّق");
+      const cost = costField(container, "pending-item")!;
+      expect(cost.value).toBe("");
+      await save(container);
+      expect(lastPurchaseInput).toBeNull();
+      expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+
+      await act(async () => setValue(cost, "0"));
+      clearPurchaseRecorder();
+      await save(container);
+      expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+      expect(lastPurchaseInput?.lines).toEqual([{ itemId: "pending-item", quantity: 1, unitPrice: 0 }]);
+    });
+
+    it("requires a typed cost after pending stock is gone and saves a nonzero receipt price", async () => {
+      catalogMatches = [{ item: { ...catalogItem("exhausted-pending-item", "مخزون مستنفد", 0), costPriceKnown: false, costPending: false }, category: null, matchedBy: "NAME" }];
+      const { container } = await mountPage();
+      await pickAppend(container, "مخزون مستنفد");
+      const cost = costField(container, "exhausted-pending-item")!;
+      expect(cost.value).toBe("");
+      await save(container);
+      expect(lastPurchaseInput).toBeNull();
+      expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+
+      await act(async () => setValue(cost, "125"));
+      await save(container);
+      expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+      expect(lastPurchaseInput?.lines).toEqual([{ itemId: "exhausted-pending-item", quantity: 1, unitPrice: 125 }]);
+    });
+
     async function pressEnter(input: HTMLInputElement) {
       await act(async () => {
         const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });

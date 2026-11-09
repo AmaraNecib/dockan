@@ -1849,6 +1849,75 @@ describe("sale checkout (ticket 30)", () => {
     expect((await client.itemsAll()).items.find((row) => row.id === item.id)?.costPending).toBe(true);
   });
 
+  it("lets an explicit zero re-establish trust after pending FIFO is exhausted", async () => {
+    const item = await makeSaleItem("تصحيح-صفر-مستنفد", 0, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, costPending: true, kind: "PURCHASE" });
+    await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id))
+      .toMatchObject({ costPrice: 0, costPriceKnown: false, costPending: false });
+
+    await client.itemsUpdate({ id: item.id, costPrice: 0 });
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id))
+      .toMatchObject({ costPrice: 0, costPriceKnown: true, costPending: false });
+    await client.stockAddManual({ itemId: item.id, delta: 1, kind: "PURCHASE" });
+    expect((await client.itemsHistory({ itemId: item.id })).movements.at(-1))
+      .toMatchObject({ unitCost: 0, costPending: false });
+  });
+
+  it("keeps cache trust separate from pending layers and historical sale snapshots", async () => {
+    const item = await makeSaleItem("تكلفة-معلقة-مستنفدة", 0, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, costPending: true, kind: "PURCHASE" });
+    const pendingSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(pendingSale.lines[0]).toMatchObject({ cogsExact: 0, costPending: true });
+
+    const exhausted = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
+    expect(exhausted.costPending).toBe(false);
+    expect(exhausted.costPriceKnown).toBe(false);
+    await expect(client.stockAddManual({ itemId: item.id, delta: 1, kind: "PURCHASE" }))
+      .rejects.toThrow(/PURCHASE_COST_REQUIRED_WHILE_PENDING/);
+    await expect(client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1 }] }))
+      .rejects.toThrow(/PURCHASE_COST_REQUIRED_WHILE_PENDING/);
+
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 0, kind: "PURCHASE" });
+    const knownZero = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
+    expect(knownZero.costPriceKnown).toBe(true);
+    expect(knownZero.costPrice).toBe(0);
+    await client.stockAddManual({ itemId: item.id, delta: 1, kind: "PURCHASE" });
+    expect((await client.itemsHistory({ itemId: item.id })).movements.at(-1)).toMatchObject({ unitCost: 0, costPending: false });
+    expect((await client.invoicesGet({ id: pendingSale.id })).lines[0]).toMatchObject({ costPending: true, cogsExact: 0 });
+  });
+
+  it("keeps pending receipt facts when an explicit item cost correction establishes a future basis", async () => {
+    const item = await makeSaleItem("تصحيح-تكلفة-ومعلق", 0, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, costPending: true, kind: "PURCHASE" });
+    await client.itemsUpdate({ id: item.id, costPrice: 77 });
+    const active = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
+    expect(active).toMatchObject({ costPrice: 77, costPriceKnown: true, costPending: true });
+    const catalogItem = (await client.catalogSearch({ query: item.name })).matches.find((match) => match.item.id === item.id)?.item;
+    expect(catalogItem).toMatchObject({ costPriceKnown: true, costPending: true });
+    await expect(client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1 }] }))
+      .rejects.toThrow(/PURCHASE_COST_REQUIRED_WHILE_PENDING/);
+
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(sale.lines[0]).toMatchObject({ costPending: true, cogsExact: 0 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((movement) => movement.delta === 2)).toMatchObject({ costPending: true, unitCost: null });
+    expect((await client.invoicesGet({ id: sale.id })).lines[0]).toMatchObject({ costPending: true, cogsExact: 0 });
+    const exhausted = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
+    expect(exhausted).toMatchObject({ costPrice: 77, costPriceKnown: true, costPending: false });
+  });
+
+  it("restores trusted average from known FIFO layers after the pending layer is exhausted", async () => {
+    const item = await makeSaleItem("مخزون-معروف-بعد-المعلق", 0, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, costPending: true, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const listed = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
+    expect(listed).toMatchObject({ stockOnHand: 5, costPending: false, costPriceKnown: true, costPrice: 100 });
+    await client.stockAddManual({ itemId: item.id, delta: 1, kind: "PURCHASE" });
+    expect((await client.itemsHistory({ itemId: item.id })).movements.at(-1)).toMatchObject({ unitCost: 100, costPending: false });
+  });
+
   it("retains nonzero known FIFO cost when a mixed sale also consumes pending stock", async () => {
     const item = await makeSaleItem("بيع-صفر-ومعلق", 250, 600);
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });

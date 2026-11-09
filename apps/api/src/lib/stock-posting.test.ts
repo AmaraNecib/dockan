@@ -53,7 +53,7 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
       movements.push(row);
       return row;
     },
-    async setItemStockAndCost(id, stockOnHand, costPrice) {
+    async setItemStockAndCost(id, stockOnHand, costPrice, costPriceKnown) {
       stats.cacheWrites += 1;
       cache.stockOnHand = stockOnHand;
       cache.costPrice = costPrice;
@@ -62,6 +62,7 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
       if (id === itemId) {
         item.stockOnHand = stockOnHand;
         item.costPrice = costPrice;
+        if (costPriceKnown !== undefined) item.costPriceKnown = costPriceKnown;
       }
     },
   };
@@ -150,7 +151,7 @@ describe("recordStockMovement", () => {
     expect(posted.stockOnHand).toBe(14);
     expect(posted.costPrice).toBe(600); // outflow never moves the average
     expect(posted.movement.unitCost).toBeNull();
-    expect(posted.outflowCost).toEqual({ totalCost: 3000, unitCost: 500 }); // 6 oldest @500
+    expect(posted.outflowCost).toEqual({ consumedMovements: [{ movementId: "m1", quantity: 6 }], totalCost: 3000, unitCost: 500 }); // 6 oldest @500
   });
 
   it("stamps the SALE FIFO snapshot and exact cogsExact from the same read", async () => {
@@ -165,7 +166,7 @@ describe("recordStockMovement", () => {
       occurredAt: "2020-01-02T10:00:00",
     });
     // 5@100 + 1@200 = 700 exact; rounded per-unit 117 (ADR-0005)
-    expect(posted.outflowCost).toEqual({ totalCost: 700, unitCost: 117 });
+    expect(posted.outflowCost).toEqual({ consumedMovements: [{ movementId: "m1", quantity: 5 }, { movementId: "m2", quantity: 1 }], totalCost: 700, unitCost: 117 });
     expect(posted.stockOnHand).toBe(4);
     expect(posted.costPrice).toBe(150); // live average untouched by the sale
     expect(posted.movement.kind).toBe("SALE");
@@ -386,8 +387,8 @@ describe("recordStockMovement", () => {
     const results = await recordStockMovements(tx, specs);
 
     expect(results.map(({ stockOnHand, costPrice, outflowCost }) => ({ stockOnHand, costPrice, outflowCost }))).toEqual([
-      { stockOnHand: 2, costPrice: 100, outflowCost: { totalCost: 200, unitCost: 100 } },
-      { stockOnHand: 2, costPrice: 700, outflowCost: { totalCost: 700, unitCost: 700 } },
+      { stockOnHand: 2, costPrice: 100, outflowCost: { consumedMovements: [{ movementId: "i1-seed", quantity: 2 }], totalCost: 200, unitCost: 100 } },
+      { stockOnHand: 2, costPrice: 700, outflowCost: { consumedMovements: [{ movementId: "i2-seed", quantity: 1 }], totalCost: 700, unitCost: 700 } },
       { stockOnHand: 4, costPrice: 150, outflowCost: null },
       { stockOnHand: 3, costPrice: 767, outflowCost: null },
     ]);

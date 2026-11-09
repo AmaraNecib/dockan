@@ -240,6 +240,7 @@ const itemCols = {
   barcode: items.barcode,
   categoryId: items.categoryId,
   costPrice: items.costPrice,
+  costPriceKnown: items.costPriceKnown,
   sellingPrice: items.sellingPrice,
   lowStockThreshold: items.lowStockThreshold,
   stockOnHand: items.stockOnHand,
@@ -427,7 +428,7 @@ const returnLineCols = {
 const toCategory = (r: typeof categories.$inferSelect): Category =>
   ({ id: r.id, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Category;
 const toItem = (r: typeof items.$inferSelect): Item =>
-  ({ id: r.id, name: r.name, barcode: r.barcode, categoryId: r.categoryId, costPrice: r.costPrice, sellingPrice: r.sellingPrice, lowStockThreshold: r.lowStockThreshold, stockOnHand: r.stockOnHand, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Item;
+  ({ id: r.id, name: r.name, barcode: r.barcode, categoryId: r.categoryId, costPrice: r.costPrice, costPriceKnown: r.costPriceKnown ?? true, sellingPrice: r.sellingPrice, lowStockThreshold: r.lowStockThreshold, stockOnHand: r.stockOnHand, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Item;
 /** Legacy rows predate subtotal_amount; a read-time heuristic maps the
  * pre-discount shape (no discount, subtotal 0, nonzero total) back to total.
  * New rows always carry a real subtotal, so the rewrite can never fire on
@@ -1437,6 +1438,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (lineRows.length > 0 && !lineNames.has("cost_pending")) {
         conn.raw.exec("ALTER TABLE invoice_lines ADD COLUMN cost_pending INTEGER NOT NULL DEFAULT 0");
       }
+      // Old caches default to the legacy known interpretation; pending receipt
+      // history is backfilled as untrusted because the old writer froze that cache.
+      // SAFETY: PRAGMA table_info returns rows with a string `name` column.
+      const itemRows = conn.raw.query("PRAGMA table_info(items)").all() as Array<{ name: string }>;
+      const addsCostTrust = itemRows.length > 0 && !itemRows.some((row) => row.name === "cost_price_known");
+      if (addsCostTrust) {
+        conn.raw.exec("ALTER TABLE items ADD COLUMN cost_price_known INTEGER NOT NULL DEFAULT 1");
+        // The old cache stayed frozen after any pending receipt. Preserve that
+        // uncertainty across upgrade, even when its FIFO quantity is exhausted.
+        conn.raw.exec("UPDATE items SET cost_price_known = 0 WHERE id IN (SELECT DISTINCT item_id FROM stock_movements WHERE cost_pending = 1)");
+      }
       stampSchemaVersion(conn.raw);
       conn.raw.exec("COMMIT");
     } catch (error) {
@@ -1917,6 +1929,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         return rows.map((row) => ({
           ...row,
           costPending: projectLedger((byItem.get(row.id) ?? []).map((movement) => ({ ...movement, seq: Number(movement.seq) })), { fallbackUnitCost: row.costPrice }).layers.some((layer) => layer.costPending === true),
+          costPriceKnown: row.costPriceKnown ?? true,
         }));
       };
       const query = db
@@ -1999,8 +2012,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const rows = await db.update(items).set(set).where(eq(items.id, idToUpdate)).returning();
       return rows.length === 0 ? undefined : toItem(firstRowOf(rows));
     },
-    async setItemStockAndCost(itemId: string, stockOnHand: number, costPrice: number) {
-      await db.update(items).set({ stockOnHand, costPrice, updatedAt: now() }).where(eq(items.id, itemId)).run();
+    async setItemStockAndCost(itemId: string, stockOnHand: number, costPrice: number, costPriceKnown?: boolean) {
+      const set: Partial<typeof items.$inferInsert> = { stockOnHand, costPrice, updatedAt: now() };
+      if (costPriceKnown !== undefined) set.costPriceKnown = costPriceKnown;
+      await db.update(items).set(set).where(eq(items.id, itemId)).run();
     },
 
     // --- stock ledger (ticket 27) --------------------------------------------

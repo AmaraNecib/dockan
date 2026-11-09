@@ -23,6 +23,8 @@ export const items = sqliteTable("items", {
     .references(() => categories.id),
   /** live average cost per unit in DA (see docs/adr/0002) */
   costPrice: integer("cost_price").notNull(),
+  /** false when the cached cost has no trustworthy known-cost basis */
+  costPriceKnown: integer("cost_price_known", { mode: "boolean" }).notNull().default(true),
   sellingPrice: integer("selling_price").notNull(),
   lowStockThreshold: integer("low_stock_threshold").notNull().default(5),
   stockOnHand: integer("stock_on_hand").notNull().default(0),
@@ -500,7 +502,7 @@ export const verifications = sqliteTable("verification", {
  */
 export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, name TEXT NOT NULL, barcode TEXT, category_id TEXT NOT NULL REFERENCES categories(id), cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL DEFAULT 5, stock_on_hand INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, name TEXT NOT NULL, barcode TEXT, category_id TEXT NOT NULL REFERENCES categories(id), cost_price INTEGER NOT NULL, cost_price_known INTEGER NOT NULL DEFAULT 1, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL DEFAULT 5, stock_on_hand INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_items_barcode ON items(barcode)`,
   `CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, created_at TEXT NOT NULL)`,
   // Phone is the identity when present (ADR-0007); NULLs stay distinct, so the

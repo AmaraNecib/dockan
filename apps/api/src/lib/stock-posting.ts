@@ -3,6 +3,7 @@ import type { Item, ReturnMark, StockMovement } from "@dokan/contracts";
 import type { StorePort } from "../store/port";
 import { localDateTime } from "./logger";
 import {
+  COST_CORRECTION_REASON,
   fifoOutflowCost,
   projectLedger,
   saleMovementTime,
@@ -68,6 +69,8 @@ export interface PostedStockMovement {
   stockOnHand: number;
   /** resynced ADR-0002 weighted-average cost written to the item cache */
   costPrice: number;
+  /** whether the cached cost has a known basis for future receipt defaults */
+  costPriceKnown: boolean;
   /** FIFO layer cost of the outflow; present iff `delta < 0`, else null */
   outflowCost: FifoOutflowCost | null;
 }
@@ -84,7 +87,7 @@ export class StockItemMissingError extends Error {
  * The item cache a movement leaves behind: the stock on hand and the
  * ADR-0002 weighted-average cost.
  */
-type ItemCache = { stockOnHand: number; costPrice: number };
+type ItemCache = { stockOnHand: number; costPrice: number; costPriceKnown: boolean };
 
 /**
  * The rows one posting batch reads once, and the running cache its movements
@@ -131,7 +134,7 @@ function cacheFor(state: BatchState, itemId: string): ItemCache {
   if (cached !== undefined) return cached;
   const item = state.items.get(itemId);
   if (item === undefined) throw new StockItemMissingError(itemId);
-  const cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice };
+  const cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice, costPriceKnown: item.costPriceKnown !== false };
   state.running.set(itemId, cache);
   return cache;
 }
@@ -196,20 +199,45 @@ async function postOne(
 
   // ADR-0002/0005: the average is replayed from the full ledger after ANY
   // write, outflows included. No per-insertion-position special-casing.
-  const containsPendingCost = [...existing, candidate].some((movement) => movement.costPending === true);
-  const costPrice = containsPendingCost
-    ? cache.costPrice
-    : weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+  candidate.id = movement.id;
+  const pendingRemains = projection.layers.some((layer) => layer.costPending === true);
+  const hasReliableRemainingCosts = projection.layers.every((layer) => {
+    if (layer.costPending === true || layer.movementId === undefined) return false;
+    const source = [...existing, candidate].find((entry) => entry.id === layer.movementId);
+    return source !== undefined && source.unitCost !== null;
+  });
+  const explicitCorrection = spec.reason === COST_CORRECTION_REASON && spec.delta === 0 && spec.unitCost !== undefined && spec.unitCost !== null;
+  let costPrice = cache.costPrice;
+  let costPriceKnown = cache.costPriceKnown;
+  if (explicitCorrection) {
+    costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+    costPriceKnown = true;
+  } else if (pendingRemains) {
+    costPriceKnown = false;
+  } else if (!costPriceKnown) {
+    if (projection.layers.length > 0 && hasReliableRemainingCosts) {
+      const knownQuantity = projection.layers.reduce((sum, layer) => sum + layer.quantity, 0);
+      const knownValue = projection.layers.reduce((sum, layer) => sum + layer.quantity * (layer.unitCost ?? 0), 0);
+      costPrice = Math.round(knownValue / knownQuantity);
+      costPriceKnown = true;
+    } else if (spec.delta > 0 && spec.costPending !== true && spec.unitCost !== undefined && spec.unitCost !== null) {
+      costPrice = spec.unitCost;
+      costPriceKnown = true;
+    }
+  } else {
+    costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+  }
   state.appended.set(spec.itemId, [...(state.appended.get(spec.itemId) ?? []), candidate]);
   cache.stockOnHand = projection.stockOnHand;
   cache.costPrice = costPrice;
-  return { movement, stockOnHand: projection.stockOnHand, costPrice, outflowCost };
+  cache.costPriceKnown = costPriceKnown;
+  return { movement, stockOnHand: projection.stockOnHand, costPrice, costPriceKnown, outflowCost };
 }
 
 /** Write the item caches the batch's movements left behind: one write per item. */
 async function writeBatchCaches(tx: StockPostingTx, state: BatchState): Promise<void> {
   for (const [itemId, cache] of state.running) {
-    await tx.setItemStockAndCost(itemId, cache.stockOnHand, cache.costPrice);
+    await tx.setItemStockAndCost(itemId, cache.stockOnHand, cache.costPrice, cache.costPriceKnown);
   }
 }
 

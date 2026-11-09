@@ -301,7 +301,7 @@ export interface StorePort {
   createItem(input: ItemCreate): Promise<Item>;
   updateItem(id: string, patch: ItemUpdate): Promise<Item | undefined>;
   /** stock + average cost kept atomic; used inside invoice transactions */
-  setItemStockAndCost(id: string, stockOnHand: number, costPrice: number): Promise<void>;
+  setItemStockAndCost(id: string, stockOnHand: number, costPrice: number, costPriceKnown?: boolean): Promise<void>;
 
   // --- stock ledger (ticket 27) --------------------------------------------
   /** append-only; no update or delete exists by design */

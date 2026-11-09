@@ -706,7 +706,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // ref-less shape. The guard can only match it against an
             // adjustment otherwise identical in the window that also carries
             // the literal reason "opening" — a reason the web never sends.
-            await postStock(tx, {
+            const posted = await postStock(tx, {
               itemId: item.id,
               kind: "MANUAL_ADJUSTMENT",
               delta: input.stockOnHand,
@@ -721,7 +721,7 @@ export function createRpcRouter(deps: RpcDeps) {
               summary: `ITEM_CREATED_WITH_STOCK ${input.stockOnHand} ${input.name}`,
               ref: item.id,
             });
-            return { ...item, stockOnHand: input.stockOnHand };
+            return { ...item, stockOnHand: input.stockOnHand, costPriceKnown: posted.costPriceKnown };
           }),
         );
       }),
@@ -748,7 +748,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // next inflow/outflow replay reproduces the owner's edit instead of
             // discarding it. Cost never rides updateItem's direct column write.
             const nextCost = input.costPrice;
-            const costChanged = nextCost !== undefined && nextCost !== current.costPrice;
+            const costChanged = nextCost !== undefined && (nextCost !== current.costPrice || current.costPriceKnown === false);
             let correctedCost = current.costPrice;
             if (costChanged) {
               // The correction's precedence is its RECORDING order, not its
@@ -838,7 +838,7 @@ export function createRpcRouter(deps: RpcDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
           }
           if (input.delta > 0 && input.kind === "PURCHASE" && input.unitCost === undefined && input.costPending !== true &&
-              (await itemStockProjection(tx, item.id, { fallbackUnitCost: item.costPrice })).layers.some((layer) => layer.costPending === true)) {
+              (item.costPriceKnown === false || (await itemStockProjection(tx, item.id, { fallbackUnitCost: item.costPrice })).layers.some((layer) => layer.costPending === true))) {
             throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_COST_REQUIRED_WHILE_PENDING" });
           }
           // #295 — the same action must not be applied twice. Two windows on
@@ -1595,8 +1595,8 @@ export function createRpcRouter(deps: RpcDeps) {
         // A cached average cannot price a receipt while pending layers remain:
         // the placeholder may be zero. Require an explicit numeric price in
         // that state; zero remains valid when the caller actually sent it.
-        for (const { line } of pricedLines) {
-          if (line.unitPrice === undefined && (await itemStockProjection(tx, line.itemId)).layers.some((layer) => layer.costPending === true)) {
+        for (const { line, item } of pricedLines) {
+          if (line.unitPrice === undefined && (item.costPriceKnown === false || (await itemStockProjection(tx, line.itemId)).layers.some((layer) => layer.costPending === true))) {
             throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_COST_REQUIRED_WHILE_PENDING" });
           }
         }

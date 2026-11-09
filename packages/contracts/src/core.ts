@@ -238,6 +238,10 @@ export const itemSchema = z.object({
   categoryId: idSchema,
   /** what the owner pays per unit, in DA */
   costPrice: dinarsSchema,
+  /** Whether costPrice has a known basis for receipt defaults. Legacy rows default to true. */
+  costPriceKnown: z.boolean().optional(),
+  /** Whether current FIFO stock still contains explicitly unpriced units. */
+  costPending: z.boolean().optional(),
   /** what the customer pays per unit, in DA */
   sellingPrice: dinarsSchema,
   /** when stockOnHand drops to this, the item appears in the low-stock list */
@@ -1802,7 +1806,7 @@ export const lowStockOutputSchema = z.object({
 
 /** item rows as returned by listItems: the owning category's display name
  * comes pre-joined so the UI never renders the raw categoryId (issue 67). */
-export const itemListItemSchema = itemSchema.extend({ categoryName: z.string().nullable(), costPending: z.boolean() });
+export const itemListItemSchema = itemSchema.extend({ categoryName: z.string().nullable(), costPending: z.boolean(), costPriceKnown: z.boolean() });
 export const itemListInputSchema = paginationInputSchema.extend({
   /** Optional bounded filter for the products table; blank means unfiltered. */
   query: z.string().trim().max(200).optional(),

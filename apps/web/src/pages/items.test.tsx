@@ -24,6 +24,7 @@ interface FixtureItem {
   lowStockThreshold: number;
   stockOnHand: number;
   costPending: boolean;
+  costPriceKnown: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -83,6 +84,7 @@ function baseItem(over: Partial<FixtureItem> = {}): FixtureItem {
     lowStockThreshold: 5,
     stockOnHand: 3,
     costPending: false,
+    costPriceKnown: true,
     createdAt: "2026-09-01T10:00:00",
     updatedAt: "2026-09-01T10:00:00",
     ...over,
@@ -218,7 +220,10 @@ mock.module("@/lib/rpc", () => ({
                 existing.categoryId = input.categoryId;
                 existing.categoryName = categories.find((category) => category.id === input.categoryId)?.name ?? null;
               }
-              if (input.costPrice !== undefined) existing.costPrice = input.costPrice;
+              if (input.costPrice !== undefined) {
+                existing.costPrice = input.costPrice;
+                existing.costPriceKnown = true;
+              }
               if (input.sellingPrice !== undefined) existing.sellingPrice = input.sellingPrice;
               if (input.lowStockThreshold !== undefined) existing.lowStockThreshold = input.lowStockThreshold;
             }
@@ -1779,6 +1784,20 @@ describe("inline item edit", () => {
     // no threshold in the patch and no edit error: mark-only is blank, not invalid
     expect(updateInputs[0]).toEqual({ id: "item-1", name: "بطارية حد ممحو" });
     expect(document.querySelector('[data-testid="items-edit-error"]')).toBeNull();
+  });
+
+  it("lets an explicit zero restore an untrusted cache after pending stock is gone", async () => {
+    items = [baseItem({ costPrice: 0, costPriceKnown: false, costPending: false })];
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    expect(inputByTestId("edit-cost").value).toBe("");
+    setInput("edit-cost", "0");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toMatchObject({ id: "item-1", costPrice: 0 });
+    expect(firstFixtureItem()).toMatchObject({ costPrice: 0, costPriceKnown: true });
+    expect(rowByCell("بطارية").querySelector('[data-testid="item-cost-pending"]')).toBeNull();
   });
 
   it("rejects money written in exponent or hex notation", async () => {

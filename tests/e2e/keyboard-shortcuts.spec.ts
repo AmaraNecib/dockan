@@ -275,6 +275,7 @@ test("reopening a mounted purchase-discard popup restores the current opener", a
     for (const animation of element.getAnimations()) animation.finish();
   });
   await expect(discard).toHaveCount(0);
+  await expect(stock).not.toBeFocused();
   await expect(search).toBeFocused();
   await expect(stock).toHaveValue("7");
 });

@@ -408,6 +408,60 @@ jobs:
           if-no-files-found: warn
           retention-days: 5
 
+  # Separate observability job. It is not part of the stable CI acceptance aggregate.
+  browser_summary:
+    name: browser CI summary retention
+    needs: e2e
+    if: ${{ needs.e2e.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Cache bun installs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Export sanitized browser summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          case "$RUNNER_TEMP" in /*) ;; *) echo "RUNNER_TEMP must be absolute" >&2; exit 1 ;; esac
+          bun scripts/browser-ci-export.ts \
+            --repo "$GITHUB_REPOSITORY" \
+            --run "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --archive "$RUNNER_TEMP/browser-ci-summary.jsonl" \
+            --scope unknown
+
+      - name: Upload browser CI summary
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-ci-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-ci-summary.jsonl
+          if-no-files-found: error
+          retention-days: 30
+
   # The Rust capability/permission guards (issue 154). The desktop crate's
   # tests include the guard added in #153: it drives the real tauri-utils
   # URLPattern matcher over setup_navigation_url() and the resolved ACL over

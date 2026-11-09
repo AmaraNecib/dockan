@@ -9,8 +9,11 @@ local Guard checks in `engineering-workflow.md`.
 | `changes` | fetch-depth-0 checkout, `git diff --no-renames` of the PR (or push), then `scripts/e2e-selection.ts` and one `grep -E` turn the file list into the `e2e_mode`, `e2e_specs` and `rust` outputs the other jobs read, and write the scope decision to the run summary |
 | `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun run --filter @dokan/web build`, `bun audit` |
 | `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` (with the mapped spec list when the diff is affected) on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
+| `browser_summary` | after successful `e2e` only, runs the sanitized exporter once for the exact run and attempt, with `scope: unknown`, then uploads only `$RUNNER_TEMP/browser-ci-summary.jsonl` as `browser-ci-summary-<run>-<attempt>` for 30 days; collection failure fails this separate observability job |
 | `rust` | gated on the `changes` job's `rust` output; `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
 | `acceptance` (`CI acceptance`) | stable required-check candidate; succeeds only when `changes` and `checks` succeed, and each `e2e`/`rust` skip matches a successful explicit selector decision |
+
+`browser_summary` is a separate observability job, not an input to `CI acceptance` and not a required status check. It runs only after `e2e` succeeds. A collection failure remains visible as its own failed job without changing the stable acceptance aggregate. Its artifact expires after 30 days; it covers successful e2e runs only and does not replace the five-day source manifest or update the manual durable archive. See [the exporter guide](../scripts/browser-ci-export.md).
 
 `checks` always runs. `e2e` and `rust` read the `changes` outputs, so an e2e
 `skip` or a diff that cannot reach the crate skips those jobs; the scope

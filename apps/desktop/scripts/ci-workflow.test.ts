@@ -716,6 +716,77 @@ describe("PR CI workflow", () => {
     }
   });
 
+  itShell("exports one sanitized summary only after successful e2e", () => {
+    const jobName = "browser_summary";
+    const lines = jobLines(WORKFLOW_SOURCE, jobName);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines).toContain("    needs: e2e");
+    expect(lines).toContain("    if: ${{ needs.e2e.result == 'success' }}");
+    const jobs = Bun.YAML.parse(WORKFLOW_SOURCE) as { jobs: Record<string, { permissions?: Record<string, string> }> };
+    expect(jobs.jobs[jobName]?.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(jobLines(WORKFLOW_SOURCE, "acceptance").join("\n")).not.toContain("browser_summary");
+
+    const steps = parseSteps(WORKFLOW_SOURCE, jobName);
+    const run = stepNamed(steps, "Export sanitized browser summary");
+    expect(run.env.get("GH_TOKEN")).toBe("${{ github.token }}");
+    expect([...run.env.keys()]).toEqual(["GH_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]);
+    expect(run.run).toContain('--repo "$GITHUB_REPOSITORY"');
+    expect(run.run).toContain('--run "$GITHUB_RUN_ID"');
+    expect(run.run).toContain('--attempt "$GITHUB_RUN_ATTEMPT"');
+    expect(run.run).toContain('--archive "$RUNNER_TEMP/browser-ci-summary.jsonl"');
+    expect(run.run).toContain("--scope unknown");
+    expect(run.run.match(/bun scripts\/browser-ci-export\.ts/gu)).toHaveLength(1);
+
+    const upload = stepNamed(steps, "Upload browser CI summary");
+    expect(upload.condition).toBe("success()");
+    expect(upload.uses).toBe(`actions/upload-artifact@${actionRefs(WORKFLOW_SOURCE).find((ref) => ref.name === "actions/upload-artifact")?.revision}`);
+    expect(upload.with.get("name")).toBe("browser-ci-summary-${{ github.run_id }}-${{ github.run_attempt }}");
+    expect(upload.with.get("path")).toBe("${{ runner.temp }}/browser-ci-summary.jsonl");
+    expect(upload.with.get("if-no-files-found")).toBe("error");
+    expect(upload.with.get("retention-days")).toBe("30");
+    expect(steps.indexOf(upload)).toBeGreaterThan(steps.indexOf(run));
+
+    const root = mkdtempSync(path.join(tmpdir(), "ci-browser-summary-"));
+    try {
+      const bin = path.join(root, "bin");
+      mkdirSync(bin);
+      const executable = path.join(bin, "bun");
+      writeFileSync(executable, [
+        "#!/bin/sh",
+        'printf "%s\\n" "$@" > "$CAPTURE_ARGS"',
+        'if [ "${EXPORT_FAIL:-}" = yes ]; then exit 23; fi',
+        'while [ "$#" -gt 0 ]; do if [ "$1" = --archive ]; then shift; printf \'{"runId":812,"attempt":3,"scope":"unknown"}\\n\' > "$1"; exit 0; fi; shift; done',
+        "exit 24",
+        "",
+      ].join("\n"), { mode: 0o700 });
+      const archive = path.join(root, "runner-temp", "browser-ci-summary.jsonl");
+      mkdirSync(path.dirname(archive));
+      const execute = (extra: Record<string, string> = {}) => execFileSync(shellPath(), ["-euo", "pipefail", "-c", run.run], {
+        cwd: root,
+        encoding: "utf8",
+        env: shellEnv({ PATH: `${bin}:${process.env.PATH ?? ""}`, RUNNER_TEMP: path.dirname(archive), GITHUB_REPOSITORY: "owner/repo", GITHUB_RUN_ID: "812", GITHUB_RUN_ATTEMPT: "3", GH_TOKEN: "TOKEN_SENTINEL", CAPTURE_ARGS: path.join(root, "args"), ...extra }),
+      });
+      execute();
+      expect(readFileSync(path.join(root, "args"), "utf8").trim().split("\n")).toEqual([
+        "scripts/browser-ci-export.ts", "--repo", "owner/repo", "--run", "812", "--attempt", "3", "--archive", archive, "--scope", "unknown",
+      ]);
+      expect(readFileSync(archive, "utf8")).toBe('{"runId":812,"attempt":3,"scope":"unknown"}\n');
+      expect(readFileSync(path.join(root, "args"), "utf8")).not.toContain("TOKEN_SENTINEL");
+      rmSync(archive);
+      expect(() => execute({ EXPORT_FAIL: "yes" })).toThrow();
+      expect(() => readFileSync(archive, "utf8")).toThrow();
+      expect(upload.condition).toBe("success()");
+      expect(upload.with.get("if-no-files-found")).toBe("error");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    // These mutations must break the contract checks, not pass on comments or a no-op run.
+    expect(jobLines(WORKFLOW_SOURCE.replace("needs: e2e", "needs: checks"), jobName)).not.toContain("    needs: e2e");
+    expect(run.run.replace("--scope unknown", "--scope full")).not.toContain("--scope unknown");
+    expect(upload.with.get("retention-days")).not.toBe("5");
+  });
+
   it("keeps the root `test` script running the scripts suite (#231)", () => {
     // This assertion used to live in scripts/e2e-selection.test.ts, where
     // removing `bun test ./scripts/` from the root script also stopped the

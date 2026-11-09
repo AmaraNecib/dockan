@@ -95,6 +95,7 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/sale.tsx::customer.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::fields.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/sale.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
+  ["pages/sale.tsx::searchQuery.trim() === \"\"", { verdict: "raw", reason: "catalogue name or barcode query is text, not a numeric draft" }],
   ["pages/stock.tsx::unitCost.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → no unit cost (api falls back to the known cost)" }],
   ["pages/supplier-opening-balance.tsx::dateDraft.trim() === \"\"", { verdict: "raw", reason: DATE }],
   ["pages/supplier-opening-balance.tsx::reasonDraft.trim() === \"\"", { verdict: "raw", reason: TEXT }],

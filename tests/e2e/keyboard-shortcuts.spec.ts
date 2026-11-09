@@ -59,14 +59,17 @@ test("workflow shortcuts respect dialogs, typed drafts, cancellation and existin
   await customer.fill("مسودة الاختصار");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Control+n");
-  const picker = page.getByTestId("picker-dialog");
-  await expect(picker.getByPlaceholder("ابحث بالاسم أو الباركود…")).toBeFocused();
-  await page.keyboard.press("Control+b");
-  await expect(page).toHaveURL(saleUrl);
-  await expect(picker).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(picker).toBeHidden();
+  const saleSearch = page.getByTestId("sale-search");
+  await expect(saleSearch).toBeFocused();
   await expect(customer).toHaveValue("مسودة الاختصار");
+  await page.keyboard.press("Control+b");
+  const saleDiscard = page.getByRole("dialog").filter({ has: page.getByTestId("new-sale-discard-confirm") });
+  await expect(saleDiscard).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(saleDiscard).toBeHidden();
+  await expect(page).toHaveURL(saleUrl);
+  await expect(customer).toHaveValue("مسودة الاختصار");
+  await expect(saleSearch).toBeFocused();
 
   await customer.focus();
   await page.keyboard.press("Control+b");
@@ -139,7 +142,7 @@ test("a closing purchase-discard popup cannot take focus from the newer picker",
   )).toEqual(["paused"]);
 
   await page.keyboard.press("Control+n");
-  const search = page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…");
+  const search = page.getByTestId("sale-search");
   await expect(search).toBeFocused();
   // Drain the picker's queued animation-frame autofocus before releasing the
   // old popup, so another picker focus cannot conceal a stale return.
@@ -249,7 +252,7 @@ test("shortcut-entered purchase and sale persist, a refused sale keeps its draft
   expect(afterRefusal.items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
   await quantity.focus();
   await page.keyboard.press("Control+n");
-  await expect(page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…")).toBeFocused();
+  await expect(page.getByTestId("sale-search")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(quantity).toHaveValue("3");
   await quantity.fill("1");
@@ -265,7 +268,7 @@ test("shortcut-entered purchase and sale persist, a refused sale keeps its draft
 
   await page.keyboard.press("Control+n");
   await expect(page.getByTestId("sale-form")).toBeVisible();
-  await expect(page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…")).toBeFocused();
+  await expect(page.getByTestId("sale-search")).toBeFocused();
 });
 
 test("navigation shortcuts cannot abandon a sale while its real save is pending", async ({ page }) => {

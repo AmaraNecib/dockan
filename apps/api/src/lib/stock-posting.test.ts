@@ -13,12 +13,12 @@ import { COST_CORRECTION_REASON, StockLedgerError } from "./stock-ledger";
 
 type Row = StockMovement & { seq: number };
 
-function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
+function fakeTx(opts: { itemId?: string; costPrice?: number; costPriceKnown?: boolean } = {}) {
   const itemId = opts.itemId ?? "i1";
   // SAFETY: the module under test only reads `id`, `costPrice` and (for the
   // batch's initial cache) `stockOnHand`; this fake is a stand-in for the
   // persisted row, never sent across the store boundary.
-  const item = { id: itemId, costPrice: opts.costPrice ?? 100, stockOnHand: 0 } as Item;
+  const item = { id: itemId, costPrice: opts.costPrice ?? 100, costPriceKnown: opts.costPriceKnown ?? true, stockOnHand: 0 } as Item;
   const movements: Row[] = [];
   const cache = { stockOnHand: 0, costPrice: item.costPrice };
   const stats = { historyReads: 0, cacheWrites: 0 };
@@ -43,6 +43,7 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
         kind: input.kind,
         delta: input.delta,
         unitCost: input.unitCost ?? null,
+        costPending: input.costPending ?? false,
         reason: input.reason ?? null,
         ref: input.ref ?? null,
         returnMark: input.returnMark ?? null,
@@ -230,6 +231,32 @@ describe("recordStockMovement", () => {
     expect(posted.stockOnHand).toBe(10);
     expect(posted.costPrice).toBe(250);
     expect(cache).toEqual({ stockOnHand: 10, costPrice: 250 });
+  });
+
+  it("does not scan full history once per remaining FIFO layer during cost recovery", async () => {
+    const { tx, movements } = fakeTx({ costPrice: 0, costPriceKnown: false });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    for (let index = 0; index < 3; index++) {
+      await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, unitCost: 100, occurredAt: `2020-01-0${index + 2}T00:00:00` });
+    }
+
+    const historyLength = movements.length;
+    const originalFind = Array.prototype.find;
+    let fullHistoryFinds = 0;
+    Array.prototype.find = new Proxy(originalFind, {
+      apply(target, thisArg, args) {
+        if (Array.isArray(thisArg) && thisArg.length === historyLength + 1) fullHistoryFinds += 1;
+        return target.call(thisArg, args[0], args[1]);
+      },
+    });
+    try {
+      const recovered = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -2, occurredAt: "2020-01-05T00:00:00" });
+      expect(recovered.costPriceKnown).toBe(true);
+      expect(recovered.costPrice).toBe(100);
+      expect(fullHistoryFinds).toBe(0);
+    } finally {
+      Array.prototype.find = originalFind;
+    }
   });
 
   it("replays the full ledger on a BACKDATED outflow (issue 143 outflow rule)", async () => {

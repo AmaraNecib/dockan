@@ -129,7 +129,7 @@ test("diagnostics keeps synthetic multiline stacks local without widening nearby
     await expect(stack).toBeHidden();
     await page.keyboard.press("Enter");
     await expect(details).toHaveAttribute("open", "");
-    await expect(stack).toHaveText(newestStack);
+    await expect(stack).toHaveJSProperty("textContent", newestStack);
 
     for (const dark of [false, true]) {
       await page.evaluate((isDark) => document.documentElement.classList.toggle("dark", isDark), dark);
@@ -168,7 +168,7 @@ test("diagnostics keeps synthetic multiline stacks local without widening nearby
         });
         expect(scroll.left).toBeGreaterThan(0);
         expect(scroll.left).toBeLessThanOrEqual(scroll.max);
-        await expect(stack).toHaveText(newestStack);
+        await expect(stack).toHaveJSProperty("textContent", newestStack);
       }
     }
   } finally {

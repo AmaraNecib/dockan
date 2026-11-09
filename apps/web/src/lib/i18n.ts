@@ -644,6 +644,7 @@ const resources = {
       saleQuickStock: "المخزون الأولي (اختياري)",
       saleQuickStockRequired: "المخزون الأولي (مطلوب)",
       saleCostPending: "تكلفة الشراء غير معروفة بعد",
+      saleCostEnter: "إدخال التكلفة",
       saleQuickSave: "حفظ المنتج وإضافته",
       saleQuickInvalid: "أدخل اسم المنتج وأسعاراً صحيحة",
       saleLinesEmpty: "لم تُضَف أسطر بعد؛ امسح باركوداً أو اختر منتجاً",

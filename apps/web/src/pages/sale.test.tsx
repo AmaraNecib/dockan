@@ -1299,12 +1299,35 @@ describe("SalePage quick-add stock (issue #119)", () => {
     await scanAndChoose(host, "UNKNOWN-PENDING-COST", "scan-create-stock");
     await fillQuick(host, "5");
     await setNamed(host, "quickCost", "");
-    const pendingLabel = [...host.querySelectorAll("label")].find((label) => label.textContent?.includes(i18n.t("saleCostPending")));
-    if (pendingLabel === undefined) throw new Error("missing pending-cost choice");
-    await act(async () => pendingLabel.querySelector("input")?.click());
+    const pendingMode = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-cost-pending"]');
+    expect(pendingMode).not.toBeNull();
+    await act(async () => pendingMode?.click());
     await submitQuick(host);
 
     expect(lastCreateWithStockInput).toMatchObject({ stockOnHand: 5, costPrice: 0, sellingPrice: 200, costPending: true });
+  });
+
+  it("keeps a typed cost while switching modes and records deliberate zero as known", async () => {
+    unknownScanCode = "UNKNOWN-COST-MODE";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-COST-MODE", "scan-create-stock");
+    await fillQuick(host, "5");
+    await setNamed(host, "quickCost", "0");
+
+    const cost = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost']");
+    const knownMode = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost-known']");
+    const pendingMode = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost-pending']");
+    expect(knownMode?.checked).toBe(true);
+    expect(cost?.value).toBe("0");
+    await act(async () => pendingMode?.click());
+    expect(cost?.disabled).toBe(true);
+    expect(cost?.value).toBe("0");
+    await act(async () => knownMode?.click());
+    expect(cost?.disabled).toBe(false);
+    expect(cost?.value).toBe("0");
+    await submitQuick(host);
+
+    expect(lastCreateWithStockInput).toMatchObject({ stockOnHand: 5, costPrice: 0, sellingPrice: 200, costPending: false });
   });
 
   it("refuses a stock quantity it cannot read and sends nothing", async () => {

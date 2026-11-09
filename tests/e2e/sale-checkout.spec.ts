@@ -133,6 +133,49 @@ test("persistent sale search keeps the real invoice draft through scans, create,
   expect(inventory.items.find((item) => item.id === ambiguousSecond.id)?.stockOnHand).toBe(3);
 });
 
+test("quick-create cost modes stay keyboard accessible and aligned in Arabic RTL", async ({ page }, testInfo) => {
+  await signIn(page);
+  const stamp = Date.now().toString();
+  await page.goto("/sale");
+  const search = page.getByTestId("sale-search");
+  await search.fill(`UNKNOWN-UI-${stamp}`);
+  await search.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create-stock").click();
+
+  const quick = page.getByTestId("sale-quick-form");
+  const category = page.getByTestId("sale-quick-category");
+  const cost = page.getByTestId("sale-quick-cost");
+  const knownMode = page.getByTestId("sale-quick-cost-known");
+  const pendingMode = page.getByTestId("sale-quick-cost-pending");
+  await expect(quick).toBeVisible();
+  await expect(knownMode).toBeChecked();
+  await expect(pendingMode).toBeEnabled();
+  await expect(category).toBeVisible();
+
+  const [categoryBox, costBox] = await Promise.all([category.boundingBox(), cost.boundingBox()]);
+  if (categoryBox === null || costBox === null) throw new Error("Quick-create category and cost fields must be measurable");
+  expect(Math.abs(categoryBox.height - costBox.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(categoryBox.width - costBox.width)).toBeLessThanOrEqual(1);
+  expect(await category.evaluate((element) => getComputedStyle(element).borderRadius)).toBe(await cost.evaluate((element) => getComputedStyle(element).borderRadius));
+
+  await cost.fill("444");
+  await knownMode.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(pendingMode).toBeChecked();
+  await expect(cost).toBeDisabled();
+  await expect(cost).toHaveValue("444");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const [mobileCategoryBox, mobileCostBox] = await Promise.all([category.boundingBox(), cost.boundingBox()]);
+  if (mobileCategoryBox === null || mobileCostBox === null) throw new Error("Quick-create fields must be measurable on mobile");
+  expect(Math.abs(mobileCategoryBox.width - mobileCostBox.width)).toBeLessThanOrEqual(1);
+  await quick.screenshot({ path: testInfo.outputPath("quick-create-mobile.png") });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await quick.screenshot({ path: testInfo.outputPath("quick-create-desktop.png") });
+});
+
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await signIn(page);

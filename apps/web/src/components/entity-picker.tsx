@@ -4,6 +4,7 @@ import { Popover } from "@base-ui/react/popover";
 
 import { arabicIncludes } from "@dokan/contracts";
 import { inputClass } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 export interface EntityOption {
   id: string;
@@ -23,6 +24,7 @@ interface EntityPickerProps {
   noMatchesLabel?: string;
   hideLabel?: boolean;
   placeholder?: string;
+  inputClassName?: string;
 }
 
 /** Search and keyboard-select a growing entity list. Search text is not a selection. */
@@ -39,6 +41,7 @@ export function EntityPicker({
   noMatchesLabel = "No matches",
   hideLabel = false,
   placeholder,
+  inputClassName,
 }: EntityPickerProps) {
   const selected = options.find((option) => option.id === value);
   const [query, setQuery] = useState(selected?.name ?? "");
@@ -130,7 +133,7 @@ export function EntityPicker({
         <input
           ref={inputRef}
           id={inputId}
-          className={inputClass}
+          className={cn(inputClass, inputClassName)}
           role="combobox"
           aria-label={label}
           aria-expanded={open}

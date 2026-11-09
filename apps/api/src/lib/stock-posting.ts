@@ -197,8 +197,9 @@ async function postOne(
     occurredAt,
   });
 
-  // ADR-0002/0005: the average is replayed from the full ledger after ANY
-  // write, outflows included. No per-insertion-position special-casing.
+  // Keep cache trust separate from pending FIFO facts. Chronological priced
+  // inflows blend the trusted live basis; ordinary outflows preserve it.
+  // Explicit corrections and backdated writes replay the ledger.
   candidate.id = movement.id;
   const pendingRemains = projection.layers.some((layer) => layer.costPending === true);
   const needsCostRecovery = !cache.costPriceKnown && !pendingRemains;

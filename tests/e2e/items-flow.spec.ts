@@ -78,9 +78,9 @@ test("items flow: one-step stock, inline edit, and prefilled stock add", async (
   const stockedRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: stockedName, exact: true }) });
   const plainRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: plainName, exact: true }) });
   await expect(stockedRow.getByTestId("stock-after-cell")).toHaveText("9");
-  // the zero-stock item also carries the low badge (0 <= default threshold 5)
+  // Zero remains in the low-stock set but has its own out-of-stock label.
   await expect(plainRow.getByTestId("stock-after-cell")).toHaveText(/^0\b/);
-  await expect(plainRow.getByTestId("stock-after-cell")).toContainText("منخفض");
+  await expect(plainRow.locator('[data-stock-status="out-of-stock"]')).toHaveText("نفد المخزون");
 
   // 3. Correct a price from the table; the change persists across a reload.
   await stockedRow.getByTestId(/^edit-item-/).click();

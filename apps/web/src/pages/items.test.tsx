@@ -562,6 +562,7 @@ describe("products table search (#388)", () => {
     await waitFor(() => document.querySelector('[data-testid="items-search-empty"]') !== null);
     expect(el<HTMLElement>('[data-testid="items-search-total"]').textContent).toContain("0");
     expect(el<HTMLElement>('[data-testid="items-search-empty"]').textContent).toContain(i18n.t("itemsSearchEmpty"));
+    expect(document.querySelector('[data-testid="stock-after-cell"]')).toBeNull();
   });
 
   it("cancels an obsolete request and keeps the latest query result visible", async () => {
@@ -580,6 +581,39 @@ describe("products table search (#388)", () => {
     await settle();
     expect(document.querySelector('[data-testid="edit-item-latest-row"]')).not.toBeNull();
     expect(el<HTMLElement>('[data-testid="items-search-total"]').textContent).toContain("1");
+  });
+});
+
+describe("products table stock status (#462)", () => {
+  it("distinguishes zero from positive low stock without changing quantity or threshold rules", async () => {
+    items = [
+      baseItem({ id: "out-of-stock", name: "نفد", stockOnHand: 0, lowStockThreshold: 5 }),
+      baseItem({ id: "zero-threshold", name: "حد صفري", stockOnHand: 0, lowStockThreshold: 0 }),
+      baseItem({ id: "low-stock", name: "منخفض", stockOnHand: 1.25, lowStockThreshold: 5 }),
+      baseItem({ id: "boundary-stock", name: "حد المخزون", stockOnHand: 2, lowStockThreshold: 2 }),
+      baseItem({ id: "ordinary-stock", name: "عادي", stockOnHand: 6, lowStockThreshold: 5 }),
+      baseItem({ id: "negative-stock", name: "سالب", stockOnHand: -1, lowStockThreshold: 5 }),
+    ];
+    await mount();
+
+    const status = (name: string) => rowByCell(name).querySelector<HTMLElement>("[data-stock-status]");
+    const zeroCell = rowByCell("نفد").querySelector<HTMLElement>("[data-testid='stock-after-cell']");
+    expect(zeroCell?.textContent).toContain("0");
+    expect(status("نفد")?.textContent).toBe("نفد المخزون");
+    expect(status("نفد")?.className).toContain("text-destructive");
+    expect(status("نفد")?.className).toContain("bg-destructive/10");
+    expect(status("حد صفري")?.textContent).toBe("نفد المخزون");
+
+    const lowCell = rowByCell("منخفض").querySelector<HTMLElement>("[data-testid='stock-after-cell']");
+    expect(lowCell?.textContent).toContain("1.25");
+    expect(status("منخفض")?.textContent).toBe("منخفض");
+    expect(status("منخفض")?.className).toContain("text-warning");
+    expect(status("منخفض")?.className).toContain("bg-warning/10");
+
+    expect(status("حد المخزون")?.textContent).toBe("منخفض");
+    expect(rowByCell("عادي").querySelector("[data-stock-status]")).toBeNull();
+    expect(rowByCell("سالب").querySelector("[data-stock-status]")).toBeNull();
+    expect(rowByCell("سالب").querySelector("[data-testid='stock-after-cell']")?.textContent).toContain("-1");
   });
 });
 

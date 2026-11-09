@@ -16,7 +16,9 @@ type SeedRequest =
     }
   | { procedure: "itemsUpdate"; input: { id: string; costPrice?: number } }
   | { procedure: "invoicesCreate"; input: { kind: "SALE"; lines: Array<{ itemId: string; quantity: number }> } }
-  | { procedure: "preferencesSet"; input: { key: string; value: string } };
+  | { procedure: "preferencesSet"; input: { key: string; value: string } }
+  | { procedure: "itemsHistory"; input: { itemId: string } }
+  | { procedure: "itemsList"; input: { limit: number; offset: number } };
 
 /** Call one oRPC procedure from the page and return its declared output. */
 async function rpc<T>(page: Page, request: SeedRequest): Promise<T> {
@@ -119,6 +121,40 @@ test("add stock manually, item history shows movements with derived stock", asyn
   // …and the rejected delta changed nothing
   await openItemsTab(page, "products");
   await expect((await manualStockRow(page)).getByTestId("stock-after-cell")).toHaveText("6");
+});
+
+test("a name-only edit does not trust stale zero after pending stock arrives in another window", async ({ page, context }) => {
+  const stamp = Date.now().toString();
+  const itemName = `تحديث تكلفة-${stamp}`;
+  await signIn(page);
+  const categories = await rpc<{ items: Array<{ id: string }> }>(page, { procedure: "categoriesList", input: {} });
+  const item = await rpc<{ id: string }>(page, {
+    procedure: "itemsCreate",
+    input: { name: itemName, categoryId: categories.items[0]!.id, costPrice: 0, sellingPrice: 200, lowStockThreshold: 0 },
+  });
+
+  await page.goto("/items");
+  await openItemsTab(page, "products");
+  const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
+  await row.getByTestId(/^edit-item-/).click();
+  const cost = page.getByTestId("edit-cost");
+  await expect(cost).toHaveValue("0");
+
+  const otherWindow = await context.newPage();
+  await otherWindow.goto("/items");
+  await rpc(otherWindow, { procedure: "stockAddManual", input: { itemId: item.id, delta: 1, costPending: true, kind: "PURCHASE" } });
+  await expect.poll(async () => (await rpc<{ items: Array<{ id: string; costPriceKnown: boolean }> }>(otherWindow, { procedure: "itemsList", input: { limit: 100, offset: 0 } })).items.find((candidate) => candidate.id === item.id)?.costPriceKnown).toBe(false);
+  await expect(cost).toHaveValue("");
+
+  await page.getByTestId("edit-name").fill(`${itemName}-renamed`);
+  await page.getByTestId("edit-save").click();
+  await expect(page.getByTestId("edit-cost")).toHaveCount(0);
+  const saved = await rpc<{ items: Array<{ id: string; costPriceKnown: boolean; name: string }> }>(otherWindow, { procedure: "itemsList", input: { limit: 100, offset: 0 } });
+  expect(saved.items.find((candidate) => candidate.id === item.id)).toMatchObject({ costPriceKnown: false, name: `${itemName}-renamed` });
+  const history = await rpc<{ movements: Array<{ kind: string }> }>(otherWindow, { procedure: "itemsHistory", input: { itemId: item.id } });
+  expect(history.movements).toHaveLength(1);
+  expect(history.movements[0]).toMatchObject({ kind: "PURCHASE" });
+  await otherWindow.close();
 });
 
 test("unknown-cost item edits reject invalid values, allow blank, and accept explicit zero", async ({ page }) => {

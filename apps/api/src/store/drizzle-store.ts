@@ -1955,7 +1955,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         // Filter the joined catalogue before slicing so a match past page one
         // is reachable and total counts matches, not the unfiltered table.
         const rows = await query;
-        const upperSearch = search.toUpperCase();
+        // Match the catalog ranker's query cleanup before barcode prefiltering.
+        const upperSearch = normalizeTextKey(search).toUpperCase();
         const matched = rows.filter((item) => {
           if (item.barcode?.toUpperCase().includes(upperSearch)) return true;
           if (arabicIncludes(item.name, search) || (item.categoryName !== null && arabicIncludes(item.categoryName, search))) return true;

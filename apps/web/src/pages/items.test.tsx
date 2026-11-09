@@ -1712,6 +1712,40 @@ describe("inline item edit", () => {
     expect(row.textContent).toContain("فلاتر");
   });
 
+  it("omits untouched cost after refresh loses trust but preserves an explicitly typed zero", async () => {
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    expect(inputByTestId("edit-cost").value).toBe("100");
+
+    firstFixtureItem().costPriceKnown = false;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    await waitFor(() => inputByTestId("edit-cost").value === "");
+    setInput("edit-name", "اسم فقط");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toEqual({ id: "item-1", name: "اسم فقط" });
+    expect(firstFixtureItem().costPriceKnown).toBe(false);
+
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "0");
+    firstFixtureItem().costPriceKnown = false;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    expect(inputByTestId("edit-cost").value).toBe("0");
+    setInput("edit-name", "صفر مقصود");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 2);
+    expect(updateInputs[1]).toMatchObject({ id: "item-1", name: "صفر مقصود", costPrice: 0 });
+
+  });
+
   it("keeps a zero-price item editable (sale quick-add creates selling 0)", async () => {
     firstFixtureItem().sellingPrice = 0;
     await mount();

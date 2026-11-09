@@ -13,14 +13,14 @@ import { COST_CORRECTION_REASON, StockLedgerError } from "./stock-ledger";
 
 type Row = StockMovement & { seq: number };
 
-function fakeTx(opts: { itemId?: string; costPrice?: number; costPriceKnown?: boolean } = {}) {
+function fakeTx(opts: { itemId?: string; costPrice?: number; costPriceKnown?: boolean; stockOnHand?: number } = {}) {
   const itemId = opts.itemId ?? "i1";
   // SAFETY: the module under test only reads `id`, `costPrice` and (for the
   // batch's initial cache) `stockOnHand`; this fake is a stand-in for the
   // persisted row, never sent across the store boundary.
-  const item = { id: itemId, costPrice: opts.costPrice ?? 100, costPriceKnown: opts.costPriceKnown ?? true, stockOnHand: 0 } as Item;
+  const item = { id: itemId, costPrice: opts.costPrice ?? 100, costPriceKnown: opts.costPriceKnown ?? true, stockOnHand: opts.stockOnHand ?? 0 } as Item;
   const movements: Row[] = [];
-  const cache = { stockOnHand: 0, costPrice: item.costPrice };
+  const cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice };
   const stats = { historyReads: 0, cacheWrites: 0 };
   let seq = 0;
   const tx: StockPostingTx = {
@@ -110,7 +110,7 @@ describe("recordStockMovement", () => {
   });
 
   it("blends a legacy null-cost inflow at the item's cached cost (uniform fallback)", async () => {
-    const { tx, movements } = fakeTx({ costPrice: 100 });
+    const { tx, movements } = fakeTx({ costPrice: 100, stockOnHand: 10 });
     // a legacy inflow with no stored unit cost: the seam replays it at the
     // item's cached cost. Base stockAddManual omitted the fallback and blended
     // it at 0, so this is the second deliberate unification (the outflow rule

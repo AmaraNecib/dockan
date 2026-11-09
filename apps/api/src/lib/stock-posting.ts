@@ -232,10 +232,20 @@ async function postOne(
       costPrice = spec.unitCost;
       costPriceKnown = true;
     }
-  } else if (spec.delta > 0 || existing.some((entry) => entry.occurredAt > occurredAt)) {
-    // Ordinary outflows do not change the trusted average. Backdated writes
-    // still require ledger replay because their position changes historical
-    // stock valuation.
+  } else if (spec.delta > 0 && !existing.some((entry) => entry.occurredAt > occurredAt)) {
+    // The trusted cache is the live weighted-average basis. Replaying older
+    // pending layers would reintroduce their provisional zero after recovery.
+    // Blend only an explicitly priced inflow; a pending layer stays pending
+    // and cannot alter the trusted basis.
+    if (candidate.unitCost !== null && !candidate.costPending) {
+      const priorQuantity = cache.stockOnHand;
+      costPrice = priorQuantity === 0
+        ? candidate.unitCost
+        : Math.round((priorQuantity * cache.costPrice + spec.delta * candidate.unitCost) / (priorQuantity + spec.delta));
+    }
+  } else if (existing.some((entry) => entry.occurredAt > occurredAt)) {
+    // Backdated writes remain ledger-replayed because their insertion position
+    // changes the historical weighted average.
     costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
   }
   state.appended.set(spec.itemId, [...(state.appended.get(spec.itemId) ?? []), candidate]);

@@ -376,6 +376,28 @@ describe("catalog search + barcodes (ticket 28)", () => {
     expect(result.matches).toHaveLength(0);
   });
 
+  it("matches pasted bidi-wrapped barcodes through the normalized store prefilter", async () => {
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreate({
+      name: "قلم حبر",
+      categoryId: categories.items[0]!.id,
+      costPrice: 12,
+      sellingPrice: 20,
+      barcode: "6210001000017",
+    });
+    for (const pasted of [
+      `\u200e${item.barcode}\u200e`,
+      `\u200b${item.barcode}\u200b`,
+      `${item.barcode!.slice(0, 4)}\u064e${item.barcode!.slice(4)}`,
+    ]) {
+      const result = await client.catalogSearch({ query: pasted });
+      expect(result.exact?.item.id).toBe(item.id);
+      expect(result.matches).toHaveLength(0);
+      const listed = await client.itemsList({ query: pasted });
+      expect(listed).toMatchObject({ total: 1, items: [{ id: item.id }] });
+    }
+  });
+
   it("maps a duplicate barcode to CONFLICT BARCODE_EXISTS", async () => {
     const categories = await client.categoriesList();
     await expect(
@@ -1946,8 +1968,19 @@ describe("sale checkout (ticket 30)", () => {
     await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
     const afterSales = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
     expect(afterSales).toMatchObject({ stockOnHand: 3, costPriceKnown: true, costPrice: 100 });
-    await client.stockAddManual({ itemId: item.id, delta: 1, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 1, kind: "PURCHASE", reason: "later omitted receipt" });
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 4, costPriceKnown: true, costPrice: 100 });
     expect((await client.itemsHistory({ itemId: item.id })).movements.at(-1)).toMatchObject({ unitCost: 100, costPending: false });
+
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 200, kind: "PURCHASE" });
+    // Independent weighted average: four units at 100 plus one at 200.
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 5, costPriceKnown: true, costPrice: 120 });
+    await client.stockAddManual({ itemId: item.id, delta: 1, kind: "PURCHASE", reason: "second omitted receipt" });
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)).toMatchObject({ stockOnHand: 6, costPriceKnown: true, costPrice: 120 });
+    expect((await client.itemsHistory({ itemId: item.id })).movements.slice(-2)).toMatchObject([
+      { unitCost: 200, costPending: false },
+      { unitCost: 120, costPending: false },
+    ]);
   });
 
   it("preserves an explicit cost correction across split pending-stock sales", async () => {

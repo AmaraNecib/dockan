@@ -23,6 +23,7 @@ interface FixtureItem {
   sellingPrice: number;
   lowStockThreshold: number;
   stockOnHand: number;
+  costPending: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -81,6 +82,7 @@ function baseItem(over: Partial<FixtureItem> = {}): FixtureItem {
     sellingPrice: 150,
     lowStockThreshold: 5,
     stockOnHand: 3,
+    costPending: false,
     createdAt: "2026-09-01T10:00:00",
     updatedAt: "2026-09-01T10:00:00",
     ...over,
@@ -452,6 +454,15 @@ afterEach(() => {
  * unfocused, so the tick is what carries the change.
  */
 describe("products table search (#388)", () => {
+  it("shows pending cost and provisional profit without placeholder amounts", async () => {
+    items = [baseItem({ costPrice: 0, sellingPrice: 1_000, costPending: true })];
+    await mount();
+    const row = rowByCell("بطارية");
+    expect(row.querySelector('[data-testid="item-cost-pending"]')?.textContent).toBe(i18n.t("itemsCostPending"));
+    expect(row.querySelector('[data-testid="item-profit-pending"]')?.textContent).toBe(i18n.t("itemsProfitPending"));
+    expect(row.querySelector('[data-testid="item-cost-pending"]')?.textContent).not.toMatch(/0/);
+  });
+
   it("finds a barcode match beyond page one and resets paging", async () => {
     const target = baseItem({ id: "row-23", name: "مصباح بعيد", barcode: "ITEM-FULL-388" });
     items = Array.from({ length: 24 }, (_, index) => baseItem({
@@ -1294,6 +1305,17 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
 });
 
 describe("stock form prefill", () => {
+  it("does not prefill a pending-cost placeholder as a known receipt price", async () => {
+    items = [baseItem({ costPrice: 0, costPending: true })];
+    await mount();
+    await openAddTab();
+    expect(inputByTestId("stock-unit-cost").value).toBe("");
+    setInput("stock-delta", "1");
+    click("stock-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="stock-error"]').textContent?.includes("التكلفة السابقة غير معروفة") === true);
+    expect(stockInputs).toHaveLength(0);
+  });
+
   it("searches beyond the first 50 stock items and binds costs to the picked record", async () => {
     items = [
       baseItem(),

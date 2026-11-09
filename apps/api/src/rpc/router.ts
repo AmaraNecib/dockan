@@ -837,6 +837,10 @@ export function createRpcRouter(deps: RpcDeps) {
           if (item === undefined) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
           }
+          if (input.delta > 0 && input.kind === "PURCHASE" && input.unitCost === undefined && input.costPending !== true &&
+              (await itemStockProjection(tx, item.id, { fallbackUnitCost: item.costPrice })).layers.some((layer) => layer.costPending === true)) {
+            throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_COST_REQUIRED_WHILE_PENDING" });
+          }
           // #295 — the same action must not be applied twice. Two windows on
           // one API (the v1 multi-client shape, #294) can post the SAME
           // adjustment: a double-clicked save, a lost response re-sent as the
@@ -1588,8 +1592,16 @@ export function createRpcRouter(deps: RpcDeps) {
         if (input.discount !== undefined || input.discountType !== undefined || input.discountValue !== undefined) {
           throw new ORPCError("BAD_REQUEST", { message: "DISCOUNT_ONLY_SALE" });
         }
-        // Existing purchase intake behavior: omitted line prices default to the
-        // item's cost because purchase prices are the stock cost basis.
+        // A cached average cannot price a receipt while pending layers remain:
+        // the placeholder may be zero. Require an explicit numeric price in
+        // that state; zero remains valid when the caller actually sent it.
+        for (const { line } of pricedLines) {
+          if (line.unitPrice === undefined && (await itemStockProjection(tx, line.itemId)).layers.some((layer) => layer.costPending === true)) {
+            throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_COST_REQUIRED_WHILE_PENDING" });
+          }
+        }
+        // For known-cost stock, omitted purchase prices retain the existing
+        // cached-cost default.
         const totalAmount = pricedLines.reduce((sum, { line, item }) => sum + line.quantity * (line.unitPrice ?? item.costPrice), 0);
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });

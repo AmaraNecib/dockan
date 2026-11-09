@@ -267,6 +267,8 @@ const resources = {
       itemsName: "الاسم",
       itemsCategory: "التصنيف",
       itemsCost: "سعر الشراء (دج)",
+      itemsCostPending: "غير محدد",
+      itemsProfitPending: "مؤقت حتى معرفة التكلفة",
       itemsSell: "سعر البيع (دج)",
       itemsThreshold: "حد التنبيه",
       itemsSave: "حفظ",
@@ -438,6 +440,7 @@ const resources = {
       itemsCostInvalid: "أدخل تكلفة صحيحة (عدد صحيح 0 أو أكثر)",
       itemsThresholdInvalid: "أدخل حد تنبيهاً صحيحاً (عدد صحيح 0 أو أكثر)",
       stockUnitCostInvalid: "أدخل تكلفة وحدة صحيحة (عدد صحيح 0 أو أكثر)",
+      stockPendingCostRequired: "أدخل تكلفة الشراء قبل تسجيل الوارد؛ التكلفة السابقة غير معروفة.",
       itemsChooseCategory: "اختر تصنيفاً أو أنشئه أولاً",
       itemsProfitPerUnit: "الربح لكل وحدة: <money/>",
       // the same sentence doubles as the products-table column header, where an

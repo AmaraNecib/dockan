@@ -1076,13 +1076,13 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
                       value={draft.cost}
                       onChange={(e) => patchDraft({ cost: e.target.value })}
                       onKeyDown={onEditKeyDown}
-                      disabled={update.isPending}
+                      disabled={update.isPending || draft.row.costPending}
                       inputMode="numeric"
                       aria-label={t("itemsCost")}
                       data-testid="edit-cost"
                     />
                   ) : (
-                    <Amount value={item.costPrice} />
+                    item.costPending ? <span data-testid="item-cost-pending">{t("itemsCostPending")}</span> : <Amount value={item.costPrice} />
                   )}
                 </td>
                 <td className="p-3">
@@ -1105,7 +1105,9 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
                 </td>
                 <td className="p-3">
                   {editing ? (
-                    draftProfit !== null ? <Amount value={draftProfit} /> : "…"
+                    draft.row.costPending ? <span data-testid="item-profit-pending">{t("itemsProfitPending")}</span> : draftProfit !== null ? <Amount value={draftProfit} /> : "…"
+                  ) : item.costPending ? (
+                    <span data-testid="item-profit-pending">{t("itemsProfitPending")}</span>
                   ) : (
                     <Amount value={item.sellingPrice - item.costPrice} />
                   )}

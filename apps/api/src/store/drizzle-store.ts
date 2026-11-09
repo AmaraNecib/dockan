@@ -22,6 +22,7 @@ import type {
   Item,
   ItemCreate,
   ItemListInput,
+  ItemListItem,
   ItemUpdate,
   OnboardingProgress,
   PaginationInput,
@@ -54,6 +55,7 @@ import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberBoundSequence, invoiceNumberFor, invoiceNumberPrefixFor, invoiceSequenceForRange, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
+import { projectLedger } from "../lib/stock-ledger";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersion } from "../lib/schema-version";
@@ -1899,6 +1901,24 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
 
     // --- items ---------------------------------------------------------------
     async listItems(pagination?: ItemListInput) {
+      const withPendingProjection = async (rows: Array<Omit<ItemListItem, "costPending">>): Promise<ItemListItem[]> => {
+        if (rows.length === 0) return [];
+        const itemIds = rows.map((row) => row.id);
+        const movements = await db.select({ ...movementCols, seq: sql<number>`rowid` })
+          .from(stockMovements)
+          .where(inArray(stockMovements.itemId, itemIds))
+          .orderBy(stockMovements.occurredAt, sql`rowid`);
+        const byItem = new Map<string, typeof movements>();
+        for (const movement of movements) {
+          const bucket = byItem.get(movement.itemId) ?? [];
+          bucket.push(movement);
+          byItem.set(movement.itemId, bucket);
+        }
+        return rows.map((row) => ({
+          ...row,
+          costPending: projectLedger((byItem.get(row.id) ?? []).map((movement) => ({ ...movement, seq: Number(movement.seq) })), { fallbackUnitCost: row.costPrice }).layers.some((layer) => layer.costPending === true),
+        }));
+      };
       const query = db
         .select({ ...itemCols, categoryName: categories.name })
         .from(items)
@@ -1917,11 +1937,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             (item.categoryName !== null && fuzzySearchScore(item.categoryName, search) > FUZZY_MATCH_MIN_SCORE);
         });
         const { limit, offset } = resolvePagination(pagination);
-        return { items: matched.slice(offset, offset + limit), total: matched.length };
+        return { items: await withPendingProjection(matched.slice(offset, offset + limit)), total: matched.length };
       }
       if (pagination === undefined) {
         const rows = await query;
-        return { items: rows, total: rows.length };
+        return { items: await withPendingProjection(rows), total: rows.length };
       }
       const { limit, offset } = resolvePagination(pagination);
       const [total, rows] = await Promise.all([
@@ -1934,7 +1954,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .limit(limit)
           .offset(offset),
       ]);
-      return { items: rows, total };
+      return { items: await withPendingProjection(rows), total };
     },
     async listLowStockItems() {
       return db.select(itemCols).from(items).where(sql`${items.stockOnHand} <= ${items.lowStockThreshold}`).orderBy(items.stockOnHand, items.name);

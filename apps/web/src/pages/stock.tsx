@@ -71,7 +71,7 @@ export function StockForm() {
     // prefilling from it would record the old average cost on a second
     // movement submitted in that window
     if (items.dataUpdatedAt < freshAfterRef.current) return;
-    const nextCost = String(selectedItem.costPrice);
+    const nextCost = selectedItem.costPending ? "" : String(selectedItem.costPrice);
     const previous = prefilledRef.current;
     const selectionChanged = previous === null || previous.itemId !== selectedItemId;
     const untouched = previous !== null && unitCost === previous.cost;
@@ -146,6 +146,10 @@ export function StockForm() {
     }
     // a removal cannot carry receipt prices; the api records only an outflow.
     const parsedUnitCost = parsedDelta > 0 ? parseWholeNumber(unitCost) : null;
+    if (parsedDelta > 0 && selectedItem?.costPending && draftBlank(unitCost)) {
+      setError(t("stockPendingCostRequired"));
+      return;
+    }
     if (parsedDelta > 0 && !draftBlank(unitCost) && parsedUnitCost === null) {
       setError(t("stockUnitCostInvalid"));
       return;

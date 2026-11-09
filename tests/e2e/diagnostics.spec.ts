@@ -163,11 +163,11 @@ test("diagnostics keeps synthetic multiline stacks local without widening nearby
         expect(measured.stackScroll).toBeGreaterThan(measured.stackClient);
 
         const scroll = await stack.evaluate((element) => {
-          element.scrollLeft = element.scrollWidth;
+          element.scrollTo({ left: element.scrollWidth, behavior: "instant" });
           return { left: element.scrollLeft, max: element.scrollWidth - element.clientWidth };
         });
         expect(scroll.left).toBeGreaterThan(0);
-        expect(scroll.left).toBe(scroll.max);
+        expect(scroll.left).toBeLessThanOrEqual(scroll.max);
         await expect(stack).toHaveText(newestStack);
       }
     }

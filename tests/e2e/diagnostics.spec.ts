@@ -61,4 +61,36 @@ test("diagnostics viewer: guarded, in nav, shows today's tail with DKN codes", a
   await expect(page.getByTestId("diagnostics-event").first()).toHaveAttribute("data-event", "RPC_ERROR");
   const code = page.getByTestId("diagnostics-code").first();
   await expect(code).toHaveText(/^DKN-[0-9A-F]{8}$/);
+
+  // #476: synthetic long stack text exercises layout without reading owner logs.
+  await page.setViewportSize({ width: 1000, height: 600 });
+  const row = page.getByTestId("diagnostics-row").first();
+  const stack = row.locator("pre");
+  await expect(stack).toBeVisible();
+  const longStack = Array.from({ length: 48 }, (_, index) => `    at syntheticDiagnosticProbe${index} (C:/synthetic/${"long-path-segment/".repeat(18)}probe.ts:${index + 1}:1)`).join("\\n");
+  await stack.evaluate((element, text) => { element.textContent = text; }, longStack);
+  const summary = row.locator("summary");
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(row.locator("details")).toHaveAttribute("open", "");
+
+  const widths = await page.evaluate(() => {
+    const main = document.querySelector("main");
+    const list = document.querySelector('[data-testid="diagnostics-list"]');
+    const card = document.querySelector('[data-testid="diagnostics-row"]');
+    const pre = card?.querySelector("pre");
+    if (!main || !list || !card || !pre) throw new Error("Expected diagnostics layout elements");
+    return {
+      viewport: document.documentElement.clientWidth,
+      mainClient: main.clientWidth,
+      mainScroll: main.scrollWidth,
+      listClient: list.clientWidth,
+      cardWidth: card.getBoundingClientRect().width,
+      stackClient: pre.clientWidth,
+      stackScroll: pre.scrollWidth,
+    };
+  });
+  expect(widths.mainScroll).toBeLessThanOrEqual(widths.mainClient);
+  expect(widths.cardWidth).toBeLessThanOrEqual(widths.listClient);
+  expect(widths.stackScroll).toBeGreaterThan(widths.stackClient);
 });

@@ -153,18 +153,20 @@ function githubFailureCategory(result: GithubProcessResult): string {
   const processErrorCode = getProcessErrorCode(result);
   const statuses = [...(result.stderr ?? "").matchAll(/(?:^|\b)HTTP(?:\/\d(?:\.\d)?)?\s+(\d{3})\b/gu)].map((match) => match[1]);
   const transports = [...(result.stderr ?? "").matchAll(/\b(ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN)\b/gu)].map((match) => match[1]);
-  const supportedStatuses = statuses.filter((status) => status === "401" || status === "403" || status === "404" || status === "429" || status?.startsWith("5"));
+  // Accept one complete gh status-error line, not HTTP codes quoted in unrelated output.
+  const statusError = /^gh: [^\r\n]+ \(HTTP (401|403|404|429|5\d\d)\)$/u.exec((result.stderr ?? "").trim())?.[1];
+  const transportError = /^(?:connect|read|write) (ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN)$/u.test((result.stderr ?? "").trim());
   if (processErrorCode === "ETIMEDOUT" && statuses.length === 0 && transports.length === 0) return "timeout";
   if (processErrorCode === "ENOENT" && statuses.length === 0 && transports.length === 0) return "missing_tool";
   if (["ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"].includes(processErrorCode ?? "") && statuses.length === 0) return "network";
-  if (processErrorCode === undefined && statuses.length === 1 && transports.length === 0 && supportedStatuses.length === 1) {
-    const status = supportedStatuses[0];
+  if (processErrorCode === undefined && statuses.length === 1 && transports.length === 0 && statusError) {
+    const status = statusError;
     if (status === "401" || status === "403") return "access_denied";
     if (status === "404") return "not_found";
     if (status === "429") return "rate_limited";
     return "server_error";
   }
-  if (processErrorCode === undefined && statuses.length === 0 && transports.length === 1) return "network";
+  if (processErrorCode === undefined && statuses.length === 0 && transports.length === 1 && transportError) return "network";
   return "unknown";
 }
 export function runGithubCommand(stage: GithubStage, args: string[], dependencies: GithubCommandDependencies = {}): string {

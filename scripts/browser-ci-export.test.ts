@@ -33,12 +33,13 @@ describe("browser CI subprocess diagnostics", () => {
     const cases = [
       [{ error: Object.assign(new Error(), { code: "ENOENT" }), status: null, signal: null, stdout: "", stderr: "" }, "missing_tool", "ENOENT"],
       [{ error: Object.assign(new Error(), { code: "ETIMEDOUT" }), status: null, signal: null, stdout: "", stderr: "HTTP 403" }, "unknown", "ETIMEDOUT"],
-      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 403" }, "access_denied", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Requires authentication (HTTP 401)" }, "access_denied", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Forbidden (HTTP 403)" }, "access_denied", null],
       [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 403 followed by HTTP 503" }, "unknown", null],
       [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 403 ECONNRESET" }, "unknown", null],
-      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 404" }, "not_found", null],
-      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 429" }, "rate_limited", null],
-      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "HTTP 503" }, "server_error", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Not Found (HTTP 404)" }, "not_found", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Too Many Requests (HTTP 429)" }, "rate_limited", null],
+      [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "gh: Service Unavailable (HTTP 503)" }, "server_error", null],
       [{ error: undefined, status: 1, signal: null, stdout: "", stderr: "connect ECONNRESET" }, "network", null],
       [{ error: undefined, status: 7, signal: null, stdout: "", stderr: "permission denied" }, "unknown", null],
       [{ error: undefined, status: null, signal: "SIGINT", stdout: "", stderr: "" }, "unknown", null],
@@ -50,6 +51,21 @@ describe("browser CI subprocess diagnostics", () => {
       expect(parsed).toMatchObject({ stage: "run_metadata", category, processErrorCode });
       expect(parsed.signal).toBe(processResult.signal);
       expect(parsed.exitCode).toBe(processResult.status);
+    }
+  });
+  test("ignores incidental HTTP and transport mentions outside supported error forms", () => {
+    for (const stderr of [
+      "see HTTP 403 in the request log", "HTTP 403", "quoted HTTP 401", "quoted HTTP 404",
+      "quoted HTTP 429", "quoted HTTP 503", "see ECONNRESET in the request log",
+      "context\ngh: Forbidden (HTTP 403)", "gh: previous HTTP 503 (HTTP 403)",
+    ]) {
+      const lines: string[] = [];
+      expect(() => runGithubCommand("run_metadata", [], {
+        spawn: () => ({ error: undefined, status: 1, signal: null, stdout: "", stderr }),
+        now: () => 0,
+        writeDiagnostic: (line) => lines.push(line),
+      })).toThrow("GitHub read failed or timed out; no archive was changed");
+      expect(JSON.parse((lines[0] ?? "").replace("BROWSER_CI_DIAGNOSTIC ", ""))).toMatchObject({ category: "unknown" });
     }
   });
   test("the default metadata reader labels run_metadata without invoking gh", () => {

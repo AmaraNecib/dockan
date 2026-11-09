@@ -167,10 +167,46 @@ test("quick-create cost modes stay keyboard accessible and aligned in Arabic RTL
   await expect(cost).toBeDisabled();
   await expect(cost).toHaveValue("444");
 
+  // The shell keeps its persistent sidebar open until the user collapses it.
+  // Exercise that real control at the target viewport before judging the form.
   await page.setViewportSize({ width: 390, height: 844 });
-  const [mobileCategoryBox, mobileCostBox] = await Promise.all([category.boundingBox(), cost.boundingBox()]);
-  if (mobileCategoryBox === null || mobileCostBox === null) throw new Error("Quick-create fields must be measurable on mobile");
+  await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
+  const sidebar = page.getByRole("complementary", { name: "التنقل الرئيسي" });
+  await expect(sidebar).toHaveCSS("width", "64px");
+
+  const [mobileCategoryBox, mobileCostBox, quickBox, mainBox] = await Promise.all([
+    category.boundingBox(),
+    cost.boundingBox(),
+    quick.boundingBox(),
+    page.locator("main").boundingBox(),
+  ]);
+  if (mobileCategoryBox === null || mobileCostBox === null || quickBox === null || mainBox === null) {
+    throw new Error("Quick-create form and fields must be measurable at 390px");
+  }
+  expect(mobileCategoryBox.width).toBeGreaterThanOrEqual(250);
+  expect(mobileCostBox.width).toBeGreaterThanOrEqual(250);
   expect(Math.abs(mobileCategoryBox.width - mobileCostBox.width)).toBeLessThanOrEqual(1);
+  expect(quickBox.x).toBeGreaterThanOrEqual(mainBox.x);
+  expect(quickBox.x + quickBox.width).toBeLessThanOrEqual(mainBox.x + mainBox.width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+  for (const field of [
+    page.getByTestId("sale-quick-name"),
+    page.getByTestId("sale-quick-barcode"),
+    category,
+    cost,
+    page.getByTestId("sale-quick-sell"),
+    page.getByTestId("sale-quick-stock"),
+    quick.getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    quick.getByRole("button", { name: "إغلاق", exact: true }),
+  ]) {
+    await field.scrollIntoViewIfNeeded();
+    await expect(field).toBeVisible();
+    const box = await field.boundingBox();
+    if (box === null) throw new Error("Every quick-create control must have a visible box");
+    expect(box.x).toBeGreaterThanOrEqual(mainBox.x);
+    expect(box.x + box.width).toBeLessThanOrEqual(mainBox.x + mainBox.width);
+  }
   await quick.screenshot({ path: testInfo.outputPath("quick-create-mobile.png") });
 
   await page.setViewportSize({ width: 1440, height: 900 });

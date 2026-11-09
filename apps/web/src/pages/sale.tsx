@@ -1,11 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../lib/scoped-mutation";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCcw, ScanBarcode, Trash2 } from "lucide-react";
 
-import type { Category, InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
+import type { CatalogMatch, Category, InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,7 @@ import {
 } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 
-import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
+import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { SaleLinePriceEditor } from "@/components/catalog/sale-line-price-editor";
 import { parseSalePriceMode } from "@/lib/sale-price-editor";
 import { usePreference } from "@/lib/preferences";
@@ -135,6 +135,15 @@ export function SalePage() {
   const priceMode = usePreference("ui.sale.priceMode", "PERCENTAGE", parseSalePriceMode, String);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchDebounced, setSearchDebounced] = useState("");
+  const [searchActiveIndex, setSearchActiveIndex] = useState<number | null>(null);
+  const searchRequestSeqRef = useRef(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
+  useLayoutEffect(() => {
+    if (searchFocusRequest > 0) searchRef.current?.focus();
+  }, [searchFocusRequest]);
   const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [discountType, setDiscountType] = useState<AmountKind>("");
   const [discountValue, setDiscountValue] = useState("");
@@ -177,18 +186,41 @@ export function SalePage() {
   // whose captured copy would be stale, so they cannot mutate the cart once a
   // commit has started.
   const commitRef = useRef(false);
+  const completedInvoiceRef = useRef(false);
 
   const draft = useInvoiceDraft(SALE_DRAFT);
   const { lines } = draft;
+  const catalogSearch = useQuery({
+    ...orpc.catalogSearch.queryOptions({ input: { query: searchDebounced || " " }, enabled: searchDebounced.length > 0 }),
+  });
+  const searchReady = searchDebounced === searchQuery.trim();
+  const searchMatches = searchReady ? catalogSearch.data?.matches ?? [] : [];
+  const searchExact = searchReady ? catalogSearch.data?.exact ?? null : null;
+  const searchMatchSetKey = searchMatches.map((match) => match.item.id).join("|");
+  const visibleSearchIndex = searchActiveIndex !== null && searchActiveIndex < searchMatches.length ? searchActiveIndex : null;
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchDebounced(searchQuery.trim()), 150);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+  useEffect(() => setSearchActiveIndex(null), [searchDebounced, searchMatchSetKey]);
+  useEffect(() => {
+    if (visibleSearchIndex === null) return;
+    const itemId = searchMatches[visibleSearchIndex]?.item.id;
+    document.getElementById(`sale-search-option-${itemId}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [visibleSearchIndex, searchMatchSetKey]);
 
   const addLine = (item: Item) => {
-    // The sale is frozen once a commit is in flight: ignore late adds (scanner,
-    // an already-open dialog, or a quick-add that settles after Save) so the
-    // cart cannot drift from the request.
-    if (commitRef.current) return;
+    // Freeze additions while committing and after the server has completed the
+    // invoice. Old asynchronous lookups must not leak into the next draft.
+    if (commitRef.current || completedInvoiceRef.current) return;
     setDraftDirty(true);
     draft.addItem(item);
     setPickerOpen(false);
+    setSearchQuery("");
+    setSearchDebounced("");
+    setSearchActiveIndex(null);
+    requestAnimationFrame(() => searchRef.current?.focus());
   };
 
   async function handleScan(code: string) {
@@ -226,6 +258,12 @@ export function SalePage() {
   const createInvoice = useMutation(
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
+        completedInvoiceRef.current = true;
+        searchRequestSeqRef.current += 1;
+        scanSeqRef.current += 1;
+        setSearchQuery("");
+        setSearchDebounced("");
+        setSearchActiveIndex(null);
         commitRef.current = false;
         // The confirmation card opens the invoice the server actually wrote;
         // its id and remaining amount are authoritative, unlike cart-price math
@@ -287,10 +325,20 @@ export function SalePage() {
     if (discardGuard.blocked) setPickerOpen(false);
   }, [discardGuard.blocked]);
 
+  function startFreshSale() {
+    searchRequestSeqRef.current += 1;
+    scanSeqRef.current += 1;
+    completedInvoiceRef.current = false;
+    setSavedSale(null);
+    setSearchQuery("");
+    setSearchDebounced("");
+    setSearchActiveIndex(null);
+    setSearchFocusRequest((request) => request + 1);
+  }
+
   useInvoiceEntryShortcut("sale", () => {
     if (savePending) return;
-    setSavedSale(null);
-    setPickerOpen(true);
+    startFreshSale();
   });
 
   useEffect(() => {
@@ -447,7 +495,7 @@ export function SalePage() {
             <Link to="/invoices/$invoiceId/print" params={{ invoiceId: savedSale.id }} data-testid="sale-print">{t("savedPrint")}</Link>
           </Button>
           <SuccessCardSpacer />
-          <Button variant="ghost" onClick={() => setSavedSale(null)} data-testid="sale-new">{t("saleNew")}</Button>
+          <Button variant="ghost" onClick={startFreshSale} data-testid="sale-new">{t("saleNew")}</Button>
         </SuccessCard>
       </section>
     );
@@ -511,6 +559,90 @@ export function SalePage() {
             <Button variant="outline" data-testid="sale-quick-add" onClick={() => openQuick()} disabled={createInvoice.isPending || quickCreatePending}>
               {t("saleQuickAdd")}
             </Button>
+          </div>
+
+          <div className="grid gap-2 border-b border-border p-4">
+            <label htmlFor="sale-search" className="text-sm font-medium">{t("itemsSearchPlaceholder")}</label>
+            <input
+              ref={searchRef}
+              id="sale-search"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls="sale-search-results"
+              aria-expanded={searchReady && searchDebounced.length > 0}
+              aria-activedescendant={visibleSearchIndex !== null ? `sale-search-option-${searchMatches[visibleSearchIndex]?.item.id}` : undefined}
+              className={cn(inputClass, "w-full px-3 py-2")}
+              autoComplete="off"
+              value={searchQuery}
+              onChange={(event) => {
+                searchRequestSeqRef.current += 1;
+                setSearchQuery(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  if (searchMatches.length === 0) return;
+                  event.preventDefault();
+                  const direction = event.key === "ArrowDown" ? 1 : -1;
+                  setSearchActiveIndex((current) => current === null
+                    ? (direction === 1 ? 0 : searchMatches.length - 1)
+                    : (current + direction + searchMatches.length) % searchMatches.length);
+                  return;
+                }
+                if (event.key !== "Enter" || searchQuery.trim() === "") return;
+                event.preventDefault();
+                // A held Enter is not another scan. Separate physical scan
+                // commits still reach this handler after the prior lookup ends.
+                if (event.repeat) return;
+                const submittedQuery = searchQuery.trim();
+                const requestSeq = ++searchRequestSeqRef.current;
+                const addSubmittedResult = (result: { exact: CatalogMatch | null; matches: CatalogMatch[] }) => {
+                  if (requestSeq !== searchRequestSeqRef.current || searchRef.current?.value.trim() !== submittedQuery || commitRef.current) return;
+                  const activeMatch = searchReady && searchDebounced === submittedQuery && visibleSearchIndex !== null
+                    ? result.matches[visibleSearchIndex]
+                    : undefined;
+                  if (activeMatch !== undefined) addLine(activeMatch.item);
+                  else if (result.exact !== null) addLine(result.exact.item);
+                  else if (result.matches.length === 1 && result.matches[0] !== undefined) addLine(result.matches[0].item);
+                };
+                if (searchReady && !catalogSearch.isPending && !catalogSearch.isError) {
+                  addSubmittedResult({ exact: searchExact, matches: searchMatches });
+                  return;
+                }
+                void queryClient.fetchQuery(orpc.catalogSearch.queryOptions({ input: { query: submittedQuery } }))
+                  .then(addSubmittedResult)
+                  .catch((err) => {
+                    if (requestSeq !== searchRequestSeqRef.current || searchRef.current?.value.trim() !== submittedQuery || commitRef.current) return;
+                    setError(tError(err instanceof Error ? err.message : undefined));
+                  });
+              }}
+              data-testid="sale-search"
+            />
+            {searchReady && searchDebounced.length > 0 && catalogSearch.isError && <p role="alert" className="text-sm text-destructive" data-testid="sale-search-error">{tError(catalogSearch.error.message)}</p>}
+            {searchExact !== null && (
+              <button type="button" className="w-full rounded border bg-accent p-2 text-right hover:bg-accent/80" onClick={() => addLine(searchExact.item)} data-testid="sale-search-exact">
+                {searchExact.item.name}
+              </button>
+            )}
+            {searchReady && searchDebounced.length > 0 && !catalogSearch.isPending && !catalogSearch.isError && searchMatches.length === 0 && searchExact === null && (
+              <p className="text-sm text-muted-foreground" data-testid="sale-search-empty">{t("itemsSearchEmpty")}</p>
+            )}
+            {searchMatches.length > 0 && (
+              <ul id="sale-search-results" role="listbox" aria-label={t("itemsSearchPlaceholder")} className="max-h-60 overflow-y-auto">
+                {searchMatches.map((match, index) => (
+                  <li key={match.item.id} id={`sale-search-option-${match.item.id}`} role="option" aria-selected={visibleSearchIndex === index}>
+                    <button
+                      type="button"
+                      className={cn("flex w-full items-center justify-between rounded p-2 text-right", visibleSearchIndex === index ? "bg-accent ring-2 ring-inset ring-ring" : "hover:bg-accent/80")}
+                      onClick={() => addLine(match.item)}
+                      data-testid="sale-search-result"
+                    >
+                      <span>{match.item.name}</span>
+                      <span className="rounded bg-accent px-2 py-0.5 text-xs text-accent-foreground">{t(matchBadgeKey(match.matchedBy))}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}

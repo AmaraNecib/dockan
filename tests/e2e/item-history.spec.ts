@@ -34,7 +34,7 @@ async function seedHistory(page: Page, name: string) {
   return { item, invoice };
 }
 
-test.use({ viewport: { width: 1920, height: 1080 }, video: { mode: "on", size: { width: 1920, height: 1080 } } });
+test.use({ viewport: { width: 1920, height: 1080 }, hasTouch: true, video: { mode: "on", size: { width: 1920, height: 1080 } } });
 
 test.describe("item history 399", () => {
 
@@ -57,6 +57,29 @@ test.describe("item history 399", () => {
     await expect(detail.getByTestId(/^history-selling-price-/)).toContainText("300");
     await expect(detail.getByTestId(/^history-cost-total-/)).toContainText("700");
     await expect(detail.getByTestId(/^history-sale-total-/)).toContainText("1,800");
+    const costFact = detail.getByTestId(/^history-fact-cost-total-/);
+    await expect(costFact.locator("dt")).toHaveText("إجمالي تكلفة وحدات الحركة");
+    await expect(costFact.locator("dd")).toContainText("700");
+    const factsHelp = detail.getByTestId("history-facts-help");
+    const factsHelpSummary = factsHelp.getByText("عن هذه القيم");
+    await expect(factsHelp).toHaveJSProperty("open", false);
+    await factsHelpSummary.focus();
+    await page.keyboard.press("Enter");
+    await expect(factsHelp).toHaveJSProperty("open", true);
+    await expect(factsHelp).toContainText("إجمالي التكلفة");
+    await expect(factsHelp).toContainText("تكلفة الوحدة المقربة");
+    const factsPanel = detail.locator("[data-testid^='history-detail-']").first();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const narrowFactsBox = await factsPanel.boundingBox();
+    expect(narrowFactsBox?.width).toBeLessThanOrEqual(240);
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await factsHelpSummary.click();
+    await expect(factsHelp).toHaveJSProperty("open", false);
+    await factsHelpSummary.tap();
+    await expect(factsHelp).toHaveJSProperty("open", true);
+    await factsHelpSummary.tap();
+    await expect(factsHelp).toHaveJSProperty("open", false);
+    await disclosure.focus();
     await page.keyboard.press("Space");
     await expect(disclosure).toHaveAttribute("aria-expanded", "false");
     await expect(detail).toBeHidden();
@@ -83,6 +106,88 @@ test.describe("item history 399", () => {
     await page.getByRole("navigation", { name: "مسار المنتج" }).getByRole("link", { name: "المنتجات", exact: true }).click();
     await expect(page).toHaveURL(/\/items$/);
     if (process.env.HISTORY_399_EVIDENCE) await page.waitForTimeout(7_000);
+  });
+
+  test("does not reconstruct an unavailable exact total from rounded unit cost", async ({ page }) => {
+    test.setTimeout(60_000);
+    await signIn(page);
+    const { item } = await seedHistory(page, "بطارية إجمالي غير متوفر 470");
+    await page.route("**/api/rpc/itemsHistory", async (route) => {
+      const response = await route.fetch();
+      // SAFETY: itemsHistory returns its declared movement list in the successful RPC `json` envelope.
+      const payload = await response.json() as { json: { movements: ItemHistoryMovement[] } };
+      const sale = payload.json.movements.find((movement) => movement.kind === "SALE");
+      if (!sale?.details?.cost) throw new Error("Expected the real sale movement and recorded cost details");
+      sale.details.cost.unitCost = 117;
+      sale.details.cost.total = null;
+      await route.fulfill({ response, body: JSON.stringify(payload) });
+    });
+    await page.goto(`/items/${item.id}/history`);
+    await expect(page.getByTestId("history-table")).toBeVisible();
+    const saleRow = page.getByTestId("history-table").locator("tbody tr[data-testid^='history-movement-row-']").filter({ hasText: "-6" });
+    await saleRow.getByRole("button").click();
+    const detail = saleRow.locator("xpath=following-sibling::tr[1]");
+    const exactCost = detail.getByTestId(/^history-cost-total-/);
+    await expect(exactCost).toContainText("غير متوفر في السجل");
+    await expect(exactCost).not.toContainText("702");
+  });
+
+  test("large recorded amounts and long document codes stay inside narrow facts", async ({ page }) => {
+    test.setTimeout(60_000);
+    await signIn(page);
+    const { item, invoice } = await seedHistory(page, "اختبار التفاف القيم 470");
+    const history = await rpc<{ movements: ItemHistoryMovement[] }>(page, { procedure: "itemsHistory", input: { itemId: item.id } });
+    const sale = history.movements.find((movement) => movement.kind === "SALE");
+    if (!sale?.details?.cost) throw new Error("Expected recorded sale facts");
+    // Synthetic display extremes retain the real invoice destination, not new relationships.
+    sale.details.sellingPrice = Number.MAX_SAFE_INTEGER;
+    sale.details.saleTotal = Number.MAX_SAFE_INTEGER;
+    sale.details.netSaleTotal = Number.MAX_SAFE_INTEGER;
+    sale.details.cost.unitCost = Number.MAX_SAFE_INTEGER;
+    sale.details.cost.total = null;
+    const documentCode = `INV-${"9876543210".repeat(4)}`;
+    sale.details.documents = [{ id: invoice.id, number: documentCode }];
+    await page.route("**/api/rpc/itemsHistory", (route) => route.fulfill({ json: { json: history } }));
+    await page.goto(`/items/${item.id}/history`);
+    await page.getByTestId(`history-toggle-${sale.id}`).click();
+    const panel = page.getByTestId(`history-detail-${sale.id}`);
+    await expect(panel.getByTestId(/^history-cost-total-/)).toHaveText("غير متوفر في السجل");
+    await expect(panel.getByTestId(/^history-selling-price-/)).toContainText("9,007,199,254,740,991");
+    await expect(panel.getByRole("link", { name: documentCode })).toHaveAttribute("href", `/invoices/${invoice.id}`);
+    await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي" }).click();
+    for (const width of [1920, 390]) {
+      await page.setViewportSize({ width, height: 1080 });
+      await panel.scrollIntoViewIfNeeded();
+      await expect(panel.locator("dt")).toHaveCount(6);
+      await expect.poll(() => panel.evaluate((root) => {
+        const bounds = root.getBoundingClientRect();
+        const failures: string[] = [];
+        for (const row of root.querySelectorAll("[data-testid^='history-fact-']")) {
+          const rect = row.getBoundingClientRect();
+          if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1) failures.push("fact escapes panel");
+          const label = row.querySelector("dt");
+          const value = row.querySelector("dd");
+          if (!label || !value) { failures.push("missing label or value"); continue; }
+          const labelRange = document.createRange();
+          labelRange.selectNodeContents(label);
+          const valueRange = document.createRange();
+          valueRange.selectNodeContents(value);
+          for (const a of labelRange.getClientRects()) {
+            for (const b of valueRange.getClientRects()) {
+              if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) failures.push("label overlaps value");
+            }
+          }
+        }
+        for (const element of root.querySelectorAll("dt, dd, a")) {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          for (const rect of range.getClientRects()) {
+            if (rect.left < bounds.left - 1 || rect.right > bounds.right + 1) failures.push("text escapes panel");
+          }
+        }
+        return failures;
+      }), { message: `Recorded facts stay contained without overlap at ${width}px` }).toEqual([]);
+    }
   });
 
   test("failed history read is explicit, retry recovers, leaving a pending read is safe", async ({ page }) => {

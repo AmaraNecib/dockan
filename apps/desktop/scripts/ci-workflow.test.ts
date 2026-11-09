@@ -724,8 +724,13 @@ describe("PR CI workflow", () => {
       expect(lines).toContain("    needs: e2e");
       expect(lines).toContain("    if: ${{ needs.e2e.result == 'success' }}");
       // SAFETY: fixture YAML is checked through its job shape and exact permissions below.
-      const jobs = Bun.YAML.parse(source) as { jobs: Record<string, { permissions?: Record<string, string> }> };
+      const jobs = Bun.YAML.parse(source) as { jobs: Record<string, { permissions?: Record<string, string>; env?: Record<string, string>; outputs?: Record<string, string>; steps?: { name?: string; id?: string }[] }> };
       expect(jobs.jobs[jobName]?.permissions).toEqual({ contents: "read", actions: "read" });
+      expect(jobs.jobs[jobName]?.env?.GH_TOKEN).toBeUndefined();
+      expect(jobs.jobs.e2e?.outputs?.manifest_attempt).toBe("${{ steps.manifest_identity.outputs.attempt }}");
+      expect(jobs.jobs.e2e?.steps?.find((step) => step.name === "Record manifest producer attempt")?.id).toBe("manifest_identity");
+      const producer = stepNamed(parseSteps(source, "e2e"), "Record manifest producer attempt");
+      expect(producer.condition).toBe("success()");
       expect(jobLines(source, "acceptance").join("\n")).not.toContain("browser_summary");
       expect(lines.join("\n")).not.toContain("continue-on-error:");
 
@@ -733,10 +738,11 @@ describe("PR CI workflow", () => {
       expect(steps.filter((step) => step.env.has("GH_TOKEN"))).toHaveLength(1);
       const run = stepNamed(steps, "Export sanitized browser summary");
       expect(run.env.get("GH_TOKEN")).toBe("${{ github.token }}");
-      expect([...run.env.keys()]).toEqual(["GH_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]);
+      expect([...run.env.keys()]).toEqual(["GH_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "BROWSER_CI_ATTEMPT"]);
+      expect(run.env.get("BROWSER_CI_ATTEMPT")).toBe("${{ needs.e2e.outputs.manifest_attempt }}");
       expect(run.run).toContain('--repo "$GITHUB_REPOSITORY"');
       expect(run.run).toContain('--run "$GITHUB_RUN_ID"');
-      expect(run.run).toContain('--attempt "$GITHUB_RUN_ATTEMPT"');
+      expect(run.run).toContain('--attempt "$BROWSER_CI_ATTEMPT"');
       expect(run.run).toContain('--archive "$RUNNER_TEMP/browser-ci-summary.jsonl"');
       expect(run.run).toContain("--scope unknown");
       expect(run.run.match(/bun scripts\/browser-ci-export\.ts/gu)).toHaveLength(1);
@@ -749,9 +755,9 @@ describe("PR CI workflow", () => {
       expect(upload.with.get("if-no-files-found")).toBe("error");
       expect(upload.with.get("retention-days")).toBe("30");
       expect(steps.indexOf(upload)).toBeGreaterThan(steps.indexOf(run));
-      return { run, upload };
+      return { run, upload, producer };
     };
-    const { run, upload } = assertContract(WORKFLOW_SOURCE);
+    const { run, upload, producer } = assertContract(WORKFLOW_SOURCE);
     const shellFile = (file: string) => process.platform === "win32"
       ? file.replace(/\\/gu, "/").replace(/^([A-Za-z]):/u, (_, drive: string) => `/${drive.toLowerCase()}`)
       : file;
@@ -772,10 +778,17 @@ describe("PR CI workflow", () => {
       ].join("\n"), { mode: 0o700 });
       const archive = path.join(root, "runner-temp", "browser-ci-summary.jsonl");
       mkdirSync(path.dirname(archive));
+      const producerOutput = path.join(root, "producer-output");
+      execFileSync(shellPath(), ["-euo", "pipefail", "-c", producer.run], {
+        cwd: root,
+        env: shellEnv({ GITHUB_RUN_ATTEMPT: "3", GITHUB_OUTPUT: shellFile(producerOutput) }),
+      });
+      expect(readFileSync(producerOutput, "utf8")).toBe("attempt=3\n");
+      const producerAttempt = readFileSync(producerOutput, "utf8").trim().slice("attempt=".length);
       const execute = (extra: Record<string, string> = {}) => execFileSync(shellPath(), ["-euo", "pipefail", "-c", 'export PATH="$STUB_BIN:$PATH"\n' + run.run], {
         cwd: root,
         encoding: "utf8",
-        env: shellEnv({ STUB_BIN: shellFile(bin), RUNNER_TEMP: shellFile(path.dirname(archive)), GITHUB_REPOSITORY: "owner/repo", GITHUB_RUN_ID: "812", GITHUB_RUN_ATTEMPT: "3", GH_TOKEN: "TOKEN_SENTINEL", CAPTURE_ARGS: shellFile(path.join(root, "args")), CAPTURE_CALLS: shellFile(path.join(root, "calls")), ...extra }),
+        env: shellEnv({ STUB_BIN: shellFile(bin), RUNNER_TEMP: shellFile(path.dirname(archive)), GITHUB_REPOSITORY: "owner/repo", GITHUB_RUN_ID: "812", GITHUB_RUN_ATTEMPT: "4", BROWSER_CI_ATTEMPT: producerAttempt, GH_TOKEN: "TOKEN_SENTINEL", CAPTURE_ARGS: shellFile(path.join(root, "args")), CAPTURE_CALLS: shellFile(path.join(root, "calls")), ...extra }),
       });
       execute();
       expect(readFileSync(path.join(root, "args"), "utf8").trim().split("\n")).toEqual([
@@ -785,6 +798,8 @@ describe("PR CI workflow", () => {
       expect(readFileSync(archive, "utf8")).toBe('{"runId":812,"attempt":3,"scope":"unknown"}\n');
       expect(readFileSync(path.join(root, "args"), "utf8")).not.toContain("TOKEN_SENTINEL");
       rmSync(archive);
+      expect(() => execute({ BROWSER_CI_ATTEMPT: "" })).toThrow();
+      expect(readFileSync(path.join(root, "calls"), "utf8")).toBe("invoked\n");
       expect(() => execute({ EXPORT_FAIL: "yes" })).toThrow();
       expect(() => readFileSync(archive, "utf8")).toThrow();
       expect(upload.condition).toBe("success()");
@@ -799,7 +814,9 @@ describe("PR CI workflow", () => {
       ["    needs: e2e", "    needs: checks"],
       ["    if: ${{ needs.e2e.result == 'success' }}", "    if: ${{ always() }}"],
       ["      actions: read", "      actions: write"],
+      ["  browser_summary:\n", "  browser_summary:\n    env:\n      GH_TOKEN: ${{ github.token }}\n"],
       ["--scope unknown", "--scope full"],
+      ["BROWSER_CI_ATTEMPT: ${{ needs.e2e.outputs.manifest_attempt }}", "BROWSER_CI_ATTEMPT: ${{ github.run_attempt }}"],
       ["          retention-days: 30", "          retention-days: 5"],
     ];
     for (const [original, replacement] of mutations) {

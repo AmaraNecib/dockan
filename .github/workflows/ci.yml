@@ -283,6 +283,8 @@ jobs:
   e2e:
     name: playwright e2e
     needs: changes
+    outputs:
+      manifest_attempt: ${{ steps.manifest_identity.outputs.attempt }}
     # A skip is not silent: the decision is written to the `changes` job's
     # summary (not this job's — a skip is exactly when this job does not run),
     # and the push-to-develop run always reports `full`. `!cancelled()` (not a
@@ -384,6 +386,12 @@ jobs:
           retention-days: 5
           compression-level: 9
 
+      - name: Record manifest producer attempt
+        id: manifest_identity
+        if: success()
+        # A summary-only rerun reuses this output from the successful e2e job.
+        run: printf 'attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       # Evidence, not a report: a green suite leaves nothing worth 5 days of
       # storage, so success is the one outcome that skips this. #197.
       - name: Upload e2e failure evidence
@@ -441,15 +449,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          BROWSER_CI_ATTEMPT: ${{ needs.e2e.outputs.manifest_attempt }}
         run: |
           set -euo pipefail
           : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+          : "${BROWSER_CI_ATTEMPT:?Successful e2e manifest attempt is required}"
           case "$RUNNER_TEMP" in /*) ;; *) echo "RUNNER_TEMP must be absolute" >&2; exit 1 ;; esac
           bun scripts/browser-ci-export.ts \
             --repo "$GITHUB_REPOSITORY" \
             --run "$GITHUB_RUN_ID" \
-            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --attempt "$BROWSER_CI_ATTEMPT" \
             --archive "$RUNNER_TEMP/browser-ci-summary.jsonl" \
             --scope unknown
 

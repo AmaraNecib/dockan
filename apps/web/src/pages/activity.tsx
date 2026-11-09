@@ -44,7 +44,7 @@ export function activityRefLink(entry: { summary: string; ref: string | null }):
   const ref = entry.ref;
   if (ref === null || ref === "") return null;
   const [tag, role] = entry.summary.split(" ");
-  if (tag === "ITEM_CREATED" || tag === "ITEM_CREATED_WITH_STOCK" || tag === "ITEM_UPDATED" || tag === "ITEM_COST_CORRECTED" || tag === "STOCK_ADJUSTED" || tag === "PURCHASE_CORRECTED") {
+  if (tag === "ITEM_CREATED" || tag === "ITEM_CREATED_WITH_STOCK" || tag === "ITEM_UPDATED" || tag === "ITEM_COST_CORRECTED" || tag === "STOCK_SELLING_PRICE_CHANGED" || tag === "STOCK_ADJUSTED" || tag === "PURCHASE_CORRECTED") {
     return { to: "/items/$itemId/history", params: { itemId: ref } };
   }
   if (tag === "STOCK_LINKED" || tag === "SALE_CREATED" || tag === "PURCHASE_CREATED" || tag === "PAYMENT_RECORDED") {
@@ -119,6 +119,15 @@ export function activitySummaryText(t: TFunction, summary: string): ReactNode {
   if (tag === "ITEM_CREATED_WITH_STOCK" && tokens.length >= 3) return t("activityItemCreatedWithStock", { name: tokens.slice(2).join(" "), stock: tokens[1] });
   if (tag === "ITEM_CREATED" && tokens.length >= 2) return t("activityItemCreated", { name: tokens.slice(1).join(" ") });
   if (tag === "ITEM_UPDATED" && tokens.length >= 2) return t("activityItemUpdated", { name: tokens.slice(1).join(" ") });
+  if (tag === "STOCK_SELLING_PRICE_CHANGED" && tokens.length >= 4) {
+    return (
+      <Trans
+        i18nKey="activitySellingPriceChanged"
+        values={{ name: tokens.slice(3).join(" ") }}
+        components={{ old: <Amount value={Number(tokens[1])} />, new: <Amount value={Number(tokens[2])} /> }}
+      />
+    );
+  }
   // locale-neutral cost correction: cost then the free-text name last. Money
   // inside a translated sentence goes through <Money>, or the digits stay
   // ungrouped and the sentence owns the currency (#254 round 2).

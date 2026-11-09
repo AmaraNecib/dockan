@@ -73,6 +73,7 @@ const resources = {
       activityItemCreatedWithStock: "إنشاء منتج {{name}} بمخزون أولي {{stock}}",
       activityItemUpdated: "تعديل منتج {{name}}",
       activityItemCostCorrected: "تصحيح تكلفة منتج {{name}} إلى <money/>",
+      activitySellingPriceChanged: "تغيير سعر بيع {{name}} من <old/> إلى <new/>",
       activityStockAdjusted: "تسوية مخزون {{name}}",
       activityStockLinked: "ربط مخزون سابق بفاتورة {{number}}",
       activityPurchaseCorrected: "تصحيح شراء {{name}}",
@@ -319,9 +320,12 @@ const resources = {
       stockQuantityInvalid: "أدخل كمية صحيحة غير صفرية",
       stockRemovalNoCost: "الإخراج لا يسجل تكلفة وحدة",
       stockUnitCost: "تكلفة الوحدة (دج)",
-      stockSellingPrice: "سعر البيع",
+      stockSellingPrice: "سعر البيع (دج)",
+      stockCurrentSellingPrice: "سعر البيع الحالي (دج)",
+      stockSellingPriceInvalid: "أدخل سعر بيع صحيحاً (عدد صحيح 0 أو أكثر)",
       stockReason: "السبب (اختياري)",
       stockAddBtn: "تسجيل",
+      stockNewEntry: "بدء إيصال جديد ومسح الحقول",
       stockAdded: "تم تسجيل الحركة",
       historyLink: "السجل",
       historyTitle: "سجل المنتج",
@@ -569,12 +573,10 @@ const resources = {
       ITEM_NOT_FOUND: "المنتج غير موجود",
       ITEM_ERROR: "تعذّر حفظ المنتج",
       STOCK_NEGATIVE: "الكمية غير متوفرة في المخزون",
-      // #295 — the same stock adjustment was posted twice (a second window, a
-      // double-clicked save, a re-sent request). The first one stands, and the
-      // escape is WAIT: telling the owner to change the reason would write a
-      // reason typed only to get past the guard into the permanent ledger
-      // (apps/api/src/lib/stock-adjustment.ts, why the window is short).
-      STOCK_ADJUSTMENT_DUPLICATE: "نفس تعديل المخزون مسجّل قبل لحظات — لم يُطبَّق مرتين. أعد المحاولة بعد قليل.",
+      // A reused movement identity is refused even when the payload differs.
+      STOCK_ADJUSTMENT_DUPLICATE: "هذا الإيصال أو إدخال مطابق له سبق تسجيله. لم تُضف الكمية مرة أخرى. إذا كان إيصالاً مختلفاً، انتظر 10 ثوانٍ ثم ابدأ إدخالاً جديداً وأعد إدخال بياناته.",
+      STOCK_ENTRY_ID_REQUIRED: "تعذّر حفظ الإيصال. ابدأ إدخالاً جديداً ثم أعد المحاولة.",
+      STOCK_PRICE_UPDATE_REQUIRES_INFLOW: "يمكن تعديل سعر البيع عند إضافة المخزون فقط.",
       // ticket 29 — purchase intake + deferred linking
       purchasesTitle: "فاتورة شراء جديدة",
       purchasesNew: "شراء جديد",

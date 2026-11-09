@@ -168,6 +168,7 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     expect(page.query("history-detail-movement-b")?.textContent).toContain("INV-467-B");
     expect(page.query("history-detail-row-movement-a")?.previousElementSibling?.getAttribute("data-testid")).toBe("history-movement-row-movement-a");
     expect(page.query("history-selling-price-movement-a")?.textContent).toContain("900");
+    expect(page.query("history-selling-price-movement-a")?.previousElementSibling?.textContent).toBe("سعر البيع (دج)");
     expect(page.query("history-sale-total-movement-a")?.textContent).toContain("1,800");
     expect(page.query("history-cost-total-movement-a")?.textContent).toContain("800");
 

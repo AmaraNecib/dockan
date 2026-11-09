@@ -51,6 +51,20 @@ async function makeItem(name: string) {
 }
 
 describe("stock movements — persistence + ordering", () => {
+  it("persists an assigned movement identity across store reopen", async () => {
+    const category = await store.createCategory({ name: `movement-id-${Date.now()}` });
+    const item = await store.createItem({ name: `movement-id-item-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 200 });
+    const movementId = crypto.randomUUID();
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertStockMovement({ id: movementId, itemId: item.id, kind: "PURCHASE", delta: 2, unitCost: 100, reason: null, ref: null, occurredAt: "2026-11-01T00:00:00" });
+    });
+
+    conn.close();
+    conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
+    store = createDrizzleStore(conn);
+    const reopened = await store.getStockMovementById(movementId);
+    expect(reopened).toMatchObject({ id: movementId, itemId: item.id, delta: 2 });
+  });
   it("lists movements ordered by occurred_at, then insertion order for ties", async () => {
     const item = await makeItem("ledger-item-1");
     await store.insertStockMovement({

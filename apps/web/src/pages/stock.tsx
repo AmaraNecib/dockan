@@ -38,6 +38,7 @@ export function StockForm() {
   const [itemId, setItemId] = useState("");
   const [delta, setDelta] = useState("");
   const [unitCost, setUnitCost] = useState("");
+  const [sellingPrice, setSellingPrice] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -58,6 +59,9 @@ export function StockForm() {
   // holds that prefilled value, so a value the operator typed is never
   // overwritten.
   const prefilledRef = useRef<{ itemId: string; cost: string } | null>(null);
+  const sellingPrefilledRef = useRef<{ itemId: string; price: string } | null>(null);
+  const movementIdRef = useRef(crypto.randomUUID());
+  const quantityRef = useRef<HTMLInputElement>(null);
   /** a movement invalidates the list; the cached cost is stale until the
    * refetch that follows it lands */
   const freshAfterRef = useRef(0);
@@ -76,15 +80,30 @@ export function StockForm() {
     setUnitCost(nextCost);
   }, [selectedItemId, selectedItem, unitCost, items.dataUpdatedAt]);
 
+  useEffect(() => {
+    if (selectedItem === null) return;
+    if (items.dataUpdatedAt < freshAfterRef.current) return;
+    const nextPrice = String(selectedItem.sellingPrice);
+    const previous = sellingPrefilledRef.current;
+    const selectionChanged = previous === null || previous.itemId !== selectedItemId;
+    const untouched = previous !== null && sellingPrice === previous.price;
+    if (!selectionChanged && !(untouched && previous.price !== nextPrice)) return;
+    sellingPrefilledRef.current = { itemId: selectedItemId, price: nextPrice };
+    setSellingPrice(nextPrice);
+  }, [selectedItemId, selectedItem, sellingPrice, items.dataUpdatedAt]);
+
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
       onSuccess: () => {
         setDelta("");
         setUnitCost("");
+        setSellingPrice("");
         setReason("");
         setDone(true);
-        // let the next refetch re-prefill the (possibly changed) average cost
-        prefilledRef.current = null;
+        // Blank is the new prefill, so edits made before the refresh survive it.
+        prefilledRef.current = { itemId: selectedItemId, cost: "" };
+        sellingPrefilledRef.current = { itemId: selectedItemId, price: "" };
+        movementIdRef.current = crypto.randomUUID();
         freshAfterRef.current = Date.now();
         // the items table (paginated, so its key carries the page), the
         // low-stock badge, the item pickers (itemsAll) and the dashboard all
@@ -94,6 +113,22 @@ export function StockForm() {
       onError: (err) => setError(tError(err.message)),
     }),
   );
+
+  function startNewEntry() {
+    movementIdRef.current = crypto.randomUUID();
+    setDelta("");
+    setUnitCost("");
+    setSellingPrice("");
+    setReason("");
+    setError(null);
+    setDone(false);
+    prefilledRef.current = { itemId: selectedItemId, cost: "" };
+    sellingPrefilledRef.current = { itemId: selectedItemId, price: "" };
+    freshAfterRef.current = Date.now();
+    adjust.reset();
+    void queryClient.invalidateQueries();
+    quantityRef.current?.focus();
+  }
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -109,16 +144,23 @@ export function StockForm() {
       setError(t("stockQuantityInvalid"));
       return;
     }
-    // a removal cannot carry a unit cost: the api takes one only for stock in
+    // a removal cannot carry receipt prices; the api records only an outflow.
     const parsedUnitCost = parsedDelta > 0 ? parseWholeNumber(unitCost) : null;
     if (parsedDelta > 0 && !draftBlank(unitCost) && parsedUnitCost === null) {
       setError(t("stockUnitCostInvalid"));
       return;
     }
+    const parsedSellingPrice = parsedDelta > 0 ? parseWholeNumber(sellingPrice) : null;
+    if (parsedDelta > 0 && parsedSellingPrice === null) {
+      setError(t("stockSellingPriceInvalid"));
+      return;
+    }
     void adjust.mutate({
+      movementId: movementIdRef.current,
       itemId: selectedItemId,
       delta: parsedDelta,
       unitCost: parsedUnitCost === null ? undefined : parsedUnitCost,
+      sellingPrice: parsedSellingPrice === null ? undefined : parsedSellingPrice,
       reason: reason === "" ? undefined : reason,
     });
   }
@@ -134,17 +176,26 @@ export function StockForm() {
         testId="stock-item"
         noMatchesLabel={t("itemsSearchEmpty")}
       />
-      {selectedItem && (
-        <p className="text-sm text-muted-foreground" data-testid="stock-selling-price">
-          {t("stockSellingPrice")}: <Amount value={selectedItem.sellingPrice} className="text-foreground" />
-        </p>
-      )}
+      <label className="grid gap-1">
+        {t("stockCurrentSellingPrice")}
+        <input
+          className={inputClass}
+          name="stockSellingPrice"
+          autoComplete="off"
+          value={sellingPrice}
+          onChange={(e) => setSellingPrice(e.target.value)}
+          inputMode="numeric"
+          disabled={isRemoval}
+          data-testid="stock-selling-price"
+        />
+      </label>
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
           {t("stockQuantity")}
           <input
             className={inputClass}
             name="stockDelta"
+            ref={quantityRef}
             autoComplete="off"
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
@@ -181,6 +232,11 @@ export function StockForm() {
         <p className="text-sm text-destructive" role="alert" data-testid="stock-error">
           {error}
         </p>
+      )}
+      {adjust.error?.message === "STOCK_ADJUSTMENT_DUPLICATE" && (
+        <Button type="button" variant="outline" onClick={startNewEntry} disabled={adjust.isPending} data-testid="stock-new-entry">
+          {t("stockNewEntry")}
+        </Button>
       )}
       {done && adjust.isSuccess && (
         <p className="text-sm text-success" data-testid="stock-done">

@@ -94,7 +94,7 @@ test("items flow: one-step stock, inline edit, and prefilled stock add", async (
   // 4. Add stock to the existing item: selling price shown, unit cost prefilled.
   await openItemsTab(page, "add");
   await chooseSelectOption(page, page.getByTestId("stock-item"), stockedName);
-  await expect(page.getByTestId("stock-selling-price")).toContainText("777");
+  await expect(page.getByTestId("stock-selling-price")).toHaveValue("777");
   await expect(page.getByTestId("stock-unit-cost")).toHaveValue("100");
 
   await page.getByTestId("stock-delta").fill("3");

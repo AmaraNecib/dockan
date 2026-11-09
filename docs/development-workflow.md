@@ -141,6 +141,15 @@ The sidecar binary and `target/` are generated artifacts (gitignored); the
 source of the icon master is `tools/generate-icon.py` (PIL) — regenerate the
 icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
 
+The portable marker selects both the encrypted app data (`data/`) and the
+WebView2 profile (`data/webview/`) beside `Dokan-portable.exe`. The shell delays
+creating the main window until it can point WebView2 at that profile. A missing
+or unwritable portable folder shows a startup error and exits, not a reason to
+use the installed profile. Installed builds keep Tauri's normal OS-managed WebView
+profile and app-data paths. Windows and WebView2 may still write system-level
+state outside the portable folder; portable mode does not promise a trace-free
+host.
+
 ### Installer facts
 
 - NSIS, `installMode: currentUser` (no admin prompt on a clean PC),

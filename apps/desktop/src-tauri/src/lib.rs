@@ -35,7 +35,19 @@ pub(crate) fn app_builder() -> tauri::Builder<tauri::Wry> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    app_builder()
+    let mut context = tauri::generate_context!();
+    let exe_dir = std::env::current_exe().expect("could not determine the Dokan executable path");
+    let exe_dir = exe_dir
+        .parent()
+        .expect("Dokan executable has no parent directory");
+    let portable = exe_dir.join(desktop::PORTABLE_MARKER).is_file();
+    if portable {
+        if let Err(error) = desktop::defer_portable_main_window(&mut context.config_mut().app.windows, true) {
+            desktop::show_portable_startup_error(&error);
+            std::process::exit(1);
+        }
+    }
+    let built = app_builder()
         .setup(desktop::setup)
         .on_window_event(|window, event| {
             // Closing the last window shuts the app down; take the sidecar
@@ -46,11 +58,18 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
-        .expect("error while building Dokan")
-        .run(|app_handle, event| {
-            if let RunEvent::Exit = event {
-                desktop::kill_sidecar(app_handle);
-            }
-        });
+        .build(context);
+    let app = match built {
+        Ok(app) => app,
+        Err(error) if portable => {
+            desktop::show_portable_startup_error(&error.to_string());
+            std::process::exit(1);
+        }
+        Err(error) => panic!("error while building Dokan: {error}"),
+    };
+    app.run(|app_handle, event| {
+        if let RunEvent::Exit = event {
+            desktop::kill_sidecar(app_handle);
+        }
+    });
 }

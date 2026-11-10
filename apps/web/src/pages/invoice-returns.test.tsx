@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createTanstackQueryUtils } from "@orpc/tanstack-query";
 
 // React 19 act() requires the environment flag to be set explicitly
 // SAFETY: only this flag is written; globalThis keeps every other property
@@ -25,6 +26,14 @@ let failReturnsRead = false;
 let failPartyDebt = false;
 let failReturnSources = false;
 let returnSourcesData: ReturnSources = { provenanceComplete: true, selectionRequired: false, sources: [] };
+let sourceReadCount = 0;
+const sourceQueryUtils = createTanstackQueryUtils({
+  returnsSources: async (_input: { invoiceId: string; invoiceLineId: string }): Promise<ReturnSources> => {
+    sourceReadCount++;
+    if (failReturnSources) throw new Error("RETURN_SOURCES_FAILED");
+    return returnSourcesData;
+  },
+});
 /** what the mocked returnsCreate resolves with; a test can override it */
 let createdReturn: ReturnDetail | null = null;
 let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number; sourceMode?: "UNKNOWN"; sourceAllocations?: Array<{ stockLinkId: string; quantity: number }> }>; reason?: string; cashPaidOut?: number } | null = null;
@@ -64,16 +73,7 @@ mock.module("@/lib/rpc", () => ({
     returnsPendingCount: {
       queryKey: () => ["returnsPendingCount"],
     },
-    returnsSources: {
-      queryOptions: ({ input }: { input: { invoiceId: string; invoiceLineId: string } }) => ({
-        queryKey: [["returnsSources"], { input }],
-        queryFn: async () => {
-          if (failReturnSources) throw new Error("RETURN_SOURCES_FAILED");
-          return returnSourcesData;
-        },
-      }),
-      queryKey: () => [["returnsSources"]],
-    },
+    returnsSources: sourceQueryUtils.returnsSources,
     debtsByParty: {
       // #256 — the panel derives the default refund method from the customer's
       // tab through the same read the debts screen uses
@@ -202,6 +202,7 @@ beforeEach(() => {
   failReturnsRead = false;
   failPartyDebt = false;
   failReturnSources = false;
+  sourceReadCount = 0;
   returnSourcesData = { provenanceComplete: true, selectionRequired: false, sources: [] };
   createdReturn = null;
   lastCreateInput = null;
@@ -237,6 +238,7 @@ function renderPanel(invoice: InvoiceDetail) {
       </QueryClientProvider>,
     );
   });
+  return client;
 }
 
 /** Sets a controlled input through the native setter + input event so React's
@@ -524,6 +526,33 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     expect(recordedCreateInput().lines).toEqual([{ invoiceLineId: LINE_ID, quantity: 2, sourceMode: "UNKNOWN" }]);
+  });
+
+  it.each([false, true])("refreshes actual oRPC source queries after submission, refusal=%s", async (refused) => {
+    const invoice = makeInvoice([saleLine()]);
+    const client = renderPanel(invoice);
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
+    const readsBefore = sourceReadCount;
+    expect(readsBefore).toBeGreaterThan(0);
+    const queryKey = sourceQueryUtils.returnsSources.queryKey({
+      input: { invoiceId: invoice.id, invoiceLineId: LINE_ID },
+    });
+    expect(client.getQueryState(queryKey)?.isInvalidated).toBe(false);
+    returnSourcesData = { provenanceComplete: false, selectionRequired: false, sources: [] };
+    failReturnsCreate = refused;
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(recordedCreateInput().lines).toEqual([{ invoiceLineId: LINE_ID, quantity: 1 }]);
+    expect(sourceReadCount > readsBefore || client.getQueryState(queryKey)?.isInvalidated === true).toBe(true);
+    if (refused) {
+      expect(sourceReadCount).toBeGreaterThan(readsBefore);
+      expect(client.getQueryData<ReturnSources>(queryKey)).toEqual(returnSourcesData);
+      expect(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')?.value).toBe("1");
+      expect(host.querySelector('[data-testid^="return-sources-error-"]')?.textContent).toContain(i18n.t("returnSourceUnavailable"));
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="returns-submit"]')?.disabled).toBe(true);
+    }
   });
 
   it("blocks submission when source loading fails and preserves the quantity draft", async () => {

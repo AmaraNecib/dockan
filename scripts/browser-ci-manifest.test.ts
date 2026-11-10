@@ -170,6 +170,17 @@ describe("browser CI manifest", () => {
     }
   });
 
+  test("reserves cold setup and evidence upload time around the full-suite deadline", () => {
+    const workflow = readFileSync(path.join(import.meta.dir, "..", ".github", "workflows", "ci.yml"), "utf8");
+    const job = workflow.match(/^  e2e:\r?\n([\s\S]*?)(?=^  browser_summary:)/m)?.[1] ?? "";
+    const jobMinutes = Number(job.match(/^    timeout-minutes: (\d+)/m)?.[1]);
+    const runMinutes = Number(job.match(/name: Run Playwright e2e[\s\S]*?timeout-minutes: (\d+)/)?.[1]);
+    // The hosted full suite passed at the former 15-minute deadline.
+    expect(runMinutes).toBeGreaterThanOrEqual(20);
+    // Cold browser setup has taken over nine minutes; keep upload time too.
+    expect(jobMinutes - runMinutes).toBeGreaterThanOrEqual(15);
+  });
+
   test("keeps the CI e2e selection and pipefail contract while uploading both artifact classes", () => {
     const workflow = readFileSync(path.join(import.meta.dir, "..", ".github", "workflows", "ci.yml"), "utf8");
     expect(workflow).toContain("bun run test:e2e $E2E_SPECS 2>&1 | tee e2e-logs/playwright.log");

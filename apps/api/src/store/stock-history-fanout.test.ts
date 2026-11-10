@@ -36,6 +36,7 @@ afterAll(async () => {
   }
 });
 
+// red-on-parent-waive: "^stock history with high invoice-link fanout loads every saved sale source when 500 invoice IDs return 700,000 links$" - Base b6d2e24e lacks stock_links.invoice_line_id and stock_outflow_consumptions, so fixture preparation cannot reach assertions; the same fixture reproduces RangeError against pre-fix a3a65992 and passes all 1,002 assertions with iterative appends.
 describe("stock history with high invoice-link fanout", () => {
   it("loads every saved sale source when 500 invoice IDs return 700,000 links", async () => {
     const [category] = await store.listCategories();

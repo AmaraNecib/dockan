@@ -5896,7 +5896,7 @@ describe("items cost correction (issue 144)", () => {
     const item = await makeItem(`receipt-resolution-${Date.now()}`, 0);
     await client.stockAddManual({ itemId: item.id, delta: 5, costPending: true, kind: "PURCHASE" });
     const receipt = (await client.itemsHistory({ itemId: item.id })).movements.find((row) => row.delta === 5)!;
-    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const sale = await client.invoicesCreate({ kind: "SALE", invoiceDate: "2039-03-01", lines: [{ itemId: item.id, quantity: 2 }] });
     const beforeStamp = receipt.occurredAt;
 
     const resolution = await client.receiptCostsResolve({ movementId: receipt.id, unitCost: 100, reason: "supplier receipt confirmed" });
@@ -5911,9 +5911,11 @@ describe("items cost correction (issue 144)", () => {
     expect(history.movements.find((row) => row.id === receipt.id)).toMatchObject({ unitCost: 100, costPending: false, occurredAt: beforeStamp, delta: 5 });
     expect((await client.invoicesGet({ id: sale.id })).lines[0]).toMatchObject({ cogsExact: 0, costPending: true });
 
-    const laterSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    const laterSale = await client.invoicesCreate({ kind: "SALE", invoiceDate: "2039-03-02", lines: [{ itemId: item.id, quantity: 1 }] });
     expect(laterSale.lines[0]).toMatchObject({ cogsExact: 100, costPending: false });
-    const window = { preset: "CUSTOM" as const, customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`, customTo: `${item.createdAt.slice(0, 10)}T23:59:59` };
+    // This file shares one database. Keep exact report assertions in a period
+    // owned by this fixture rather than including every earlier sale today.
+    const window = { preset: "CUSTOM" as const, customFrom: "2039-03-01T00:00:00", customTo: "2039-03-02T23:59:59" };
     const report = await client.reportsProfit(window);
     expect(report.cogs).toBe(300);
   });

@@ -325,7 +325,11 @@ export interface StorePort {
   insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "id" | "returnMark">>): Promise<StockMovement>;
   getStockMovementById(id: string): Promise<StockMovement | undefined>;
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
-  listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
+  listStockMovements(itemId: string): Promise<Array<StockMovement & {
+    seq: number;
+    /** Complete persisted sale sources for effective FIFO projection, not rewritten movement facts. */
+    consumedMovements?: Array<{ movementId: string; quantity: number }>;
+  }>>;
   /**
    * The movements recorded AFTER a local stamp, in insertion order — the
    * #295 repeat window. The stamp is the server's local
@@ -345,7 +349,9 @@ export interface StorePort {
   listStockLinksByItem(itemId: string): Promise<StockLink[]>;
   /** purchase-only attribution links for the item's inventory pool */
   listPurchaseStockLinksByItem(itemId: string): Promise<StockLink[]>;
-  /** Resolves one pending receipt and appends exact linked sale-line COGS deltas atomically. */
+  /** Resolves one pending receipt and appends exact linked sale-line COGS deltas atomically.
+   * Direct calls open an immediate transaction. Inside a transaction, use withTransactionImmediate
+   * so resolution and the caller's audit event share the same write-locked unit. */
   resolveReceiptCost(input: { movementId: string; unitCost: number; reason: string; actorId: string; actorName: string; recordedAt: string }): Promise<ReceiptCostResolutionRecord>;
 
   // --- expenses + profit report (ticket 31) --------------------------------

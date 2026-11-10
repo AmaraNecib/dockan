@@ -2151,6 +2151,36 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
     expect(await store.listStockMovements(item.id)).toHaveLength(2); // resolution did not alter stock movements
   });
 
+  it("rolls back a direct receipt resolution when its cache write fails", async () => {
+    const category = await store.createCategory({ name: `receipt-direct-${Date.now()}` });
+    const item = await store.createItem({ name: "direct atomic resolution", categoryId: category.id, costPrice: 0, sellingPrice: 200 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 5, unitCost: null, costPending: true, reason: null, ref: null, occurredAt: stamp() });
+    await store.setItemStockAndCost(item.id, 5, 0, false);
+    const before = await store.listStockMovements(item.id);
+    conn.raw.exec(`CREATE TEMP TRIGGER fail_receipt_cache BEFORE UPDATE ON items WHEN OLD.id = '${item.id}' BEGIN SELECT RAISE(ABORT, 'injected receipt cache failure'); END`);
+    try {
+      await expect(store.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "invoice found", actorId: "admin", actorName: "Owner", recordedAt: stamp() })).rejects.toThrow("injected receipt cache failure");
+      expect(await store.listStockMovements(item.id)).toEqual(before);
+      expect((await store.getItemsByIds([item.id])).get(item.id)).toMatchObject({ stockOnHand: 5, costPrice: 0, costPriceKnown: false });
+    } finally {
+      conn.raw.exec("DROP TRIGGER fail_receipt_cache");
+    }
+    const retried = await store.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "invoice found", actorId: "admin", actorName: "Owner", recordedAt: stamp() });
+    expect(retried.created).toBe(true);
+    expect((await store.getItemsByIds([item.id])).get(item.id)).toMatchObject({ stockOnHand: 5, costPrice: 100, costPriceKnown: true });
+  });
+
+  it("refuses receipt resolution inside a deferred transaction without writes", async () => {
+    const category = await store.createCategory({ name: `receipt-deferred-${Date.now()}` });
+    const item = await store.createItem({ name: "deferred resolution", categoryId: category.id, costPrice: 0, sellingPrice: 1 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: null, costPending: true, reason: null, ref: null, occurredAt: stamp() });
+    const input = { movementId: receipt.id, unitCost: 100, reason: "invoice found", actorId: "admin", actorName: "Owner", recordedAt: stamp() };
+    const before = await store.listStockMovements(item.id);
+    await expect(store.withTransaction((tx) => tx.resolveReceiptCost(input))).rejects.toThrow("receipt resolution writes require an immediate transaction");
+    expect(await store.listStockMovements(item.id)).toEqual(before);
+    expect((await store.withTransactionImmediate((tx) => tx.resolveReceiptCost(input))).created).toBe(true);
+  });
+
   it("refuses a retry that changes the immutable resolution reason", async () => {
     const category = await store.createCategory({ name: `receipt-conflict-${Date.now()}` });
     const item = await store.createItem({ name: `receipt-conflict-item-${Date.now()}`, categoryId: category.id, costPrice: 0, sellingPrice: 1 });

@@ -1022,6 +1022,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         // SAFETY: both transaction methods keep their own serialization.
         return [key, value as StorePort[typeof key]];
       }
+      if (key === "resolveReceiptCost") {
+        // Direct callers receive the same atomic write unit as RPC callers.
+        const resolve: StorePort["resolveReceiptCost"] = (input) => runTransaction(true, (tx) => tx.resolveReceiptCost(input));
+        return [key, resolve];
+      }
       if (key === "withTransactionImmediate") {
         // SAFETY: same serialization contract as withTransaction; no wrapper needed
         return [key, value as StorePort["withTransactionImmediate"]];
@@ -1932,6 +1937,58 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     };
   };
 
+  /** Overlay only complete saved sale allocations, never a replay-derived guess. */
+  const withSaleSources = async (movements: Array<StockMovement & { seq: number }>) => {
+    const saleGroups = new Map<string, typeof movements>();
+    for (const movement of [...movements].sort((a, b) => a.seq - b.seq)) {
+      if (movement.kind !== "SALE" || movement.delta >= 0 || movement.ref === null) continue;
+      const key = `${movement.ref}:${movement.itemId}`;
+      const group = saleGroups.get(key) ?? [];
+      group.push(movement);
+      saleGroups.set(key, group);
+    }
+    if (saleGroups.size === 0) return movements;
+    const invoiceIds = [...new Set([...saleGroups.values()].flatMap((group) => group.flatMap((row) => row.ref === null ? [] : [row.ref])))];
+    const links = await db.select({
+      invoiceId: stockLinks.invoiceId, movementId: stockLinks.movementId, quantity: stockLinks.quantity,
+      lineInvoiceId: invoiceLines.invoiceId, lineItemId: invoiceLines.itemId,
+    }).from(stockLinks).leftJoin(invoiceLines, eq(invoiceLines.id, stockLinks.invoiceLineId))
+      .where(inArray(stockLinks.invoiceId, invoiceIds)).orderBy(sql`stock_links.rowid`);
+    const byId = new Map(movements.map((movement) => [movement.id, movement]));
+    const attributed = new Map<string, Array<{ movementId: string; quantity: number }>>();
+    for (const group of saleGroups.values()) {
+      const first = group[0];
+      if (first === undefined) continue;
+      const allocations = links.filter((link) => link.invoiceId === first.ref && byId.get(link.movementId)?.itemId === first.itemId);
+      const totalOutflow = group.reduce((sum, movement) => sum - movement.delta, 0);
+      if (allocations.reduce((sum, link) => sum + link.quantity, 0) !== totalOutflow ||
+          allocations.some((link) => link.lineInvoiceId !== first.ref || link.lineItemId !== first.itemId ||
+            !Number.isSafeInteger(link.quantity) || link.quantity <= 0 || (byId.get(link.movementId)?.delta ?? 0) <= 0)) continue;
+      // Duplicate-item lines share an invoice ref. Split its saved allocation
+      // stream across outflow rows in recording order, not present-day FIFO.
+      let index = 0;
+      let used = 0;
+      for (const movement of group) {
+        let remaining = -movement.delta;
+        const consumed: Array<{ movementId: string; quantity: number }> = [];
+        while (remaining > 0) {
+          const source = allocations[index];
+          if (source === undefined) throw new Error("STOCK_PROVENANCE_INVALID");
+          const take = Math.min(remaining, source.quantity - used);
+          consumed.push({ movementId: source.movementId, quantity: take });
+          used += take;
+          remaining -= take;
+          if (used === source.quantity) { index++; used = 0; }
+        }
+        attributed.set(movement.id, consumed);
+      }
+    }
+    return movements.map((movement) => {
+      const consumedMovements = attributed.get(movement.id);
+      return consumedMovements === undefined ? movement : { ...movement, consumedMovements };
+    });
+  };
+
   const store: StorePort = {
     setup,
 
@@ -1984,10 +2041,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .from(stockMovements)
           .where(inArray(stockMovements.itemId, pendingItemIds))
           .orderBy(stockMovements.occurredAt, sql`rowid`);
-        const byItem = new Map<string, typeof movements>();
-        for (const movement of movements) {
+        const attributed = await withSaleSources(movements.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) })));
+        const byItem = new Map<string, typeof attributed>();
+        for (const movement of attributed) {
           const bucket = byItem.get(movement.itemId) ?? [];
-          bucket.push({ ...movement, costPending: Boolean(movement.costPending) });
+          bucket.push(movement);
           byItem.set(movement.itemId, bucket);
         }
         return rows.map((row) => {
@@ -2129,7 +2187,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .from(stockMovements)
         .where(eq(stockMovements.itemId, itemId))
         .orderBy(stockMovements.occurredAt, sql`rowid`);
-      return rows.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) }));
+      return withSaleSources(rows.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) })));
     },
     async listStockMovementsSince(itemId, recordedAfter) {
       // the #295 repeat window: only the movements RECORDED after the cutoff
@@ -2203,6 +2261,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
 
     async resolveReceiptCost(input) {
+      if (!conn.inTransaction || !immediateTransaction) throw new Error("receipt resolution writes require an immediate transaction");
       // SAFETY: the fixed aliases and selected columns define the returned row shape.
       const existing = conn.raw.query(`SELECT id, movement_id AS movementId, unit_cost AS unitCost, reason, actor_id AS actorId, actor_name AS actorName, recorded_at AS recordedAt FROM receipt_cost_resolutions WHERE movement_id = ?`).get(input.movementId) as { id: string; movementId: string; unitCost: number; reason: string; actorId: string | null; actorName: string | null; recordedAt: string } | null;
       if (existing !== null) {
@@ -2214,10 +2273,34 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SAFETY: the fixed aliases and columns define the receipt row shape.
       const receipt = conn.raw.query(`SELECT id, item_id AS itemId, kind, delta, cost_pending AS costPending FROM stock_movements WHERE id = ?`).get(input.movementId) as { id: string; itemId: string; kind: string; delta: number; costPending: number } | null;
       if (receipt === null || receipt.kind !== "PURCHASE" || receipt.delta <= 0 || receipt.costPending !== 1) throw new Error("RECEIPT_NOT_PENDING");
-      // SAFETY: these aliases are fixed; nullable line ids are validated immediately below.
-      const links = conn.raw.query(`SELECT sl.invoice_line_id AS invoiceLineId, sl.quantity FROM stock_links sl JOIN invoices i ON i.id = sl.invoice_id WHERE sl.movement_id = ? AND i.kind = 'SALE' ORDER BY sl.rowid`).all(input.movementId) as Array<{ invoiceLineId: string | null; quantity: number }>;
+      // SAFETY: fixed aliases describe persisted allocations, including nullable legacy keys.
+      const links = conn.raw.query(`
+        SELECT sl.invoice_line_id AS invoiceLineId, sl.invoice_id AS invoiceId, sl.quantity,
+               l.invoice_id AS lineInvoiceId, l.item_id AS lineItemId, l.cost_pending AS lineCostPending
+        FROM stock_links sl JOIN invoices i ON i.id = sl.invoice_id
+        LEFT JOIN invoice_lines l ON l.id = sl.invoice_line_id
+        WHERE sl.movement_id = ? AND i.kind = 'SALE' ORDER BY sl.rowid
+      `).all(input.movementId) as Array<{ invoiceLineId: string | null; invoiceId: string; quantity: number; lineInvoiceId: string | null; lineItemId: string | null; lineCostPending: number | null }>;
       if (links.some((link) => link.invoiceLineId === null)) throw new Error("RECEIPT_PROVENANCE_AMBIGUOUS");
-      const provenLinks = links.filter((link): link is { invoiceLineId: string; quantity: number } => link.invoiceLineId !== null);
+      if (links.some((link) => link.lineInvoiceId !== link.invoiceId || link.lineItemId !== receipt.itemId || link.lineCostPending !== 1 || !Number.isSafeInteger(link.quantity) || link.quantity <= 0)) {
+        throw new Error("RECEIPT_PROVENANCE_INVALID");
+      }
+      // Missing legacy links cannot be recovered from rounded snapshots or a
+      // present-day FIFO replay. Refuse even when no link to this receipt survived.
+      const unproven = conn.raw.query(`
+        SELECT 1 FROM invoice_lines l JOIN invoices i ON i.id = l.invoice_id
+        WHERE i.kind = 'SALE' AND l.item_id = ? AND l.cost_pending = 1
+          AND (COALESCE((SELECT SUM(sl.quantity) FROM stock_links sl
+                        WHERE sl.invoice_line_id = l.id), 0) != l.quantity
+               OR EXISTS (SELECT 1 FROM stock_links sl
+                          JOIN stock_movements source ON source.id = sl.movement_id
+                          WHERE sl.invoice_line_id = l.id
+                            AND (sl.invoice_id != l.invoice_id OR source.item_id != l.item_id
+                                 OR source.delta <= 0 OR sl.quantity <= 0 OR sl.quantity != CAST(sl.quantity AS INTEGER))))
+        LIMIT 1
+      `).get(receipt.itemId);
+      if (unproven !== null) throw new Error("RECEIPT_PROVENANCE_AMBIGUOUS");
+      const provenLinks = links.flatMap((link) => link.invoiceLineId === null ? [] : [{ invoiceLineId: link.invoiceLineId, quantity: link.quantity }]);
       const soldQuantity = provenLinks.reduce((sum, link) => sum + link.quantity, 0);
       if (soldQuantity > receipt.delta) throw new Error("RECEIPT_PROVENANCE_INVALID");
       const lineIds = [...new Set(provenLinks.map((link) => link.invoiceLineId))];

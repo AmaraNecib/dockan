@@ -32,6 +32,8 @@ export interface LedgerMovement {
   occurredAt: string;
   /** store rowid tiebreaker for identical timestamps; array order wins when absent */
   seq?: number;
+  /** Proven posting-time source quantities, overlaid by the store for saved sales. */
+  consumedMovements?: Array<{ movementId: string; quantity: number }>;
 }
 
 export interface FifoLayer {
@@ -112,6 +114,23 @@ export function projectLedger(
       let remaining = -movement.delta;
       if (remaining > stockOnHand) {
         throw new StockLedgerError("STOCK_NEGATIVE", `sale of ${remaining} exceeds stock ${stockOnHand}`);
+      }
+      if (movement.consumedMovements !== undefined) {
+        // A later backdated inflow must not replace the sources this sale
+        // already consumed. New outflows still choose FIFO from what remains.
+        const allocations = movement.consumedMovements;
+        if (allocations.some((source) => !Number.isSafeInteger(source.quantity) || source.quantity <= 0) ||
+            allocations.reduce((sum, source) => sum + source.quantity, 0) !== remaining) {
+          throw new Error("STOCK_PROVENANCE_INVALID");
+        }
+        for (const source of allocations) {
+          const index = layers.findIndex((layer) => layer.movementId === source.movementId);
+          const layer = layers[index];
+          if (layer === undefined || layer.quantity < source.quantity) throw new Error("STOCK_PROVENANCE_INVALID");
+          layer.quantity -= source.quantity;
+          if (layer.quantity === 0) layers.splice(index, 1);
+        }
+        remaining = 0;
       }
       while (remaining > 0) {
         const oldest = layers[0];

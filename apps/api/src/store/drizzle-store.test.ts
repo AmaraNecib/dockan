@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
+import { stockLinks, stockMovements } from "../db/schema";
 import { localDateTime, localDate } from "../lib/logger";
 import { supplierBalance, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createDrizzleStore, backfillReturnDebtApplications, seedExpenseCategories } from "./drizzle-store";
@@ -59,6 +60,53 @@ const removeTempDirRetry = (dir: string): void => {
     }
   }
 };
+
+describe("catalog pending-cost projection", () => {
+  it("skips full history reads without pending matches and projects matching pending history", async () => {
+    const category = await store.createCategory({ name: `catalog-${Date.now()}` });
+    const plain = await store.createItem({ name: `ZEBRAnomatch-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150 });
+    const pending = await store.createItem({ name: `PENGUINpending-${Date.now()}`, categoryId: category.id, costPrice: 0, sellingPrice: 150 });
+    await store.insertStockMovement({
+      itemId: pending.id,
+      kind: "PURCHASE",
+      delta: 1,
+      unitCost: null,
+      costPending: true,
+      reason: null,
+      ref: null,
+      occurredAt: stamp(),
+    });
+
+    const originalSelect = conn.db.select;
+    let historyReads = 0;
+    const instrumentedSelect = (...args: Parameters<typeof conn.db.select>) => {
+      const query = originalSelect.apply(conn.db, args);
+      const isFullMovementProjection = args[0] !== undefined && Object.keys(args[0]).length > 1;
+      const originalFrom = query.from.bind(query);
+      type FromTable = Parameters<typeof query.from>[0];
+      Object.defineProperty(query, "from", {
+        configurable: true,
+        value: (table: FromTable) => {
+          if (table === stockMovements && isFullMovementProjection) historyReads += 1;
+          return originalFrom(table);
+        },
+      });
+      return query;
+    };
+    Object.defineProperty(conn.db, "select", { configurable: true, value: instrumentedSelect });
+    try {
+      const plainResult = await store.listItems({ query: plain.name, limit: 10, offset: 0 });
+      expect(plainResult.items.find((row) => row.id === plain.id)?.costPending).toBe(false);
+      expect(historyReads).toBe(0);
+
+      const pendingResult = await store.listItems({ query: pending.name, limit: 10, offset: 0 });
+      expect(pendingResult.items.find((row) => row.id === pending.id)?.costPending).toBe(true);
+      expect(historyReads).toBe(1);
+    } finally {
+      Object.defineProperty(conn.db, "select", { configurable: true, value: originalSelect });
+    }
+  });
+});
 
 describe("category management (#389)", () => {
   it("renames a category without changing its id or an assigned item's category", async () => {
@@ -534,13 +582,13 @@ describe("barcodes (ticket 28)", () => {
       legacy.raw.exec("INSERT INTO categories VALUES ('legacy-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
       legacy.raw.exec("INSERT INTO items VALUES ('legacy-item', 'منتج قديم', 'legacy-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
       legacy.raw.exec("INSERT INTO invoices VALUES ('legacy-invoice', 'INV-LEGACY', 'SALE', NULL, NULL, '2026-01-01', 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
-      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-line', 'legacy-invoice', 'legacy-item', 'منتج قديم', 1, 200, 100, 200)");
+      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-line', 'legacy-invoice', 'legacy-item', 'منتج قديم', 1, 200, 0, 200)");
 
       const legacyStore = createDrizzleStore(legacy);
       await legacyStore.setup();
       const detail = await legacyStore.getInvoiceDetail("legacy-invoice");
       expect(detail).toMatchObject({ subtotalAmount: 200, discountType: null, discountValue: null, discountAmount: 0 });
-      expect(detail?.lines[0]).toMatchObject({ defaultUnitPrice: 200, discountAllocated: 0, netTotal: 200 });
+      expect(detail?.lines[0]).toMatchObject({ defaultUnitPrice: 200, costAtSale: 0, costPending: false, discountAllocated: 0, netTotal: 200 });
     } finally {
       legacy.close();
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -702,10 +750,10 @@ describe("barcodes (ticket 28)", () => {
       // post-heal modern rows must survive later setup calls: a zero default
       // price is real for the item, and a fully discounted line's net zero is
       // real too — the restricted WHERE clauses and the marker keep them.
-      // (The table now carries cogs_exact, appended by the first setup; the
-      // value 1×100 is the true layer sum for this 1-unit line.)
+      // Name the columns because setup adds fields with migration defaults.
+      // The value 1×100 is the true layer sum for this 1-unit line.
       interrupted.raw.exec("INSERT INTO invoices VALUES ('modern-invoice', 'INV-MODERN', 'SALE', NULL, NULL, '2026-02-01', 700, 'PERCENTAGE', 100, 700, 0, 0, 0, NULL, '2026-02-01T00:00:00', '2026-02-01T00:00:00')");
-      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0, 100)");
+      interrupted.raw.exec("INSERT INTO invoice_lines (id, invoice_id, item_id, description, quantity, default_unit_price, unit_price, cost_at_sale, total, discount_allocated, net_total, cogs_exact) VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0, 100)");
       await interruptedStore.setup();
       const modern = await interruptedStore.getInvoiceDetail("modern-invoice");
       expect(modern?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 700, netTotal: 0 });
@@ -1997,6 +2045,77 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
     expect(linksA).toHaveLength(1);
     expect(linksA[0]).toMatchObject({ movementId: movementA.id, quantity: 4 });
     expect(await store.listStockLinksByItem(b.id)).toEqual([]);
+  });
+
+  it("filters purchase attribution links in SQLite without dropping sale history links", async () => {
+    const category = await store.createCategory({ name: `link-kind-${Date.now()}` });
+    const item = await store.createItem({ name: `link-kind-item-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150 });
+    const purchase = await store.insertInvoice({
+      invoiceNumber: `SUP-${Date.now()}`,
+      kind: "PURCHASE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      totalAmount: 100,
+      paidAmount: 0,
+      remainingAmount: 100,
+      notes: null,
+    });
+    const sale = await store.insertInvoice({
+      invoiceNumber: `INV-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      totalAmount: 100,
+      paidAmount: 0,
+      remainingAmount: 100,
+      notes: null,
+    });
+    const purchaseMovement = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 30, unitCost: 100, reason: null, ref: null, occurredAt: stamp() });
+    const purchaseLink = await store.insertStockLink({ invoiceId: purchase.id, movementId: purchaseMovement.id, quantity: 1 });
+    const saleLinks = [];
+    for (let index = 0; index < 20; index++) {
+      const saleMovement = await store.insertStockMovement({ itemId: item.id, kind: "SALE", delta: -1, unitCost: null, reason: null, ref: sale.id, occurredAt: stamp() });
+      saleLinks.push(await store.insertStockLink({ invoiceId: sale.id, movementId: saleMovement.id, quantity: 1 }));
+    }
+
+    // Observe real query results before store-level mapping or filtering.
+    // No SQL text or predicate representation is part of this assertion.
+    const originalSelect = conn.db.select;
+    const databaseRowCounts: number[] = [];
+    const instrumentedSelect = (...args: Parameters<typeof conn.db.select>) => {
+      const query = originalSelect.apply(conn.db, args);
+      const originalFrom = query.from.bind(query);
+      type FromTable = Parameters<typeof query.from>[0];
+      Object.defineProperty(query, "from", {
+        configurable: true,
+        value: (table: FromTable) => {
+          const selection = originalFrom(table);
+          if (table === stockLinks) {
+            const originalAll = selection.all.bind(selection);
+            Object.defineProperty(selection, "all", {
+              configurable: true,
+              value: (...params: Parameters<typeof selection.all>) => {
+                const rows = originalAll(...params);
+                databaseRowCounts.push(rows.length);
+                return rows;
+              },
+            });
+          }
+          return selection;
+        },
+      });
+      return query;
+    };
+    Object.defineProperty(conn.db, "select", { configurable: true, value: instrumentedSelect });
+    try {
+      expect(await store.listPurchaseStockLinksByItem(item.id)).toEqual([purchaseLink]);
+      expect(databaseRowCounts).toEqual([1]);
+    } finally {
+      Object.defineProperty(conn.db, "select", { configurable: true, value: originalSelect });
+    }
+    expect(await store.listStockLinksByItem(item.id)).toEqual([purchaseLink, ...saleLinks]);
   });
 
   it("getInvoiceLine returns a single line or undefined", async () => {

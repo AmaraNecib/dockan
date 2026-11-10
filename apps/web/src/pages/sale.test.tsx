@@ -52,6 +52,7 @@ interface CapturedItemInput {
   sellingPrice: number;
   barcode?: string;
   stockOnHand?: number;
+  costPending?: boolean;
 }
 
 /** PartyPicker create options (issue 120); the picker passes callbacks per call. */
@@ -803,7 +804,11 @@ describe("SalePage commit states (greptile round-2)", () => {
     await act(async () => {
       host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج سريع");
+      setInput(host, "sale-quick-cost", "0");
+      setInput(host, "sale-quick-sell", "700");
+    });
     await act(async () => {
       host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -820,7 +825,11 @@ describe("SalePage commit states (greptile round-2)", () => {
     await act(async () => {
       host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+    await act(async () => {
+      setInput(host, "sale-quick-name", "منتج سريع");
+      setInput(host, "sale-quick-cost", "0");
+      setInput(host, "sale-quick-sell", "700");
+    });
 
     // commit the sale; the quick form stays open while the request is in flight
     await act(async () => {
@@ -1259,6 +1268,18 @@ describe("SalePage quick-add stock (issue #119)", () => {
     expect(lastCreateInput).not.toHaveProperty("stockOnHand");
   });
 
+  it("refuses a blank selling price instead of creating a free item", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    await fillQuick(host, "5");
+    await setNamed(host, "quickSell", "");
+    await submitQuick(host);
+
+    expect(lastCreateInput).toBeNull();
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(host.querySelector('[data-testid="sale-quick-form"]')).not.toBeNull();
+  });
+
   it("creates with opening stock when a positive quantity is typed", async () => {
     const host = await mountSale();
     await openQuick(host);
@@ -1270,6 +1291,44 @@ describe("SalePage quick-add stock (issue #119)", () => {
     // the settled create added the line and closed the one form
     expect(host.querySelector('[data-testid="sale-quick-form"]')).toBeNull();
     expect(host.querySelector('[data-testid="sale-lines"]')?.textContent).toContain("منتج سريع");
+  });
+
+  it("creates stocked unknown-scan items with an explicit pending-cost marker", async () => {
+    unknownScanCode = "UNKNOWN-PENDING-COST";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-PENDING-COST", "scan-create-stock");
+    await fillQuick(host, "5");
+    await setNamed(host, "quickCost", "");
+    const pendingMode = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-cost-pending"]');
+    expect(pendingMode).not.toBeNull();
+    await act(async () => pendingMode?.click());
+    await submitQuick(host);
+
+    expect(lastCreateWithStockInput).toMatchObject({ stockOnHand: 5, costPrice: 0, sellingPrice: 200, costPending: true });
+  });
+
+  it("keeps a typed cost while switching modes and records deliberate zero as known", async () => {
+    unknownScanCode = "UNKNOWN-COST-MODE";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-COST-MODE", "scan-create-stock");
+    await fillQuick(host, "5");
+    await setNamed(host, "quickCost", "0");
+
+    const cost = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost']");
+    const knownMode = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost-known']");
+    const pendingMode = host.querySelector<HTMLInputElement>("[data-testid='sale-quick-cost-pending']");
+    expect(cost?.getAttribute("aria-label")).toBe(i18n.t("itemsCost"));
+    expect(knownMode?.checked).toBe(true);
+    expect(cost?.value).toBe("0");
+    await act(async () => pendingMode?.click());
+    expect(cost?.disabled).toBe(true);
+    expect(cost?.value).toBe("0");
+    await act(async () => knownMode?.click());
+    expect(cost?.disabled).toBe(false);
+    expect(cost?.value).toBe("0");
+    await submitQuick(host);
+
+    expect(lastCreateWithStockInput).toMatchObject({ stockOnHand: 5, costPrice: 0, sellingPrice: 200, costPending: false });
   });
 
   it("refuses a stock quantity it cannot read and sends nothing", async () => {

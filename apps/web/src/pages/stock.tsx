@@ -71,7 +71,7 @@ export function StockForm() {
     // prefilling from it would record the old average cost on a second
     // movement submitted in that window
     if (items.dataUpdatedAt < freshAfterRef.current) return;
-    const nextCost = String(selectedItem.costPrice);
+    const nextCost = selectedItem.costPending || selectedItem.costPriceKnown === false ? "" : String(selectedItem.costPrice);
     const previous = prefilledRef.current;
     const selectionChanged = previous === null || previous.itemId !== selectedItemId;
     const untouched = previous !== null && unitCost === previous.cost;
@@ -146,6 +146,10 @@ export function StockForm() {
     }
     // a removal cannot carry receipt prices; the api records only an outflow.
     const parsedUnitCost = parsedDelta > 0 ? parseWholeNumber(unitCost) : null;
+    if (parsedDelta > 0 && selectedItem !== undefined && selectedItem !== null && (selectedItem.costPending || selectedItem.costPriceKnown === false) && draftBlank(unitCost)) {
+      setError(t("stockPendingCostRequired"));
+      return;
+    }
     if (parsedDelta > 0 && !draftBlank(unitCost) && parsedUnitCost === null) {
       setError(t("stockUnitCostInvalid"));
       return;
@@ -593,7 +597,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                               <div data-testid={`history-fact-unit-cost-${movement.id}`} className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
                                 <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("stockUnitCost")}</dt>
                                 <dd className="shrink-0 text-left">
-                                  <HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} />
+                                  {movement.details?.cost?.costPending ? t("historyCostPending") : <HistoryAmount value={movement.details === undefined ? movement.unitCost : movement.details.cost?.unitCost} />}
                                 </dd>
                               </div>
                               <div data-testid={`history-fact-sale-total-${movement.id}`} className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">

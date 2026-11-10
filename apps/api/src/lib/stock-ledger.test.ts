@@ -64,6 +64,18 @@ describe("projectLedger — FIFO consumption", () => {
     const p = projectLedger([m("MANUAL_ADJUSTMENT", 4)], { fallbackUnitCost: 250 });
     expect(p.layers).toEqual([{ quantity: 4, unitCost: 250 }]);
   });
+
+  it("keeps pending-cost layers distinct from known zero-cost layers", () => {
+    const movements = [
+      m("PURCHASE", 2, 0),
+      { ...m("PURCHASE", 3, null, "2025-01-02T10:00:00"), costPending: true },
+    ];
+    expect(projectLedger(movements).layers).toEqual([
+      { quantity: 2, unitCost: 0 },
+      { quantity: 3, unitCost: null, costPending: true },
+    ]);
+    expect(fifoOutflowCost(movements, 3)).toEqual({ totalCost: 0, unitCost: 0, costPending: true });
+  });
 });
 
 describe("fifoOutflowCost", () => {
@@ -256,6 +268,41 @@ describe("weightedAverageCost (ADR-0002 replay)", () => {
       m(5, 50, "2025-01-01T00:00:00"), // backdated
     ];
     expect(weightedAverageCost(movements)).toBe(130);
+  });
+
+  it("never uses fallback to price pending history during valued replay", () => {
+    const movements = [
+      m(10, 100, "2025-01-02T00:00:00"),
+      { ...m(10, null, "2025-01-01T00:00:00"), costPending: true },
+      m(10, 100, "2025-01-01T12:00:00"),
+    ];
+    expect(weightedAverageCost(movements, { fallbackUnitCost: 999 })).toBe(100);
+    expect(projectLedger(movements, { fallbackUnitCost: 999 }).layers[0])
+      .toMatchObject({ quantity: 10, unitCost: null, costPending: true });
+  });
+
+  it("weights a known zero basis rather than treating it as missing", () => {
+    const movements = [
+      m(10, 0, "2025-01-01T00:00:00"),
+      { ...m(10, null, "2025-01-01T12:00:00"), costPending: true },
+      m(10, 100, "2025-01-02T00:00:00"),
+    ];
+    // Live weighting uses all 20 units on hand at the known zero basis.
+    // The pending FIFO layer remains unknown, independent of that cache.
+    expect(weightedAverageCost(movements)).toBe(33);
+    expect(projectLedger(movements).layers.map((layer) => layer.unitCost)).toEqual([0, null, 100]);
+  });
+
+  it("treats an explicit zero correction as a basis even with only pending history", () => {
+    const movements = [
+      { ...m(10, null, "2025-01-02T00:00:00"), costPending: true },
+      { kind: "MANUAL_ADJUSTMENT" as const, delta: 0, unitCost: 0, reason: COST_CORRECTION_REASON, occurredAt: "2025-01-01T00:00:00" },
+      m(10, 100, "2025-01-01T12:00:00"),
+    ];
+    // Correction precedence is recording order. Ten units at its known zero
+    // live basis blend with 10@100 even though their FIFO cost stays pending.
+    expect(weightedAverageCost(movements)).toBe(50);
+    expect(projectLedger(movements).layers.at(-1)).toMatchObject({ unitCost: null, costPending: true });
   });
 
   it("outflows never change the average — unlike FIFO layer valuation", () => {

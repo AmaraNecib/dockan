@@ -22,6 +22,7 @@ import type {
   Item,
   ItemCreate,
   ItemListInput,
+  ItemListItem,
   ItemUpdate,
   OnboardingProgress,
   PaginationInput,
@@ -54,6 +55,7 @@ import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberBoundSequence, invoiceNumberFor, invoiceNumberPrefixFor, invoiceSequenceForRange, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
+import { projectLedger } from "../lib/stock-ledger";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersion } from "../lib/schema-version";
@@ -238,6 +240,7 @@ const itemCols = {
   barcode: items.barcode,
   categoryId: items.categoryId,
   costPrice: items.costPrice,
+  costPriceKnown: items.costPriceKnown,
   sellingPrice: items.sellingPrice,
   lowStockThreshold: items.lowStockThreshold,
   stockOnHand: items.stockOnHand,
@@ -351,6 +354,7 @@ const lineCols = {
   unitPrice: invoiceLines.unitPrice,
   costAtSale: invoiceLines.costAtSale,
   cogsExact: invoiceLines.cogsExact,
+  costPending: invoiceLines.costPending,
   total: invoiceLines.total,
   discountAllocated: invoiceLines.discountAllocated,
   netTotal: invoiceLines.netTotal,
@@ -401,6 +405,7 @@ const movementCols = {
   kind: stockMovements.kind,
   delta: stockMovements.delta,
   unitCost: stockMovements.unitCost,
+  costPending: stockMovements.costPending,
   reason: stockMovements.reason,
   ref: stockMovements.ref,
   returnMark: stockMovements.returnMark,
@@ -423,7 +428,7 @@ const returnLineCols = {
 const toCategory = (r: typeof categories.$inferSelect): Category =>
   ({ id: r.id, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Category;
 const toItem = (r: typeof items.$inferSelect): Item =>
-  ({ id: r.id, name: r.name, barcode: r.barcode, categoryId: r.categoryId, costPrice: r.costPrice, sellingPrice: r.sellingPrice, lowStockThreshold: r.lowStockThreshold, stockOnHand: r.stockOnHand, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Item;
+  ({ id: r.id, name: r.name, barcode: r.barcode, categoryId: r.categoryId, costPrice: r.costPrice, costPriceKnown: r.costPriceKnown ?? true, sellingPrice: r.sellingPrice, lowStockThreshold: r.lowStockThreshold, stockOnHand: r.stockOnHand, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Item;
 /** Legacy rows predate subtotal_amount; a read-time heuristic maps the
  * pre-discount shape (no discount, subtotal 0, nonzero total) back to total.
  * New rows always carry a real subtotal, so the rewrite can never fire on
@@ -474,6 +479,7 @@ const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
     unitPrice: r.unitPrice,
     costAtSale: r.costAtSale,
     cogsExact: r.cogsExact,
+    costPending: r.costPending,
     total: r.total,
     discountAllocated: r.discountAllocated ?? 0,
     netTotal: r.netTotal ?? r.total,
@@ -481,7 +487,7 @@ const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
 const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
 const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
-  ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, returnMark: r.returnMark, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
+  ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, costPending: r.costPending, reason: r.reason, ref: r.ref, returnMark: r.returnMark, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
 /** The movement rows carry return_mark; the contracts shape exposes it as returnMark. */
 const toReturn = (r: (typeof returns.$inferSelect) & { invoice_number: string; invoice_date: string; counterparty_name: string | null }): ReturnDetail =>
   ({
@@ -1415,6 +1421,42 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }
   };
 
+  /** Add pending-cost columns atomically. Old NULL costs retain their legacy fallback semantics. */
+  const ensurePendingCostColumns = (): void => {
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      assertSchemaVersionSupported(conn.raw);
+      // SAFETY: PRAGMA table_info returns rows with a string `name` column.
+      const movementRows = conn.raw.query("PRAGMA table_info(stock_movements)").all() as Array<{ name: string }>;
+      const movementNames = new Set(movementRows.map((row) => row.name));
+      if (movementRows.length > 0 && !movementNames.has("cost_pending")) {
+        conn.raw.exec("ALTER TABLE stock_movements ADD COLUMN cost_pending INTEGER NOT NULL DEFAULT 0");
+      }
+      // SAFETY: PRAGMA table_info returns rows with a string `name` column.
+      const lineRows = conn.raw.query("PRAGMA table_info(invoice_lines)").all() as Array<{ name: string }>;
+      const lineNames = new Set(lineRows.map((row) => row.name));
+      if (lineRows.length > 0 && !lineNames.has("cost_pending")) {
+        conn.raw.exec("ALTER TABLE invoice_lines ADD COLUMN cost_pending INTEGER NOT NULL DEFAULT 0");
+      }
+      // Old caches default to the legacy known interpretation; pending receipt
+      // history is backfilled as untrusted because the old writer froze that cache.
+      // SAFETY: PRAGMA table_info returns rows with a string `name` column.
+      const itemRows = conn.raw.query("PRAGMA table_info(items)").all() as Array<{ name: string }>;
+      const addsCostTrust = itemRows.length > 0 && !itemRows.some((row) => row.name === "cost_price_known");
+      if (addsCostTrust) {
+        conn.raw.exec("ALTER TABLE items ADD COLUMN cost_price_known INTEGER NOT NULL DEFAULT 1");
+        // The old cache stayed frozen after any pending receipt. Preserve that
+        // uncertainty across upgrade, even when its FIFO quantity is exhausted.
+        conn.raw.exec("UPDATE items SET cost_price_known = 0 WHERE id IN (SELECT DISTINCT item_id FROM stock_movements WHERE cost_pending = 1)");
+      }
+      stampSchemaVersion(conn.raw);
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      conn.raw.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
   /**
    * Issue 400 migration slice: add nullable actor snapshots without inventing
    * an owner for historical or system events. Column changes and the version
@@ -1466,6 +1508,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureSupplierAdjustmentDedupKeyColumn();
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
+    ensurePendingCostColumns();
     ensureSaleColumns();
     // issue 120: point legacy typed-name invoices at real party records (once).
     // Deliberately fail-loud like every other migration in this file: a failed
@@ -1870,6 +1913,38 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
 
     // --- items ---------------------------------------------------------------
     async listItems(pagination?: ItemListInput) {
+      const withPendingProjection = async (rows: Array<Omit<ItemListItem, "costPending">>): Promise<ItemListItem[]> => {
+        if (rows.length === 0) return [];
+        const itemIds = rows.map((row) => row.id);
+        const pendingItemRows = await db.selectDistinct({ itemId: stockMovements.itemId })
+          .from(stockMovements)
+          .where(and(inArray(stockMovements.itemId, itemIds), eq(stockMovements.costPending, true)));
+        const pendingItemIds = pendingItemRows.map(({ itemId }) => itemId);
+        if (pendingItemIds.length === 0) return rows.map((row) => ({ ...row, costPending: false, costPriceKnown: row.costPriceKnown ?? true }));
+        const movements = await db.select({ ...movementCols, seq: sql<number>`rowid` })
+          .from(stockMovements)
+          .where(inArray(stockMovements.itemId, pendingItemIds))
+          .orderBy(stockMovements.occurredAt, sql`rowid`);
+        const byItem = new Map<string, typeof movements>();
+        for (const movement of movements) {
+          const bucket = byItem.get(movement.itemId) ?? [];
+          bucket.push(movement);
+          byItem.set(movement.itemId, bucket);
+        }
+        return rows.map((row) => {
+          const itemMovements = byItem.get(row.id) ?? [];
+          // Most list reads need no ledger replay. In particular, transaction
+          // snapshots can temporarily contain a sale movement before its paired
+          // stock update. Only replay when this item's history records pending
+          // cost, the fact this projection exists to expose.
+          const hasPendingCostFact = itemMovements.some((movement) => movement.costPending === true);
+          return {
+            ...row,
+            costPending: hasPendingCostFact && projectLedger(itemMovements.map((movement) => ({ ...movement, seq: Number(movement.seq) })), { fallbackUnitCost: row.costPrice }).layers.some((layer) => layer.costPending === true),
+            costPriceKnown: row.costPriceKnown ?? true,
+          };
+        });
+      };
       const query = db
         .select({ ...itemCols, categoryName: categories.name })
         .from(items)
@@ -1880,7 +1955,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         // Filter the joined catalogue before slicing so a match past page one
         // is reachable and total counts matches, not the unfiltered table.
         const rows = await query;
-        const upperSearch = search.toUpperCase();
+        // Match the catalog ranker's query cleanup before barcode prefiltering.
+        const upperSearch = normalizeTextKey(search).toUpperCase();
         const matched = rows.filter((item) => {
           if (item.barcode?.toUpperCase().includes(upperSearch)) return true;
           if (arabicIncludes(item.name, search) || (item.categoryName !== null && arabicIncludes(item.categoryName, search))) return true;
@@ -1888,11 +1964,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             (item.categoryName !== null && fuzzySearchScore(item.categoryName, search) > FUZZY_MATCH_MIN_SCORE);
         });
         const { limit, offset } = resolvePagination(pagination);
-        return { items: matched.slice(offset, offset + limit), total: matched.length };
+        return { items: await withPendingProjection(matched.slice(offset, offset + limit)), total: matched.length };
       }
       if (pagination === undefined) {
         const rows = await query;
-        return { items: rows, total: rows.length };
+        return { items: await withPendingProjection(rows), total: rows.length };
       }
       const { limit, offset } = resolvePagination(pagination);
       const [total, rows] = await Promise.all([
@@ -1905,7 +1981,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .limit(limit)
           .offset(offset),
       ]);
-      return { items: rows, total };
+      return { items: await withPendingProjection(rows), total };
     },
     async listLowStockItems() {
       return db.select(itemCols).from(items).where(sql`${items.stockOnHand} <= ${items.lowStockThreshold}`).orderBy(items.stockOnHand, items.name);
@@ -1950,8 +2026,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const rows = await db.update(items).set(set).where(eq(items.id, idToUpdate)).returning();
       return rows.length === 0 ? undefined : toItem(firstRowOf(rows));
     },
-    async setItemStockAndCost(itemId: string, stockOnHand: number, costPrice: number) {
-      await db.update(items).set({ stockOnHand, costPrice, updatedAt: now() }).where(eq(items.id, itemId)).run();
+    async setItemStockAndCost(itemId: string, stockOnHand: number, costPrice: number, costPriceKnown?: boolean) {
+      const set: Partial<typeof items.$inferInsert> = { stockOnHand, costPrice, updatedAt: now() };
+      if (costPriceKnown !== undefined) set.costPriceKnown = costPriceKnown;
+      await db.update(items).set(set).where(eq(items.id, itemId)).run();
     },
 
     // --- stock ledger (ticket 27) --------------------------------------------
@@ -1969,6 +2047,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             kind: movement.kind,
             delta: movement.delta,
             unitCost: movement.unitCost ?? null,
+            costPending: movement.costPending ?? false,
             reason: movement.reason ?? null,
             ref: movement.ref ?? null,
             returnMark: movement.returnMark ?? null,
@@ -2035,6 +2114,24 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .where(eq(stockMovements.itemId, itemId))
         // SAFETY: the join makes a bare `rowid` ambiguous — qualify it with the
         // links table so insertion-order tiebreaks still apply
+        .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
+      return rows.map((row) => ({ ...row }) satisfies StockLink);
+    },
+    async listPurchaseStockLinksByItem(itemId: string) {
+      // Keep sale-consumption links in the all-links history query, but filter
+      // attribution links here before they leave SQLite.
+      const rows = await db
+        .select({
+          id: stockLinks.id,
+          invoiceId: stockLinks.invoiceId,
+          movementId: stockLinks.movementId,
+          quantity: stockLinks.quantity,
+          createdAt: stockLinks.createdAt,
+        })
+        .from(stockLinks)
+        .innerJoin(stockMovements, eq(stockMovements.id, stockLinks.movementId))
+        .innerJoin(invoices, eq(invoices.id, stockLinks.invoiceId))
+        .where(and(eq(stockMovements.itemId, itemId), eq(invoices.kind, "PURCHASE")))
         .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
       return rows.map((row) => ({ ...row }) satisfies StockLink);
     },
@@ -2241,7 +2338,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
                l.id AS lineId, l.quantity AS quantity,
                l.cost_at_sale AS costAtSale, l.cogs_exact AS cogsExact,
-               l.net_total AS netTotal
+               l.cost_pending AS costPending, l.net_total AS netTotal
         FROM invoice_lines l
         JOIN invoices i ON i.id = l.invoice_id
         WHERE i.kind = 'SALE'
@@ -2275,12 +2372,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       for (const line of lines) {
         const perLineStats = statsByLine.get(line.lineId);
         if (perLineStats === undefined) {
-          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact, netTotal: line.netTotal });
+          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact, costPending: Boolean(line.costPending), netTotal: line.netTotal });
           continue;
         }
         const booked = bookSaleLineForReturns(line, perLineStats);
         if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
-        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact, netTotal: booked.netTotal });
+        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact, costPending: Boolean(line.costPending), netTotal: booked.netTotal });
       }
       return rows;
     },
@@ -3046,6 +3143,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             // rows where cost was the unit cost). The sale router always
             // passes the true layer-sum snapshot.
             cogsExact: line.cogsExact ?? line.quantity * line.costAtSale,
+            costPending: line.costPending ?? false,
           })
           .returning(),
       );

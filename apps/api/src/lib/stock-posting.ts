@@ -3,6 +3,7 @@ import type { Item, ReturnMark, StockMovement } from "@dokan/contracts";
 import type { StorePort } from "../store/port";
 import { localDateTime } from "./logger";
 import {
+  COST_CORRECTION_REASON,
   fifoOutflowCost,
   projectLedger,
   saleMovementTime,
@@ -47,6 +48,8 @@ export interface StockMovementSpec {
    * a misleading "fact"); a zero-delta cost correction passes the new cost.
    */
   unitCost?: number | null;
+  /** Explicitly unknown cost; bypasses legacy cached-cost fallback. */
+  costPending?: boolean;
   reason?: string | null;
   ref?: string | null;
   returnMark?: ReturnMark | null;
@@ -66,6 +69,8 @@ export interface PostedStockMovement {
   stockOnHand: number;
   /** resynced ADR-0002 weighted-average cost written to the item cache */
   costPrice: number;
+  /** whether the cached cost has a known basis for future receipt defaults */
+  costPriceKnown: boolean;
   /** FIFO layer cost of the outflow; present iff `delta < 0`, else null */
   outflowCost: FifoOutflowCost | null;
 }
@@ -82,7 +87,7 @@ export class StockItemMissingError extends Error {
  * The item cache a movement leaves behind: the stock on hand and the
  * ADR-0002 weighted-average cost.
  */
-type ItemCache = { stockOnHand: number; costPrice: number };
+type ItemCache = { stockOnHand: number; costPrice: number; costPriceKnown: boolean };
 
 /**
  * The rows one posting batch reads once, and the running cache its movements
@@ -129,7 +134,7 @@ function cacheFor(state: BatchState, itemId: string): ItemCache {
   if (cached !== undefined) return cached;
   const item = state.items.get(itemId);
   if (item === undefined) throw new StockItemMissingError(itemId);
-  const cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice };
+  const cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice, costPriceKnown: item.costPriceKnown !== false };
   state.running.set(itemId, cache);
   return cache;
 }
@@ -158,7 +163,7 @@ async function postOne(
 
   const unitCost =
     spec.delta > 0
-      ? (spec.unitCost ?? cache.costPrice)
+      ? (spec.costPending === true ? null : (spec.unitCost ?? cache.costPrice))
       : spec.delta < 0
         ? null
         : (spec.unitCost ?? null);
@@ -169,6 +174,7 @@ async function postOne(
     unitCost,
     reason: spec.reason ?? null,
     occurredAt,
+    costPending: spec.costPending === true,
     seq: undefined,
   };
 
@@ -184,25 +190,81 @@ async function postOne(
     kind: spec.kind,
     delta: spec.delta,
     unitCost,
+    costPending: spec.costPending === true,
     reason: spec.reason ?? null,
     ref: spec.ref ?? null,
     returnMark: spec.returnMark ?? null,
     occurredAt,
   });
 
-  // ADR-0002/0005: the average is replayed from the full ledger after ANY
-  // write, outflows included. No per-insertion-position special-casing.
-  const costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+  // Keep cache trust separate from pending FIFO facts. Chronological priced
+  // inflows blend the trusted live basis; ordinary outflows preserve it.
+  // Explicit corrections and backdated writes replay the ledger.
+  candidate.id = movement.id;
+  const pendingRemains = projection.layers.some((layer) => layer.costPending === true);
+  const needsCostRecovery = !cache.costPriceKnown && !pendingRemains;
+  const movementById = needsCostRecovery
+    ? new Map([...existing, candidate].flatMap((entry) => entry.id === undefined ? [] : [[entry.id, entry] as const]))
+    : undefined;
+  const hasReliableRemainingCosts = needsCostRecovery && projection.layers.every((layer) => {
+    if (layer.costPending === true || layer.movementId === undefined) return false;
+    const source = movementById?.get(layer.movementId);
+    return source !== undefined && source.unitCost !== null;
+  });
+  const explicitCorrection = spec.reason === COST_CORRECTION_REASON && spec.delta === 0 && spec.unitCost !== undefined && spec.unitCost !== null;
+  let costPrice = cache.costPrice;
+  let costPriceKnown = cache.costPriceKnown;
+  if (explicitCorrection) {
+    costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+    costPriceKnown = true;
+  } else if (spec.delta > 0 && spec.costPending === true && cache.stockOnHand === 0 && !explicitCorrection) {
+    // A pending opening layer has no trusted basis. An explicit correction
+    // remains trusted even while pending quantity remains.
+    costPriceKnown = false;
+  } else if (!costPriceKnown && pendingRemains) {
+    // Keep the untrusted cache unchanged while any unknown FIFO quantity remains.
+  } else if (!costPriceKnown) {
+    if (projection.layers.length > 0 && hasReliableRemainingCosts) {
+      const knownQuantity = projection.layers.reduce((sum, layer) => sum + layer.quantity, 0);
+      const knownValue = projection.layers.reduce((sum, layer) => sum + layer.quantity * (layer.unitCost ?? 0), 0);
+      costPrice = Math.round(knownValue / knownQuantity);
+      costPriceKnown = true;
+    } else if (spec.delta > 0 && spec.costPending !== true && spec.unitCost !== undefined && spec.unitCost !== null) {
+      costPrice = spec.unitCost;
+      costPriceKnown = true;
+    }
+  } else if (spec.delta > 0 && !existing.some((entry) => entry.occurredAt > occurredAt)) {
+    // The trusted cache is the live weighted-average basis. Replaying older
+    // pending layers would reintroduce their provisional zero after recovery.
+    // Blend only an explicitly priced inflow; a pending layer stays pending
+    // and cannot alter the trusted basis.
+    if (candidate.unitCost !== null && !candidate.costPending) {
+      const priorQuantity = cache.stockOnHand;
+      costPrice = priorQuantity === 0
+        ? candidate.unitCost
+        : Math.round((priorQuantity * cache.costPrice + spec.delta * candidate.unitCost) / (priorQuantity + spec.delta));
+    }
+  } else if (existing.some((entry) => entry.occurredAt > occurredAt)) {
+    // A backdated pending layer has no trusted price. Replaying it as zero
+    // would dilute a known live basis; keep the cache independent from that
+    // provisional FIFO layer. Other backdated movements still replay because
+    // their position can change the valued ledger, and explicit corrections
+    // above still take precedence.
+    if (!(spec.delta > 0 && spec.costPending === true)) {
+      costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+    }
+  }
   state.appended.set(spec.itemId, [...(state.appended.get(spec.itemId) ?? []), candidate]);
   cache.stockOnHand = projection.stockOnHand;
   cache.costPrice = costPrice;
-  return { movement, stockOnHand: projection.stockOnHand, costPrice, outflowCost };
+  cache.costPriceKnown = costPriceKnown;
+  return { movement, stockOnHand: projection.stockOnHand, costPrice, costPriceKnown, outflowCost };
 }
 
 /** Write the item caches the batch's movements left behind: one write per item. */
 async function writeBatchCaches(tx: StockPostingTx, state: BatchState): Promise<void> {
   for (const [itemId, cache] of state.running) {
-    await tx.setItemStockAndCost(itemId, cache.stockOnHand, cache.costPrice);
+    await tx.setItemStockAndCost(itemId, cache.stockOnHand, cache.costPrice, cache.costPriceKnown);
   }
 }
 

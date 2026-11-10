@@ -168,7 +168,7 @@ function aggregateLineQuantities(lines: readonly InvoiceLine[]): Map<string, num
 async function uninvoicedAvailability(store: StorePort, itemId: string): Promise<number> {
   const movements = await store.listStockMovements(itemId);
   const consumed = new Map<string, number>();
-  for (const link of await store.listStockLinksByItem(itemId)) {
+  for (const link of await store.listPurchaseStockLinksByItem(itemId)) {
     consumed.set(link.movementId, (consumed.get(link.movementId) ?? 0) + link.quantity);
   }
   let available = 0;
@@ -185,7 +185,7 @@ async function uninvoicedAvailability(store: StorePort, itemId: string): Promise
  * attributing more than the line claims. */
 async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: string): Promise<number> {
   let total = 0;
-  for (const link of await store.listStockLinksByItem(itemId)) {
+  for (const link of await store.listPurchaseStockLinksByItem(itemId)) {
     if (link.invoiceId === invoiceId) total += link.quantity;
   }
   return total;
@@ -706,11 +706,12 @@ export function createRpcRouter(deps: RpcDeps) {
             // ref-less shape. The guard can only match it against an
             // adjustment otherwise identical in the window that also carries
             // the literal reason "opening" — a reason the web never sends.
-            await postStock(tx, {
+            const posted = await postStock(tx, {
               itemId: item.id,
               kind: "MANUAL_ADJUSTMENT",
               delta: input.stockOnHand,
               unitCost: input.costPrice,
+              costPending: input.costPending,
               reason: "opening",
               ref: null,
               occurredAt: item.createdAt,
@@ -720,7 +721,7 @@ export function createRpcRouter(deps: RpcDeps) {
               summary: `ITEM_CREATED_WITH_STOCK ${input.stockOnHand} ${input.name}`,
               ref: item.id,
             });
-            return { ...item, stockOnHand: input.stockOnHand };
+            return { ...item, stockOnHand: input.stockOnHand, costPriceKnown: posted.costPriceKnown };
           }),
         );
       }),
@@ -747,7 +748,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // next inflow/outflow replay reproduces the owner's edit instead of
             // discarding it. Cost never rides updateItem's direct column write.
             const nextCost = input.costPrice;
-            const costChanged = nextCost !== undefined && nextCost !== current.costPrice;
+            const costChanged = nextCost !== undefined && (nextCost !== current.costPrice || current.costPriceKnown === false);
             let correctedCost = current.costPrice;
             if (costChanged) {
               // The correction's precedence is its RECORDING order, not its
@@ -795,7 +796,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- catalog search + scanning (ticket 28) --------------------------------
     catalogSearch: os.catalogSearch.handler(
       guardedInput(async ({ query, limit }) => {
-        const [items, categories] = await Promise.all([deps.store.listItems(), deps.store.listCategories()]);
+        const [items, categories] = await Promise.all([deps.store.listItems({ query, limit: 100000, offset: 0 }), deps.store.listCategories()]);
         return rankCatalog(items.items, categories, query, limit);
       }),
     ),
@@ -805,6 +806,9 @@ export function createRpcRouter(deps: RpcDeps) {
       guardedInput(async (input, _context, session) => {
         if (input.kind === "PURCHASE" && input.delta <= 0) {
           throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_REQUIRES_INFLOW" });
+        }
+        if (input.costPending === true && (input.kind !== "PURCHASE" || input.delta <= 0 || input.unitCost !== undefined)) {
+          throw new ORPCError("BAD_REQUEST", { message: "PENDING_COST_REQUIRES_UNPRICED_PURCHASE" });
         }
         if (input.delta < 0 && input.sellingPrice !== undefined) {
           throw new ORPCError("BAD_REQUEST", { message: "STOCK_PRICE_UPDATE_REQUIRES_INFLOW" });
@@ -833,6 +837,10 @@ export function createRpcRouter(deps: RpcDeps) {
           if (item === undefined) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
           }
+          if (input.delta > 0 && input.unitCost === undefined && input.costPending !== true &&
+              (item.costPriceKnown === false || (await itemStockProjection(tx, item.id, { fallbackUnitCost: item.costPrice })).layers.some((layer) => layer.costPending === true))) {
+            throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_COST_REQUIRED_WHILE_PENDING" });
+          }
           // #295 — the same action must not be applied twice. Two windows on
           // one API (the v1 multi-client shape, #294) can post the SAME
           // adjustment: a double-clicked save, a lost response re-sent as the
@@ -856,6 +864,7 @@ export function createRpcRouter(deps: RpcDeps) {
             kind: input.kind,
             delta: input.delta,
             unitCost: expressUnitCost(input.delta, input.unitCost, item.costPrice),
+            costPending: input.costPending === true,
             reason,
             occurredAt: input.occurredAt ?? null,
             // an adjustment the owner typed has no origin document; the rows
@@ -889,6 +898,7 @@ export function createRpcRouter(deps: RpcDeps) {
             kind: input.kind,
             delta: input.delta,
             unitCost: input.unitCost,
+            costPending: input.costPending === true,
             reason,
             ref: null,
             occurredAt: input.occurredAt,
@@ -1543,6 +1553,9 @@ export function createRpcRouter(deps: RpcDeps) {
               const outflow = posted.outflowCost;
               if (outflow === null) throw new Error("SALE movement returned no outflow cost");
               const { unitCost: costAtSale, totalCost: cogsExact } = outflow;
+              for (const consumed of outflow.consumedMovements ?? []) {
+                await tx.insertStockLink({ invoiceId: invoice.id, movementId: consumed.movementId, quantity: consumed.quantity });
+              }
               const inserted = await tx.insertInvoiceLine({
                 invoiceId: invoice.id,
                 itemId: item.id,
@@ -1552,6 +1565,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 unitPrice: calculated.unitPrice,
                 costAtSale,
                 cogsExact,
+                costPending: outflow.costPending,
                 total: calculated.grossTotal,
                 discountAllocated: calculated.discountAllocated,
                 netTotal: calculated.netTotal,
@@ -1578,8 +1592,16 @@ export function createRpcRouter(deps: RpcDeps) {
         if (input.discount !== undefined || input.discountType !== undefined || input.discountValue !== undefined) {
           throw new ORPCError("BAD_REQUEST", { message: "DISCOUNT_ONLY_SALE" });
         }
-        // Existing purchase intake behavior: omitted line prices default to the
-        // item's cost because purchase prices are the stock cost basis.
+        // A cached average cannot price a receipt while pending layers remain:
+        // the placeholder may be zero. Require an explicit numeric price in
+        // that state; zero remains valid when the caller actually sent it.
+        for (const { line, item } of pricedLines) {
+          if (line.unitPrice === undefined && (item.costPriceKnown === false || (await itemStockProjection(tx, line.itemId)).layers.some((layer) => layer.costPending === true))) {
+            throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_COST_REQUIRED_WHILE_PENDING" });
+          }
+        }
+        // For known-cost stock, omitted purchase prices retain the existing
+        // cached-cost default.
         const totalAmount = pricedLines.reduce((sum, { line, item }) => sum + line.quantity * (line.unitPrice ?? item.costPrice), 0);
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
@@ -1912,7 +1934,8 @@ export function createRpcRouter(deps: RpcDeps) {
               itemId: item.id,
               kind: "SALE",
               delta: lineRefund.quantity,
-              unitCost: item.costPrice,
+              unitCost: line.costPending === true ? null : item.costPrice,
+              costPending: line.costPending === true,
               // visible marker in the item history: this stock-in is a return.
               // Locale-neutral key; the ui translates it (the ref carries the
               // return number).
@@ -2179,7 +2202,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // FIFO walk over that item's uninvoiced PURCHASE movements
             const movements = await tx.listStockMovements(allocation.itemId);
             const alreadyLinked = new Map<string, number>();
-            for (const link of await tx.listStockLinksByItem(allocation.itemId)) {
+            for (const link of await tx.listPurchaseStockLinksByItem(allocation.itemId)) {
               alreadyLinked.set(link.movementId, (alreadyLinked.get(link.movementId) ?? 0) + link.quantity);
             }
             for (const movement of movements) {

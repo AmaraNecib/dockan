@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { InvoiceDetail, Item } from "../../packages/contracts/src/core";
 import { signIn } from "./auth-helpers";
-import { actAndAck, callRpc, saveQuickAdd, seedCategoryId } from "./rpc-helpers";
+import { actAndAck, callRpc, readEnvelope, readRpc, saveQuickAdd, seedCategoryId } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { chooseDiscountMode, expectDiscountControlsCollapsed, openDiscountControls, selectRadioValue } from "./sale-discount-helpers";
 
@@ -84,7 +84,7 @@ test("persistent sale search keeps the real invoice draft through scans, create,
   await expect(page.getByTestId("sale-quick-category")).toBeEnabled();
   await expect(page.getByTestId("sale-quick-category")).toHaveValue(category.name);
   await page.getByTestId("sale-quick-name").fill(createdName);
-  await page.getByLabel("سعر الشراء (دج)").fill("100");
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("100");
   await page.getByLabel("سعر البيع (دج)").fill("300");
   await page.getByTestId("sale-quick-stock").fill("4");
 
@@ -133,6 +133,109 @@ test("persistent sale search keeps the real invoice draft through scans, create,
   expect(inventory.items.find((item) => item.id === ambiguousSecond.id)?.stockOnHand).toBe(3);
 });
 
+test("quick-create cost modes stay keyboard accessible and aligned in Arabic RTL", async ({ page }, testInfo) => {
+  await signIn(page);
+  const key = "ui.sidebar.collapsed";
+  const original = (await readRpc<{ values: Record<string, string> }>(page, "preferencesGet")).values[key] === "true";
+  const sidebar = page.getByRole("complementary", { name: "التنقل الرئيسي" });
+  const toggleSidebar = async (collapsed: boolean) => {
+    const value = String(collapsed);
+    const ack = readEnvelope<{ key: string; value: string }>(page.waitForResponse((response) => {
+      if (response.request().method() !== "POST" || new URL(response.url()).pathname !== "/api/rpc/preferencesSet") return false;
+      const input = response.request().postDataJSON();
+      return input?.json?.key === key && input?.json?.value === value;
+    }), "preferencesSet");
+    void ack.catch(() => undefined);
+    await page.getByRole("button", { name: "توسيع / طي الشريط الجانبي", exact: true }).click();
+    expect(await ack).toEqual({ key, value });
+    await expect(sidebar).toHaveCSS("width", collapsed ? "64px" : "240px");
+  };
+  try {
+    await expect(sidebar).toHaveCSS("width", original ? "64px" : "240px");
+    if (original) await toggleSidebar(false);
+    const stamp = Date.now().toString();
+    await page.goto("/sale");
+    const search = page.getByTestId("sale-search");
+    await search.focus();
+    await page.keyboard.type(`UNKNOWN-UI-${stamp}`, { delay: 8 });
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+    await page.getByTestId("scan-create-stock").click();
+
+    const quick = page.getByTestId("sale-quick-form");
+    const category = page.getByTestId("sale-quick-category");
+    const cost = page.getByTestId("sale-quick-cost");
+    const knownMode = page.getByTestId("sale-quick-cost-known");
+    const pendingMode = page.getByTestId("sale-quick-cost-pending");
+    await expect(quick).toBeVisible();
+    await expect(knownMode).toBeChecked();
+    await expect(pendingMode).toBeEnabled();
+    await expect(category).toBeVisible();
+
+    const [categoryBox, costBox] = await Promise.all([category.boundingBox(), cost.boundingBox()]);
+    if (categoryBox === null || costBox === null) throw new Error("Quick-create category and cost fields must be measurable");
+    expect(Math.abs(categoryBox.height - costBox.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs(categoryBox.width - costBox.width)).toBeLessThanOrEqual(1);
+    expect(await category.evaluate((element) => getComputedStyle(element).borderRadius)).toBe(await cost.evaluate((element) => getComputedStyle(element).borderRadius));
+
+    await cost.fill("444");
+    await knownMode.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(pendingMode).toBeChecked();
+    await expect(cost).toBeDisabled();
+    await expect(cost).toHaveValue("444");
+
+    // The shell keeps its persistent sidebar open until the user collapses it.
+    // Exercise that real control at the target viewport before judging the form.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await toggleSidebar(true);
+
+    const [mobileCategoryBox, mobileCostBox, quickBox, mainBox] = await Promise.all([
+      category.boundingBox(),
+      cost.boundingBox(),
+      quick.boundingBox(),
+      page.locator("main").boundingBox(),
+    ]);
+    if (mobileCategoryBox === null || mobileCostBox === null || quickBox === null || mainBox === null) {
+      throw new Error("Quick-create form and fields must be measurable at 390px");
+    }
+    expect(mobileCategoryBox.width).toBeGreaterThanOrEqual(250);
+    expect(mobileCostBox.width).toBeGreaterThanOrEqual(250);
+    expect(Math.abs(mobileCategoryBox.width - mobileCostBox.width)).toBeLessThanOrEqual(1);
+    expect(quickBox.x).toBeGreaterThanOrEqual(mainBox.x);
+    expect(quickBox.x + quickBox.width).toBeLessThanOrEqual(mainBox.x + mainBox.width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+    for (const field of [
+      page.getByTestId("sale-quick-name"),
+      page.getByTestId("sale-quick-barcode"),
+      category,
+      cost,
+      page.getByTestId("sale-quick-sell"),
+      page.getByTestId("sale-quick-stock"),
+      quick.getByRole("button", { name: "حفظ المنتج وإضافته" }),
+      quick.getByRole("button", { name: "إغلاق", exact: true }),
+    ]) {
+      await field.scrollIntoViewIfNeeded();
+      await expect(field).toBeVisible();
+      const box = await field.boundingBox();
+      if (box === null) throw new Error("Every quick-create control must have a visible box");
+      expect(box.x).toBeGreaterThanOrEqual(mainBox.x);
+      expect(box.x + box.width).toBeLessThanOrEqual(mainBox.x + mainBox.width);
+    }
+    await quick.screenshot({ path: testInfo.outputPath("quick-create-mobile.png") });
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await quick.screenshot({ path: testInfo.outputPath("quick-create-desktop.png") });
+  } finally {
+    // Browser contexts share this server preference. Restore it even after an assertion fails.
+    // An absent key means expanded; preferencesSet has no delete operation.
+    const value = String(original);
+    expect(await callRpc(page, "preferencesSet", { key, value })).toEqual({ key, value });
+    expect((await readRpc<{ values: Record<string, string> }>(page, "preferencesGet")).values[key]).toBe(value);
+  }
+});
+
 test("sale checkout keeps the final line and focused control clear at short heights", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await signIn(page);
@@ -149,8 +252,8 @@ test("sale checkout keeps the final line and focused control clear at short heig
   await page.goto("/sale");
   await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("2");
   await saveQuickAdd(page, {
@@ -257,8 +360,8 @@ test("scan create-with-stock refuses a blank or zero quantity and focuses it on 
   await expect(page.getByTestId("sale-quick-stock")).toHaveAttribute("aria-required", "true");
 
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
 
   // blank must not create an unsellable item: the submit is refused by name
@@ -312,8 +415,8 @@ test("sale checkout: an invalid price override outranks the payment it invalidat
   await expect(page.getByTestId("sale-form")).toBeVisible();
   await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
@@ -360,8 +463,8 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
   await expect(page.getByTestId("sale-quick-barcode")).toHaveValue(barcode);
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");
   await saveQuickAdd(page, {
@@ -413,8 +516,8 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
   await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(secondName);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("300");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("300");
   await page.getByLabel("سعر البيع (دج)").fill("500");
   await page.getByTestId("sale-quick-barcode").fill(`SALE2-${stamp}`);
   await page.getByTestId("sale-quick-stock").fill("2");
@@ -443,8 +546,8 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
   await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(`بيع-تجاوز-${stamp}`);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("100");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("100");
   await page.getByLabel("سعر البيع (دج)").fill("200");
   await page.getByTestId("sale-quick-stock").fill("1");
   const oversellName = `بيع-تجاوز-${stamp}`;
@@ -497,8 +600,8 @@ test("sale checkout: Arabic-Indic digits price the line and the discount like AS
   await page.getByTestId("scan-create-stock").click();
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");
   await saveQuickAdd(page, {
@@ -547,8 +650,8 @@ test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the type
   await page.getByTestId("scan-create-stock").click();
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+  await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");
   await saveQuickAdd(page, {
@@ -605,8 +708,8 @@ test("sale checkout: a mark-only payment draft is blank, not a refusal (#238)", 
   async function quickAdd(name: string, sell: string) {
     await page.getByTestId("sale-quick-add").click();
     await page.getByTestId("sale-quick-name").fill(name);
-    await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
-    await page.getByLabel("سعر الشراء (دج)").fill("400");
+    await chooseSelectOption(page, page.getByRole("combobox", { name: "التصنيف", exact: true }), categoryName);
+    await page.getByRole("textbox", { name: "سعر الشراء (دج)", exact: true }).fill("400");
     await page.getByLabel("سعر البيع (دج)").fill(sell);
     await page.getByTestId("sale-quick-stock").fill("5");
     await saveQuickAdd(page, {

@@ -19,7 +19,7 @@ import { inputClass } from "@/components/ui/input";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { draftBlank, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import { PURCHASE_QUICK, type PurchaseQuickFields } from "@/lib/purchase-quick";
-import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseCartDirty, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { firstCommitError, lineQuantity, nextPurchaseUnitCost, parseQuantityDraft, purchaseCartDirty, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
 import { useDiscardNavigationGuard } from "@/hooks/use-discard-navigation-guard";
 import { useInvoiceEntryShortcut } from "@/hooks/use-invoice-entry-shortcut";
@@ -51,7 +51,7 @@ import { useRpc } from "../lib/rpc-context";
 
 /** The per-kind draft rules; module scope keeps the config identity stable. */
 const PURCHASE_DRAFT = {
-  emptyLine: (item: Item): PurchaseDraftLine => ({ item, quantityDraft: "1", unitCost: item.costPrice }),
+  emptyLine: (item: Item): PurchaseDraftLine => ({ item, quantityDraft: "1", unitCost: item.costPriceKnown === false || item.costPending === true ? null : item.costPrice }),
   unitPrice: purchaseUnitPrice,
 };
 
@@ -486,6 +486,7 @@ export function PurchasePage() {
       partyNeedsChoice: supplier.needsChoice === true,
       partyNeedsChoiceMessage: t("partyChooseExisting"),
       quantity: { invalid: (line) => quantityDraftInvalid(line.quantityDraft), message: t("purchasesInvalidQuantity") },
+      unitCost: { invalid: (line) => line.unitCost === null, message: t("purchasesInvalidCost") },
       payment: { invalid: !paid.ok, message: t("purchasesInvalidPaid") },
     });
     if (commitError !== null) {
@@ -501,7 +502,7 @@ export function PurchasePage() {
       // the api requires a POSITIVE initialPaid; a zero draft (0% or a small
       // percentage that rounds to 0) means "nothing paid now"
       initialPaid: resolvedInitialPaid(paid),
-      lines: lines.map((line) => ({ itemId: line.item.id, quantity: parseQuantityDraft(line.quantityDraft), unitPrice: line.unitCost })),
+      lines: lines.map((line) => ({ itemId: line.item.id, quantity: parseQuantityDraft(line.quantityDraft), unitPrice: line.unitCost ?? 0 })),
     });
   }
 
@@ -562,7 +563,12 @@ export function PurchasePage() {
     // invoice line's own movement re-derives the product's cost from the ledger
     // at save time — so refusing here would block the shortcut on a price the
     // form does not even offer to edit (review round 1, F2).
-    const sellPrice = draftBlank(current.sellPrice) ? line.unitCost : parseLooseNumber(current.sellPrice);
+    if (line.unitCost === null) {
+      setLineError(t("purchasesInvalidCost"));
+      return;
+    }
+    const unitCost = line.unitCost;
+    const sellPrice = draftBlank(current.sellPrice) ? unitCost : parseLooseNumber(current.sellPrice);
     if (!Number.isInteger(sellPrice) || sellPrice < 0) {
       setLineError(t("itemsSellInvalid"));
       return;
@@ -576,7 +582,7 @@ export function PurchasePage() {
     setLineCreatePending({ target, attempt });
     const outcome = await new Promise<QuickAddOutcome>((resolve) => {
       createItem.mutate(
-        { name, categoryId: current.categoryId, costPrice: line.unitCost, sellingPrice: sellPrice },
+        { name, categoryId: current.categoryId, costPrice: unitCost, sellingPrice: sellPrice },
         { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) },
       );
     });
@@ -863,13 +869,13 @@ export function PurchasePage() {
                               name={`unitCost-${line.item.id}`}
                               autoComplete="off"
                               inputMode="numeric"
-                              value={String(line.unitCost)}
+                              value={line.unitCost === null ? "" : String(line.unitCost)}
                               disabled={savePending}
-                              onChange={(e) => draft.patch(line.item.id, { unitCost: nextUnitCost(e.target.value, line.unitCost) })}
+                              onChange={(e) => draft.patch(line.item.id, { unitCost: nextPurchaseUnitCost(e.target.value, line.unitCost) })}
                               aria-label={`${line.item.name}: ${t("purchasesLineCost")}`}
                             />
                           </td>
-                          <td className="p-2">{lineQuantity(line) * line.unitCost}</td>
+                          <td className="p-2">{line.unitCost === null ? "…" : lineQuantity(line) * line.unitCost}</td>
                           <td className="p-2">
                             <button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent" disabled={savePending} aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => draft.remove(line.item.id)}>
                               <Trash2 size={16} aria-hidden="true" />
@@ -933,7 +939,7 @@ export function PurchasePage() {
                                       name="lineProductSell"
                                       autoComplete="off"
                                       inputMode="numeric"
-                                      placeholder={String(line.unitCost)}
+                                      placeholder={line.unitCost === null ? "" : String(line.unitCost)}
                                       value={lineDraft.sellPrice}
                                       onChange={(e) => patchLineDraft({ sellPrice: e.target.value })}
                                       data-testid="line-product-sell"
@@ -941,7 +947,7 @@ export function PurchasePage() {
                                   </label>
                                 </div>
                                 <p className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="line-product-cost">
-                                  {t("purchasesLineCreateCost")} <Amount value={line.unitCost} />
+                                  {t("purchasesLineCreateCost")} {line.unitCost === null ? "…" : <Amount value={line.unitCost} />}
                                 </p>
                                 {lineError !== null && (
                                   <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="line-product-error" role="alert">

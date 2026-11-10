@@ -44,6 +44,7 @@ type ItemEditDraft = {
   name: string;
   categoryId: string;
   cost: string;
+  costEdited: boolean;
   sell: string;
   threshold: string;
   /** the row as loaded, so save can send only the fields that changed */
@@ -732,7 +733,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
         },
         name: current.name.trim() === current.baseline.name ? row.name : current.name,
         categoryId: current.categoryId === current.baseline.categoryId ? row.categoryId : current.categoryId,
-        cost: current.cost.trim() === String(current.baseline.costPrice) ? String(row.costPrice) : current.cost,
+        cost: current.costEdited ? current.cost : row.costPriceKnown === false ? "" : String(row.costPrice),
         sell: current.sell.trim() === String(current.baseline.sellingPrice) ? String(row.sellingPrice) : current.sell,
         threshold: current.threshold.trim() === String(current.baseline.lowStockThreshold) ? String(row.lowStockThreshold) : current.threshold,
       };
@@ -755,7 +756,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
     draft !== null &&
     (draft.name.trim() !== draft.baseline.name ||
       draft.categoryId !== draft.baseline.categoryId ||
-      draft.cost.trim() !== String(draft.baseline.costPrice) ||
+      (draft.row.costPriceKnown === false ? !draftBlank(draft.cost) : draft.cost.trim() !== String(draft.baseline.costPrice)) ||
       draft.sell.trim() !== String(draft.baseline.sellingPrice) ||
       draft.threshold.trim() !== String(draft.baseline.lowStockThreshold));
 
@@ -768,7 +769,8 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
       id: item.id,
       name: item.name,
       categoryId: item.categoryId,
-      cost: String(item.costPrice),
+      cost: item.costPriceKnown === false ? "" : String(item.costPrice),
+      costEdited: false,
       sell: String(item.sellingPrice),
       threshold: String(item.lowStockThreshold),
       row: item,
@@ -783,7 +785,12 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
   }
 
   function patchDraft(patch: Partial<ItemEditDraft>) {
-    setDraft((current) => (current === null ? null : { ...current, ...patch }));
+    setDraft((current) => {
+      if (current === null) return current;
+      const next = { ...current, ...patch };
+      if (Object.hasOwn(patch, "cost")) next.costEdited = true;
+      return next;
+    });
   }
 
   function cancelEdit() {
@@ -814,8 +821,8 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
     }
     // create rejects a blank cost outright, so edit must too: silently writing
     // 0 moves purchase cost, average cost and profit on a select-all + Enter
-    const costPrice = parseWholeNumber(draft.cost);
-    if (costPrice === null) {
+    const costPrice = draft.row.costPriceKnown === false && draftBlank(draft.cost) ? null : parseWholeNumber(draft.cost);
+    if (costPrice === null && !(draft.row.costPriceKnown === false && draftBlank(draft.cost))) {
       setEditError(t("itemsCostInvalid"));
       return;
     }
@@ -837,7 +844,7 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
       patch.categoryId = draft.categoryId;
       changed = true;
     }
-    if (costPrice !== draft.baseline.costPrice) {
+    if (costPrice !== null && (costPrice !== draft.baseline.costPrice || draft.row.costPriceKnown === false)) {
       patch.costPrice = costPrice;
       changed = true;
     }
@@ -1076,13 +1083,13 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
                       value={draft.cost}
                       onChange={(e) => patchDraft({ cost: e.target.value })}
                       onKeyDown={onEditKeyDown}
-                      disabled={update.isPending}
+                      disabled={update.isPending || draft.row.costPending}
                       inputMode="numeric"
                       aria-label={t("itemsCost")}
                       data-testid="edit-cost"
                     />
                   ) : (
-                    <Amount value={item.costPrice} />
+                    item.costPending || item.costPriceKnown === false ? <span data-testid="item-cost-pending">{t("itemsCostPending")}</span> : <Amount value={item.costPrice} />
                   )}
                 </td>
                 <td className="p-3">
@@ -1105,7 +1112,9 @@ function ItemList({ scanNonce, onAddItem, refreshMs, searchQuery, pager }: { sca
                 </td>
                 <td className="p-3">
                   {editing ? (
-                    draftProfit !== null ? <Amount value={draftProfit} /> : "…"
+                    draft.row.costPending || draft.row.costPriceKnown === false ? <span data-testid="item-profit-pending">{t("itemsProfitPending")}</span> : draftProfit !== null ? <Amount value={draftProfit} /> : "…"
+                  ) : item.costPending || item.costPriceKnown === false ? (
+                    <span data-testid="item-profit-pending">{t("itemsProfitPending")}</span>
                   ) : (
                     <Amount value={item.sellingPrice - item.costPrice} />
                   )}

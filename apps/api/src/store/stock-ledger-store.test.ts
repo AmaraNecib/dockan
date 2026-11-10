@@ -211,6 +211,16 @@ describe("stock movements — persistence + ordering", () => {
     expect(columns.sort((a, b) => a.seqno - b.seqno).map((column) => column.name)).toEqual(["item_id", "created_at"]);
   });
 
+  it("finds pending candidates through the item index before loading candidate history", () => {
+    // SAFETY: each EXPLAIN QUERY PLAN row exposes its plan text as `detail`.
+    const plan = conn.raw
+      .query("EXPLAIN QUERY PLAN SELECT DISTINCT item_id FROM stock_movements WHERE item_id IN (?, ?) AND cost_pending = ?")
+      .all("candidate-a", "candidate-b", 1) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join(" | ");
+    expect(details).toContain("SEARCH stock_movements USING INDEX idx_stock_movements_item");
+    expect(details).not.toContain("SCAN stock_movements");
+  });
+
   it("counts movements per item only", async () => {
     const a = await makeItem("ledger-item-2");
     const b = await makeItem("ledger-item-3");

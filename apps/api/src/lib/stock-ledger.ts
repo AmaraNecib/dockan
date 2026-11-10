@@ -19,11 +19,14 @@ export type MovementKind = (typeof movementKinds)[number];
 export const COST_CORRECTION_REASON = "COST_CORRECTION";
 
 export interface LedgerMovement {
+  id?: string;
   kind: MovementKind;
   /** signed quantity: positive = stock in, negative = stock out */
   delta: number;
   /** per-unit cost of an inflow; null for outflows */
   unitCost: number | null;
+  /** Explicit unknown purchase basis; unlike legacy null, never use cached-cost fallback. */
+  costPending?: boolean;
   /** locale-neutral audit reason; identifies a cost correction (see above) */
   reason?: string | null;
   occurredAt: string;
@@ -33,7 +36,9 @@ export interface LedgerMovement {
 
 export interface FifoLayer {
   quantity: number;
-  unitCost: number;
+  unitCost: number | null;
+  costPending?: boolean;
+  movementId?: string;
 }
 
 /** Exact layer cost of one outflow: `totalCost` before rounding, plus the
@@ -42,6 +47,8 @@ export interface FifoLayer {
 export interface FifoOutflowCost {
   totalCost: number;
   unitCost: number;
+  costPending?: boolean;
+  consumedMovements?: Array<{ movementId: string; quantity: number }>;
 }
 
 export interface LedgerProjection {
@@ -88,12 +95,17 @@ export function projectLedger(
   let stockOnHand = 0;
   for (const movement of ordered(movements)) {
     if (movement.delta > 0) {
-      const unitCost = movement.unitCost ?? opts.fallbackUnitCost ?? 0;
+      const costPending = movement.costPending === true;
+      const unitCost = costPending ? null : (movement.unitCost ?? opts.fallbackUnitCost ?? 0);
       const last = layers.at(-1);
-      if (last !== undefined && last.unitCost === unitCost) {
+      if (last !== undefined && last.unitCost === unitCost && (last.costPending === true) === costPending &&
+          movement.id === last.movementId) {
         last.quantity += movement.delta;
       } else {
-        layers.push({ quantity: movement.delta, unitCost });
+        const layer: FifoLayer = { quantity: movement.delta, unitCost: costPending ? null : unitCost };
+        if (costPending) layer.costPending = true;
+        if (movement.id !== undefined) layer.movementId = movement.id;
+        layers.push(layer);
       }
       stockOnHand += movement.delta;
     } else if (movement.delta < 0) {
@@ -163,13 +175,20 @@ export function fifoOutflowCost(
   }
   let remaining = quantity;
   let totalCost = 0;
+  let costPending = false;
+  const consumedMovements: Array<{ movementId: string; quantity: number }> = [];
   for (const layer of projection.layers) {
     const take = Math.min(layer.quantity, remaining);
-    totalCost += take * layer.unitCost;
+    if (layer.costPending) costPending = true;
+    else totalCost += take * (layer.unitCost ?? 0);
+    if (layer.movementId !== undefined) consumedMovements.push({ movementId: layer.movementId, quantity: take });
     remaining -= take;
     if (remaining === 0) break;
   }
-  return { totalCost, unitCost: Math.round(totalCost / quantity) };
+  const result: FifoOutflowCost = { totalCost, unitCost: Math.round(totalCost / quantity) };
+  if (consumedMovements.length > 0) result.consumedMovements = consumedMovements;
+  if (costPending) result.costPending = true;
+  return result;
 }
 
 /**
@@ -372,6 +391,11 @@ export function averageCostAfter(
  * date precedes that future row. No movement's stored `occurredAt` is
  * rewritten, and with no corrections the whole ledger is one segment, so the
  * result is the historical occurredAt replay.
+ *
+ * Pending inflows add quantity without asserting a price. The first valued
+ * inflow establishes a numeric basis; later inflows weight that live basis
+ * by all on-hand quantity, as chronological posting does. This never prices
+ * pending FIFO layers or establishes cache trust. Posting owns trust recovery.
  */
 export function weightedAverageCost(
   movements: readonly LedgerMovement[],
@@ -379,16 +403,23 @@ export function weightedAverageCost(
 ): number {
   let quantity = 0;
   let average = 0;
+  let hasCostBasis = false;
   let segment: LedgerMovement[] = [];
   const flushSegment = (): void => {
     for (const movement of ordered(segment)) {
-      if (movement.delta > 0) {
-        average = averageCostAfter(
-          average,
-          quantity,
-          movement.delta,
-          movement.unitCost ?? opts.fallbackUnitCost ?? 0,
-        );
+      // Pending inflows change quantity, never the live cost basis. Until a
+      // valued inflow or correction establishes that basis, there is no
+      // average to weight by the earlier pending quantity. FIFO facts remain
+      // unknown in projectLedger; this replay only computes the live cache.
+      if (movement.delta > 0 && movement.costPending === true && quantity === 0) {
+        hasCostBasis = false;
+      }
+      if (movement.delta > 0 && movement.costPending !== true) {
+        const unitCost = movement.unitCost ?? opts.fallbackUnitCost ?? 0;
+        average = hasCostBasis
+          ? averageCostAfter(average, quantity, movement.delta, unitCost)
+          : unitCost;
+        hasCostBasis = true;
       }
       quantity += movement.delta;
     }
@@ -399,6 +430,7 @@ export function weightedAverageCost(
       flushSegment();
       // explicit cost correction: set the average for the on-hand quantity
       average = movement.unitCost;
+      hasCostBasis = true;
     } else {
       segment.push(movement);
     }

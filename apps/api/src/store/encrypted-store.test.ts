@@ -88,6 +88,31 @@ async function freshVault(): Promise<FreshVault> {
 }
 
 describe("vault-mode store", () => {
+  itHeavy("persists pending receipt cost through encrypted snapshot reopen", async () => {
+    const { vault, vaultId, conn, store } = await freshVault();
+    try {
+      const category = await store.createCategory({ name: "pending-cost-vault-392" });
+      const item = await store.createItem({ name: "pending-cost-item-392", categoryId: category.id, costPrice: 0, sellingPrice: 300 });
+      await store.withTransaction(async (tx) => {
+        await tx.insertStockMovement({
+          itemId: item.id, kind: "PURCHASE", delta: 5, unitCost: null, costPending: true,
+          reason: null, ref: null, occurredAt: "2026-01-01T10:00:00",
+        });
+        await tx.setItemStockAndCost(item.id, 5, 0);
+      });
+      const reopened = createEncryptedConnection({ vaultId, masterKey: vault.requireMasterKey(), snapshotPath: vault.snapshotPath });
+      try {
+        const movements = await createDrizzleStore(reopened).listStockMovements(item.id);
+        expect(movements).toHaveLength(1);
+        expect(movements[0]).toMatchObject({ delta: 5, unitCost: null, costPending: true });
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await conn.close();
+    }
+  });
+
   itHeavy("persists a direct category rename before acknowledging success (#389)", async () => {
     const { vault, conn, store } = await freshVault();
     try {

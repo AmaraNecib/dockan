@@ -120,6 +120,7 @@ export function ReportsPage() {
         </div>
       ) : (
         <>
+          {report.data.provisional && <p role="status" className="mt-3 rounded border border-warning/30 bg-warning/10 p-3 text-sm" data-testid="report-provisional">{t("reportProvisionalCost")}</p>}
           <dl className="mt-4 grid gap-px overflow-hidden rounded border bg-muted" data-testid="report-figures">
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportRevenue")}</dt>

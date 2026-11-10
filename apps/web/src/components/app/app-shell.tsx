@@ -169,9 +169,11 @@ export function AppShell() {
     }
     if (activeKey === "sale" && draftDirtyRef.current) {
       const activeElement = document.activeElement;
-      purchaseDiscardOpenerRef.current = activeElement instanceof HTMLElement && activeElement !== document.body
-        ? activeElement
-        : null;
+      if (!purchaseDiscardOpen) {
+        purchaseDiscardOpenerRef.current = activeElement instanceof HTMLElement && activeElement !== document.body
+          ? activeElement
+          : null;
+      }
       setPurchaseDiscardOpen(true);
       return;
     }

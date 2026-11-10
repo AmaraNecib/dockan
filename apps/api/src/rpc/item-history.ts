@@ -70,7 +70,8 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
           const document = documentsByInvoiceId.get(invoiceId);
           return document === undefined ? [] : [document];
         });
-      const recordedCost = sale?.costAtSale ?? row.unitCost;
+      const costPending = sale?.costPending === true || row.costPending === true;
+      const recordedCost = costPending ? null : sale?.costAtSale ?? row.unitCost;
       const inflowTotal = row.delta > 0 && row.unitCost !== null ? row.delta * row.unitCost : null;
       // Valid unit facts can have an unrepresentable total. Never return rounded money.
       const safeInflowTotal = inflowTotal !== null && Number.isSafeInteger(inflowTotal) ? inflowTotal : null;
@@ -88,11 +89,14 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
         ? recordedSaleCogs : null;
       const safeSaleTotal = sale !== undefined && Number.isSafeInteger(sale.total) ? sale.total : null;
       const safeNetSaleTotal = sale !== undefined && Number.isSafeInteger(sale.netTotal) ? sale.netTotal : null;
+      const cost = costPending
+        ? { unitCost: recordedCost, total: null, costPending: true }
+        : { unitCost: recordedCost, total: sale === undefined ? safeInflowTotal : safeSaleCogs };
       return { ...row, supersededBySeq: superseded[index] ?? null, details: {
         sellingPrice: sale?.unitPrice ?? null,
         saleTotal: safeSaleTotal,
         netSaleTotal: safeNetSaleTotal,
-        cost: { unitCost: recordedCost, total: sale === undefined ? safeInflowTotal : safeSaleCogs },
+        cost,
         documents,
       } };
     });

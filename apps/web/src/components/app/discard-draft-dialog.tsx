@@ -1,4 +1,4 @@
-import { useRef, type ComponentProps } from "react";
+import { useLayoutEffect, useRef, type ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPopup, DialogTitle } from "@/components/ui/dialog";
@@ -51,18 +51,28 @@ export function DiscardDraftDialog({
   openerRef,
 }: DiscardDraftDialogProps) {
   const popupRef = useRef<HTMLDivElement | null>(null);
-  const resolvedFinalFocus = openerRef
-    ? () => {
-        const opener = openerRef.current;
-        if (!opener?.isConnected) return false;
+  const returnTarget = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!open || openerRef) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !popupRef.current?.contains(active)) {
+      returnTarget.current = active;
+    }
+  }, [open, openerRef]);
 
-        const activeElement = document.activeElement;
-        const focusStayedInDialog = activeElement instanceof HTMLElement
-          && popupRef.current?.contains(activeElement);
-        if (activeElement !== document.body && !focusStayedInDialog) return false;
+  function restoreOpeningFocus() {
+    const popup = popupRef.current;
+    const active = document.activeElement;
+    // A closing popup can reopen before unmount. Use the latest caller-captured
+    // opener, or capture each open transition when the caller has no opener ref.
+    // Do not override focus acquired by a newer control during the exit.
+    if (active !== document.body && active instanceof HTMLElement && !popup?.contains(active)) return false;
+    const target = openerRef?.current ?? returnTarget.current;
+    return target?.isConnected ? target : false;
+  }
 
-        return opener;
-      }
+  const resolvedFinalFocus = finalFocus === undefined || finalFocus === true
+    ? restoreOpeningFocus
     : finalFocus;
 
   // Escape is Base UI's job, and the layer stack already knows which dialog is on

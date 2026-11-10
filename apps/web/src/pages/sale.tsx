@@ -173,6 +173,7 @@ export function SalePage() {
   // choice promises an opening movement, so its path refuses a blank/zero
   // quantity; the plain create keeps blank = no opening stock (stock 0).
   const [quickStockRequired, setQuickStockRequired] = useState(false);
+  const [quickCostPending, setQuickCostPending] = useState(false);
   const quickStockRef = useRef<HTMLInputElement>(null);
   // Monotonic focus request. A later unknown scan can choose "create with
   // stock" while this same form is already open, when `quickOpen` never
@@ -423,6 +424,7 @@ export function SalePage() {
     if (quickCreatePending || createInvoice.isPending) return;
     quickCategoryDefaultAtOpen.current = quickCategoryDefault;
     setQuickStockRequired(withStock);
+    setQuickCostPending(false);
     if (withStock) setQuickStockFocusRequest((request) => request + 1);
     setCategoryCreateError(null);
     quick.openForm({ barcode: code, categoryId: quickCategoryDefault });
@@ -446,7 +448,7 @@ export function SalePage() {
       // that rule, the messages stay here
       const stock = resolveOpeningStock(fields.stock, quickStockRequired);
       if (!categoryId) return { ok: false, error: t("itemsChooseCategory") };
-      if (fields.name.trim() === "" || !Number.isInteger(cost) || cost < 0 || !Number.isInteger(sell) || sell < 0) {
+      if (fields.name.trim() === "" || (!quickCostPending && (draftBlank(fields.cost) || !Number.isInteger(cost) || cost < 0)) || draftBlank(fields.sell) || !Number.isInteger(sell) || sell < 0) {
         return { ok: false, error: t("saleQuickInvalid") };
       }
       if (!stock.ok) {
@@ -455,7 +457,7 @@ export function SalePage() {
       const input = {
         name: fields.name.trim(),
         categoryId,
-        costPrice: cost,
+        costPrice: quickCostPending ? 0 : cost,
         sellingPrice: sell,
         barcode: fields.barcode.trim() === "" ? undefined : fields.barcode.trim(),
       };
@@ -463,7 +465,7 @@ export function SalePage() {
         setSavePending(true);
         if (stock.value > 0) {
           createWithStock.mutate(
-            { ...input, stockOnHand: stock.value },
+            { ...input, stockOnHand: stock.value, costPending: quickCostPending },
             { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) },
           );
           return;
@@ -648,33 +650,53 @@ export function SalePage() {
           {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
 
           {quick.open && (
-            <form className="m-4 grid gap-3 rounded bg-accent p-3" onSubmit={quickSubmit} data-testid="sale-quick-form" aria-busy={quickCreatePending}>
-              <div className="grid grid-cols-2 gap-3">
+            <form className="my-4 grid gap-3 rounded bg-accent p-3 sm:m-4" onSubmit={quickSubmit} data-testid="sale-quick-form" aria-busy={quickCreatePending}>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" disabled={quickCreatePending} value={quick.fields.name} onChange={(event) => quick.setField("name", event.target.value)} required data-testid="sale-quick-name" /></label>
                 <label className="grid gap-1 text-sm font-medium">{t("saleQuickBarcode")}<input dir="ltr" className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" disabled={quickCreatePending} value={quick.fields.barcode} onChange={(event) => quick.setField("barcode", event.target.value)} data-testid="sale-quick-barcode" /></label>
-                <EntityPicker
-                  label={t("itemsCategory")}
-                  options={categories.data?.items ?? []}
-                  value={quickCategory}
-                  onChange={(nextCategoryId) => {
-                    quick.setField("categoryId", nextCategoryId);
-                    setDraftDirty(
-                      draftDirtyWithoutQuickCategory ||
-                        (nextCategoryId !== "" && nextCategoryId !== quickCategoryDefaultAtOpen.current),
-                    );
-                  }}
-                  onCreate={(name) => {
-                    setCategoryCreateError(null);
-                    categoryCreate.mutate({ name });
-                  }}
-                  createLabel={(name) => t("categoriesCreateInline", { name })}
-                  noMatchesLabel={t("categoriesNoMatches")}
-                  name="quickCategory"
-                  disabled={quickCategoriesLoading || quickCreatePending}
-                  testId="sale-quick-category"
-                />
-                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required /></label>
-                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
+                <div className="min-w-0">
+                  <EntityPicker
+                    label={t("itemsCategory")}
+                    inputClassName="h-9 w-full min-w-0 rounded-lg px-3 py-1 text-sm"
+                    options={categories.data?.items ?? []}
+                    value={quickCategory}
+                    onChange={(nextCategoryId) => {
+                      quick.setField("categoryId", nextCategoryId);
+                      setDraftDirty(
+                        draftDirtyWithoutQuickCategory ||
+                          (nextCategoryId !== "" && nextCategoryId !== quickCategoryDefaultAtOpen.current),
+                      );
+                    }}
+                    onCreate={(name) => {
+                      setCategoryCreateError(null);
+                      categoryCreate.mutate({ name });
+                    }}
+                    createLabel={(name) => t("categoriesCreateInline", { name })}
+                    noMatchesLabel={t("categoriesNoMatches")}
+                    name="quickCategory"
+                    disabled={quickCategoriesLoading || quickCreatePending}
+                    testId="sale-quick-category"
+                  />
+                </div>
+                <fieldset className="grid min-w-0 gap-1 text-sm font-medium">
+                  <legend className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2">
+                    {t("itemsCost")}
+                    {quickStockRequired && (
+                      <div role="radiogroup" aria-label={t("itemsCost")} className="inline-flex shrink-0 overflow-hidden rounded-md border border-input text-xs">
+                        <label className="relative cursor-pointer">
+                          <input type="radio" name="quickCostMode" value="known" aria-label={t("saleCostEnter")} checked={!quickCostPending} onChange={() => setQuickCostPending(false)} disabled={quickCreatePending} className="peer sr-only" data-testid="sale-quick-cost-known" />
+                          <span className="block px-2 py-1 text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">{t("saleCostEnter")}</span>
+                        </label>
+                        <label className="relative cursor-pointer border-s border-input">
+                          <input type="radio" name="quickCostMode" value="pending" aria-label={t("saleCostPending")} checked={quickCostPending} onChange={() => setQuickCostPending(true)} disabled={quickCreatePending} className="peer sr-only" data-testid="sale-quick-cost-pending" />
+                          <span className="block px-2 py-1 text-muted-foreground peer-checked:bg-accent peer-checked:text-accent-foreground peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-ring">{t("saleCostPending")}</span>
+                        </label>
+                      </div>
+                    )}
+                  </legend>
+                  <input className="h-9 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" aria-label={t("itemsCost")} data-testid="sale-quick-cost" autoComplete="off" inputMode="numeric" disabled={quickCreatePending || quickCostPending} value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required={!quickCostPending} />
+                </fieldset>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" data-testid="sale-quick-sell" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">
                   {quickStockRequired ? t("saleQuickStockRequired") : t("saleQuickStock")}
                   <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" disabled={quickCreatePending} value={quick.fields.stock} onChange={(event) => quick.setField("stock", event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />

@@ -13,14 +13,14 @@ import { COST_CORRECTION_REASON, StockLedgerError } from "./stock-ledger";
 
 type Row = StockMovement & { seq: number };
 
-function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
+function fakeTx(opts: { itemId?: string; costPrice?: number; costPriceKnown?: boolean; stockOnHand?: number } = {}) {
   const itemId = opts.itemId ?? "i1";
   // SAFETY: the module under test only reads `id`, `costPrice` and (for the
   // batch's initial cache) `stockOnHand`; this fake is a stand-in for the
   // persisted row, never sent across the store boundary.
-  const item = { id: itemId, costPrice: opts.costPrice ?? 100, stockOnHand: 0 } as Item;
+  const item = { id: itemId, costPrice: opts.costPrice ?? 100, costPriceKnown: opts.costPriceKnown ?? true, stockOnHand: opts.stockOnHand ?? 0 } as Item;
   const movements: Row[] = [];
-  const cache = { stockOnHand: 0, costPrice: item.costPrice };
+  const cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice };
   const stats = { historyReads: 0, cacheWrites: 0 };
   let seq = 0;
   const tx: StockPostingTx = {
@@ -43,6 +43,7 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
         kind: input.kind,
         delta: input.delta,
         unitCost: input.unitCost ?? null,
+        costPending: input.costPending ?? false,
         reason: input.reason ?? null,
         ref: input.ref ?? null,
         returnMark: input.returnMark ?? null,
@@ -53,7 +54,7 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
       movements.push(row);
       return row;
     },
-    async setItemStockAndCost(id, stockOnHand, costPrice) {
+    async setItemStockAndCost(id, stockOnHand, costPrice, costPriceKnown) {
       stats.cacheWrites += 1;
       cache.stockOnHand = stockOnHand;
       cache.costPrice = costPrice;
@@ -62,6 +63,7 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
       if (id === itemId) {
         item.stockOnHand = stockOnHand;
         item.costPrice = costPrice;
+        if (costPriceKnown !== undefined) item.costPriceKnown = costPriceKnown;
       }
     },
   };
@@ -108,7 +110,7 @@ describe("recordStockMovement", () => {
   });
 
   it("blends a legacy null-cost inflow at the item's cached cost (uniform fallback)", async () => {
-    const { tx, movements } = fakeTx({ costPrice: 100 });
+    const { tx, movements } = fakeTx({ costPrice: 100, stockOnHand: 10 });
     // a legacy inflow with no stored unit cost: the seam replays it at the
     // item's cached cost. Base stockAddManual omitted the fallback and blended
     // it at 0, so this is the second deliberate unification (the outflow rule
@@ -150,7 +152,7 @@ describe("recordStockMovement", () => {
     expect(posted.stockOnHand).toBe(14);
     expect(posted.costPrice).toBe(600); // outflow never moves the average
     expect(posted.movement.unitCost).toBeNull();
-    expect(posted.outflowCost).toEqual({ totalCost: 3000, unitCost: 500 }); // 6 oldest @500
+    expect(posted.outflowCost).toEqual({ consumedMovements: [{ movementId: "m1", quantity: 6 }], totalCost: 3000, unitCost: 500 }); // 6 oldest @500
   });
 
   it("stamps the SALE FIFO snapshot and exact cogsExact from the same read", async () => {
@@ -165,7 +167,7 @@ describe("recordStockMovement", () => {
       occurredAt: "2020-01-02T10:00:00",
     });
     // 5@100 + 1@200 = 700 exact; rounded per-unit 117 (ADR-0005)
-    expect(posted.outflowCost).toEqual({ totalCost: 700, unitCost: 117 });
+    expect(posted.outflowCost).toEqual({ consumedMovements: [{ movementId: "m1", quantity: 5 }, { movementId: "m2", quantity: 1 }], totalCost: 700, unitCost: 117 });
     expect(posted.stockOnHand).toBe(4);
     expect(posted.costPrice).toBe(150); // live average untouched by the sale
     expect(posted.movement.kind).toBe("SALE");
@@ -229,6 +231,147 @@ describe("recordStockMovement", () => {
     expect(posted.stockOnHand).toBe(10);
     expect(posted.costPrice).toBe(250);
     expect(cache).toEqual({ stockOnHand: 10, costPrice: 250 });
+  });
+
+  it("does not scan full history once per remaining FIFO layer during cost recovery", async () => {
+    const { tx, movements } = fakeTx({ costPrice: 0, costPriceKnown: false });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    for (let index = 0; index < 3; index++) {
+      await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, unitCost: 100, occurredAt: `2020-01-0${index + 2}T00:00:00` });
+    }
+
+    const historyLength = movements.length;
+    const originalFind = Array.prototype.find;
+    let fullHistoryFinds = 0;
+    Array.prototype.find = new Proxy(originalFind, {
+      apply(target, thisArg, args) {
+        if (Array.isArray(thisArg) && thisArg.length === historyLength + 1) fullHistoryFinds += 1;
+        return target.call(thisArg, args[0], args[1]);
+      },
+    });
+    try {
+      const recovered = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -2, occurredAt: "2020-01-05T00:00:00" });
+      expect(recovered.costPriceKnown).toBe(true);
+      expect(recovered.costPrice).toBe(100);
+      expect(fullHistoryFinds).toBe(0);
+    } finally {
+      Array.prototype.find = originalFind;
+    }
+  });
+
+  it("keeps a backdated pending layer out of the trusted average after it is drained", async () => {
+    const { tx, cache } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+
+    const pending = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 10,
+      costPending: true,
+      occurredAt: "2020-01-01T00:00:00",
+    });
+    expect(pending.costPriceKnown).toBe(true);
+    expect(pending.costPrice).toBe(100);
+
+    await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-03T00:00:00" });
+    const later = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, occurredAt: "2020-01-04T00:00:00" });
+
+    expect(later.movement.unitCost).toBe(100);
+    expect(later.costPrice).toBe(100);
+    expect(later.costPriceKnown).toBe(true);
+    expect(cache).toEqual({ stockOnHand: 12, costPrice: 100 });
+  });
+
+  it("keeps trusted cost through a valued backdate, pending drain and default receipt", async () => {
+    const { tx, cache, movements } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    const pending = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    expect(pending.costPrice).toBe(100);
+    const valued = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T12:00:00" });
+    expect(valued.costPrice).toBe(100);
+    expect(valued.costPriceKnown).toBe(true);
+
+    const sale = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-03T00:00:00" });
+    expect(sale.outflowCost).toMatchObject({ totalCost: 0, unitCost: 0, costPending: true });
+    const later = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, occurredAt: "2020-01-04T00:00:00" });
+    expect(later.movement).toMatchObject({ unitCost: 100, costPending: false });
+    expect(later.costPriceKnown).toBe(true);
+    expect(cache).toEqual({ stockOnHand: 22, costPrice: 100 });
+    expect(movements.find((row) => row.id === pending.movement.id)).toMatchObject({ unitCost: null, costPending: true });
+    expect(sale.outflowCost).toMatchObject({ totalCost: 0, costPending: true });
+  });
+
+  it("replays backdated outflows with pending history without zero-valuing the live basis", async () => {
+    const { tx } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 300, occurredAt: "2020-01-04T00:00:00" });
+
+    const posted = await recordStockMovement(tx, { itemId: "i1", kind: "MANUAL_ADJUSTMENT", delta: -5, occurredAt: "2020-01-03T00:00:00" });
+    // The backdate leaves 15 units at the trusted 100 basis before 10@300.
+    // This must replay to 180, not preserve the chronological cache of 167.
+    expect(posted).toMatchObject({ costPrice: 180, costPriceKnown: true, stockOnHand: 25 });
+    expect(posted.outflowCost).toMatchObject({ totalCost: 0, costPending: true });
+  });
+
+  it("keeps pending return facts and correction precedence across later backdates", async () => {
+    const { tx, movements } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    const returned = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: 10, costPending: true, reason: "RETURN_RECORDED", returnMark: "PENDING", occurredAt: "2020-01-01T00:00:00" });
+    const valued = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: 10, unitCost: 100, reason: "RETURN_RECORDED", returnMark: "PENDING", occurredAt: "2020-01-01T12:00:00" });
+    expect(valued).toMatchObject({ costPrice: 100, costPriceKnown: true });
+    await recordStockMovement(tx, { itemId: "i1", kind: "MANUAL_ADJUSTMENT", delta: 0, unitCost: 250, reason: COST_CORRECTION_REASON, occurredAt: "2019-12-31T00:00:00" });
+    const afterCorrection = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 50, occurredAt: "2020-01-01T18:00:00" });
+    // The correction is recorded after the three inflows, despite its date.
+    expect(afterCorrection).toMatchObject({ costPrice: 200, costPriceKnown: true, stockOnHand: 40 });
+    expect(movements.find((row) => row.id === returned.movement.id)).toMatchObject({ unitCost: null, costPending: true, returnMark: "PENDING" });
+  });
+
+  it("replays a recovered basis through a later backdated receipt and omitted default", async () => {
+    const { tx } = fakeTx({ costPrice: 0, costPriceKnown: false });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -3, occurredAt: "2020-01-03T00:00:00" });
+    const blend = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, unitCost: 200, occurredAt: "2020-01-05T00:00:00" });
+    expect(blend.costPrice).toBe(120);
+    // One more 100-cost receipt before the sale leaves five at 100, then
+    // 1@200, so the historical replay is 117, not a blend against today's 120.
+    const backdated = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, unitCost: 100, occurredAt: "2020-01-02T12:00:00" });
+    expect(backdated).toMatchObject({ costPrice: 117, costPriceKnown: true });
+    const later = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, occurredAt: "2020-01-06T00:00:00" });
+    expect(later.movement).toMatchObject({ unitCost: 117, costPending: false });
+    expect(later.costPrice).toBe(117);
+  });
+
+  it("does not revive an exhausted price when replay crosses a new pending opening", async () => {
+    const { tx } = fakeTx({ costPrice: 500 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 500, occurredAt: "2020-01-01T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-02T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-03T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-04T00:00:00" });
+    const recovered = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-05T00:00:00" });
+    expect(recovered).toMatchObject({ costPrice: 100, costPriceKnown: true });
+    const backdated = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-04T12:00:00" });
+    expect(backdated).toMatchObject({ costPrice: 100, costPriceKnown: true });
+  });
+
+  it("matches single posting for a mixed-backdate batch with one snapshot read", async () => {
+    const specs: StockMovementSpec[] = [
+      { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-01T00:00:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T12:00:00" },
+      { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-03T00:00:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 2, occurredAt: "2020-01-04T00:00:00" },
+    ];
+    const singles = fakeTx();
+    const expected = [];
+    for (const spec of specs) expected.push(await recordStockMovement(singles.tx, spec));
+    const batch = fakeTx();
+    const posted = await recordStockMovements(batch.tx, specs);
+    expect(posted).toEqual(expected);
+    expect(posted.map((entry) => entry.costPrice)).toEqual([100, 100, 100, 100, 100]);
+    expect(batch.cache).toEqual({ stockOnHand: 22, costPrice: 100 });
+    expect(batch.stats).toEqual({ historyReads: 1, cacheWrites: 1 });
   });
 
   it("replays the full ledger on a BACKDATED outflow (issue 143 outflow rule)", async () => {
@@ -386,8 +529,8 @@ describe("recordStockMovement", () => {
     const results = await recordStockMovements(tx, specs);
 
     expect(results.map(({ stockOnHand, costPrice, outflowCost }) => ({ stockOnHand, costPrice, outflowCost }))).toEqual([
-      { stockOnHand: 2, costPrice: 100, outflowCost: { totalCost: 200, unitCost: 100 } },
-      { stockOnHand: 2, costPrice: 700, outflowCost: { totalCost: 700, unitCost: 700 } },
+      { stockOnHand: 2, costPrice: 100, outflowCost: { consumedMovements: [{ movementId: "i1-seed", quantity: 2 }], totalCost: 200, unitCost: 100 } },
+      { stockOnHand: 2, costPrice: 700, outflowCost: { consumedMovements: [{ movementId: "i2-seed", quantity: 1 }], totalCost: 700, unitCost: 700 } },
       { stockOnHand: 4, costPrice: 150, outflowCost: null },
       { stockOnHand: 3, costPrice: 767, outflowCost: null },
     ]);

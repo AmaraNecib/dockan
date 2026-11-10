@@ -23,6 +23,8 @@ interface FixtureItem {
   sellingPrice: number;
   lowStockThreshold: number;
   stockOnHand: number;
+  costPending: boolean;
+  costPriceKnown: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -81,6 +83,8 @@ function baseItem(over: Partial<FixtureItem> = {}): FixtureItem {
     sellingPrice: 150,
     lowStockThreshold: 5,
     stockOnHand: 3,
+    costPending: false,
+    costPriceKnown: true,
     createdAt: "2026-09-01T10:00:00",
     updatedAt: "2026-09-01T10:00:00",
     ...over,
@@ -216,7 +220,10 @@ mock.module("@/lib/rpc", () => ({
                 existing.categoryId = input.categoryId;
                 existing.categoryName = categories.find((category) => category.id === input.categoryId)?.name ?? null;
               }
-              if (input.costPrice !== undefined) existing.costPrice = input.costPrice;
+              if (input.costPrice !== undefined) {
+                existing.costPrice = input.costPrice;
+                existing.costPriceKnown = true;
+              }
               if (input.sellingPrice !== undefined) existing.sellingPrice = input.sellingPrice;
               if (input.lowStockThreshold !== undefined) existing.lowStockThreshold = input.lowStockThreshold;
             }
@@ -452,6 +459,15 @@ afterEach(() => {
  * unfocused, so the tick is what carries the change.
  */
 describe("products table search (#388)", () => {
+  it("shows pending cost and provisional profit without placeholder amounts", async () => {
+    items = [baseItem({ costPrice: 0, sellingPrice: 1_000, costPending: true })];
+    await mount();
+    const row = rowByCell("بطارية");
+    expect(row.querySelector('[data-testid="item-cost-pending"]')?.textContent).toBe(i18n.t("itemsCostPending"));
+    expect(row.querySelector('[data-testid="item-profit-pending"]')?.textContent).toBe(i18n.t("itemsProfitPending"));
+    expect(row.querySelector('[data-testid="item-cost-pending"]')?.textContent).not.toMatch(/0/);
+  });
+
   it("finds a barcode match beyond page one and resets paging", async () => {
     const target = baseItem({ id: "row-23", name: "مصباح بعيد", barcode: "ITEM-FULL-388" });
     items = Array.from({ length: 24 }, (_, index) => baseItem({
@@ -1294,6 +1310,17 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
 });
 
 describe("stock form prefill", () => {
+  it("does not prefill a pending-cost placeholder as a known receipt price", async () => {
+    items = [baseItem({ costPrice: 0, costPending: true })];
+    await mount();
+    await openAddTab();
+    expect(inputByTestId("stock-unit-cost").value).toBe("");
+    setInput("stock-delta", "1");
+    click("stock-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="stock-error"]').textContent?.includes("التكلفة السابقة غير معروفة") === true);
+    expect(stockInputs).toHaveLength(0);
+  });
+
   it("searches beyond the first 50 stock items and binds costs to the picked record", async () => {
     items = [
       baseItem(),
@@ -1685,6 +1712,83 @@ describe("inline item edit", () => {
     expect(row.textContent).toContain("فلاتر");
   });
 
+  it("omits untouched cost after refresh loses trust but preserves an explicitly typed zero", async () => {
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    expect(inputByTestId("edit-cost").value).toBe("100");
+
+    firstFixtureItem().costPriceKnown = false;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    await waitFor(() => inputByTestId("edit-cost").value === "");
+    setInput("edit-name", "اسم فقط");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toEqual({ id: "item-1", name: "اسم فقط" });
+    expect(firstFixtureItem().costPriceKnown).toBe(false);
+
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "0");
+    firstFixtureItem().costPriceKnown = false;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    expect(inputByTestId("edit-cost").value).toBe("0");
+    setInput("edit-name", "صفر مقصود");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 2);
+    expect(updateInputs[1]).toMatchObject({ id: "item-1", name: "صفر مقصود", costPrice: 0 });
+
+  });
+
+  it.each([false, true])("refreshes untouched cost when trust returns, initially unknown=%s", async (initiallyUnknown) => {
+    firstFixtureItem().costPriceKnown = !initiallyUnknown;
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    if (!initiallyUnknown) {
+      firstFixtureItem().costPriceKnown = false;
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["items"] });
+        await settle();
+      });
+    }
+    await waitFor(() => inputByTestId("edit-cost").value === "");
+    setInput("edit-name", "اسم بعد الاستعادة");
+    firstFixtureItem().costPrice = 175;
+    firstFixtureItem().costPriceKnown = true;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    await waitFor(() => inputByTestId("edit-cost").value === "175");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toEqual({ id: "item-1", name: "اسم بعد الاستعادة" });
+  });
+
+  it.each(["0", "77", "abc", ""])("preserves owner cost text %j when trust returns", async (text) => {
+    firstFixtureItem().costPriceKnown = false;
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "123");
+    setInput("edit-cost", text);
+    firstFixtureItem().costPrice = 175;
+    firstFixtureItem().costPriceKnown = true;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    expect(inputByTestId("edit-cost").value).toBe(text);
+    expect(updateInputs).toHaveLength(0);
+  });
+
   it("keeps a zero-price item editable (sale quick-add creates selling 0)", async () => {
     firstFixtureItem().sellingPrice = 0;
     await mount();
@@ -1757,6 +1861,20 @@ describe("inline item edit", () => {
     // no threshold in the patch and no edit error: mark-only is blank, not invalid
     expect(updateInputs[0]).toEqual({ id: "item-1", name: "بطارية حد ممحو" });
     expect(document.querySelector('[data-testid="items-edit-error"]')).toBeNull();
+  });
+
+  it("lets an explicit zero restore an untrusted cache after pending stock is gone", async () => {
+    items = [baseItem({ costPrice: 0, costPriceKnown: false, costPending: false })];
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    expect(inputByTestId("edit-cost").value).toBe("");
+    setInput("edit-cost", "0");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toMatchObject({ id: "item-1", costPrice: 0 });
+    expect(firstFixtureItem()).toMatchObject({ costPrice: 0, costPriceKnown: true });
+    expect(rowByCell("بطارية").querySelector('[data-testid="item-cost-pending"]')).toBeNull();
   });
 
   it("rejects money written in exponent or hex notation", async () => {
@@ -1868,6 +1986,36 @@ describe("inline item edit", () => {
     });
     await waitFor(() => updateInputs.length === 1);
     expect(updateInputs[0]).toMatchObject({ id: "item-1", name: "بطارية بإدخال" });
+  });
+
+  it("keeps invalid unknown-cost drafts open, permits blank omission, and accepts explicit zero", async () => {
+    items = [baseItem({ costPrice: 0, costPriceKnown: false })];
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "abc");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(document.querySelector('[data-testid="edit-cost"]')).not.toBeNull();
+    expect(inputByTestId("edit-cost").value).toBe("abc");
+    expect(updateInputs).toHaveLength(0);
+    setInput("edit-cost", "-1");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(inputByTestId("edit-cost").value).toBe("-1");
+    expect(updateInputs).toHaveLength(0);
+
+    setInput("edit-cost", "");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') === null);
+    expect(updateInputs).toHaveLength(0);
+
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "0");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toMatchObject({ id: "item-1", costPrice: 0 });
   });
 
   it("rejects a non-numeric cost instead of silently zeroing it", async () => {

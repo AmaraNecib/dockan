@@ -72,6 +72,7 @@ export interface ProfitSaleLine {
   costAtSale: number;
   /** exact total COGS of the layers this line consumed (unrounded FIFO sum) */
   cogsExact: number;
+  costPending?: boolean;
   netTotal: number;
 }
 
@@ -120,8 +121,8 @@ export interface DashboardAggregates {
  * returns the complete historical response shape with safe zero defaults. */
 export type InvoiceInsert = Omit<Invoice, "id" | "createdAt" | "updatedAt" | "subtotalAmount" | "discountType" | "discountValue" | "discountAmount"> &
   Partial<Pick<Invoice, "subtotalAmount" | "discountType" | "discountValue" | "discountAmount">>;
-export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact"> &
-  Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact">>;
+export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact" | "costPending"> &
+  Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact" | "costPending">>;
 
 export interface StockLink {
   id: string;
@@ -300,7 +301,7 @@ export interface StorePort {
   createItem(input: ItemCreate): Promise<Item>;
   updateItem(id: string, patch: ItemUpdate): Promise<Item | undefined>;
   /** stock + average cost kept atomic; used inside invoice transactions */
-  setItemStockAndCost(id: string, stockOnHand: number, costPrice: number): Promise<void>;
+  setItemStockAndCost(id: string, stockOnHand: number, costPrice: number, costPriceKnown?: boolean): Promise<void>;
 
   // --- stock ledger (ticket 27) --------------------------------------------
   /** append-only; no update or delete exists by design */
@@ -320,12 +321,13 @@ export interface StorePort {
   /** Recorded invoice facts only, never joined to current item prices. */
   listItemHistoryLines(itemId: string): Promise<Array<InvoiceLine & { invoiceNumber: string; invoiceKind: InvoiceKind }>>;
 
-  // --- purchase linkage (ticket 29) ----------------------------------------
-  /** appends an attribution record between a purchase invoice and an earlier
-   * uninvoiced movement; the ledger itself is never rewritten */
+  // --- invoice-to-stock attribution -----------------------------------------
+  /** appends attribution between an invoice and a stock movement; the ledger itself is never rewritten */
   insertStockLink(link: { invoiceId: string; movementId: string; quantity: number }): Promise<StockLink>;
   /** all links whose movement belongs to the item (link consumption audit) */
   listStockLinksByItem(itemId: string): Promise<StockLink[]>;
+  /** purchase-only attribution links for the item's inventory pool */
+  listPurchaseStockLinksByItem(itemId: string): Promise<StockLink[]>;
 
   // --- expenses + profit report (ticket 31) --------------------------------
   listExpenseCategories(): Promise<ExpenseCategory[]>;

@@ -52,7 +52,8 @@ export interface SaleDraftLine extends DraftLine {
  * a resolved number, not a draft. See `nextUnitCost`.
  */
 export interface PurchaseDraftLine extends DraftLine {
-  unitCost: number;
+  /** null until the owner enters a price when no trusted default exists */
+  unitCost: number | null;
 }
 
 /**
@@ -207,6 +208,8 @@ export interface CommitChecks<T extends DraftLine> {
   override?: LineCheck<T>;
   /** the per-line quantity */
   quantity: LineCheck<T>;
+  /** purchase's known-cost requirement, checked after quantity */
+  unitCost?: LineCheck<T>;
   /** sale's invoice discount, a second input to the total */
   discount?: Check;
   /** the initial payment, derived from the total the checks above can zero */
@@ -234,6 +237,7 @@ export function firstCommitError<T extends DraftLine>(checks: CommitChecks<T>): 
   const lineError = firstLineError(checks.lines, (line) => {
     if (checks.override?.invalid(line) === true) return checks.override.message;
     if (checks.quantity.invalid(line)) return checks.quantity.message;
+    if (checks.unitCost?.invalid(line) === true) return checks.unitCost.message;
     return null;
   });
   if (lineError !== null) return lineError;
@@ -281,7 +285,7 @@ export function saleOverrideInvalid(line: Pick<SaleDraftLine, "overrideType" | "
 
 /** The unit price a PURCHASE line bills at: the cost actually paid. */
 export function purchaseUnitPrice(line: PurchaseDraftLine): number {
-  return line.unitCost;
+  return line.unitCost ?? 0;
 }
 
 /**
@@ -304,6 +308,13 @@ export function purchaseUnitPrice(line: PurchaseDraftLine): number {
  */
 export function nextUnitCost(value: string, previous: number): number {
   if (draftBlank(value)) return 0;
+  const parsed = parseLooseNumber(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : previous;
+}
+
+/** Preserve a truly blank purchase cost until the owner enters a numeric price. */
+export function nextPurchaseUnitCost(value: string, previous: number | null): number | null {
+  if (draftBlank(value)) return previous === null ? null : 0;
   const parsed = parseLooseNumber(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : previous;
 }

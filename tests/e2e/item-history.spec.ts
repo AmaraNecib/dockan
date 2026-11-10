@@ -61,7 +61,8 @@ test.describe("item history 399", () => {
     await expect(costFact.locator("dt")).toHaveText("إجمالي تكلفة وحدات الحركة");
     await expect(costFact.locator("dd")).toContainText("700");
     const factsHelp = detail.getByTestId("history-facts-help");
-    const factsHelpSummary = factsHelp.getByText("عن هذه القيم");
+    const factsHelpSummary = factsHelp.locator("summary");
+    await expect(factsHelpSummary).toHaveText("توضيح القيم");
     await expect(factsHelp).toHaveJSProperty("open", false);
     await factsHelpSummary.focus();
     await page.keyboard.press("Enter");

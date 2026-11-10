@@ -1990,13 +1990,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     const savedConsumptions: Array<{ movementId: string; sourceMovementId: string; quantity: number }> = [];
     for (let offset = 0; offset < movementIds.length; offset += lookupBatchSize) {
       const batch = movementIds.slice(offset, offset + lookupBatchSize);
-      savedConsumptions.push(...await db.select({
+      for (const row of await db.select({
         movementId: stockOutflowConsumptions.movementId,
         sourceMovementId: stockOutflowConsumptions.sourceMovementId,
         quantity: stockOutflowConsumptions.quantity,
       }).from(stockOutflowConsumptions)
         .where(inArray(stockOutflowConsumptions.movementId, batch))
-        .orderBy(sql`stock_outflow_consumptions.rowid`));
+        .orderBy(sql`stock_outflow_consumptions.rowid`)) savedConsumptions.push(row);
     }
     const durable = new Map<string, Array<{ movementId: string; quantity: number }>>();
     for (const row of savedConsumptions) {
@@ -2014,11 +2014,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }> = [];
     for (let offset = 0; offset < invoiceIds.length; offset += lookupBatchSize) {
       const batch = invoiceIds.slice(offset, offset + lookupBatchSize);
-      links.push(...await db.select({
+      for (const row of await db.select({
         invoiceId: stockLinks.invoiceId, movementId: stockLinks.movementId, quantity: stockLinks.quantity,
         lineInvoiceId: invoiceLines.invoiceId, lineItemId: invoiceLines.itemId,
       }).from(stockLinks).leftJoin(invoiceLines, eq(invoiceLines.id, stockLinks.invoiceLineId))
-        .where(inArray(stockLinks.invoiceId, batch)).orderBy(sql`stock_links.rowid`));
+        .where(inArray(stockLinks.invoiceId, batch)).orderBy(sql`stock_links.rowid`)) links.push(row);
     }
     const byId = new Map(movements.map((movement) => [movement.id, movement]));
     const attributed = new Map<string, Array<{ movementId: string; quantity: number }>>();

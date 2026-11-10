@@ -607,6 +607,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(activity).toHaveLength(1);
   });
 
+  // red-on-parent-waive: "associates each resolution activity with its exact receipt when receipts share an item" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables, so neither audit event can be created before the association assertions
   it("associates each resolution activity with its exact receipt when receipts share an item", async () => {
     const product = await item();
     const first = await receipt(product.id, 1, undefined, "2026-01-10T10:00:00");

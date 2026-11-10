@@ -64,6 +64,12 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     expect(copy).toMatch(/[\u0600-\u06FF]/);
   });
 
+  it("explains missing return provenance without promising that resolving the same receipt will repair it", () => {
+    const message = tError("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
+    expect(message).toContain("سجلات المرتجع");
+    expect(message).not.toContain("صحّح تكلفة الوارد الأصلي أولاً");
+  });
+
   it("explains receipt provenance safety refusals in Arabic", () => {
     for (const code of ["RECEIPT_PROVENANCE_AMBIGUOUS", "RECEIPT_RETURN_PROVENANCE_UNSUPPORTED"]) {
       const message = tError(code);

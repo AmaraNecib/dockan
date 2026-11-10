@@ -947,7 +947,7 @@ const resources = {
       RECEIPT_RESOLUTION_CONFLICT: "سُجّلت تكلفة مختلفة لهذا الوارد. حدّث سجل الصنف.",
       RETURN_SOURCE_ALLOCATION_INVALID: "تغيّرت كميات المصدر المتاحة. أعد تحميل مصادر البيع وحدّد التوزيع من جديد.",
       RECEIPT_PROVENANCE_AMBIGUOUS: "تعذّر تحديد الوارد الأصلي بأمان. راجع سجل حركة المنتج قبل تصحيح التكلفة.",
-      RECEIPT_RETURN_PROVENANCE_UNSUPPORTED: "لا يمكن تصحيح تكلفة طبقة مرجوع بأمان. صحّح تكلفة الوارد الأصلي أولاً.",
+      RECEIPT_RETURN_PROVENANCE_UNSUPPORTED: "لا يمكن إثبات ارتباط سجلات المرتجع بالوارد الأصلي بأمان. راجع سجل البيع والمرتجع. لم تُحفظ أي تكلفة.",
       RETURN_SOURCE_PROVENANCE_UNAVAILABLE: "تعذّر إثبات مصدر الوحدات المرجعة بأمان. أعد تحميل المصادر أو راجع سجل البيع.",
       RETURN_SOURCE_SELECTION_REQUIRED: "يجب تحديد مصدر الوحدات المرجعة قبل حفظ العملية.",
       // locale-neutral api strings rendered here; the api itself emits keys

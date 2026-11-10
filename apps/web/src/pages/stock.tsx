@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../lib/scoped-mutation";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -411,6 +411,8 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
   const queryClient = useQueryClient();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
+  // SAFETY: itemHistoryRoute validates focusMovementId as an optional UUID.
+  const { focusMovementId } = useSearch({ strict: false }) as { focusMovementId?: string };
   const pager = usePagination();
   const [expandedMovementIds, setExpandedMovementIds] = useState<Set<string>>(() => new Set());
   const [resolutionMovementId, setResolutionMovementId] = useState<string | null>(null);
@@ -437,7 +439,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
     setExpandedMovementIds(new Set());
   }, [itemId]);
   const history = useQuery({
-    ...orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }),
+    ...orpc.itemsHistory.queryOptions({ input: { itemId, focusMovementId, ...pager.pagination } }),
     // #295 — the running stock column on this screen is a hot counter too: a
     // sale or an adjustment posted in another window has to show up here
     // without the owner reloading the page. The ledger read is slower than
@@ -449,6 +451,16 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
   // them (issue 151): a future-dated purchase the owner would otherwise read as
   // one that never moved the average
   const superseded = history.data === undefined ? new Set<number>() : supersededByCorrection(history.data.movements);
+  useEffect(() => {
+    if (focusMovementId === undefined || history.data === undefined) return;
+    if (pager.offset === 0 && history.data.pageOffset !== undefined && history.data.pageOffset > 0) {
+      pager.setOffset(history.data.pageOffset);
+      return;
+    }
+    if (history.data.movements.some((movement) => movement.id === focusMovementId)) {
+      setExpandedMovementIds((current) => new Set(current).add(focusMovementId));
+    }
+  }, [focusMovementId, history.data]);
 
   function beginReceiptResolution(movementId: string) {
     setResolutionMovementId(movementId);
@@ -568,6 +580,9 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
         />
       ) : (
         <>
+        {focusMovementId !== undefined && !history.data.movements.some((movement) => movement.id === focusMovementId) && (
+          <p role="status" className="mt-4 rounded border border-warning p-3 text-sm text-warning-foreground" data-testid="history-focus-unavailable">{t("historyFocusedMovementUnavailable")}</p>
+        )}
         <Table className="mt-4 min-w-[40rem] rounded border bg-card text-sm" data-testid="history-table">
           <TableHeader>
             <TableRow className="text-right text-muted-foreground">
@@ -584,7 +599,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
               const detailId = `history-detail-${movement.id}`;
               return (
                 <Fragment key={movement.id}>
-                  <TableRow aria-expanded={expanded} data-testid={`history-movement-row-${movement.id}`}>
+                  <TableRow aria-expanded={expanded} data-focused={movement.id === focusMovementId || undefined} className={movement.id === focusMovementId ? "bg-primary/10" : undefined} data-testid={`history-movement-row-${movement.id}`}>
                     <TableCell className="p-3">{formatDateTime(movement.occurredAt)}</TableCell>
                     <TableCell className="p-3 whitespace-normal">
                       {kindLabel(t, movement.kind)}
@@ -745,7 +760,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
         <Pager
           total={history.data.total}
           pageSize={pager.pageSize}
-          offset={pager.offset}
+          offset={history.data.pageOffset ?? pager.offset}
           onOffsetChange={pager.setOffset}
           onPageSizeChange={pager.setPageSize}
           testId="history-pager"

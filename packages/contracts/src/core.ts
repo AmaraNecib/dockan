@@ -86,6 +86,7 @@ export const activitySummaryTags = [
   "STOCK_ADJUSTED",
   "STOCK_LINKED",
   "RECEIPT_COST_RESOLVED",
+  "RECEIPT_COST_RESOLVED_ITEM",
   "PURCHASE_CORRECTED",
   "PARTY_CREATED",
   "PARTY_UPDATED",
@@ -1724,6 +1725,8 @@ export const returnsPendingCountOutputSchema = z.object({
 
 export const itemHistoryInputSchema = z.object({
   itemId: idSchema,
+  /** Optional exact ledger row to include when opening history from an activity link. */
+  focusMovementId: idSchema.optional(),
 }).merge(paginationInputSchema);
 
 /**
@@ -1759,6 +1762,8 @@ export const itemHistoryOutputSchema = z.object({
   movements: z.array(itemHistoryMovementSchema),
   /** number of movements in the whole ledger, not just this page */
   total: z.number().int().min(0),
+  /** actual page offset, which may differ when an exact focus ID selects its page */
+  pageOffset: z.number().int().min(0).optional(),
   stockOnHand: z.number().int().min(0),
 });
 

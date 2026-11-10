@@ -29,7 +29,11 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
       else invoiceIds.push(link.invoiceId);
     }
     const projected = historyWithRemaining(movements);
-    const { limit, offset } = resolvePagination(input);
+    const { limit, offset: requestedOffset } = resolvePagination(input);
+    const focusIndex = input.focusMovementId === undefined
+      ? -1
+      : projected.findIndex((movement) => movement.id === input.focusMovementId);
+    const offset = focusIndex < 0 || requestedOffset > 0 ? requestedOffset : Math.floor(focusIndex / limit) * limit;
     const page = projected.slice(offset, offset + limit);
     const superseded = supersededByCorrectionSeq(projected, offset, offset + page.length);
     const returnInvoices = new Map<string, string | null>();
@@ -105,6 +109,6 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
       }
       return { ...row, supersededBySeq: superseded[index] ?? null, details };
     });
-    return { item: { id: item.id, name: item.name }, movements: rows, total: movements.length, stockOnHand: projected.at(-1)?.stockAfter ?? 0 };
+    return { item: { id: item.id, name: item.name }, movements: rows, total: movements.length, pageOffset: offset, stockOnHand: projected.at(-1)?.stockAfter ?? 0 };
   });
 }

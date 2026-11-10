@@ -119,6 +119,11 @@ describe("item history projection scaling", () => {
     expect(trackedLinks.iterations).toBe(1);
     expect(trackedLinks.filters).toBe(0);
     expect(trackedLinks.finds).toBe(0);
+
+    const focused = await readItemHistory(store, { itemId: "item-1", focusMovementId: "movement-999", limit: 20 });
+    expect(focused.movements.map((movement) => movement.id)).toContain("movement-999");
+    expect(focused.movements).toHaveLength(20);
+    expect(focused.movements[0]?.id).toBe("movement-980");
   });
 
   it("returns null for unsafe recorded sale COGS and keeps the history contract valid", async () => {

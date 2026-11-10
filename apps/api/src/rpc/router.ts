@@ -2411,6 +2411,8 @@ export function createRpcRouter(deps: RpcDeps) {
         const actorName = actor.name ?? actor.id;
         try {
           return await deps.store.withTransactionImmediate(async (tx) => {
+            const movement = await tx.getStockMovementById(input.movementId);
+            const item = movement === undefined ? undefined : (await tx.getItemsByIds([movement.itemId])).get(movement.itemId);
             const resolution = await tx.resolveReceiptCost({
               ...input,
               reason: input.reason.trim(),
@@ -2421,8 +2423,10 @@ export function createRpcRouter(deps: RpcDeps) {
             if (resolution.created) {
               await insertSessionActivity(tx, session, {
                 type: "RECEIPT_COST_RESOLVED",
-                summary: `RECEIPT_COST_RESOLVED ${input.movementId} ${input.unitCost}`,
-                ref: input.movementId,
+                summary: item === undefined || movement === undefined
+                  ? `RECEIPT_COST_RESOLVED ${input.movementId} ${input.unitCost}`
+                  : `RECEIPT_COST_RESOLVED_ITEM ${movement.id} ${item.id} ${input.unitCost} ${item.name}`,
+                ref: item === undefined ? input.movementId : item.id,
               });
             }
             return resolution;

@@ -59,6 +59,7 @@ const itemsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/items"
 const itemHistoryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/items/$itemId/history",
+  validateSearch: (search) => z.object({ focusMovementId: z.string().uuid().optional() }).parse(search),
   component: ItemHistoryPage,
 });
 const backupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/backups", component: BackupsPage });

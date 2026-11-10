@@ -5903,7 +5903,8 @@ describe("items cost correction (issue 144)", () => {
     expect(resolution.created).toBe(true);
     const retry = await client.receiptCostsResolve({ movementId: receipt.id, unitCost: 100, reason: "supplier receipt confirmed" });
     expect(retry.created).toBe(false);
-    expect((await client.activitiesList({ limit: 500 })).items.filter((row) => row.type === "RECEIPT_COST_RESOLVED" && row.ref === receipt.id)).toHaveLength(1);
+    const resolutionActivity = (await client.activitiesList({ limit: 500 })).items.find((row) => row.type === "RECEIPT_COST_RESOLVED" && row.ref === item.id);
+    expect(resolutionActivity).toMatchObject({ ref: item.id, summary: `RECEIPT_COST_RESOLVED_ITEM ${receipt.id} ${item.id} 100 ${item.name}` });
 
     const catalog = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
     expect(catalog).toMatchObject({ stockOnHand: 3, costPrice: 100, costPriceKnown: true, costPending: false });

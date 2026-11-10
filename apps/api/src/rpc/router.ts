@@ -2183,7 +2183,6 @@ export function createRpcRouter(deps: RpcDeps) {
             // clamp: never remove more than is actually in stock (some returned
             // units may already have been resold between create and review)
             const removalBudget = Math.min(returnedQty, projection.stockOnHand);
-            if (removalBudget <= 0) continue;
             // allocate the scrapped units across this item's return lines,
             // first-come-first-served; each line's movement carries its id as
             // the reason suffix for exact report attribution. The lines ship as
@@ -2197,7 +2196,6 @@ export function createRpcRouter(deps: RpcDeps) {
             const itemLinks = await tx.listStockLinksByItem(item.id);
             let remaining = removalBudget;
             for (const line of linesOfItem) {
-              if (remaining <= 0) break;
               const sourceAllocations = await tx.returnSourceAllocationsByReturnLine(line.id);
               if (sourceAllocations.length === 0) {
                 const take = Math.min(line.quantity, remaining);
@@ -2207,15 +2205,14 @@ export function createRpcRouter(deps: RpcDeps) {
                 continue;
               }
               for (const source of sourceAllocations) {
-                if (remaining <= 0) break;
                 const soldFromLayer = itemLinks.filter((link) => link.movementId === source.returnedMovementId && link.invoiceLineId !== null)
                   .reduce((sum, link) => sum + link.quantity, 0);
-                const stillOnLayer = Math.max(0, source.quantity - soldFromLayer);
-                const take = Math.min(stillOnLayer, remaining);
+                const notResold = Math.max(0, source.quantity - soldFromLayer);
+                if (notResold > 0) await tx.recordReturnSourceRejection({ returnLineId: line.id, stockLinkId: source.stockLinkId, quantity: notResold });
+                const take = Math.min(notResold, remaining);
                 if (take <= 0) continue;
                 scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
                   reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt });
-                await tx.recordReturnSourceScrap({ returnLineId: line.id, stockLinkId: source.stockLinkId, quantity: take });
                 remaining -= take;
               }
             }

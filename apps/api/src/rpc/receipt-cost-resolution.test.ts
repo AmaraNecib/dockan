@@ -487,6 +487,19 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(resale);
   });
 
+  it("keeps original COGS when a rejected return was consumed by an unlinked stock outflow", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const original = await sell(product.id, 5);
+    await resolve(source.id, 100);
+    const returned = await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: required(original.lines[0]).id, quantity: 1 }] });
+    const returnMovement = (await store.listStockMovements(product.id)).find((movement) => movement.reason === "RETURN_RECORDED");
+    await store.insertStockMovement({ itemId: product.id, kind: "MANUAL_ADJUSTMENT", delta: -1, unitCost: null, reason: "unlinked stock outflow", ref: null, occurredAt: required(returnMovement).occurredAt });
+    await client.returnsReject({ returnId: returned.id, reason: "inspection refused" });
+    expect(await report()).toMatchObject({ cogs: 500, provisional: false });
+    expect((await saved(product.id)).projection.stockOnHand).toBe(0);
+  });
+
   it("resolves a returned source after rejection and resale", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);

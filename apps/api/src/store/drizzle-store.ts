@@ -2733,11 +2733,15 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       `)) as Array<{ quantity: number; stockLinkId: string; returnedMovementId: string; invoiceLineId: string; status: string; resoldQuantity: number }>;
       const returnCostByLine = new Map<string, number>();
       const returnQtyByLine = new Map<string, number>();
+      const rejectedResoldByLine = new Map<string, number>();
       for (const source of sourceRows) {
         returnQtyByLine.set(source.invoiceLineId, (returnQtyByLine.get(source.invoiceLineId) ?? 0) + source.quantity);
         const effectiveReturnQuantity = source.status === "REJECTED_DAMAGED"
           ? Math.min(source.quantity, source.resoldQuantity)
           : source.quantity;
+        if (source.status === "REJECTED_DAMAGED" && effectiveReturnQuantity > 0) {
+          rejectedResoldByLine.set(source.invoiceLineId, (rejectedResoldByLine.get(source.invoiceLineId) ?? 0) + effectiveReturnQuantity);
+        }
         if (effectiveReturnQuantity <= 0) continue;
         // Only known original sources need a separate return relief. Pending
         // receipt adjustments already follow the effective sale chain.
@@ -2768,9 +2772,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact + line.cogsAdjustment, cogsAdjustment: line.cogsAdjustment, costPending: Boolean(line.costPending), netTotal: line.netTotal });
           continue;
         }
-        const booked = bookSaleLineForReturns(line, perLineStats);
-        if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
         const hasCompleteSourceAttribution = allocatedByLine.get(line.lineId) === perLineStats.heldQty + perLineStats.rejectedQty;
+        const bookingStats = hasCompleteSourceAttribution
+          ? { ...perLineStats, rejectedQty: perLineStats.rejectedScrapQty + (rejectedResoldByLine.get(line.lineId) ?? 0) }
+          : perLineStats;
+        const booked = bookSaleLineForReturns(line, bookingStats);
+        if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
         const cogsExact = hasCompleteSourceAttribution
           ? line.cogsExact - (returnCostByLine.get(line.lineId) ?? 0) + line.cogsAdjustment
           : booked.cogsExact + line.cogsAdjustment;
@@ -3135,7 +3142,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           stockLinkId: string; quantity: number; returnedMovementId: string;
         }>;
     },
-    async recordReturnSourceScrap(input) {
+    async recordReturnSourceRejection(input) {
       if (!conn.inTransaction || !immediateTransaction) throw new Error("return source accounting requires an immediate transaction");
       if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0) throw new Error("RETURN_SOURCE_ALLOCATION_INVALID");
       // SAFETY: fixed aliases define the source-allocation row shape.

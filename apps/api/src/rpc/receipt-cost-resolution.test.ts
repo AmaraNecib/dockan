@@ -379,18 +379,142 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertStock(product.id, 2, 0, 0);
   });
 
-  it("keeps the explicit return-provenance refusal atomic", async () => {
+  it("resolves a pending source through an attributed return and values the remaining layer once", async () => {
     const product = await item();
-    const source = await receipt(product.id);
-    const sale = await sell(product.id);
+    const source = await receipt(product.id, 5);
+    const sale = await sell(product.id, 2);
     await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: required(sale.lines[0]).id, quantity: 1 }] });
-    const before = await saved(product.id);
-    const profit = await report();
-    await expect(resolve(source.id)).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RECEIPT_RETURN_PROVENANCE_UNSUPPORTED" });
-    expect(await saved(product.id)).toEqual(before);
-    expect(await report()).toEqual(profit);
-    expect(await resolutionActivities(source.id)).toEqual([]);
+    const original = required(sale.lines[0]);
+    const result = await resolve(source.id, 100);
+    expect(result.adjustments).toEqual([{ invoiceLineId: original.id, amount: 100 }]);
+    expect(await report()).toMatchObject({ revenue: 200, cogs: 100, grossProfit: 100, provisional: false });
+    await assertStock(product.id, 4, 400, 100);
     await assertOriginal(sale);
+  });
+
+  it("uses selected source cost instead of proportional COGS for a mixed-source return", async () => {
+    const product = await item();
+    const known = await receipt(product.id, 1, 40);
+    const pending = await receipt(product.id, 1, undefined, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 2);
+    const lineId = required(sale.lines[0]).id;
+    const sources = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1,
+      sourceAllocations: [{ stockLinkId: required(sources.sources.find((row) => row.movementId === known.id)).stockLinkId, quantity: 1 }] }] });
+    await resolve(pending.id, 100);
+    expect(await report()).toMatchObject({ cogs: 100, provisional: false });
+  });
+
+  it("reverses resolved COGS by the selected source when the return happens later", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const sale = await sell(product.id, 2);
+    const resolved = await resolve(source.id, 100);
+    expect(await report()).toMatchObject({ cogs: 200, provisional: false });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: required(sale.lines[0]).id, quantity: 1 }] });
+    expect(await report()).toMatchObject({ cogs: 100, provisional: false });
+    expect(await resolve(source.id, 100)).toEqual({ ...resolved, created: false });
+    await assertStock(product.id, 4, 400, 100);
+    await assertOriginal(sale);
+  });
+
+  it("keeps mixed known and pending source returns in separate valued layers", async () => {
+    const product = await item();
+    const known = await receipt(product.id, 1, 40);
+    const pending = await receipt(product.id, 1, undefined, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 2);
+    const lineId = required(sale.lines[0]).id;
+    const sources = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 2, sourceAllocations: [
+      { stockLinkId: required(sources.sources.find((row) => row.movementId === known.id)).stockLinkId, quantity: 1 },
+      { stockLinkId: required(sources.sources.find((row) => row.movementId === pending.id)).stockLinkId, quantity: 1 },
+    ] }] });
+    const returnedLayers = (await store.listStockMovements(product.id)).filter((movement) => movement.reason === "RETURN_RECORDED");
+    expect(returnedLayers).toHaveLength(2);
+    expect(returnedLayers.map((movement) => [movement.delta, movement.costPending])).toEqual([[1, false], [1, true]]);
+    await resolve(pending.id, 100);
+    const valued = (await store.listStockMovements(product.id)).filter((movement) => movement.reason === "RETURN_RECORDED");
+    expect(valued.map((movement) => [movement.unitCost, movement.costPending])).toEqual([[required(returnedLayers[0]).unitCost, false], [100, false]]);
+    expect(await report()).toMatchObject({ cogs: 0, provisional: false });
+  });
+
+  it("moves resolved source cost from the original sale to a returned-layer resale", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const originalSale = await sell(product.id, 5);
+    await client.returnsCreate({ invoiceId: originalSale.id, lines: [{ invoiceLineId: required(originalSale.lines[0]).id, quantity: 1 }] });
+    const resale = await sell(product.id, 1, "2026-01-12");
+    const result = await resolve(source.id, 100);
+    expect(result.adjustments).toEqual([
+      { invoiceLineId: required(originalSale.lines[0]).id, amount: 400 },
+      { invoiceLineId: required(resale.lines[0]).id, amount: 100 },
+    ]);
+    expect(await report("2026-01-11")).toMatchObject({ cogs: 400, provisional: false });
+    expect(await report("2026-01-12")).toMatchObject({ cogs: 100, provisional: false });
+    await assertStock(product.id, 0, 0, 100);
+    await assertOriginal(originalSale);
+    await assertOriginal(resale);
+  });
+
+  it("snapshots exact cost on a sale made after resolving a returned layer", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const original = await sell(product.id, 5);
+    await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: required(original.lines[0]).id, quantity: 1 }] });
+    await resolve(source.id, 100);
+    const resale = await sell(product.id, 1, "2026-01-12");
+    expect(resale.lines[0]).toMatchObject({ cogsExact: 100, costAtSale: 100, costPending: false });
+    expect(await report("2026-01-11")).toMatchObject({ cogs: 400, provisional: false });
+    expect(await report("2026-01-12")).toMatchObject({ cogs: 100, provisional: false });
+    await assertStock(product.id, 0, 0, 100);
+    await assertOriginal(original);
+  });
+
+  it("finishes rejection after returned stock was resold without scrapping unrelated stock", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const original = await sell(product.id, 5);
+    const returned = await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: required(original.lines[0]).id, quantity: 1 }] });
+    await resolve(source.id, 100);
+    const resale = await sell(product.id, 1, "2026-01-12");
+    const before = await report("2026-01-12");
+    await client.returnsReject({ returnId: returned.id, reason: "inspection refused" });
+    expect(await report("2026-01-11")).toMatchObject({ cogs: 400, provisional: false });
+    expect(await report("2026-01-12")).toMatchObject({ cogs: 100, provisional: false });
+    expect(await report("2026-01-12")).toMatchObject({ revenue: before.revenue });
+    await assertStock(product.id, 0, 0, 100);
+    await assertOriginal(original);
+    await assertOriginal(resale);
+  });
+
+  it("resolves a returned source after rejection and resale", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const original = await sell(product.id, 5);
+    const returned = await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: required(original.lines[0]).id, quantity: 1 }] });
+    const resale = await sell(product.id, 1, "2026-01-12");
+    await client.returnsReject({ returnId: returned.id, reason: "inspection refused" });
+    const result = await resolve(source.id, 100);
+    expect(result.adjustments).toEqual([
+      { invoiceLineId: required(original.lines[0]).id, amount: 400 },
+      { invoiceLineId: required(resale.lines[0]).id, amount: 100 },
+    ]);
+    expect(await report("2026-01-11")).toMatchObject({ cogs: 400, provisional: false });
+    expect(await report("2026-01-12")).toMatchObject({ cogs: 100, provisional: false });
+  });
+
+  it("keeps ancestry through a return-resale-return chain", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const original = await sell(product.id, 5);
+    await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: required(original.lines[0]).id, quantity: 1 }] });
+    const resale = await sell(product.id, 1, "2026-01-12");
+    await client.returnsCreate({ invoiceId: resale.id, lines: [{ invoiceLineId: required(resale.lines[0]).id, quantity: 1 }] });
+    const result = await resolve(source.id, 100);
+    expect(result.adjustments).toEqual([{ invoiceLineId: required(original.lines[0]).id, amount: 400 }]);
+    expect(await report("2026-01-11")).toMatchObject({ cogs: 400, provisional: false });
+    expect(await report("2026-01-12")).toMatchObject({ cogs: 0, provisional: false });
+    await assertStock(product.id, 1, 100, 100);
   });
 
   it("accepts only unambiguous complete legacy line links on reopen", async () => {
@@ -599,6 +723,25 @@ describe("persisted return source choices", () => {
       { stockLinkId: required(sources.sources[1]).stockLinkId, quantity: 1 },
     ] });
     expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({ provenanceComplete: true, sources: [{ movementId: next.id, quantityAvailable: 1 }] });
+  });
+
+  it("safely keeps homogeneous known-cost legacy returns available", async () => {
+    const product = await item();
+    await receipt(product.id, 2, 40);
+    const laterReceipt = await receipt(product.id, 2, 40, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    const line = required(sale.lines[0]);
+    const first = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: line.id });
+    const returned = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: line.id, quantity: 1 }] });
+    conn.raw.query(`DELETE FROM return_source_allocations WHERE return_line_id IN (SELECT id FROM return_lines WHERE return_id = ?)`).run(returned.id);
+    const remaining = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: line.id });
+    expect(remaining).toMatchObject({ provenanceComplete: true, selectionRequired: false,
+      sources: [{ quantityAvailable: 1 }, { quantityAvailable: 2 }] });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: line.id, quantity: 1 }] });
+    expect((await client.returnsSources({ invoiceId: sale.id, invoiceLineId: line.id })).sources).toMatchObject([
+      { movementId: laterReceipt.id, quantityAvailable: 2 },
+    ]);
+    expect(first.provenanceComplete).toBe(true);
   });
 
   it("does not invent per-source caps for a legacy unattributed return", async () => {

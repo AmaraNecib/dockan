@@ -1938,6 +1938,43 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     };
   };
 
+  /** Overlay a return layer only when every persisted ancestry path resolves
+   * to the same known receipt cost. Mixed legacy aggregate layers stay as
+   * recorded; this read must not choose one source or reconstruct FIFO. */
+  const withResolvedReturnCosts = (movements: Array<StockMovement & { seq: number }>) => {
+    const costByReturn = new Map<string, number>();
+    for (const movement of movements) {
+      if (movement.delta <= 0 || movement.reason !== "RETURN_RECORDED") continue;
+      // SAFETY: the recursive CTE and aliases are fixed; it follows persisted
+      // return-allocation -> stock-link edges only, with a hard depth bound.
+      const ancestors = conn.raw.query(`
+        WITH RECURSIVE ancestry(movement_id, depth) AS (
+          SELECT sl.movement_id, 1
+          FROM return_source_allocations a JOIN stock_links sl ON sl.id = a.stock_link_id
+          WHERE a.returned_movement_id = ?
+          UNION
+          SELECT sl.movement_id, ancestry.depth + 1
+          FROM ancestry
+          JOIN return_source_allocations a ON a.returned_movement_id = ancestry.movement_id
+          JOIN stock_links sl ON sl.id = a.stock_link_id
+          WHERE ancestry.depth < 100
+        )
+        SELECT ancestry.movement_id AS movementId, r.unit_cost AS unitCost
+        FROM ancestry
+        LEFT JOIN receipt_cost_resolutions r ON r.movement_id = ancestry.movement_id
+        WHERE NOT EXISTS (SELECT 1 FROM return_source_allocations child WHERE child.returned_movement_id = ancestry.movement_id)
+      `).all(movement.id) as Array<{ movementId: string; unitCost: number | null }>;
+      if (ancestors.length === 0 || ancestors.some((source) => source.unitCost === null)) continue;
+      const costs = new Set(ancestors.map((source) => source.unitCost));
+      const effectiveCost = ancestors[0]?.unitCost;
+      if (costs.size === 1 && effectiveCost !== null && effectiveCost !== undefined) costByReturn.set(movement.id, effectiveCost);
+    }
+    return movements.map((movement) => {
+      const unitCost = movement.id === undefined ? undefined : costByReturn.get(movement.id);
+      return unitCost === undefined ? movement : { ...movement, unitCost, costPending: false };
+    });
+  };
+
   /** Overlay only complete saved sale allocations, never a replay-derived guess. */
   const withSaleSources = async (movements: Array<StockMovement & { seq: number }>) => {
     const saleGroups = new Map<string, typeof movements>();
@@ -2042,7 +2079,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .from(stockMovements)
           .where(inArray(stockMovements.itemId, pendingItemIds))
           .orderBy(stockMovements.occurredAt, sql`rowid`);
-        const attributed = await withSaleSources(movements.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) })));
+        const returnedCosts = withResolvedReturnCosts(movements.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) })));
+        const attributed = await withSaleSources(returnedCosts);
         const byItem = new Map<string, typeof attributed>();
         for (const movement of attributed) {
           const bucket = byItem.get(movement.itemId) ?? [];
@@ -2188,7 +2226,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .from(stockMovements)
         .where(eq(stockMovements.itemId, itemId))
         .orderBy(stockMovements.occurredAt, sql`rowid`);
-      return withSaleSources(rows.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) })));
+      return withSaleSources(withResolvedReturnCosts(rows.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) }))));
     },
     async listStockMovementsSince(itemId, recordedAfter) {
       // the #295 repeat window: only the movements RECORDED after the cutoff
@@ -2274,6 +2312,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SAFETY: the fixed aliases and columns define the receipt row shape.
       const receipt = conn.raw.query(`SELECT id, item_id AS itemId, kind, delta, cost_pending AS costPending FROM stock_movements WHERE id = ?`).get(input.movementId) as { id: string; itemId: string; kind: string; delta: number; costPending: number } | null;
       if (receipt === null || receipt.kind !== "PURCHASE" || receipt.delta <= 0 || receipt.costPending !== 1) throw new Error("RECEIPT_NOT_PENDING");
+      const receiptItemId = receipt.itemId;
       // SAFETY: fixed aliases describe persisted allocations, including nullable legacy keys.
       const links = conn.raw.query(`
         SELECT sl.invoice_line_id AS invoiceLineId, sl.invoice_id AS invoiceId, sl.quantity,
@@ -2304,21 +2343,88 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const provenLinks = links.flatMap((link) => link.invoiceLineId === null ? [] : [{ invoiceLineId: link.invoiceLineId, quantity: link.quantity }]);
       const soldQuantity = provenLinks.reduce((sum, link) => sum + link.quantity, 0);
       if (soldQuantity > receipt.delta) throw new Error("RECEIPT_PROVENANCE_INVALID");
-      const lineIds = [...new Set(provenLinks.map((link) => link.invoiceLineId))];
-      if (lineIds.length > 0) {
-        const placeholders = lineIds.map(() => "?").join(",");
-        const returned = conn.raw.query(`SELECT 1 AS found FROM return_lines WHERE invoice_line_id IN (${placeholders}) LIMIT 1`).get(...lineIds);
-        if (returned !== null) throw new Error("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
+      // Follow source-specific returned layers through later sale links. A
+      // returned movement with multiple source edges is legacy aggregate
+      // provenance: no current FIFO or rounded snapshot can safely split it.
+      // SAFETY: fixed SELECT aliases define every row field below; values are
+      // database facts read inside the immediate transaction.
+      const allLinks = conn.raw.query(`
+        SELECT sl.id, sl.invoice_id AS invoiceId, sl.movement_id AS movementId,
+               sl.invoice_line_id AS invoiceLineId, sl.quantity,
+               i.kind AS invoiceKind, l.invoice_id AS lineInvoiceId, l.item_id AS lineItemId
+        FROM stock_links sl JOIN invoices i ON i.id = sl.invoice_id
+        LEFT JOIN invoice_lines l ON l.id = sl.invoice_line_id
+        JOIN stock_movements source ON source.id = sl.movement_id
+        WHERE source.item_id = ? ORDER BY sl.rowid
+      `).all(receiptItemId) as Array<{ id: string; invoiceId: string; movementId: string; invoiceLineId: string | null; quantity: number; invoiceKind: string; lineInvoiceId: string | null; lineItemId: string | null }>;
+      // SAFETY: fixed aliases define the return allocation row shape.
+      const allocations = conn.raw.query(`
+        SELECT a.stock_link_id AS stockLinkId, a.returned_movement_id AS returnedMovementId,
+               a.quantity, r.status
+        FROM return_source_allocations a JOIN return_lines rl ON rl.id = a.return_line_id
+        JOIN returns r ON r.id = rl.return_id ORDER BY a.rowid
+      `).all() as Array<{ stockLinkId: string; returnedMovementId: string; quantity: number; status: string }>;
+      const linksByMovement = new Map<string, typeof allLinks>();
+      for (const link of allLinks) {
+        const group = linksByMovement.get(link.movementId) ?? [];
+        group.push(link);
+        linksByMovement.set(link.movementId, group);
       }
+      const returnsByLink = new Map<string, typeof allocations>();
+      for (const allocation of allocations) {
+        const group = returnsByLink.get(allocation.stockLinkId) ?? [];
+        group.push(allocation);
+        returnsByLink.set(allocation.stockLinkId, group);
+      }
+      const effectiveSoldByLine = new Map<string, number>();
+      const visitedReturns = new Set<string>();
+      function visitReturnedLayer(movementId: string, quantity: number, depth: number): void {
+        if (depth > 100) throw new Error("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
+        const movementAllocations = allocations.filter((allocation) => allocation.returnedMovementId === movementId);
+        const movementAllocation = movementAllocations[0];
+        if (movementAllocations.length !== 1 || movementAllocation === undefined || movementAllocation.quantity < quantity || visitedReturns.has(movementId)) {
+          throw new Error("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
+        }
+        visitedReturns.add(movementId);
+        visitMovement(movementId, quantity, depth + 1);
+      }
+      function visitMovement(movementId: string, available: number, depth: number): void {
+        if (depth > 100) throw new Error("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
+        const outgoing = (linksByMovement.get(movementId) ?? []).filter((link) => link.invoiceKind === "SALE");
+        const totalOut = outgoing.reduce((sum, link) => sum + link.quantity, 0);
+        if (totalOut > available) throw new Error("RECEIPT_PROVENANCE_INVALID");
+        for (const link of outgoing) {
+          if (link.invoiceLineId === null || link.lineInvoiceId !== link.invoiceId || link.lineItemId !== receiptItemId ||
+              !Number.isSafeInteger(link.quantity) || link.quantity <= 0) throw new Error("RECEIPT_PROVENANCE_INVALID");
+          const linkedReturns = returnsByLink.get(link.id) ?? [];
+          const activeReturns = linkedReturns.filter((allocation) => allocation.status !== "REJECTED_DAMAGED");
+          const rejectedReturns = linkedReturns.filter((allocation) => allocation.status === "REJECTED_DAMAGED");
+          const heldQuantity = activeReturns.reduce((sum, allocation) => sum + allocation.quantity, 0);
+          if (heldQuantity > link.quantity) throw new Error("RECEIPT_PROVENANCE_INVALID");
+          let rejectedResoldQuantity = 0;
+          const resoldRejectedLayers: Array<{ movementId: string; quantity: number }> = [];
+          for (const allocation of rejectedReturns) {
+            const resold = (linksByMovement.get(allocation.returnedMovementId) ?? [])
+              .filter((saleLink) => saleLink.invoiceKind === "SALE")
+              .reduce((sum, saleLink) => sum + saleLink.quantity, 0);
+            if (resold > allocation.quantity) throw new Error("RECEIPT_PROVENANCE_INVALID");
+            rejectedResoldQuantity += resold;
+            if (resold > 0) resoldRejectedLayers.push({ movementId: allocation.returnedMovementId, quantity: resold });
+          }
+          if (heldQuantity + rejectedResoldQuantity > link.quantity) throw new Error("RECEIPT_PROVENANCE_INVALID");
+          const netSold = link.quantity - heldQuantity - rejectedResoldQuantity;
+          effectiveSoldByLine.set(link.invoiceLineId, (effectiveSoldByLine.get(link.invoiceLineId) ?? 0) + netSold);
+          for (const allocation of activeReturns) visitReturnedLayer(allocation.returnedMovementId, allocation.quantity, depth + 1);
+          for (const layer of resoldRejectedLayers) visitReturnedLayer(layer.movementId, layer.quantity, depth + 1);
+        }
+      }
+      visitMovement(input.movementId, receipt.delta, 0);
       const resolutionId = id();
       conn.raw.query(`INSERT INTO receipt_cost_resolutions (id, movement_id, unit_cost, reason, actor_id, actor_name, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(resolutionId, input.movementId, input.unitCost, input.reason, input.actorId, input.actorName, input.recordedAt);
-      const byLine = new Map<string, number>();
-      for (const link of provenLinks) {
-        const lineId = link.invoiceLineId;
-        byLine.set(lineId, (byLine.get(lineId) ?? 0) + link.quantity * input.unitCost);
-      }
       const adjustments: Array<{ invoiceLineId: string; amount: number }> = [];
-      for (const [invoiceLineId, amount] of byLine) {
+      for (const [invoiceLineId, quantity] of effectiveSoldByLine) {
+        if (quantity === 0) continue;
+        const amount = quantity * input.unitCost;
         conn.raw.query(`INSERT INTO receipt_cost_adjustments (id, resolution_id, invoice_line_id, amount, created_at) VALUES (?, ?, ?, ?, ?)`).run(id(), resolutionId, invoiceLineId, amount, input.recordedAt);
         adjustments.push({ invoiceLineId, amount });
       }
@@ -2544,17 +2650,46 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                    JOIN stock_movements source ON source.id = sl.movement_id
                    WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
                      AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
+                     AND EXISTS (
+                       WITH RECURSIVE ancestry(movement_id) AS (
+                         SELECT source.id
+                         UNION
+                         SELECT origin.movement_id FROM ancestry
+                         JOIN return_source_allocations a ON a.returned_movement_id = ancestry.movement_id
+                         JOIN stock_links origin ON origin.id = a.stock_link_id
+                       )
+                       SELECT 1 FROM ancestry
+                       JOIN stock_movements root ON root.id = ancestry.movement_id
+                       WHERE NOT EXISTS (SELECT 1 FROM return_source_allocations child WHERE child.returned_movement_id = root.id)
+                         AND root.cost_pending = 1
+                         AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = root.id)
+                     )
                  ) THEN 1
                  WHEN COALESCE((SELECT SUM(sl.quantity) FROM stock_links sl WHERE sl.invoice_line_id = l.id), 0) = l.quantity
                    AND NOT EXISTS (
                      SELECT 1 FROM stock_links sl JOIN stock_movements source ON source.id = sl.movement_id
                      WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
                        AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
+                       AND EXISTS (
+                         WITH RECURSIVE ancestry(movement_id) AS (
+                           SELECT source.id
+                           UNION
+                           SELECT origin.movement_id FROM ancestry
+                           JOIN return_source_allocations a ON a.returned_movement_id = ancestry.movement_id
+                           JOIN stock_links origin ON origin.id = a.stock_link_id
+                         )
+                         SELECT 1 FROM ancestry
+                         JOIN stock_movements root ON root.id = ancestry.movement_id
+                         WHERE NOT EXISTS (SELECT 1 FROM return_source_allocations child WHERE child.returned_movement_id = root.id)
+                           AND root.cost_pending = 1
+                           AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = root.id)
+                       )
                    ) THEN 0
                  ELSE l.cost_pending
                END AS costPending,
                l.net_total AS netTotal,
-               COALESCE((SELECT SUM(a.amount) FROM receipt_cost_adjustments a WHERE a.invoice_line_id = l.id), 0) AS cogsAdjustment
+               COALESCE((SELECT SUM(a.amount) FROM receipt_cost_adjustments a WHERE a.invoice_line_id = l.id), 0)
+                 + COALESCE((SELECT SUM(a.amount) FROM receipt_cost_return_adjustments a WHERE a.invoice_line_id = l.id), 0) AS cogsAdjustment
         FROM invoice_lines l
         JOIN invoices i ON i.id = l.invoice_id
         WHERE i.kind = 'SALE'
@@ -2584,6 +2719,48 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         GROUP BY rl.invoice_line_id
       `)) as Array<{ invoiceLineId: string; heldQty: number; rejectedQty: number; rejectedScrapQty: number }>;
       const statsByLine = new Map(stats.map((row) => [row.invoiceLineId, row]));
+      // SAFETY: fixed SQL aliases define the source-return projection below.
+      const sourceRows = (await db.all(sql`
+        SELECT a.quantity, a.stock_link_id AS stockLinkId,
+               a.returned_movement_id AS returnedMovementId, sl.invoice_line_id AS invoiceLineId, r.status,
+               COALESCE((SELECT SUM(consumed.quantity) FROM stock_links consumed
+                         JOIN invoices sale ON sale.id = consumed.invoice_id AND sale.kind = 'SALE'
+                         WHERE consumed.movement_id = a.returned_movement_id), 0) AS resoldQuantity
+        FROM return_source_allocations a
+        JOIN return_lines rl ON rl.id = a.return_line_id
+        JOIN returns r ON r.id = rl.return_id
+        JOIN stock_links sl ON sl.id = a.stock_link_id
+      `)) as Array<{ quantity: number; stockLinkId: string; returnedMovementId: string; invoiceLineId: string; status: string; resoldQuantity: number }>;
+      const returnCostByLine = new Map<string, number>();
+      const returnQtyByLine = new Map<string, number>();
+      for (const source of sourceRows) {
+        returnQtyByLine.set(source.invoiceLineId, (returnQtyByLine.get(source.invoiceLineId) ?? 0) + source.quantity);
+        const effectiveReturnQuantity = source.status === "REJECTED_DAMAGED"
+          ? Math.min(source.quantity, source.resoldQuantity)
+          : source.quantity;
+        if (effectiveReturnQuantity <= 0) continue;
+        // Only known original sources need a separate return relief. Pending
+        // receipt adjustments already follow the effective sale chain.
+        // SAFETY: the fixed query aliases the terminal movement valuation fields.
+        const roots = conn.raw.query(`
+          WITH RECURSIVE ancestry(movement_id, depth) AS (
+            SELECT sl.movement_id, 0 FROM stock_links sl WHERE sl.id = ?
+            UNION
+            SELECT sl.movement_id, ancestry.depth + 1 FROM ancestry
+            JOIN return_source_allocations a ON a.returned_movement_id = ancestry.movement_id
+            JOIN stock_links sl ON sl.id = a.stock_link_id WHERE ancestry.depth < 100
+          )
+          SELECT sm.unit_cost AS unitCost, sm.cost_pending AS costPending,
+                 EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = sm.id) AS resolved
+          FROM ancestry JOIN stock_movements sm ON sm.id = ancestry.movement_id
+          WHERE NOT EXISTS (SELECT 1 FROM return_source_allocations child WHERE child.returned_movement_id = sm.id)
+        `).all(source.stockLinkId) as Array<{ unitCost: number | null; costPending: number; resolved: number }>;
+        const root = roots[0];
+        if (roots.length !== 1 || root === undefined || root.costPending !== 0 || root.resolved !== 0 || root.unitCost === null) continue;
+        returnCostByLine.set(source.invoiceLineId, (returnCostByLine.get(source.invoiceLineId) ?? 0) + effectiveReturnQuantity * root.unitCost);
+      }
+      const allocatedByLine = new Map<string, number>();
+      for (const line of lines) allocatedByLine.set(line.lineId, returnQtyByLine.get(line.lineId) ?? 0);
       const rows: ProfitSaleLine[] = [];
       for (const line of lines) {
         const perLineStats = statsByLine.get(line.lineId);
@@ -2593,7 +2770,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         }
         const booked = bookSaleLineForReturns(line, perLineStats);
         if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
-        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact + line.cogsAdjustment, cogsAdjustment: line.cogsAdjustment, costPending: Boolean(line.costPending), netTotal: booked.netTotal });
+        const hasCompleteSourceAttribution = allocatedByLine.get(line.lineId) === perLineStats.heldQty + perLineStats.rejectedQty;
+        const cogsExact = hasCompleteSourceAttribution
+          ? line.cogsExact - (returnCostByLine.get(line.lineId) ?? 0) + line.cogsAdjustment
+          : booked.cogsExact + line.cogsAdjustment;
+        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact, cogsAdjustment: line.cogsAdjustment, costPending: Boolean(line.costPending), netTotal: booked.netTotal });
       }
       return rows;
     },
@@ -2905,6 +3086,36 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         (id, return_line_id, stock_link_id, quantity, attribution_mode, returned_movement_id)
         VALUES (?, ?, ?, ?, ?, ?)`).run(id(), allocation.returnLineId, allocation.stockLinkId,
         allocation.quantity, allocation.attributionMode, allocation.returnedMovementId);
+      // If this source has already been resolved, append the source-specific
+      // COGS reversal now. A later resolution instead computes effective sold
+      // quantities through the saved return edge in its own transaction.
+      // SAFETY: the fixed SELECT aliases define the source link row shape.
+      const source = conn.raw.query(`
+        SELECT sl.invoice_line_id AS invoiceLineId, sl.movement_id AS movementId
+        FROM stock_links sl WHERE sl.id = ?
+      `).get(allocation.stockLinkId) as { invoiceLineId: string | null; movementId: string } | null;
+      if (source?.invoiceLineId == null) return;
+      // SAFETY: the fixed CTE returns the selected resolution id and unit cost.
+      const resolutions = conn.raw.query(`
+        WITH RECURSIVE ancestry(movement_id, depth) AS (
+          SELECT ?, 0
+          UNION
+          SELECT sl.movement_id, ancestry.depth + 1
+          FROM ancestry
+          JOIN return_source_allocations a ON a.returned_movement_id = ancestry.movement_id
+          JOIN stock_links sl ON sl.id = a.stock_link_id
+          WHERE ancestry.depth < 100
+        )
+        SELECT r.id AS resolutionId, r.unit_cost AS unitCost
+        FROM ancestry JOIN receipt_cost_resolutions r ON r.movement_id = ancestry.movement_id
+        ORDER BY ancestry.depth LIMIT 2
+      `).all(source.movementId) as Array<{ resolutionId: string; unitCost: number }>;
+      if (resolutions.length !== 1) return;
+      const resolution = resolutions[0];
+      if (resolution === undefined) return;
+      conn.raw.query(`INSERT INTO receipt_cost_return_adjustments
+        (id, resolution_id, return_line_id, invoice_line_id, amount, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(id(), resolution.resolutionId, allocation.returnLineId, source.invoiceLineId, -allocation.quantity * resolution.unitCost, now());
     },
     async returnSourceAllocationsByLine(invoiceLineId) {
       // SAFETY: selected aliases match the declared row shape; schema CHECKs restrict modes.
@@ -2915,6 +3126,43 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         WHERE rl.invoice_line_id = ? ORDER BY a.rowid`).all(invoiceLineId) as Array<{
           stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string;
         }>;
+    },
+    async returnSourceAllocationsByReturnLine(returnLineId) {
+      // SAFETY: fixed aliases define the persisted source-allocation row shape.
+      return conn.raw.query(`SELECT stock_link_id AS stockLinkId, quantity,
+        returned_movement_id AS returnedMovementId FROM return_source_allocations
+        WHERE return_line_id = ? ORDER BY rowid`).all(returnLineId) as Array<{
+          stockLinkId: string; quantity: number; returnedMovementId: string;
+        }>;
+    },
+    async recordReturnSourceScrap(input) {
+      if (!conn.inTransaction || !immediateTransaction) throw new Error("return source accounting requires an immediate transaction");
+      if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0) throw new Error("RETURN_SOURCE_ALLOCATION_INVALID");
+      // SAFETY: fixed aliases define the source-allocation row shape.
+      const row = conn.raw.query(`
+        SELECT a.quantity AS allocatedQuantity, sl.invoice_line_id AS invoiceLineId, sl.movement_id AS movementId
+        FROM return_source_allocations a JOIN stock_links sl ON sl.id = a.stock_link_id
+        WHERE a.return_line_id = ? AND a.stock_link_id = ?
+      `).get(input.returnLineId, input.stockLinkId) as { allocatedQuantity: number; invoiceLineId: string | null; movementId: string } | null;
+      if (row === null || row.invoiceLineId === null || input.quantity > row.allocatedQuantity) throw new Error("RETURN_SOURCE_ALLOCATION_INVALID");
+      // SAFETY: selected aliases define the receipt-resolution row shape.
+      const resolutions = conn.raw.query(`
+        WITH RECURSIVE ancestry(movement_id, depth) AS (
+          SELECT ?, 0
+          UNION
+          SELECT sl.movement_id, ancestry.depth + 1 FROM ancestry
+          JOIN return_source_allocations a ON a.returned_movement_id = ancestry.movement_id
+          JOIN stock_links sl ON sl.id = a.stock_link_id WHERE ancestry.depth < 100
+        )
+        SELECT r.id AS resolutionId, r.unit_cost AS unitCost FROM ancestry
+        JOIN receipt_cost_resolutions r ON r.movement_id = ancestry.movement_id ORDER BY ancestry.depth LIMIT 2
+      `).all(row.movementId) as Array<{ resolutionId: string; unitCost: number }>;
+      if (resolutions.length !== 1) return;
+      const source = resolutions[0];
+      if (source === undefined) return;
+      conn.raw.query(`INSERT INTO receipt_cost_return_adjustments
+        (id, resolution_id, return_line_id, invoice_line_id, amount, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(id(), source.resolutionId, input.returnLineId, row.invoiceLineId, input.quantity * source.unitCost, now());
     },
     /** One return header joined to its invoice identity (for the voucher/list).
      * Returns the contract shape with an empty line list — the caller resolves

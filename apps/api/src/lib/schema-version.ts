@@ -87,8 +87,15 @@ import type { Database } from "bun:sqlite";
  * Version 13 (issue 393 checkpoint): stock links gain nullable sale-line
  * attribution, and receipt cost resolution plus exact COGS adjustment ledgers
  * are additive. A v12 build cannot read these facts and must refuse the file.
+ *
+ * Version 14 (issue 393 return accounting): return source splits now create
+ * source-specific returned stock layers, and receipt resolutions record
+ * append-only return/resale COGS deltas. A v13 build can create one aggregate
+ * layer for a mixed-source return, losing ancestry needed to resolve receipt
+ * cost and correctly book resale COGS. It must refuse this format rather than
+ * silently writing financially ambiguous facts.
  */
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 /**
  * A database written by a newer app. The older build cannot know what the

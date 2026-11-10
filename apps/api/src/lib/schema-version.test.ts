@@ -155,6 +155,18 @@ describe("the version gate", () => {
     }
   });
 
+  itHeavy("refuses v13 writers after source-specific return layers are introduced", () => {
+    const database = new Database(":memory:");
+    try {
+      database.exec("PRAGMA user_version = 14");
+      expect(CURRENT_SCHEMA_VERSION).toBe(14);
+      expect(() => assertSchemaVersionSupported(database, 13)).toThrow(UnsupportedSchemaVersionError);
+      expect(readSchemaVersion(database)).toBe(14);
+    } finally {
+      database.close();
+    }
+  });
+
   itHeavy("refuses a newer database before any write, leaves it untouched and closes the handle", () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "newer-open.db");

@@ -1828,10 +1828,24 @@ export function createRpcRouter(deps: RpcDeps) {
           // while holding the immediate transaction lock. Legacy returns with
           // no proven allocation remain a hard refusal, never guessed FIFO.
           const sourceAllocationsByLine = new Map<string, { mode: "AUTO" | "SELECTED" | "UNKNOWN"; allocations: Array<{ stockLinkId: string; quantity: number }> }>();
-          if (new Set(input.lines.map((entry) => entry.invoiceLineId)).size !== input.lines.length) {
-            throw new ORPCError("BAD_REQUEST", { message: "RETURN_LINE_DUPLICATE" });
-          }
+          const groupedSourceEntries = new Map<string, typeof input.lines[number][]>();
           for (const entry of input.lines) {
+            const group = groupedSourceEntries.get(entry.invoiceLineId) ?? [];
+            group.push(entry);
+            groupedSourceEntries.set(entry.invoiceLineId, group);
+          }
+          const sourceEntries = [...groupedSourceEntries].map(([invoiceLineId, entries]) => ({
+            invoiceLineId,
+            quantity: entries.reduce((sum, entry) => sum + entry.quantity, 0),
+            sourceMode: entries.some((entry) => entry.sourceMode === "UNKNOWN") ? "UNKNOWN" as const : undefined,
+            sourceAllocations: entries.some((entry) => entry.sourceAllocations !== undefined)
+              ? [...entries.flatMap((entry) => entry.sourceAllocations ?? []).reduce((bySource, allocation) => {
+                  bySource.set(allocation.stockLinkId, (bySource.get(allocation.stockLinkId) ?? 0) + allocation.quantity);
+                  return bySource;
+                }, new Map<string, number>())].map(([stockLinkId, quantity]) => ({ stockLinkId, quantity }))
+              : undefined,
+          }));
+          for (const entry of sourceEntries) {
             const sourceSet = await readReturnSources(tx, { invoiceId: invoice.id, invoiceLineId: entry.invoiceLineId });
             if (!sourceSet.provenanceComplete) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_PROVENANCE_UNAVAILABLE" });
             let allocations: Array<{ stockLinkId: string; quantity: number }>;
@@ -1972,30 +1986,38 @@ export function createRpcRouter(deps: RpcDeps) {
               refundUnitPrice: lineRefund.refundUnitPrice,
               refundAmount: lineRefund.refundAmount,
             });
-            // Returned units join the FIFO layers straight away at the item's
-            // current weighted average — "pure cost into the basis", no
-            // special valuation (ADR-0002/0005 unchanged). One movement per
-            // line, marked PENDING for the owner's review. An inflow can never
-            // dip stock, but the seam still projects the whole history so a
-            // corrupt ledger fails loudly before any write.
-            const returnedMovement = await postStock(tx, {
-              itemId: item.id,
-              kind: "SALE",
-              delta: lineRefund.quantity,
-              unitCost: line.costPending === true ? null : item.costPrice,
-              costPending: line.costPending === true,
-              // visible marker in the item history: this stock-in is a return.
-              // Locale-neutral key; the ui translates it (the ref carries the
-              // return number).
-              reason: "RETURN_RECORDED",
-              ref: returnId,
-              returnMark: "PENDING",
-              occurredAt,
-            });
+            // Persist one return layer per source split. A single aggregate
+            // movement would erase mixed pending/priced ancestry, so a later
+            // receipt resolution could neither revalue stock nor trace resale.
+            // Known-cost returns keep the established current-average value;
+            // unresolved pending sources remain pending, while a resolved
+            // pending source carries its now-known receipt cost.
             const sourceChoice = sourceAllocationsByLine.get(line.id)!;
-            for (const allocation of sourceChoice.allocations) await tx.insertReturnSourceAllocation({
-              returnLineId, ...allocation, attributionMode: sourceChoice.mode, returnedMovementId: returnedMovement.movement.id,
-            });
+            const itemLinks = await tx.listStockLinksByItem(item.id);
+            const sourceLinks = new Map(itemLinks.map((link) => [link.id, link]));
+            const itemMovements = new Map((await tx.listStockMovements(item.id)).map((movement) => [movement.id, movement]));
+            for (const allocation of sourceChoice.allocations) {
+              const sourceLink = sourceLinks.get(allocation.stockLinkId);
+              const sourceMovement = sourceLink === undefined ? undefined : itemMovements.get(sourceLink.movementId);
+              if (sourceMovement === undefined) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_PROVENANCE_UNAVAILABLE" });
+              const immutableSource = await tx.getStockMovementById(sourceMovement.id);
+              const sourcePending = sourceMovement.costPending === true;
+              const sourceWasPending = immutableSource?.costPending === true;
+              const returnedMovement = await postStock(tx, {
+                itemId: item.id,
+                kind: "SALE",
+                delta: allocation.quantity,
+                unitCost: sourcePending ? null : (sourceWasPending ? sourceMovement.unitCost : item.costPrice),
+                costPending: sourcePending,
+                reason: "RETURN_RECORDED",
+                ref: returnId,
+                returnMark: "PENDING",
+                occurredAt,
+              });
+              await tx.insertReturnSourceAllocation({
+                returnLineId, ...allocation, attributionMode: sourceChoice.mode, returnedMovementId: returnedMovement.movement.id,
+              });
+            }
           }
           // #68: the debt portion is NOT settled while the return is pending —
           // the voucher records the owner's chosen split, but the invoice keeps
@@ -2172,21 +2194,32 @@ export function createRpcRouter(deps: RpcDeps) {
             // lines in order against the running cache, so every movement and
             // the final cache match the per-line calls exactly.
             const scrapSpecs: StockMovementSpec[] = [];
+            const itemLinks = await tx.listStockLinksByItem(item.id);
             let remaining = removalBudget;
             for (const line of linesOfItem) {
-              const take = Math.min(line.quantity, remaining);
-              if (take <= 0) continue;
-              scrapSpecs.push({
-                itemId: item.id,
-                kind: "MANUAL_ADJUSTMENT",
-                delta: -take,
-                reason: `${reasonKey} #${line.id}`,
-                ref: existing.id,
-                occurredAt,
-              });
-              remaining -= take;
+              if (remaining <= 0) break;
+              const sourceAllocations = await tx.returnSourceAllocationsByReturnLine(line.id);
+              if (sourceAllocations.length === 0) {
+                const take = Math.min(line.quantity, remaining);
+                if (take > 0) scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
+                  reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt });
+                remaining -= take;
+                continue;
+              }
+              for (const source of sourceAllocations) {
+                if (remaining <= 0) break;
+                const soldFromLayer = itemLinks.filter((link) => link.movementId === source.returnedMovementId && link.invoiceLineId !== null)
+                  .reduce((sum, link) => sum + link.quantity, 0);
+                const stillOnLayer = Math.max(0, source.quantity - soldFromLayer);
+                const take = Math.min(stillOnLayer, remaining);
+                if (take <= 0) continue;
+                scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
+                  reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt });
+                await tx.recordReturnSourceScrap({ returnLineId: line.id, stockLinkId: source.stockLinkId, quantity: take });
+                remaining -= take;
+              }
             }
-            await postStockBatch(tx, scrapSpecs);
+            if (scrapSpecs.length > 0) await postStockBatch(tx, scrapSpecs);
           }
           await tx.setReturnMarks(existing.id, "REJECTED");
           await insertSessionActivity(tx, session, {

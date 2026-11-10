@@ -483,6 +483,8 @@ export interface StorePort {
   insertReturnLine(line: ReturnLineInsert): Promise<string>;
   insertReturnSourceAllocation(allocation: { returnLineId: string; stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string }): Promise<void>;
   returnSourceAllocationsByLine?(invoiceLineId: string): Promise<Array<{ stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string }>>;
+  returnSourceAllocationsByReturnLine(returnLineId: string): Promise<Array<{ stockLinkId: string; quantity: number; returnedMovementId: string }>>;
+  recordReturnSourceScrap(input: { returnLineId: string; stockLinkId: string; quantity: number }): Promise<void>;
   /** full return with lines; optional invoice scope. `total` is the count for
    * the filters, independent of the page. */
   listReturns(filters: { invoiceId?: string }, pagination?: PaginationInput): Promise<{ items: ReturnDetail[]; total: number }>;

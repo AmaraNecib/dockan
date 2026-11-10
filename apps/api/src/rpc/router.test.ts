@@ -4464,7 +4464,7 @@ describe("returns & refunds", () => {
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
     expect(sale.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 700 });
-    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2, sourceMode: "UNKNOWN" }] });
 
     const history = await client.itemsHistory({ itemId: item.id });
     // 5 → 10 → 4 → 6: every step stays non-negative (deterministic replay)

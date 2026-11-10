@@ -524,8 +524,9 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_return ON return_lines(return_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_invoice_line ON return_lines(invoice_line_id)`,
-  // Additive schema only: older returns are not backfilled because their source split is unprovable.
-  // No user_version bump is needed; CREATE IF NOT EXISTS upgrades on open without rewriting facts.
+  // Older returns are not backfilled because their source split is unprovable.
+  // Version 14 gates source-specific returned layers from v13 writers, which
+  // would collapse a mixed split into an aggregate movement.
   `CREATE TABLE IF NOT EXISTS return_source_allocations (id TEXT PRIMARY KEY, return_line_id TEXT NOT NULL REFERENCES return_lines(id), stock_link_id TEXT NOT NULL REFERENCES stock_links(id), quantity INTEGER NOT NULL CHECK (quantity > 0), attribution_mode TEXT NOT NULL CHECK (attribution_mode IN ('AUTO','SELECTED','UNKNOWN')), returned_movement_id TEXT NOT NULL REFERENCES stock_movements(id))`,
   `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_link ON return_source_allocations(stock_link_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_line ON return_source_allocations(return_line_id)`,
@@ -555,6 +556,9 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS receipt_cost_adjustments (id TEXT PRIMARY KEY, resolution_id TEXT NOT NULL REFERENCES receipt_cost_resolutions(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_receipt_cost_adjustments_line ON receipt_cost_adjustments(invoice_line_id)`,
   `CREATE INDEX IF NOT EXISTS idx_receipt_cost_adjustments_resolution ON receipt_cost_adjustments(resolution_id)`,
+  `CREATE TABLE IF NOT EXISTS receipt_cost_return_adjustments (id TEXT PRIMARY KEY, resolution_id TEXT NOT NULL REFERENCES receipt_cost_resolutions(id), return_line_id TEXT NOT NULL REFERENCES return_lines(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_return_adjustments_line ON receipt_cost_return_adjustments(invoice_line_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_return_adjustments_resolution ON receipt_cost_return_adjustments(resolution_id)`,
   `CREATE TABLE IF NOT EXISTS supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), direction TEXT CHECK (direction IN ('WE_OWE','THEY_OWE') OR direction IS NULL), invoice_id TEXT REFERENCES invoices(id), method TEXT, note TEXT, ref TEXT, dedup_key TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL))`,
   `CREATE INDEX IF NOT EXISTS idx_supplier_entries_supplier ON supplier_account_entries(supplier_id, occurred_at)`,
   // #181 — the DB backstop for the adjustment dedup key. Partial so every

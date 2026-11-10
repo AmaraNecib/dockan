@@ -2415,6 +2415,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         for (const link of outgoing) {
           if (link.invoiceLineId === null || link.lineInvoiceId !== link.invoiceId || link.lineItemId !== receiptItemId ||
               !Number.isSafeInteger(link.quantity) || link.quantity <= 0) throw new Error("RECEIPT_PROVENANCE_INVALID");
+          const unattributedReturn = conn.raw.query(`
+            SELECT 1 FROM return_lines rl
+            WHERE rl.invoice_line_id = ?
+              AND COALESCE((SELECT SUM(a.quantity) FROM return_source_allocations a WHERE a.return_line_id = rl.id), 0) != rl.quantity
+            LIMIT 1
+          `).get(link.invoiceLineId);
+          if (unattributedReturn !== null) throw new Error("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
           const linkedReturns = returnsByLink.get(link.id) ?? [];
           const activeReturns = linkedReturns.filter((allocation) => allocation.status !== "REJECTED_DAMAGED");
           const rejectedReturns = linkedReturns.filter((allocation) => allocation.status === "REJECTED_DAMAGED");
@@ -2668,6 +2675,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                    SELECT 1 FROM stock_links sl
                    JOIN stock_movements source ON source.id = sl.movement_id
                    WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
+                     AND sl.quantity > COALESCE((
+                       SELECT SUM(a.quantity) FROM return_source_allocations a
+                       JOIN return_lines rl ON rl.id = a.return_line_id
+                       JOIN returns returned ON returned.id = rl.return_id
+                       WHERE a.stock_link_id = sl.id AND returned.status != 'REJECTED_DAMAGED'
+                     ), 0)
                      AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
                      AND EXISTS (
                        WITH RECURSIVE ancestry(movement_id) AS (
@@ -2688,6 +2701,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                    AND NOT EXISTS (
                      SELECT 1 FROM stock_links sl JOIN stock_movements source ON source.id = sl.movement_id
                      WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
+                       AND sl.quantity > COALESCE((
+                         SELECT SUM(a.quantity) FROM return_source_allocations a
+                         JOIN return_lines rl ON rl.id = a.return_line_id
+                         JOIN returns returned ON returned.id = rl.return_id
+                         WHERE a.stock_link_id = sl.id AND returned.status != 'REJECTED_DAMAGED'
+                       ), 0)
                        AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
                        AND EXISTS (
                          WITH RECURSIVE ancestry(movement_id) AS (
@@ -2729,12 +2748,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         SELECT rl.invoice_line_id AS invoiceLineId,
                COALESCE(SUM(CASE WHEN r.status != 'REJECTED_DAMAGED' THEN rl.quantity ELSE 0 END), 0) AS heldQty,
                COALESCE(SUM(CASE WHEN r.status = 'REJECTED_DAMAGED' THEN rl.quantity ELSE 0 END), 0) AS rejectedQty,
-               COALESCE(SUM(CASE WHEN r.status = 'REJECTED_DAMAGED' AND sm.id IS NOT NULL THEN -sm.delta ELSE 0 END), 0) AS rejectedScrapQty
+               COALESCE(SUM(CASE WHEN r.status = 'REJECTED_DAMAGED' THEN (
+                 SELECT COALESCE(SUM(-sm.delta), 0) FROM stock_movements sm
+                 WHERE sm.ref = r.id AND sm.kind = 'MANUAL_ADJUSTMENT' AND sm.delta < 0
+                   AND substr(sm.reason, -(length(rl.id) + 1)) = '#' || rl.id
+               ) ELSE 0 END), 0) AS rejectedScrapQty
         FROM return_lines rl
         JOIN returns r ON r.id = rl.return_id
-        LEFT JOIN stock_movements sm
-          ON sm.ref = r.id AND sm.kind = 'MANUAL_ADJUSTMENT' AND sm.delta < 0
-         AND substr(sm.reason, -(length(rl.id) + 1)) = '#' || rl.id
         GROUP BY rl.invoice_line_id
       `)) as Array<{ invoiceLineId: string; heldQty: number; rejectedQty: number; rejectedScrapQty: number }>;
       const statsByLine = new Map(stats.map((row) => [row.invoiceLineId, row]));
@@ -2764,6 +2784,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         if (effectiveReturnQuantity <= 0) continue;
         // Only known original sources need a separate return relief. Pending
         // receipt adjustments already follow the effective sale chain.
+        const consumedLayerRow = conn.raw.query(`
+          SELECT sm.unit_cost AS unitCost, sm.cost_pending AS costPending
+          FROM stock_links sl JOIN stock_movements sm ON sm.id = sl.movement_id
+          WHERE sl.id = ?
+        `).get(source.stockLinkId);
+        // SAFETY: the fixed SELECT returns only the two aliases below for one stock-link id.
+        const consumedLayer = consumedLayerRow as { unitCost: number | null; costPending: number } | null;
         // SAFETY: the fixed query aliases the terminal movement valuation fields.
         const roots = conn.raw.query(`
           WITH RECURSIVE ancestry(movement_id, depth) AS (
@@ -2780,7 +2807,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         `).all(source.stockLinkId) as Array<{ unitCost: number | null; costPending: number; resolved: number }>;
         const root = roots[0];
         if (roots.length !== 1 || root === undefined || root.costPending !== 0 || root.resolved !== 0 || root.unitCost === null) continue;
-        returnCostByLine.set(source.invoiceLineId, (returnCostByLine.get(source.invoiceLineId) ?? 0) + effectiveReturnQuantity * root.unitCost);
+        const bookedUnitCost = consumedLayer?.costPending === 0 && consumedLayer.unitCost !== null
+          ? consumedLayer.unitCost
+          : root.unitCost;
+        returnCostByLine.set(source.invoiceLineId, (returnCostByLine.get(source.invoiceLineId) ?? 0) + effectiveReturnQuantity * bookedUnitCost);
       }
       const allocatedByLine = new Map<string, number>();
       for (const line of lines) allocatedByLine.set(line.lineId, returnQtyByLine.get(line.lineId) ?? 0);

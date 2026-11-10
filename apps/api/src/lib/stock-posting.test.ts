@@ -183,6 +183,16 @@ describe("recordStockMovement", () => {
     expect(cache).toEqual({ stockOnHand: 0, costPrice: 100 });
   });
 
+  it("validates a backdated outflow with the same sources returned to the caller", async () => {
+    const { tx } = fakeTx({ costPrice: 100 });
+    const jan1 = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 100, occurredAt: "2026-01-01T10:00:00" });
+    const jan2 = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 200, occurredAt: "2026-01-02T10:00:00" });
+    const prior = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -5, occurredAt: "2026-01-05T10:00:00" });
+    expect(prior.outflowCost?.consumedMovements).toEqual([{ movementId: jan1.movement.id, quantity: 5 }]);
+    const backdated = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -1, occurredAt: "2026-01-03T10:00:00" });
+    expect(backdated.outflowCost).toMatchObject({ totalCost: 200, consumedMovements: [{ movementId: jan2.movement.id, quantity: 1 }] });
+  });
+
   it("clamps a backdated SALE to the newest inflow and rejects an unclamped date", async () => {
     const { tx } = fakeTx({ costPrice: 100 });
     await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 100, occurredAt: "2020-06-01T00:00:00" });

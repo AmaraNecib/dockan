@@ -530,6 +530,7 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS return_source_allocations (id TEXT PRIMARY KEY, return_line_id TEXT NOT NULL REFERENCES return_lines(id), stock_link_id TEXT NOT NULL REFERENCES stock_links(id), quantity INTEGER NOT NULL CHECK (quantity > 0), attribution_mode TEXT NOT NULL CHECK (attribution_mode IN ('AUTO','SELECTED','UNKNOWN')), returned_movement_id TEXT NOT NULL REFERENCES stock_movements(id))`,
   `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_link ON return_source_allocations(stock_link_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_line ON return_source_allocations(return_line_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_returned_movement ON return_source_allocations(returned_movement_id)`,
   `CREATE TABLE IF NOT EXISTS return_debt_applications (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_id TEXT NOT NULL REFERENCES invoices(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_invoice ON return_debt_applications(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_return ON return_debt_applications(return_id)`,

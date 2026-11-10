@@ -168,6 +168,10 @@ async function postOne(
         ? null
         : (spec.unitCost ?? null);
 
+  // Compute provenance once, then use the same consumed sources to validate
+  // the candidate that the caller will persist as stock links.
+  const outflowCost =
+    spec.delta < 0 ? fifoOutflowCost(existing, -spec.delta, { fallbackUnitCost }) : null;
   const candidate: LedgerMovement = {
     kind: spec.kind,
     delta: spec.delta,
@@ -177,11 +181,10 @@ async function postOne(
     costPending: spec.costPending === true,
     seq: undefined,
   };
-
-  // an outflow stamps its FIFO layer cost (ADR-0005) and rejects an oversell;
-  // the whole-history projection then validates the candidate in order
-  const outflowCost =
-    spec.delta < 0 ? fifoOutflowCost(existing, -spec.delta, { fallbackUnitCost }) : null;
+  if (outflowCost?.consumedMovements !== undefined) {
+    candidate.consumedMovements = outflowCost.consumedMovements;
+  }
+  // the whole-history projection validates the candidate in order
   const projection = projectLedger([...existing, candidate], { fallbackUnitCost });
 
   const movement = await tx.insertStockMovement({

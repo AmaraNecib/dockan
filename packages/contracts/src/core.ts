@@ -49,6 +49,7 @@ export const activityTypes = [
   "PAYMENT_RECORDED",
   "BACKUP_CREATED",
   "STOCK_ADJUSTED",
+  "RECEIPT_COST_RESOLVED",
   "RETURN_RECORDED",
   "RETURN_REVIEWED",
   "ADJUSTMENT_RECORDED",
@@ -84,6 +85,8 @@ export const activitySummaryTags = [
   "STOCK_SELLING_PRICE_CHANGED",
   "STOCK_ADJUSTED",
   "STOCK_LINKED",
+  "RECEIPT_COST_RESOLVED",
+  "RECEIPT_COST_RESOLVED_ITEM",
   "PURCHASE_CORRECTED",
   "PARTY_CREATED",
   "PARTY_UPDATED",
@@ -808,6 +811,8 @@ export const returnLineSchema = z.object({
   refundUnitPrice: dinarsSchema,
   /** quantity × refundUnitPrice, whole DZD */
   refundAmount: dinarsSchema,
+  sourceAttribution: z.enum(["AUTO", "SELECTED", "UNKNOWN"]).nullable().optional(),
+  sourceAllocations: z.array(z.object({ stockLinkId: idSchema, quantity: z.number().int().positive() })).optional(),
 });
 
 /**
@@ -1451,7 +1456,11 @@ export const returnLineInputSchema = z.object({
   invoiceLineId: idSchema,
   /** capped so quantity × price never approaches Number.MAX_SAFE_INTEGER */
   quantity: z.number().int().positive().max(1_000_000),
-});
+  /** Explicit source split; omitted only for homogeneous automatic allocation. */
+  sourceAllocations: z.array(z.object({ stockLinkId: idSchema, quantity: z.number().int().positive().max(1_000_000) })).min(1).max(200).optional(),
+  /** Operator explicitly does not know; server allocates oldest eligible first. */
+  sourceMode: z.enum(["UNKNOWN"]).optional(),
+}).refine((line) => !(line.sourceAllocations !== undefined && line.sourceMode !== undefined), "source choice is mutually exclusive");
 
 export const returnsCreateInputSchema = z.object({
   invoiceId: idSchema,
@@ -1482,6 +1491,21 @@ export const returnsListInputSchema = paginationInputSchema.extend({
  * preview, so this read is deliberately unpaginated while `returnsList` (the
  * review screen) pages. */
 export const returnsForInvoiceInputSchema = z.object({ invoiceId: idSchema });
+
+export const returnSourcesInputSchema = z.object({ invoiceId: idSchema, invoiceLineId: idSchema });
+export const returnSourcesOutputSchema = z.object({
+  provenanceComplete: z.boolean(),
+  selectionRequired: z.boolean(),
+  sources: z.array(z.object({
+    stockLinkId: idSchema,
+    movementId: idSchema,
+    occurredAt: localDateTimeSchema,
+    unitCost: dinarsSchema.nullable(),
+    costPending: z.boolean(),
+    quantityAvailable: z.number().int().positive(),
+  })),
+});
+export type ReturnSources = z.infer<typeof returnSourcesOutputSchema>;
 
 export const returnsReviewInputSchema = z.object({
   returnId: idSchema,
@@ -1631,6 +1655,23 @@ export const purchasesLinkStockOutputSchema = z.object({
   remainderMoved: z.number().int().min(0),
 });
 
+export const receiptCostResolveInputSchema = z.object({
+  movementId: idSchema,
+  unitCost: z.number().int().min(0).max(1_000_000_000),
+  reason: z.string().trim().min(1).max(1000),
+});
+export const receiptCostResolutionSchema = z.object({
+  id: idSchema,
+  movementId: idSchema,
+  unitCost: z.number().int().min(0),
+  reason: z.string().min(1),
+  actorId: z.string().min(1),
+  actorName: z.string().min(1),
+  recordedAt: z.string().min(1),
+  created: z.boolean(),
+  adjustments: z.array(z.object({ invoiceLineId: idSchema, amount: z.number().int() })),
+});
+
 export const purchasesProposalOutputSchema = z.object({
   invoiceId: idSchema,
   items: z.array(
@@ -1644,6 +1685,9 @@ export const purchasesProposalOutputSchema = z.object({
     }),
   ),
 });
+
+export type ReceiptCostResolveInput = z.infer<typeof receiptCostResolveInputSchema>;
+export type ReceiptCostResolution = z.infer<typeof receiptCostResolutionSchema>;
 
 export const purchasesCorrectLineInputSchema = z.object({
   lineId: idSchema,
@@ -1681,6 +1725,8 @@ export const returnsPendingCountOutputSchema = z.object({
 
 export const itemHistoryInputSchema = z.object({
   itemId: idSchema,
+  /** Optional exact ledger row to include when opening history from an activity link. */
+  focusMovementId: idSchema.optional(),
 }).merge(paginationInputSchema);
 
 /**
@@ -1699,6 +1745,9 @@ export const itemHistoryDetailsSchema = z.object({
   saleTotal: dinarsSchema.nullable(),
   netSaleTotal: dinarsSchema.nullable(),
   cost: z.object({ unitCost: dinarsSchema.nullable(), total: dinarsSchema.nullable(), costPending: z.boolean().optional() }).nullable(),
+  /** Raw receipt facts and immutable audit metadata; `cost` above remains effective. */
+  receiptOriginalCost: z.object({ unitCost: dinarsSchema.nullable(), costPending: z.boolean() }).optional(),
+  receiptResolution: z.object({ unitCost: dinarsSchema, reason: z.string().min(1), actorId: idSchema.nullable(), actorName: z.string().nullable(), recordedAt: z.string().min(1) }).nullable().optional(),
   documents: z.array(z.object({ id: idSchema, number: z.string() })),
 });
 
@@ -1713,6 +1762,8 @@ export const itemHistoryOutputSchema = z.object({
   movements: z.array(itemHistoryMovementSchema),
   /** number of movements in the whole ledger, not just this page */
   total: z.number().int().min(0),
+  /** actual page offset, which may differ when an exact focus ID selects its page */
+  pageOffset: z.number().int().min(0).optional(),
   stockOnHand: z.number().int().min(0),
 });
 

@@ -14,6 +14,7 @@ import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { readItemHistory } from "./item-history";
+import { readReturnSources } from "./return-sources";
 import { itemStockProjection, recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
@@ -1553,9 +1554,6 @@ export function createRpcRouter(deps: RpcDeps) {
               const outflow = posted.outflowCost;
               if (outflow === null) throw new Error("SALE movement returned no outflow cost");
               const { unitCost: costAtSale, totalCost: cogsExact } = outflow;
-              for (const consumed of outflow.consumedMovements ?? []) {
-                await tx.insertStockLink({ invoiceId: invoice.id, movementId: consumed.movementId, quantity: consumed.quantity });
-              }
               const inserted = await tx.insertInvoiceLine({
                 invoiceId: invoice.id,
                 itemId: item.id,
@@ -1570,6 +1568,9 @@ export function createRpcRouter(deps: RpcDeps) {
                 discountAllocated: calculated.discountAllocated,
                 netTotal: calculated.netTotal,
               });
+              for (const consumed of outflow.consumedMovements ?? []) {
+                await tx.insertStockLink({ invoiceId: invoice.id, invoiceLineId: inserted.id, movementId: consumed.movementId, quantity: consumed.quantity });
+              }
               insertedLines.push(inserted);
             }
             const insertedPayments: InvoiceDetail["payments"] = [];
@@ -1823,6 +1824,67 @@ export function createRpcRouter(deps: RpcDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
           }
 
+          // Validate every source choice against immutable original-sale links
+          // while holding the immediate transaction lock. Legacy returns with
+          // no proven allocation remain a hard refusal, never guessed FIFO.
+          const sourceAllocationsByLine = new Map<string, { mode: "AUTO" | "SELECTED" | "UNKNOWN"; allocations: Array<{ stockLinkId: string; quantity: number }> }>();
+          const groupedSourceEntries = new Map<string, typeof input.lines[number][]>();
+          for (const entry of input.lines) {
+            const group = groupedSourceEntries.get(entry.invoiceLineId) ?? [];
+            group.push(entry);
+            groupedSourceEntries.set(entry.invoiceLineId, group);
+          }
+          const sourceEntries = [...groupedSourceEntries].map(([invoiceLineId, entries]) => ({
+            invoiceLineId,
+            quantity: entries.reduce((sum, entry) => sum + entry.quantity, 0),
+            sourceMode: entries.some((entry) => entry.sourceMode === "UNKNOWN") ? "UNKNOWN" as const : undefined,
+            sourceAllocations: entries.some((entry) => entry.sourceAllocations !== undefined)
+              ? [...entries.flatMap((entry) => entry.sourceAllocations ?? []).reduce((bySource, allocation) => {
+                  bySource.set(allocation.stockLinkId, (bySource.get(allocation.stockLinkId) ?? 0) + allocation.quantity);
+                  return bySource;
+                }, new Map<string, number>())].map(([stockLinkId, quantity]) => ({ stockLinkId, quantity }))
+              : undefined,
+          }));
+          for (const entry of sourceEntries) {
+            const sourceSet = await readReturnSources(tx, { invoiceId: invoice.id, invoiceLineId: entry.invoiceLineId });
+            if (!sourceSet.provenanceComplete) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_PROVENANCE_UNAVAILABLE" });
+            let allocations: Array<{ stockLinkId: string; quantity: number }>;
+            let mode: "AUTO" | "SELECTED" | "UNKNOWN";
+            if (entry.sourceAllocations !== undefined) {
+              mode = "SELECTED";
+              const ids = entry.sourceAllocations.map((allocation) => allocation.stockLinkId);
+              if (new Set(ids).size !== ids.length || entry.sourceAllocations.some((allocation) => !sourceSet.sources.some((source) => source.stockLinkId === allocation.stockLinkId && allocation.quantity <= source.quantityAvailable)) ||
+                  entry.sourceAllocations.reduce((sum, allocation) => sum + allocation.quantity, 0) !== entry.quantity) {
+                throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_ALLOCATION_INVALID" });
+              }
+              allocations = entry.sourceAllocations;
+            } else if (entry.sourceMode === "UNKNOWN") {
+              mode = "UNKNOWN";
+              let remaining = entry.quantity;
+              allocations = [];
+              for (const source of sourceSet.sources) {
+                const quantity = Math.min(remaining, source.quantityAvailable);
+                if (quantity > 0) allocations.push({ stockLinkId: source.stockLinkId, quantity });
+                remaining -= quantity;
+                if (remaining === 0) break;
+              }
+              if (remaining !== 0) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_ALLOCATION_INVALID" });
+            } else {
+              if (sourceSet.selectionRequired) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_SELECTION_REQUIRED" });
+              mode = "AUTO";
+              let remaining = entry.quantity;
+              allocations = [];
+              for (const source of sourceSet.sources) {
+                const quantity = Math.min(remaining, source.quantityAvailable);
+                if (quantity > 0) allocations.push({ stockLinkId: source.stockLinkId, quantity });
+                remaining -= quantity;
+                if (remaining === 0) break;
+              }
+              if (remaining !== 0) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_ALLOCATION_INVALID" });
+            }
+            sourceAllocationsByLine.set(entry.invoiceLineId, { mode, allocations });
+          }
+
           // refund math reads the authoritative line snapshots (netTotal after
           // the allocated invoice discount, divided by the line's SOLD count), never
           // client-sent prices — a partial return prices at what the customer
@@ -1915,7 +1977,7 @@ export function createRpcRouter(deps: RpcDeps) {
             if (item === undefined) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
-            await tx.insertReturnLine({
+            const returnLineId = await tx.insertReturnLine({
               returnId,
               invoiceLineId: line.id,
               itemId: item.id,
@@ -1924,26 +1986,38 @@ export function createRpcRouter(deps: RpcDeps) {
               refundUnitPrice: lineRefund.refundUnitPrice,
               refundAmount: lineRefund.refundAmount,
             });
-            // Returned units join the FIFO layers straight away at the item's
-            // current weighted average — "pure cost into the basis", no
-            // special valuation (ADR-0002/0005 unchanged). One movement per
-            // line, marked PENDING for the owner's review. An inflow can never
-            // dip stock, but the seam still projects the whole history so a
-            // corrupt ledger fails loudly before any write.
-            await postStock(tx, {
-              itemId: item.id,
-              kind: "SALE",
-              delta: lineRefund.quantity,
-              unitCost: line.costPending === true ? null : item.costPrice,
-              costPending: line.costPending === true,
-              // visible marker in the item history: this stock-in is a return.
-              // Locale-neutral key; the ui translates it (the ref carries the
-              // return number).
-              reason: "RETURN_RECORDED",
-              ref: returnId,
-              returnMark: "PENDING",
-              occurredAt,
-            });
+            // Persist one return layer per source split. A single aggregate
+            // movement would erase mixed pending/priced ancestry, so a later
+            // receipt resolution could neither revalue stock nor trace resale.
+            // Known-cost returns keep the established current-average value;
+            // unresolved pending sources remain pending, while a resolved
+            // pending source carries its now-known receipt cost.
+            const sourceChoice = sourceAllocationsByLine.get(line.id)!;
+            const itemLinks = await tx.listStockLinksByItem(item.id);
+            const sourceLinks = new Map(itemLinks.map((link) => [link.id, link]));
+            const itemMovements = new Map((await tx.listStockMovements(item.id)).map((movement) => [movement.id, movement]));
+            for (const allocation of sourceChoice.allocations) {
+              const sourceLink = sourceLinks.get(allocation.stockLinkId);
+              const sourceMovement = sourceLink === undefined ? undefined : itemMovements.get(sourceLink.movementId);
+              if (sourceMovement === undefined) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_PROVENANCE_UNAVAILABLE" });
+              const immutableSource = await tx.getStockMovementById(sourceMovement.id);
+              const sourcePending = sourceMovement.costPending === true;
+              const sourceWasPending = immutableSource?.costPending === true;
+              const returnedMovement = await postStock(tx, {
+                itemId: item.id,
+                kind: "SALE",
+                delta: allocation.quantity,
+                unitCost: sourcePending ? null : (sourceWasPending ? sourceMovement.unitCost : item.costPrice),
+                costPending: sourcePending,
+                reason: "RETURN_RECORDED",
+                ref: returnId,
+                returnMark: "PENDING",
+                occurredAt,
+              });
+              await tx.insertReturnSourceAllocation({
+                returnLineId, ...allocation, attributionMode: sourceChoice.mode, returnedMovementId: returnedMovement.movement.id,
+              });
+            }
           }
           // #68: the debt portion is NOT settled while the return is pending —
           // the voucher records the owner's chosen split, but the invoice keeps
@@ -1971,6 +2045,9 @@ export function createRpcRouter(deps: RpcDeps) {
         const { items } = await deps.store.listReturns({ invoiceId });
         return { items };
       }),
+    ),
+    returnsSources: os.returnsSources.handler(
+      guardedInput(async (input) => deps.store.withReadTransaction((tx) => readReturnSources(tx, input))),
     ),
     returnsPendingCount: os.returnsPendingCount.handler(guarded(async () => ({ count: await deps.store.pendingReturnsCount() }))),
     // Review accept: consumes the pending stock mark — the returned goods are
@@ -2106,7 +2183,6 @@ export function createRpcRouter(deps: RpcDeps) {
             // clamp: never remove more than is actually in stock (some returned
             // units may already have been resold between create and review)
             const removalBudget = Math.min(returnedQty, projection.stockOnHand);
-            if (removalBudget <= 0) continue;
             // allocate the scrapped units across this item's return lines,
             // first-come-first-served; each line's movement carries its id as
             // the reason suffix for exact report attribution. The lines ship as
@@ -2117,21 +2193,48 @@ export function createRpcRouter(deps: RpcDeps) {
             // lines in order against the running cache, so every movement and
             // the final cache match the per-line calls exactly.
             const scrapSpecs: StockMovementSpec[] = [];
+            const itemLinks = await tx.listStockLinksByItem(item.id);
+            const remainingByLayer = new Map(projection.layers.flatMap((layer) => layer.movementId === undefined ? [] : [[layer.movementId, layer.quantity] as const]));
             let remaining = removalBudget;
             for (const line of linesOfItem) {
-              const take = Math.min(line.quantity, remaining);
-              if (take <= 0) continue;
-              scrapSpecs.push({
-                itemId: item.id,
-                kind: "MANUAL_ADJUSTMENT",
-                delta: -take,
-                reason: `${reasonKey} #${line.id}`,
-                ref: existing.id,
-                occurredAt,
-              });
-              remaining -= take;
+              const sourceAllocations = await tx.returnSourceAllocationsByReturnLine(line.id);
+              if (sourceAllocations.length === 0) {
+                const take = Math.min(line.quantity, remaining);
+                if (take > 0) {
+                  let unallocated = take;
+                  const consumedMovements: Array<{ movementId: string; quantity: number }> = [];
+                  for (const layer of projection.layers) {
+                    if (unallocated === 0 || layer.movementId === undefined) continue;
+                    const available = remainingByLayer.get(layer.movementId) ?? 0;
+                    const layerTake = Math.min(unallocated, available);
+                    if (layerTake === 0) continue;
+                    consumedMovements.push({ movementId: layer.movementId, quantity: layerTake });
+                    remainingByLayer.set(layer.movementId, available - layerTake);
+                    unallocated -= layerTake;
+                  }
+                  if (unallocated !== 0) throw new Error("STOCK_PROVENANCE_INVALID");
+                  scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
+                    reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt, consumedMovements });
+                }
+                remaining -= take;
+                continue;
+              }
+              for (const source of sourceAllocations) {
+                const soldFromLayer = itemLinks.filter((link) => link.movementId === source.returnedMovementId && link.invoiceLineId !== null)
+                  .reduce((sum, link) => sum + link.quantity, 0);
+                const notResold = Math.max(0, source.quantity - soldFromLayer);
+                if (notResold > 0) await tx.recordReturnSourceRejection({ returnLineId: line.id, stockLinkId: source.stockLinkId, quantity: notResold });
+                const layerRemaining = remainingByLayer.get(source.returnedMovementId) ?? 0;
+                const take = Math.min(notResold, layerRemaining, remaining);
+                if (take <= 0) continue;
+                scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
+                  reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt,
+                  consumedMovements: [{ movementId: source.returnedMovementId, quantity: take }] });
+                remainingByLayer.set(source.returnedMovementId, layerRemaining - take);
+                remaining -= take;
+              }
             }
-            await postStockBatch(tx, scrapSpecs);
+            if (scrapSpecs.length > 0) await postStockBatch(tx, scrapSpecs);
           }
           await tx.setReturnMarks(existing.id, "REJECTED");
           await insertSessionActivity(tx, session, {
@@ -2300,6 +2403,42 @@ export function createRpcRouter(deps: RpcDeps) {
           // SAFETY: the invoice was just read inside this handler; it cannot vanish mid-transaction
           return refreshed!;
         });
+      }),
+    ),
+    receiptCostsResolve: os.receiptCostsResolve.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        const actorName = actor.name ?? actor.id;
+        try {
+          return await deps.store.withTransactionImmediate(async (tx) => {
+            const movement = await tx.getStockMovementById(input.movementId);
+            const item = movement === undefined ? undefined : (await tx.getItemsByIds([movement.itemId])).get(movement.itemId);
+            const resolution = await tx.resolveReceiptCost({
+              ...input,
+              reason: input.reason.trim(),
+              actorId: actor.id,
+              actorName,
+              recordedAt: localDateTime(),
+            });
+            if (resolution.created) {
+              await insertSessionActivity(tx, session, {
+                type: "RECEIPT_COST_RESOLVED",
+                summary: item === undefined || movement === undefined
+                  ? `RECEIPT_COST_RESOLVED ${input.movementId} ${input.unitCost}`
+                  : `RECEIPT_COST_RESOLVED_ITEM ${movement.id} ${item.id} ${input.unitCost} ${item.name}`,
+                ref: item === undefined ? input.movementId : item.id,
+              });
+            }
+            return resolution;
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (message === "RECEIPT_RESOLUTION_CONFLICT") throw new ORPCError("CONFLICT", { message });
+          if (message === "RECEIPT_RETURN_PROVENANCE_UNSUPPORTED" || message === "RECEIPT_PROVENANCE_AMBIGUOUS" || message === "RECEIPT_PROVENANCE_INVALID" || message === "RECEIPT_NOT_PENDING") {
+            throw new ORPCError("BAD_REQUEST", { message });
+          }
+          throw error;
+        }
       }),
     ),
     // --- debts screen (ticket 9) -------------------------------------------

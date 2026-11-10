@@ -236,6 +236,56 @@ describe("setup + seed", () => {
     expect(settings.storeName).toBe("Dokan");
   });
 
+  it("backfills only provable legacy sale-line stock links", async () => {
+    const migrationDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-stock-line-migration-"));
+    const existing = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: migrationDir, DOKAN_DB_PATH: path.join(migrationDir, "existing.db") }),
+    );
+    const existingStore = createDrizzleStore(existing);
+    try {
+      await existingStore.setup();
+      const category = await existingStore.createCategory({ name: `legacy-link-${Date.now()}` });
+      const item = await existingStore.createItem({ name: `legacy-link-item-${Date.now()}`, categoryId: category.id, costPrice: 10, sellingPrice: 20 });
+      const uniqueSale = await existingStore.insertInvoice({
+        invoiceNumber: `INV-UNIQUE-${crypto.randomUUID()}`, kind: "SALE", counterpartyId: null,
+        counterpartyName: null, invoiceDate: localDate(), totalAmount: 20, paidAmount: 0,
+        remainingAmount: 20, notes: null,
+      });
+      const uniqueLine = await existingStore.insertInvoiceLine({
+        invoiceId: uniqueSale.id, itemId: item.id, description: item.name, quantity: 1,
+        unitPrice: 20, costAtSale: 10, total: 20,
+      });
+      const uniqueReceipt = await existingStore.insertStockMovement({
+        itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: 10, reason: null, ref: null, occurredAt: stamp(),
+      });
+      const uniqueLink = await existingStore.insertStockLink({ invoiceId: uniqueSale.id, movementId: uniqueReceipt.id, quantity: 1 });
+
+      const duplicateSale = await existingStore.insertInvoice({
+        invoiceNumber: `INV-DUPLICATE-${crypto.randomUUID()}`, kind: "SALE", counterpartyId: null,
+        counterpartyName: null, invoiceDate: localDate(), totalAmount: 60, paidAmount: 0,
+        remainingAmount: 60, notes: null,
+      });
+      await existingStore.insertInvoiceLine({ invoiceId: duplicateSale.id, itemId: item.id, description: item.name, quantity: 1, unitPrice: 20, costAtSale: 10, total: 20 });
+      await existingStore.insertInvoiceLine({ invoiceId: duplicateSale.id, itemId: item.id, description: item.name, quantity: 2, unitPrice: 20, costAtSale: 10, total: 40 });
+      const duplicateReceipt = await existingStore.insertStockMovement({
+        itemId: item.id, kind: "PURCHASE", delta: 3, unitCost: 10, reason: null, ref: null, occurredAt: stamp(),
+      });
+      const duplicateLink = await existingStore.insertStockLink({ invoiceId: duplicateSale.id, movementId: duplicateReceipt.id, quantity: 3 });
+
+      existing.raw.exec("DROP INDEX IF EXISTS idx_stock_links_line");
+      existing.raw.exec("ALTER TABLE stock_links DROP COLUMN invoice_line_id");
+      existing.raw.exec("PRAGMA user_version = 12");
+      await existingStore.setup();
+
+      const links = await existingStore.listStockLinksByItem(item.id);
+      expect(links.find((link) => link.id === uniqueLink.id)?.invoiceLineId).toBe(uniqueLine.id);
+      expect(links.find((link) => link.id === duplicateLink.id)?.invoiceLineId).toBeNull();
+    } finally {
+      await existing.close();
+      removeTempDirRetry(migrationDir);
+    }
+  });
+
   it("creates the invoice-line item index when setup runs on an existing database", async () => {
     const indexDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-history-index-"));
     const existing = openConnection(
@@ -2045,6 +2095,98 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
     expect(linksA).toHaveLength(1);
     expect(linksA[0]).toMatchObject({ movementId: movementA.id, quantity: 4 });
     expect(await store.listStockLinksByItem(b.id)).toEqual([]);
+  });
+
+  it("persists exact sale-line identity on each consumed receipt link", async () => {
+    const category = await store.createCategory({ name: `line-link-${Date.now()}` });
+    const item = await store.createItem({ name: `line-link-item-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150 });
+    const sale = await store.insertInvoice({
+      invoiceNumber: `INV-LINE-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      totalAmount: 150,
+      paidAmount: 0,
+      remainingAmount: 150,
+      notes: null,
+    });
+    const line = await store.insertInvoiceLine({
+      invoiceId: sale.id,
+      itemId: item.id,
+      description: item.name,
+      quantity: 1,
+      unitPrice: 150,
+      costAtSale: 100,
+      total: 150,
+    });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: 100, reason: null, ref: null, occurredAt: stamp() });
+    const link = await store.insertStockLink({ invoiceId: sale.id, invoiceLineId: line.id, movementId: receipt.id, quantity: 1 });
+
+    expect(link.invoiceLineId).toBe(line.id);
+    expect(await store.listStockLinksByItem(item.id)).toContainEqual(expect.objectContaining({
+      invoiceId: sale.id,
+      invoiceLineId: line.id,
+      movementId: receipt.id,
+      quantity: 1,
+    }));
+  });
+
+  it("resolves a pending receipt into persisted exact sold COGS and remaining FIFO value", async () => {
+    const category = await store.createCategory({ name: `receipt-resolution-${Date.now()}` });
+    const item = await store.createItem({ name: `receipt-item-${Date.now()}`, categoryId: category.id, costPrice: 0, sellingPrice: 200 });
+    const purchase = await store.insertInvoice({ invoiceNumber: `SUP-R-${Date.now()}`, kind: "PURCHASE", counterpartyId: null, counterpartyName: "supplier", invoiceDate: "2026-01-10", totalAmount: 0, paidAmount: 0, remainingAmount: 0, notes: null });
+    const sale = await store.insertInvoice({ invoiceNumber: `INV-R-${Date.now()}`, kind: "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: "2026-01-11", totalAmount: 400, paidAmount: 0, remainingAmount: 400, notes: null });
+    const line = await store.insertInvoiceLine({ invoiceId: sale.id, itemId: item.id, description: item.name, quantity: 2, unitPrice: 200, costAtSale: 0, total: 400, costPending: true, cogsExact: 0 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 5, unitCost: null, costPending: true, reason: null, ref: purchase.id, occurredAt: "2026-01-10T10:00:00" });
+    await store.insertStockMovement({ itemId: item.id, kind: "SALE", delta: -2, unitCost: null, reason: null, ref: sale.id, occurredAt: "2026-01-11T10:00:00" });
+    await store.insertStockLink({ invoiceId: sale.id, invoiceLineId: line.id, movementId: receipt.id, quantity: 2 });
+
+    const result = await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "supplier invoice found", actorId: "admin", actorName: "Owner", recordedAt: "2026-02-01T12:00:00" }));
+    expect(result.adjustments).toEqual([{ invoiceLineId: line.id, amount: 200 }]);
+    expect(await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "supplier invoice found", actorId: "admin", actorName: "Owner", recordedAt: "2026-02-02T12:00:00" }))).toEqual({ ...result, created: false });
+    expect((await store.listStockMovements(item.id)).find((movement) => movement.id === receipt.id)).toMatchObject({ unitCost: 100, costPending: false, delta: 5 });
+    const saleLines = await store.listSaleLinesForProfit("2026-01-11", "2026-01-11");
+    expect(saleLines.find((row) => row.invoiceId === sale.id)).toMatchObject({ cogsExact: 200, costPending: false, netTotal: 400 });
+    expect(await store.listStockMovements(item.id)).toHaveLength(2); // resolution did not alter stock movements
+  });
+
+  it("rolls back a direct receipt resolution when its cache write fails", async () => {
+    const category = await store.createCategory({ name: `receipt-direct-${Date.now()}` });
+    const item = await store.createItem({ name: "direct atomic resolution", categoryId: category.id, costPrice: 0, sellingPrice: 200 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 5, unitCost: null, costPending: true, reason: null, ref: null, occurredAt: stamp() });
+    await store.setItemStockAndCost(item.id, 5, 0, false);
+    const before = await store.listStockMovements(item.id);
+    conn.raw.exec(`CREATE TEMP TRIGGER fail_receipt_cache BEFORE UPDATE ON items WHEN OLD.id = '${item.id}' BEGIN SELECT RAISE(ABORT, 'injected receipt cache failure'); END`);
+    try {
+      await expect(store.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "invoice found", actorId: "admin", actorName: "Owner", recordedAt: stamp() })).rejects.toThrow("injected receipt cache failure");
+      expect(await store.listStockMovements(item.id)).toEqual(before);
+      expect((await store.getItemsByIds([item.id])).get(item.id)).toMatchObject({ stockOnHand: 5, costPrice: 0, costPriceKnown: false });
+    } finally {
+      conn.raw.exec("DROP TRIGGER fail_receipt_cache");
+    }
+    const retried = await store.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "invoice found", actorId: "admin", actorName: "Owner", recordedAt: stamp() });
+    expect(retried.created).toBe(true);
+    expect((await store.getItemsByIds([item.id])).get(item.id)).toMatchObject({ stockOnHand: 5, costPrice: 100, costPriceKnown: true });
+  });
+
+  it("refuses receipt resolution inside a deferred transaction without writes", async () => {
+    const category = await store.createCategory({ name: `receipt-deferred-${Date.now()}` });
+    const item = await store.createItem({ name: "deferred resolution", categoryId: category.id, costPrice: 0, sellingPrice: 1 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: null, costPending: true, reason: null, ref: null, occurredAt: stamp() });
+    const input = { movementId: receipt.id, unitCost: 100, reason: "invoice found", actorId: "admin", actorName: "Owner", recordedAt: stamp() };
+    const before = await store.listStockMovements(item.id);
+    await expect(store.withTransaction((tx) => tx.resolveReceiptCost(input))).rejects.toThrow("receipt resolution writes require an immediate transaction");
+    expect(await store.listStockMovements(item.id)).toEqual(before);
+    expect((await store.withTransactionImmediate((tx) => tx.resolveReceiptCost(input))).created).toBe(true);
+  });
+
+  it("refuses a retry that changes the immutable resolution reason", async () => {
+    const category = await store.createCategory({ name: `receipt-conflict-${Date.now()}` });
+    const item = await store.createItem({ name: `receipt-conflict-item-${Date.now()}`, categoryId: category.id, costPrice: 0, sellingPrice: 1 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: null, costPending: true, reason: null, ref: null, occurredAt: stamp() });
+    await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 0, reason: "zero cost confirmed", actorId: "admin", actorName: "Owner", recordedAt: stamp() }));
+    await expect(store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 1, reason: "different", actorId: "admin", actorName: "Owner", recordedAt: stamp() }))).rejects.toThrow("RECEIPT_RESOLUTION_CONFLICT");
   });
 
   it("filters purchase attribution links in SQLite without dropping sale history links", async () => {

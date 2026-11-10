@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createTanstackQueryUtils } from "@orpc/tanstack-query";
 import type { ReactNode } from "react";
 
 // React 19 act() requires the environment flag to be set explicitly
@@ -10,7 +11,7 @@ import type { ReactNode } from "react";
 
 import "@/lib/i18n";
 
-import type { DebtSummary, Invoice, InvoiceDetail, ReturnDetail } from "@dokan/contracts";
+import type { DebtSummary, Invoice, InvoiceDetail, ReturnDetail, ReturnSources } from "@dokan/contracts";
 
 import { routerMock } from "../tests/router-mock";
 
@@ -46,6 +47,10 @@ let partyReads: Array<{ counterpartyId: string | null; counterpartyName: string 
 /** the debts screen's rows */
 let owedToUs: DebtSummary[] = [];
 let weOwe: DebtSummary[] = [];
+
+const sourceQueryUtils = createTanstackQueryUtils({
+  returnsSources: async (): Promise<ReturnSources> => ({ provenanceComplete: true, selectionRequired: false, sources: [] }),
+});
 
 // the page modules import the router Link at module scope; the shared stub
 // keeps the screens testable without a router mount
@@ -102,6 +107,7 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: () => ({ queryKey: ["returnsForInvoice"], queryFn: async () => ({ items: [] }) }),
       queryKey: () => ["returnsForInvoice"],
     },
+    returnsSources: sourceQueryUtils.returnsSources,
     returnsCreate: {
       mutationOptions: (options?: { onSuccess?: (record: ReturnDetail) => void; onError?: (error: Error) => void }) => ({
         mutationKey: ["returnsCreate"],

@@ -36,7 +36,7 @@ function formatActivityReference(type: string, ref: string): string {
  */
 export type ActivityRefTarget =
   | { to: "/invoices/$invoiceId"; params: { invoiceId: string } }
-  | { to: "/items/$itemId/history"; params: { itemId: string } }
+  | { to: "/items/$itemId/history"; params: { itemId: string }; search?: { focusMovementId?: string } }
   | { to: "/customers/$partyId"; params: { partyId: string } }
   | { to: "/suppliers/$partyId"; params: { partyId: string } };
 
@@ -44,6 +44,9 @@ export function activityRefLink(entry: { summary: string; ref: string | null }):
   const ref = entry.ref;
   if (ref === null || ref === "") return null;
   const [tag, role] = entry.summary.split(" ");
+  if (tag === "RECEIPT_COST_RESOLVED_ITEM" && entry.summary.split(" ").length >= 5 && entry.summary.split(" ")[2] === ref) {
+    return { to: "/items/$itemId/history", params: { itemId: ref }, search: { focusMovementId: entry.summary.split(" ")[1] } };
+  }
   if (tag === "ITEM_CREATED" || tag === "ITEM_CREATED_WITH_STOCK" || tag === "ITEM_UPDATED" || tag === "ITEM_COST_CORRECTED" || tag === "STOCK_SELLING_PRICE_CHANGED" || tag === "STOCK_ADJUSTED" || tag === "PURCHASE_CORRECTED") {
     return { to: "/items/$itemId/history", params: { itemId: ref } };
   }
@@ -68,7 +71,7 @@ function ActivityRef({ target, children }: { target: ActivityRefTarget; children
     case "/invoices/$invoiceId":
       return <Link to={target.to} params={target.params} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
     case "/items/$itemId/history":
-      return <Link to={target.to} params={target.params} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
+      return <Link to={target.to} params={target.params} search={target.search} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
     case "/customers/$partyId":
       return <Link to={target.to} params={target.params} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
     case "/suppliers/$partyId":
@@ -78,9 +81,15 @@ function ActivityRef({ target, children }: { target: ActivityRefTarget; children
 
 /** The reference cell: a link to the record when one exists, the compact id or
  * safe backup filename otherwise, and an em dash when the row has no ref. */
+export function activityRefLabel(type: string, summary: string, ref: string): string {
+  const tokens = summary.split(" ");
+  if (tokens[0] === "RECEIPT_COST_RESOLVED_ITEM" && tokens.length >= 5 && tokens[2] === ref) return tokens.slice(4).join(" ");
+  return formatActivityReference(type, ref);
+}
+
 function ActivityRefCell({ entry }: { entry: { type: string; summary: string; ref: string | null } }) {
   if (entry.ref === null || entry.ref === "") return <>—</>;
-  const label = formatActivityReference(entry.type, entry.ref);
+  const label = activityRefLabel(entry.type, entry.summary, entry.ref);
   const target = activityRefLink(entry);
   if (target === null) return <>{label}</>;
   return <ActivityRef target={target}>{label}</ActivityRef>;
@@ -137,6 +146,26 @@ export function activitySummaryText(t: TFunction, summary: string): ReactNode {
         i18nKey="activityItemCostCorrected"
         values={{ name: tokens.slice(2).join(" ") }}
         components={{ money: <Amount value={Number(tokens[1])} /> }}
+      />
+    );
+  }
+  if (tag === "RECEIPT_COST_RESOLVED_ITEM" && tokens.length >= 5) {
+    return (
+      <>
+        <Trans
+          i18nKey="activityReceiptCostResolvedItem"
+          values={{ name: tokens.slice(4).join(" ") }}
+          components={{ money: <Amount value={Number(tokens[3])} /> }}
+        />
+      </>
+    );
+  }
+  if (tag === "RECEIPT_COST_RESOLVED" && tokens.length >= 3) {
+    return (
+      <Trans
+        i18nKey="activityReceiptCostResolved"
+        values={{ movement: tokens[1] }}
+        components={{ money: <Amount value={Number(tokens[2])} /> }}
       />
     );
   }

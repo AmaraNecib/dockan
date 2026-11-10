@@ -11,7 +11,7 @@ import { createRoot } from "react-dom/client";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar)
-import { activityActorText, activityRefLink, activitySummaryText } from "./activity";
+import { activityActorText, activityRefLabel, activityRefLink, activitySummaryText } from "./activity";
 
 // SAFETY: the initialized i18next instance is a TFunction; the module's default
 // export is typed as a broader i18n interface, so the narrowing is asserted here
@@ -60,6 +60,8 @@ describe("activity summary tokens render translated copy", () => {
     { tag: "ITEM_CREATED", summary: "ITEM_CREATED بطارية", keeps: ["بطارية"] },
     { tag: "ITEM_UPDATED", summary: "ITEM_UPDATED بطارية", keeps: ["بطارية"] },
     { tag: "ITEM_COST_CORRECTED", summary: "ITEM_COST_CORRECTED 150 بطارية", keeps: ["150", "بطارية"] },
+    { tag: "RECEIPT_COST_RESOLVED", summary: "RECEIPT_COST_RESOLVED movement-17 150", keeps: ["movement-17", "150"] },
+    { tag: "RECEIPT_COST_RESOLVED_ITEM", summary: "RECEIPT_COST_RESOLVED_ITEM movement-17 1111aaaa-2222 0 بطارية عربية كبيرة", keeps: ["بطارية عربية كبيرة", "0"] },
     { tag: "STOCK_SELLING_PRICE_CHANGED", summary: "STOCK_SELLING_PRICE_CHANGED 150 175 بطارية", keeps: ["150", "175", "بطارية"] },
     { tag: "PARTY_CREATED", summary: "PARTY_CREATED CUSTOMER علي علي", keeps: ["علي علي", "زبون"] },
     { tag: "PARTY_UPDATED", summary: "PARTY_UPDATED SUPPLIER صالح بن علي", keeps: ["صالح بن علي", "مورّد"] },
@@ -234,6 +236,25 @@ describe("activity reference links", () => {
   const item = { summary: "ITEM_CREATED بطارية", ref: "1111aaaa-2222" };
   const invoice = { summary: "SALE_CREATED INV-2", ref: "3333bbbb-4444" };
   const supplier = { summary: "SUPPLIER_PAYMENT 500 شركة الأمل", ref: "5555cccc-6666" };
+
+  it("links a named receipt resolution to the item and focuses the exact movement", () => {
+    const summary = "RECEIPT_COST_RESOLVED_ITEM movement-17 1111aaaa-2222 0 بطارية عربية كبيرة";
+    expect(activityRefLink({ summary, ref: "1111aaaa-2222" })).toEqual({
+      to: "/items/$itemId/history",
+      params: { itemId: "1111aaaa-2222" },
+      search: { focusMovementId: "movement-17" },
+    });
+    expect(activityRefLabel("RECEIPT_COST_RESOLVED", summary, "1111aaaa-2222")).toBe("بطارية عربية كبيرة");
+    const summaryText = renderNode(activitySummaryText(t, summary)).textContent ?? "";
+    expect(summaryText).toContain("0");
+    expect(summaryText).not.toContain("movement-17");
+  });
+
+  it("does not route or invent an item label for legacy receipt rows", () => {
+    const summary = "RECEIPT_COST_RESOLVED movement-17 150";
+    expect(activityRefLink({ summary, ref: "movement-17" })).toBeNull();
+    expect(activityRefLabel("RECEIPT_COST_RESOLVED", summary, "movement-17")).toBe("movement");
+  });
 
   it("links an item row to its history", () => {
     expect(activityRefLink(item)).toEqual({ to: "/items/$itemId/history", params: { itemId: "1111aaaa-2222" } });

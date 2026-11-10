@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createTanstackQueryUtils } from "@orpc/tanstack-query";
 
 // React 19 act() requires the environment flag to be set explicitly
 // SAFETY: only this flag is written; globalThis keeps every other property
@@ -10,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import i18n from "../lib/i18n";
 
-import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
+import type { InvoiceDetail, ReturnDetail, ReturnSources } from "@dokan/contracts";
 
 import { routerMock } from "../tests/router-mock";
 
@@ -27,6 +28,9 @@ let invoiceReturns: ReturnDetail[] = [];
 let partyDebtInvoices: Array<{ remainingAmount: number }> = [];
 /** the "server" side effect of a recorded payment, so a refresh can observe it */
 let applyPayment: ((amount: number) => void) | null = null;
+const sourceQueryUtils = createTanstackQueryUtils({
+  returnsSources: async (): Promise<ReturnSources> => ({ provenanceComplete: true, selectionRequired: false, sources: [] }),
+});
 
 // The page renders router Links and (through ReturnsPanel) useParams; mirror the
 // seam the other page tests use so InvoicePage is testable without a router.
@@ -64,6 +68,7 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: () => ({ mutationFn: async () => ({}) }),
     },
     returnsPendingCount: { queryKey: () => ["returnsPendingCount"] },
+    returnsSources: sourceQueryUtils.returnsSources,
     debtsByParty: {
       // #256 — the returns panel derives its refund default from the customer's
       // tab; the input is part of the key so `invoicesPay` can invalidate it

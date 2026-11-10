@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../lib/scoped-mutation";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -408,16 +408,41 @@ function HistoryAmount({ value }: { value: number | null | undefined }) {
 export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?: number } = {}) {
   const { orpc } = useRpc();
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
+  // SAFETY: itemHistoryRoute validates focusMovementId as an optional UUID.
+  const { focusMovementId } = useSearch({ strict: false }) as { focusMovementId?: string };
+  const [dismissedFocusJumpKey, setDismissedFocusJumpKey] = useState<string | null>(null);
+  const focusJumpKey = focusMovementId === undefined ? undefined : `${itemId}:${focusMovementId}`;
+  const applyFocusJump = focusJumpKey !== undefined && dismissedFocusJumpKey !== focusJumpKey;
   const pager = usePagination();
   const [expandedMovementIds, setExpandedMovementIds] = useState<Set<string>>(() => new Set());
+  const [resolutionMovementId, setResolutionMovementId] = useState<string | null>(null);
+  const [resolutionCost, setResolutionCost] = useState("");
+  const [resolutionReason, setResolutionReason] = useState("");
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const resolutionCostRef = useRef<HTMLInputElement>(null);
+  const resolutionReasonRef = useRef<HTMLInputElement>(null);
+  const resolveReceipt = useMutation(orpc.receiptCostsResolve.mutationOptions({
+    onSuccess: async () => {
+      setResolutionMovementId(null);
+      setResolutionCost("");
+      setResolutionReason("");
+      setResolutionError(null);
+      await queryClient.invalidateQueries();
+    },
+    onError: async (error) => {
+      setResolutionError(tError(error.message));
+      await queryClient.invalidateQueries();
+    },
+  }));
   useEffect(() => {
     pager.reset();
     setExpandedMovementIds(new Set());
   }, [itemId]);
   const history = useQuery({
-    ...orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }),
+    ...orpc.itemsHistory.queryOptions({ input: { itemId, focusMovementId: applyFocusJump ? focusMovementId : undefined, ...pager.pagination } }),
     // #295 — the running stock column on this screen is a hot counter too: a
     // sale or an adjustment posted in another window has to show up here
     // without the owner reloading the page. The ledger read is slower than
@@ -429,6 +454,64 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
   // them (issue 151): a future-dated purchase the owner would otherwise read as
   // one that never moved the average
   const superseded = history.data === undefined ? new Set<number>() : supersededByCorrection(history.data.movements);
+  useEffect(() => {
+    if (!applyFocusJump || focusMovementId === undefined || history.data === undefined) return;
+    if (pager.offset === 0 && history.data.pageOffset !== undefined && history.data.pageOffset > 0) {
+      pager.setOffset(history.data.pageOffset);
+      return;
+    }
+    if (history.data.movements.some((movement) => movement.id === focusMovementId)) {
+      setExpandedMovementIds((current) => new Set(current).add(focusMovementId));
+    }
+  }, [applyFocusJump, focusMovementId, history.data, pager.offset]);
+
+  function dismissFocusJump() {
+    if (focusJumpKey !== undefined) setDismissedFocusJumpKey(focusJumpKey);
+  }
+
+  function changeHistoryPage(offset: number) {
+    dismissFocusJump();
+    pager.setOffset(offset);
+  }
+
+  function changeHistoryPageSize(pageSize: number) {
+    dismissFocusJump();
+    pager.setPageSize(pageSize);
+  }
+
+  function beginReceiptResolution(movementId: string) {
+    setResolutionMovementId(movementId);
+    setResolutionCost("");
+    setResolutionReason("");
+    setResolutionError(null);
+    resolveReceipt.reset();
+  }
+
+  function cancelReceiptResolution() {
+    setResolutionMovementId(null);
+    setResolutionCost("");
+    setResolutionReason("");
+    setResolutionError(null);
+    resolveReceipt.reset();
+  }
+
+  function submitReceiptResolution(event: React.FormEvent<HTMLFormElement>, movementId: string) {
+    event.preventDefault();
+    const parsedCost = parseWholeNumber(resolutionCost);
+    if (draftBlank(resolutionCost) || parsedCost === null) {
+      setResolutionError(t("receiptResolutionCostRequired"));
+      resolutionCostRef.current?.focus();
+      return;
+    }
+    const reason = resolutionReason.trim();
+    if (reason.length === 0) {
+      setResolutionError(t("receiptResolutionReasonRequired"));
+      resolutionReasonRef.current?.focus();
+      return;
+    }
+    setResolutionError(null);
+    void resolveReceipt.mutate({ movementId, unitCost: parsedCost, reason });
+  }
 
   function toggleMovementDetails(movementId: string) {
     setExpandedMovementIds((current) => {
@@ -514,6 +597,9 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
         />
       ) : (
         <>
+        {applyFocusJump && focusMovementId !== undefined && !history.data.movements.some((movement) => movement.id === focusMovementId) && (
+          <p role="status" className="mt-4 rounded border border-warning p-3 text-sm text-warning-foreground" data-testid="history-focus-unavailable">{t("historyFocusedMovementUnavailable")}</p>
+        )}
         <Table className="mt-4 min-w-[40rem] rounded border bg-card text-sm" data-testid="history-table">
           <TableHeader>
             <TableRow className="text-right text-muted-foreground">
@@ -530,7 +616,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
               const detailId = `history-detail-${movement.id}`;
               return (
                 <Fragment key={movement.id}>
-                  <TableRow aria-expanded={expanded} data-testid={`history-movement-row-${movement.id}`}>
+                  <TableRow aria-expanded={expanded} data-focused={movement.id === focusMovementId || undefined} className={movement.id === focusMovementId ? "bg-primary/10" : undefined} data-testid={`history-movement-row-${movement.id}`}>
                     <TableCell className="p-3">{formatDateTime(movement.occurredAt)}</TableCell>
                     <TableCell className="p-3 whitespace-normal">
                       {kindLabel(t, movement.kind)}
@@ -578,15 +664,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                       <div id={detailId} data-testid={`history-detail-${movement.id}`} className="w-full max-w-[min(56rem,calc(100vw-10rem))] space-y-3">
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                           <section className="min-w-0">
-                            <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                              <h3 className="text-xs font-semibold text-muted-foreground">{t("historyAmounts")}</h3>
-                              <details data-testid="history-facts-help" className="min-w-0 text-xs text-muted-foreground">
-                                <summary className="min-h-8 cursor-pointer rounded px-1 py-1 text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-                                  {t("historyFactsHelpLabel")}
-                                </summary>
-                                <p className="mt-1 max-w-prose leading-relaxed">{t("historyFactsHint")}</p>
-                              </details>
-                            </div>
+                            <h3 className="mb-2 text-xs font-semibold text-muted-foreground">{t("historyAmounts")}</h3>
                             <dl className="space-y-2 text-sm">
                               <div data-testid={`history-fact-selling-price-${movement.id}`} className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
                                 <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("stockSellingPrice")}</dt>
@@ -619,12 +697,53 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                                 </dd>
                               </div>
                             </dl>
+                            <details data-testid="history-facts-help" className="mt-2 border-t pt-2 text-sm text-muted-foreground">
+                              <summary className="min-h-11 cursor-pointer rounded px-1 py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+                                {t("historyFactsHelpLabel")}
+                              </summary>
+                              <p className="mt-1 max-w-prose leading-relaxed">{t("historyFactsHint")}</p>
+                            </details>
                           </section>
                           <div className="space-y-3">
                             <dl className="text-sm">
                               <dt className="text-xs text-muted-foreground">{t("historyRecordedAt")}</dt>
                               <dd className="break-words">{formatDateTime(movement.createdAt)}</dd>
                             </dl>
+                            {movement.kind === "PURCHASE" && movement.details?.receiptOriginalCost?.costPending && movement.details.receiptResolution == null && (
+                              <div className="space-y-2 rounded border bg-background p-3" data-testid={`receipt-resolution-${movement.id}`}>
+                                <p className="text-sm font-medium">{t("receiptResolutionPending")}</p>
+                                {resolutionMovementId !== movement.id ? (
+                                  <Button type="button" variant="outline" size="sm" onClick={() => beginReceiptResolution(movement.id)} data-testid={`receipt-resolution-open-${movement.id}`}>
+                                    {t("receiptResolutionAction")}
+                                  </Button>
+                                ) : (
+                                  <form className="grid gap-2" onSubmit={(event) => submitReceiptResolution(event, movement.id)}>
+                                    <label className="grid gap-1 text-sm">
+                                      <span>{t("receiptResolutionCost")}</span>
+                                      <input ref={resolutionCostRef} className={inputClass} inputMode="numeric" autoComplete="off" value={resolutionCost} onChange={(event) => setResolutionCost(event.target.value)} data-testid="receipt-resolution-cost" />
+                                    </label>
+                                    <label className="grid gap-1 text-sm">
+                                      <span>{t("receiptResolutionReason")}</span>
+                                      <input ref={resolutionReasonRef} className={inputClass} autoComplete="off" maxLength={1000} value={resolutionReason} onChange={(event) => setResolutionReason(event.target.value)} data-testid="receipt-resolution-reason" />
+                                    </label>
+                                    {resolutionError && <p role="alert" className="text-sm text-destructive" data-testid="receipt-resolution-error">{resolutionError}</p>}
+                                    <div className="flex flex-wrap gap-2">
+                                      <Button type="submit" disabled={resolveReceipt.isPending} data-testid="receipt-resolution-save">{resolveReceipt.isPending ? t("receiptResolutionSaving") : t("receiptResolutionSave")}</Button>
+                                      <Button type="button" variant="outline" disabled={resolveReceipt.isPending} onClick={cancelReceiptResolution} data-testid="receipt-resolution-cancel">{t("receiptResolutionCancel")}</Button>
+                                    </div>
+                                  </form>
+                                )}
+                              </div>
+                            )}
+                            {movement.details?.receiptResolution && (
+                              <dl className="space-y-2 rounded border bg-background p-3 text-sm" data-testid={`receipt-resolution-audit-${movement.id}`}>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionOriginalCost")}</dt><dd>{movement.details.receiptOriginalCost?.costPending ? t("historyCostPending") : <HistoryAmount value={movement.details.receiptOriginalCost?.unitCost} />}</dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionEffectiveCost")}</dt><dd><Amount value={movement.details.receiptResolution.unitCost} /></dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionRecordedAt")}</dt><dd>{formatDateTime(movement.details.receiptResolution.recordedAt)}</dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionActor")}</dt><dd>{movement.details.receiptResolution.actorName ?? t("historyUnavailable")}</dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionReason")}</dt><dd className="break-words">{movement.details.receiptResolution.reason}</dd></div>
+                              </dl>
+                            )}
                             {movement.details?.documents.length ? (
                               <div>
                                 <p className="mb-1 text-xs text-muted-foreground">{t("historyDocuments")}</p>
@@ -656,9 +775,9 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
         <Pager
           total={history.data.total}
           pageSize={pager.pageSize}
-          offset={pager.offset}
-          onOffsetChange={pager.setOffset}
-          onPageSizeChange={pager.setPageSize}
+          offset={history.data.pageOffset ?? pager.offset}
+          onOffsetChange={changeHistoryPage}
+          onPageSizeChange={changeHistoryPageSize}
           testId="history-pager"
         />
         </>

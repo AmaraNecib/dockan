@@ -548,6 +548,7 @@ describe("stock ledger (ticket 27)", () => {
       item: { id: item.id, name: item.name },
       movements: [],
       total: 0,
+      pageOffset: 0,
       stockOnHand: 0,
     });
   });
@@ -1377,7 +1378,7 @@ describe("purchase intake (ticket 29)", () => {
       code = (err as Error).message;
     }
     expect(code).toContain("PURCHASE_REQUIRES_INFLOW");
-    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ item: { id: item.id, name: item.name }, movements: [], total: 0, stockOnHand: 0 });
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ item: { id: item.id, name: item.name }, movements: [], total: 0, pageOffset: 0, stockOnHand: 0 });
   });
 
   it("proposes FIFO availability, links partially, and reports the unmatched share without minting stock", async () => {
@@ -4464,7 +4465,7 @@ describe("returns & refunds", () => {
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
     expect(sale.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 700 });
-    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2, sourceMode: "UNKNOWN" }] });
 
     const history = await client.itemsHistory({ itemId: item.id });
     // 5 → 10 → 4 → 6: every step stays non-negative (deterministic replay)
@@ -5890,6 +5891,35 @@ describe("items cost correction (issue 144)", () => {
     const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(15);
     expect(row.costPrice).toBe(233);
+  });
+
+  it("resolves a pending receipt once and keeps catalog, later FIFO sales, and report periods aligned", async () => {
+    const item = await makeItem(`receipt-resolution-${Date.now()}`, 0);
+    await client.stockAddManual({ itemId: item.id, delta: 5, costPending: true, kind: "PURCHASE" });
+    const receipt = (await client.itemsHistory({ itemId: item.id })).movements.find((row) => row.delta === 5)!;
+    const sale = await client.invoicesCreate({ kind: "SALE", invoiceDate: "2039-03-01", lines: [{ itemId: item.id, quantity: 2 }] });
+    const beforeStamp = receipt.occurredAt;
+
+    const resolution = await client.receiptCostsResolve({ movementId: receipt.id, unitCost: 100, reason: "supplier receipt confirmed" });
+    expect(resolution.created).toBe(true);
+    const retry = await client.receiptCostsResolve({ movementId: receipt.id, unitCost: 100, reason: "supplier receipt confirmed" });
+    expect(retry.created).toBe(false);
+    const resolutionActivity = (await client.activitiesList({ limit: 500 })).items.find((row) => row.type === "RECEIPT_COST_RESOLVED" && row.ref === item.id);
+    expect(resolutionActivity).toMatchObject({ ref: item.id, summary: `RECEIPT_COST_RESOLVED_ITEM ${receipt.id} ${item.id} 100 ${item.name}` });
+
+    const catalog = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
+    expect(catalog).toMatchObject({ stockOnHand: 3, costPrice: 100, costPriceKnown: true, costPending: false });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((row) => row.id === receipt.id)).toMatchObject({ unitCost: 100, costPending: false, occurredAt: beforeStamp, delta: 5 });
+    expect((await client.invoicesGet({ id: sale.id })).lines[0]).toMatchObject({ cogsExact: 0, costPending: true });
+
+    const laterSale = await client.invoicesCreate({ kind: "SALE", invoiceDate: "2039-03-02", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(laterSale.lines[0]).toMatchObject({ cogsExact: 100, costPending: false });
+    // This file shares one database. Keep exact report assertions in a period
+    // owned by this fixture rather than including every earlier sale today.
+    const window = { preset: "CUSTOM" as const, customFrom: "2039-03-01T00:00:00", customTo: "2039-03-02T23:59:59" };
+    const report = await client.reportsProfit(window);
+    expect(report.cogs).toBe(300);
   });
 
   it("writes exactly one correction activity row, and none on replay", async () => {

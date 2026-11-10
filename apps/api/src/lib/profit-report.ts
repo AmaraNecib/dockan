@@ -22,6 +22,8 @@ export interface ProfitSaleLine {
   costAtSale: number;
   /** exact total COGS of the layers this line consumed (unrounded FIFO sum) */
   cogsExact: number;
+  /** immutable linked receipt-cost deltas, booked in this line's sale period */
+  cogsAdjustment?: number;
   costPending?: boolean;
   /** line revenue after its allocated share of the invoice discount */
   netTotal: number;

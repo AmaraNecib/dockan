@@ -74,6 +74,8 @@ describe("item history projection scaling", () => {
     const trackedLines = new IterationCountedArray(...[...lines].reverse());
     const trackedLinks = new IterationCountedArray(...[...links].reverse());
     const tx = {
+      getInvoiceDetail: async () => undefined,
+      returnedByLine: async () => new Map(),
       getItemsByIds: async () => new Map([["item-1", {
         id: "item-1",
         name: "Indexed item",
@@ -117,6 +119,11 @@ describe("item history projection scaling", () => {
     expect(trackedLinks.iterations).toBe(1);
     expect(trackedLinks.filters).toBe(0);
     expect(trackedLinks.finds).toBe(0);
+
+    const focused = await readItemHistory(store, { itemId: "item-1", focusMovementId: "movement-999", limit: 20 });
+    expect(focused.movements.map((movement) => movement.id)).toContain("movement-999");
+    expect(focused.movements).toHaveLength(20);
+    expect(focused.movements[0]?.id).toBe("movement-980");
   });
 
   it("returns null for unsafe recorded sale COGS and keeps the history contract valid", async () => {
@@ -174,6 +181,8 @@ describe("item history projection scaling", () => {
       invoiceKind: "SALE" as const,
     }];
     const tx = {
+      getInvoiceDetail: async () => undefined,
+      returnedByLine: async () => new Map(),
       getItemsByIds: async () => new Map([["00000000-0000-4000-8000-000000000001", {
         id: "00000000-0000-4000-8000-000000000001",
         name: "Indexed item",
@@ -229,6 +238,8 @@ describe("item history projection scaling", () => {
       { id: "line-zero", invoiceId: "00000000-0000-4000-8000-000000000023", itemId, description: "zero", quantity: 1, defaultUnitPrice: 0, unitPrice: 0, costAtSale: 0, cogsExact: 0, total: 0, discountAllocated: 0, netTotal: 0, invoiceNumber: "INV-ZERO", invoiceKind: "SALE" as const },
     ];
     const tx = {
+      getInvoiceDetail: async () => undefined,
+      returnedByLine: async () => new Map(),
       getItemsByIds: async () => new Map([[itemId, { id: itemId, name: "History item", barcode: null, categoryId: "00000000-0000-4000-8000-000000000007", costPrice: 117, sellingPrice: 300, lowStockThreshold: 0, stockOnHand: 0, createdAt: "2025-01-01T00:00:00", updatedAt: "2025-01-01T00:00:00" }]]),
       listStockMovements: async () => movements,
       listItemHistoryLines: async () => lines,

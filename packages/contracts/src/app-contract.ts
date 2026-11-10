@@ -70,6 +70,8 @@ import {
   profitReportInputSchema,
   profitReportOutputSchema,
   purchasesCorrectLineInputSchema,
+  receiptCostResolveInputSchema,
+  receiptCostResolutionSchema,
   purchasesLinkStockInputSchema,
   purchasesLinkStockOutputSchema,
   purchasesProposalOutputSchema,
@@ -80,6 +82,8 @@ import {
   returnsCreateInputSchema,
   returnsForInvoiceInputSchema,
   returnsForInvoiceOutputSchema,
+  returnSourcesInputSchema,
+  returnSourcesOutputSchema,
   returnsGetInputSchema,
   returnsListInputSchema,
   returnsListOutputSchema,
@@ -204,6 +208,7 @@ export const dokanContract = {
   /** complete (unpaginated) return history for one invoice: the review panel's
    * form derives the remaining returnable quantity from every prior return */
   returnsForInvoice: oc.input(returnsForInvoiceInputSchema).output(returnsForInvoiceOutputSchema),
+  returnsSources: oc.input(returnSourcesInputSchema).output(returnSourcesOutputSchema),
   /** pending-review count for the sidebar badge and dashboard notice (issue 118) */
   returnsPendingCount: oc.output(returnsPendingCountOutputSchema),
   /** owner confirms the returned goods: consumes the pending stock mark */
@@ -216,6 +221,7 @@ export const dokanContract = {
   purchasesProposal: oc.input(z.object({ invoiceId: z.string().uuid() })).output(purchasesProposalOutputSchema),
   purchasesLinkStock: oc.input(purchasesLinkStockInputSchema).output(purchasesLinkStockOutputSchema),
   purchasesCorrectLine: oc.input(purchasesCorrectLineInputSchema).output(invoiceDetailSchema),
+  receiptCostsResolve: oc.input(receiptCostResolveInputSchema).output(receiptCostResolutionSchema),
 
   // --- reports -------------------------------------------------------------
   reportsDebts: oc.output(debtsOutputSchema),

@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { activityTypes, invoiceKinds, movementKinds, paymentMethods, returnMarks, returnPayoutMethods, returnStatuses, supplierAdjustmentDirections, supplierEntryKinds } from "@dokan/contracts";
 /**
  * Drizzle table definitions. Column names are snake_case; the API layer
@@ -256,12 +256,21 @@ export const stockMovements = sqliteTable("stock_movements", {
   createdAt: text("created_at").notNull(),
 });
 
+/** Append-only source quantities that make each stock outflow replayable. */
+export const stockOutflowConsumptions = sqliteTable("stock_outflow_consumptions", {
+  movementId: text("movement_id").notNull().references(() => stockMovements.id),
+  sourceMovementId: text("source_movement_id").notNull().references(() => stockMovements.id),
+  quantity: integer("quantity").notNull(),
+}, (table) => [primaryKey({ columns: [table.movementId, table.sourceMovementId] })]);
+
 /** Append-only attribution from invoice lines to the stock movements they consume. */
 export const stockLinks = sqliteTable("stock_links", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
     .notNull()
     .references(() => invoices.id),
+  /** exact sale line for FIFO consumption; nullable on legacy and purchase links */
+  invoiceLineId: text("invoice_line_id").references(() => invoiceLines.id),
   movementId: text("movement_id")
     .notNull()
     .references(() => stockMovements.id),
@@ -522,6 +531,13 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_return ON return_lines(return_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_invoice_line ON return_lines(invoice_line_id)`,
+  // Older returns are not backfilled because their source split is unprovable.
+  // Version 14 gates source-specific returned layers from v13 writers, which
+  // would collapse a mixed split into an aggregate movement.
+  `CREATE TABLE IF NOT EXISTS return_source_allocations (id TEXT PRIMARY KEY, return_line_id TEXT NOT NULL REFERENCES return_lines(id), stock_link_id TEXT NOT NULL REFERENCES stock_links(id), quantity INTEGER NOT NULL CHECK (quantity > 0), attribution_mode TEXT NOT NULL CHECK (attribution_mode IN ('AUTO','SELECTED','UNKNOWN')), returned_movement_id TEXT NOT NULL REFERENCES stock_movements(id))`,
+  `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_link ON return_source_allocations(stock_link_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_line ON return_source_allocations(return_line_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_return_source_allocations_returned_movement ON return_source_allocations(returned_movement_id)`,
   `CREATE TABLE IF NOT EXISTS return_debt_applications (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_id TEXT NOT NULL REFERENCES invoices(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_invoice ON return_debt_applications(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_return ON return_debt_applications(return_id)`,
@@ -543,7 +559,16 @@ export const SCHEMA_DDL: readonly string[] = [
   // rewrite. The index is built on the next boot from this same array —
   // ~50 ms at 100k rows, once.
   `CREATE INDEX IF NOT EXISTS idx_stock_movements_item ON stock_movements(item_id, created_at)`,
-  `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), invoice_line_id TEXT REFERENCES invoice_lines(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS stock_outflow_consumptions (movement_id TEXT NOT NULL REFERENCES stock_movements(id), source_movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL CHECK (quantity > 0), PRIMARY KEY (movement_id, source_movement_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_stock_outflow_consumptions_source ON stock_outflow_consumptions(source_movement_id)`,
+  `CREATE TABLE IF NOT EXISTS receipt_cost_resolutions (id TEXT PRIMARY KEY, movement_id TEXT NOT NULL UNIQUE REFERENCES stock_movements(id), unit_cost INTEGER NOT NULL CHECK (unit_cost >= 0), reason TEXT NOT NULL CHECK (length(trim(reason)) > 0), actor_id TEXT, actor_name TEXT, recorded_at TEXT NOT NULL, CHECK ((actor_id IS NULL AND actor_name IS NULL) OR (actor_id IS NOT NULL AND actor_name IS NOT NULL)))`,
+  `CREATE TABLE IF NOT EXISTS receipt_cost_adjustments (id TEXT PRIMARY KEY, resolution_id TEXT NOT NULL REFERENCES receipt_cost_resolutions(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_adjustments_line ON receipt_cost_adjustments(invoice_line_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_adjustments_resolution ON receipt_cost_adjustments(resolution_id)`,
+  `CREATE TABLE IF NOT EXISTS receipt_cost_return_adjustments (id TEXT PRIMARY KEY, resolution_id TEXT NOT NULL REFERENCES receipt_cost_resolutions(id), return_line_id TEXT NOT NULL REFERENCES return_lines(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_return_adjustments_line ON receipt_cost_return_adjustments(invoice_line_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_return_adjustments_resolution ON receipt_cost_return_adjustments(resolution_id)`,
   `CREATE TABLE IF NOT EXISTS supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), direction TEXT CHECK (direction IN ('WE_OWE','THEY_OWE') OR direction IS NULL), invoice_id TEXT REFERENCES invoices(id), method TEXT, note TEXT, ref TEXT, dedup_key TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL))`,
   `CREATE INDEX IF NOT EXISTS idx_supplier_entries_supplier ON supplier_account_entries(supplier_id, occurred_at)`,
   // #181 — the DB backstop for the adjustment dedup key. Partial so every

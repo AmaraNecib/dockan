@@ -5,6 +5,15 @@ import { VAULT_ERROR_CODES } from "@dokan/contracts";
 
 import i18n, { CATALOGUE_KEYS, PHONE_EXAMPLE_INTL, PHONE_EXAMPLE_LOCAL, authErrorKey, serverErrorKey, tError, type MessageKey } from "./i18n";
 
+describe("item history values explanation copy", () => {
+  it("uses a concise neutral label and preserves the factual explanation", () => {
+    expect(i18n.t("historyFactsHelpLabel")).toBe("توضيح القيم");
+    expect(i18n.t("historyFactsHint")).toBe(
+      "الأسعار والتكاليف كما سُجلت وقت الحركة، لا أسعار اليوم. قد تغيب القيم القديمة وتكون تكلفة الوحدة مقربة. إجمالي التكلفة يخص وحدات هذه الحركة لا إجمالي البيع؛ إذا لم يُسجل، يبقى غير متوفر ولا يُستنتج من تكلفة الوحدة المقربة أو تكلفة اليوم.",
+    );
+  });
+});
+
 /**
  * Issue #100 — a failure the app can name must say what it is. These cases are
  * the shapes that actually reach the web: better-auth error objects, oRPC
@@ -62,6 +71,20 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     const copy = tError("OPENING_BALANCE_TARGET_CHANGED");
     expect(copy).not.toBe(i18n.t("errorGeneric"));
     expect(copy).toMatch(/[\u0600-\u06FF]/);
+  });
+
+  it("explains missing return provenance without promising that resolving the same receipt will repair it", () => {
+    const message = tError("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
+    expect(message).toContain("سجلات المرتجع");
+    expect(message).not.toContain("صحّح تكلفة الوارد الأصلي أولاً");
+  });
+
+  it("explains receipt provenance safety refusals in Arabic", () => {
+    for (const code of ["RECEIPT_PROVENANCE_AMBIGUOUS", "RECEIPT_RETURN_PROVENANCE_UNSUPPORTED"]) {
+      const message = tError(code);
+      expect(message).not.toBe(i18n.t("errorGeneric"));
+      expect(message).toMatch(/[\u0600-\u06FF]/);
+    }
   });
 
   it("falls back to raw validator sentences only when no code arrives", () => {

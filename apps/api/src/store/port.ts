@@ -72,6 +72,8 @@ export interface ProfitSaleLine {
   costAtSale: number;
   /** exact total COGS of the layers this line consumed (unrounded FIFO sum) */
   cogsExact: number;
+  /** immutable linked receipt-cost deltas, booked in this line's sale period */
+  cogsAdjustment?: number;
   costPending?: boolean;
   netTotal: number;
 }
@@ -124,9 +126,24 @@ export type InvoiceInsert = Omit<Invoice, "id" | "createdAt" | "updatedAt" | "su
 export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact" | "costPending"> &
   Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact" | "costPending">>;
 
+export interface ReceiptCostResolutionRecord {
+  id: string;
+  movementId: string;
+  unitCost: number;
+  reason: string;
+  actorId: string;
+  actorName: string;
+  recordedAt: string;
+  /** True only for the transaction that created the immutable resolution. */
+  created: boolean;
+  adjustments: Array<{ invoiceLineId: string; amount: number }>;
+}
+
 export interface StockLink {
   id: string;
   invoiceId: string;
+  /** exact sale line for FIFO consumption; absent on old adapters, null for unproven legacy rows */
+  invoiceLineId?: string | null;
   movementId: string;
   quantity: number;
   createdAt: string;
@@ -280,7 +297,8 @@ export type PartyDeleteResult = "DELETED" | "HAS_INVOICES" | "NOT_FOUND";
 /** Read methods needed by composed snapshot reads; no write or transaction handle. */
 export type StoreReadPort = Pick<StorePort,
   "getItemsByIds" | "listStockMovements" | "listItemHistoryLines" |
-  "listStockLinksByItem" | "getReturnHeader" | "getSupplierReturn" | "getExpenseRefundHistory"
+  "listStockLinksByItem" | "getInvoiceDetail" | "returnedByLine" | "returnSourceAllocationsByLine" |
+  "getReturnHeader" | "getSupplierReturn" | "getExpenseRefundHistory"
 >;
 
 export interface StorePort {
@@ -305,10 +323,18 @@ export interface StorePort {
 
   // --- stock ledger (ticket 27) --------------------------------------------
   /** append-only; no update or delete exists by design */
-  insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "id" | "returnMark">>): Promise<StockMovement>;
+  insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "id" | "returnMark">> & { consumedMovements?: Array<{ movementId: string; quantity: number }> }): Promise<StockMovement>;
   getStockMovementById(id: string): Promise<StockMovement | undefined>;
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
-  listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
+  listStockMovements(itemId: string): Promise<Array<StockMovement & {
+    seq: number;
+    /** Immutable receipt facts retained alongside the effective movement projection. */
+    receiptOriginalUnitCost?: number | null;
+    receiptOriginalCostPending?: boolean;
+    receiptResolution?: { unitCost: number; reason: string; actorId: string | null; actorName: string | null; recordedAt: string } | null;
+    /** Complete persisted sale sources for effective FIFO projection, not rewritten movement facts. */
+    consumedMovements?: Array<{ movementId: string; quantity: number }>;
+  }>>;
   /**
    * The movements recorded AFTER a local stamp, in insertion order — the
    * #295 repeat window. The stamp is the server's local
@@ -323,11 +349,15 @@ export interface StorePort {
 
   // --- invoice-to-stock attribution -----------------------------------------
   /** appends attribution between an invoice and a stock movement; the ledger itself is never rewritten */
-  insertStockLink(link: { invoiceId: string; movementId: string; quantity: number }): Promise<StockLink>;
+  insertStockLink(link: { invoiceId: string; invoiceLineId?: string | null; movementId: string; quantity: number }): Promise<StockLink>;
   /** all links whose movement belongs to the item (link consumption audit) */
   listStockLinksByItem(itemId: string): Promise<StockLink[]>;
   /** purchase-only attribution links for the item's inventory pool */
   listPurchaseStockLinksByItem(itemId: string): Promise<StockLink[]>;
+  /** Resolves one pending receipt and appends exact linked sale-line COGS deltas atomically.
+   * Direct calls open an immediate transaction. Inside a transaction, use withTransactionImmediate
+   * so resolution and the caller's audit event share the same write-locked unit. */
+  resolveReceiptCost(input: { movementId: string; unitCost: number; reason: string; actorId: string; actorName: string; recordedAt: string }): Promise<ReceiptCostResolutionRecord>;
 
   // --- expenses + profit report (ticket 31) --------------------------------
   listExpenseCategories(): Promise<ExpenseCategory[]>;
@@ -454,7 +484,11 @@ export interface StorePort {
   /** Reserves the next return number (RET-%04d) atomically in the database. */
   allocateReturnNumber(): Promise<string>;
   insertReturn(input: ReturnInsert): Promise<{ id: string }>;
-  insertReturnLine(line: ReturnLineInsert): Promise<void>;
+  insertReturnLine(line: ReturnLineInsert): Promise<string>;
+  insertReturnSourceAllocation(allocation: { returnLineId: string; stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string }): Promise<void>;
+  returnSourceAllocationsByLine?(invoiceLineId: string): Promise<Array<{ stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string }>>;
+  returnSourceAllocationsByReturnLine(returnLineId: string): Promise<Array<{ stockLinkId: string; quantity: number; returnedMovementId: string }>>;
+  recordReturnSourceRejection(input: { returnLineId: string; stockLinkId: string; quantity: number }): Promise<void>;
   /** full return with lines; optional invoice scope. `total` is the count for
    * the filters, independent of the page. */
   listReturns(filters: { invoiceId?: string }, pagination?: PaginationInput): Promise<{ items: ReturnDetail[]; total: number }>;

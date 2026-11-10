@@ -73,6 +73,7 @@ const resources = {
       activityItemCreatedWithStock: "إنشاء منتج {{name}} بمخزون أولي {{stock}}",
       activityItemUpdated: "تعديل منتج {{name}}",
       activityItemCostCorrected: "تصحيح تكلفة منتج {{name}} إلى <money/>",
+      activityReceiptCostResolved: "تحديد التكلفة الفعلية للوارد {{movement}} بمبلغ <money/>",
       activitySellingPriceChanged: "تغيير سعر بيع {{name}} من <old/> إلى <new/>",
       activityStockAdjusted: "تسوية مخزون {{name}}",
       activityStockLinked: "ربط مخزون سابق بفاتورة {{number}}",

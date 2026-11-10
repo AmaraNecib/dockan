@@ -60,6 +60,7 @@ describe("activity summary tokens render translated copy", () => {
     { tag: "ITEM_CREATED", summary: "ITEM_CREATED بطارية", keeps: ["بطارية"] },
     { tag: "ITEM_UPDATED", summary: "ITEM_UPDATED بطارية", keeps: ["بطارية"] },
     { tag: "ITEM_COST_CORRECTED", summary: "ITEM_COST_CORRECTED 150 بطارية", keeps: ["150", "بطارية"] },
+    { tag: "RECEIPT_COST_RESOLVED", summary: "RECEIPT_COST_RESOLVED movement-17 150", keeps: ["movement-17", "150"] },
     { tag: "STOCK_SELLING_PRICE_CHANGED", summary: "STOCK_SELLING_PRICE_CHANGED 150 175 بطارية", keeps: ["150", "175", "بطارية"] },
     { tag: "PARTY_CREATED", summary: "PARTY_CREATED CUSTOMER علي علي", keeps: ["علي علي", "زبون"] },
     { tag: "PARTY_UPDATED", summary: "PARTY_UPDATED SUPPLIER صالح بن علي", keeps: ["صالح بن علي", "مورّد"] },

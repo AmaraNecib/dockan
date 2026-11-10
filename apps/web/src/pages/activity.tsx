@@ -140,6 +140,15 @@ export function activitySummaryText(t: TFunction, summary: string): ReactNode {
       />
     );
   }
+  if (tag === "RECEIPT_COST_RESOLVED" && tokens.length >= 3) {
+    return (
+      <Trans
+        i18nKey="activityReceiptCostResolved"
+        values={{ movement: tokens[1] }}
+        components={{ money: <Amount value={Number(tokens[2])} /> }}
+      />
+    );
+  }
   // issue 120: party rows carry a role token, then the free-text name
   if ((tag === "PARTY_CREATED" || tag === "PARTY_UPDATED" || tag === "PARTY_DELETED") && tokens.length >= 3) {
     const role = tokens[1] === "SUPPLIER" ? t("partySupplier") : t("partyCustomer");

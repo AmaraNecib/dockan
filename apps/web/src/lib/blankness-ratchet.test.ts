@@ -44,6 +44,7 @@ const TEXT = "text field, not a numeric draft: a mark-only paste is real content
 const DATE = "date field: a mark-only draft is still an unreadable date, never blank";
 const BARCODE = "barcode is an identity code, not a numeric draft; a mark-only draft is content";
 const DIRTY = "unsaved-work indicator, not a value decision: a pasted mark is work the discard warning must keep";
+const RECEIPT_REASON = "required receipt-resolution reason is text, not a numeric draft";
 
 const CLASSIFIED = new Map<string, Classification>([
   ["components/parties/customer-settle-panel.tsx::value.amount.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → no required-message; confirm stays disabled on the parsed-amount guard" }],
@@ -99,6 +100,7 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/sale.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/sale.tsx::searchQuery.trim() === \"\"", { verdict: "raw", reason: "catalogue name or barcode query is text, not a numeric draft" }],
   ["pages/stock.tsx::unitCost.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → no unit cost (api falls back to the known cost)" }],
+  ["pages/stock.tsx::reason.length === 0 [resolutionReason.trim()]", { verdict: "raw", reason: RECEIPT_REASON }],
   ["pages/supplier-opening-balance.tsx::dateDraft.trim() === \"\"", { verdict: "raw", reason: DATE }],
   ["pages/supplier-opening-balance.tsx::reasonDraft.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   // #255 — the typed rows are a list, so the remove control's label names the row

@@ -548,6 +548,7 @@ describe("stock ledger (ticket 27)", () => {
       item: { id: item.id, name: item.name },
       movements: [],
       total: 0,
+      pageOffset: 0,
       stockOnHand: 0,
     });
   });
@@ -1377,7 +1378,7 @@ describe("purchase intake (ticket 29)", () => {
       code = (err as Error).message;
     }
     expect(code).toContain("PURCHASE_REQUIRES_INFLOW");
-    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ item: { id: item.id, name: item.name }, movements: [], total: 0, stockOnHand: 0 });
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ item: { id: item.id, name: item.name }, movements: [], total: 0, pageOffset: 0, stockOnHand: 0 });
   });
 
   it("proposes FIFO availability, links partially, and reports the unmatched share without minting stock", async () => {

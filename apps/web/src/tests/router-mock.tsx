@@ -16,7 +16,10 @@ import * as routerModule from "@tanstack/react-router";
  *   mock.module("@tanstack/react-router", routerMock);
  *   mock.module("@tanstack/react-router", () => routerMock({ invoiceId: "…" }));
  */
-export function routerMock(params: Record<string, string> = {}) {
+export function routerMock(
+  params: Record<string, string> = {},
+  search: Record<string, string | undefined> = {},
+) {
   return {
     ...routerModule,
     Link: (props: {
@@ -34,7 +37,7 @@ export function routerMock(params: Record<string, string> = {}) {
       return <a href={`${to ?? ""}?${new URLSearchParams(linkParams ?? {}).toString()}`} {...rest}>{children}</a>;
     },
     useParams: () => params,
-    useSearch: () => ({}),
+    useSearch: () => search,
     // PartyDetailPage navigates on delete; the stub keeps every page test from
     // needing to know about the router just to mount
     useNavigate: () => () => undefined,

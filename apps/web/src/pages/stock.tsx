@@ -460,7 +460,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
     if (history.data.movements.some((movement) => movement.id === focusMovementId)) {
       setExpandedMovementIds((current) => new Set(current).add(focusMovementId));
     }
-  }, [focusMovementId, history.data]);
+  }, [focusMovementId, history.data, pager.offset]);
 
   function beginReceiptResolution(movementId: string) {
     setResolutionMovementId(movementId);

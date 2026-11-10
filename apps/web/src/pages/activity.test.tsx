@@ -247,7 +247,7 @@ describe("activity reference links", () => {
     expect(activityRefLabel("RECEIPT_COST_RESOLVED", summary, "1111aaaa-2222")).toBe("بطارية عربية كبيرة");
     const summaryText = renderNode(activitySummaryText(t, summary)).textContent ?? "";
     expect(summaryText).toContain("0");
-    expect(summaryText).toContain("movement-17");
+    expect(summaryText).not.toContain("movement-17");
   });
 
   it("does not route or invent an item label for legacy receipt rows", () => {

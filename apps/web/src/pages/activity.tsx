@@ -156,7 +156,7 @@ export function activitySummaryText(t: TFunction, summary: string): ReactNode {
           i18nKey="activityReceiptCostResolvedItem"
           values={{ name: tokens.slice(4).join(" ") }}
           components={{ money: <Amount value={Number(tokens[3])} /> }}
-        />{" "}<bdi dir="ltr">{tokens[1]}</bdi>
+        />
       </>
     );
   }

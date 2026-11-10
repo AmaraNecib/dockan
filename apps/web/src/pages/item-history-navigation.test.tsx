@@ -7,11 +7,13 @@ import { mountWithProviders, unmountAllMountedPages } from "../tests/page-harnes
 import { routerMock } from "../tests/router-mock";
 
 const itemId = "00000000-0000-4000-8000-000000000467";
-mock.module("@tanstack/react-router", () => routerMock({ itemId }));
+const routeSearch: Record<string, string | undefined> = {};
+mock.module("@tanstack/react-router", () => routerMock({ itemId }, routeSearch));
 
 interface HistoryFixture {
   item: { id: string; name: string };
   total: number;
+  pageOffset?: number;
   stockOnHand: number;
   movements: {
     id: string;
@@ -66,6 +68,7 @@ function sale(id: string, documentId: string, number: string, delta: number) {
 
 let historyResult: HistoryFixture;
 let historyPromise: Promise<HistoryFixture> | null = null;
+const historyRequests: Array<{ itemId: string; focusMovementId?: string; limit?: number; offset?: number }> = [];
 let resolutionCalls: Array<{ movementId: string; unitCost: number; reason: string }> = [];
 let failResolution = false;
 
@@ -79,7 +82,10 @@ function setInputValue(input: HTMLInputElement, value: string): void {
 mock.module("@/lib/rpc", () => ({
   orpc: {
     itemsHistory: {
-      queryOptions: () => ({ queryKey: ["issue467-item-history"], queryFn: () => historyPromise ?? Promise.resolve(historyResult) }),
+      queryOptions: ({ input }: { input: { itemId: string; focusMovementId?: string; limit?: number; offset?: number } }) => {
+        historyRequests.push(input);
+        return { queryKey: ["issue467-item-history", input], queryFn: () => historyPromise ?? Promise.resolve(historyResult) };
+      },
     },
     receiptCostsResolve: {
       mutationOptions: (options: { onSuccess?: (record: ReceiptCostResolution) => void; onError?: (error: Error) => void }) => ({
@@ -111,6 +117,8 @@ const { ItemHistoryPage } = await import("./stock");
 
 describe("item-history navigation and disclosure (issue #467)", () => {
   beforeEach(() => {
+    delete routeSearch.focusMovementId;
+    historyRequests.length = 0;
     historyPromise = null;
     resolutionCalls = [];
     failResolution = false;
@@ -168,6 +176,48 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     expect(productsLink?.getAttribute("href")).toContain("/items");
     expect(page.container.querySelector('nav [aria-current="page"]')?.textContent).toContain("بطارية طويلة الاسم للاختبار");
     expect(page.container.querySelector("h1")?.nextElementSibling?.textContent).toBe("سجل المنتج");
+  });
+
+  it("requests a focused movement beyond page one, updates the pager, and opens only that row", async () => {
+    const focusedMovementId = "00000000-0000-4000-8000-000000000999";
+    routeSearch.focusMovementId = focusedMovementId;
+    historyResult = {
+      ...historyResult,
+      total: 50,
+      pageOffset: 20,
+      movements: Array.from({ length: 10 }, (_, index) => sale(
+        index === 9 ? focusedMovementId : `movement-page-2-${index}`,
+        documentA,
+        `INV-467-${index}`,
+        -1,
+      )),
+    };
+
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => page.query("history-table") !== null, "focused history table");
+
+    expect(historyRequests.some((input) => input.itemId === itemId && input.focusMovementId === focusedMovementId)).toBe(true);
+    expect(historyRequests.some((input) => input.offset === 20 && input.focusMovementId === focusedMovementId)).toBe(true);
+    expect(page.query("history-pager-page-3")?.getAttribute("aria-current")).toBe("page");
+    expect(page.query(`history-movement-row-${focusedMovementId}`)?.getAttribute("data-focused")).toBe("true");
+    expect(page.query(`history-toggle-${focusedMovementId}`)?.getAttribute("aria-expanded")).toBe("true");
+    const expandedRows = [...page.container.querySelectorAll<HTMLButtonElement>('button[data-testid^="history-toggle-"]')]
+      .filter((button) => button.getAttribute("aria-expanded") === "true");
+    expect(expandedRows.map((button) => button.dataset.testid)).toEqual([`history-toggle-${focusedMovementId}`]);
+    const highlightedRows = [...page.container.querySelectorAll('[data-focused="true"]')];
+    expect(highlightedRows.map((row) => row.getAttribute("data-testid"))).toEqual([`history-movement-row-${focusedMovementId}`]);
+  });
+
+  it("reports a missing or other-item focus without expanding another movement", async () => {
+    routeSearch.focusMovementId = "00000000-0000-4000-8000-000000000998";
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => page.query("history-focus-unavailable") !== null, "unavailable focus status");
+
+    expect(historyRequests.some((input) => input.focusMovementId === routeSearch.focusMovementId)).toBe(true);
+    expect(page.query("history-focus-unavailable")?.textContent).toContain("غير متاحة");
+    expect([...page.container.querySelectorAll<HTMLButtonElement>('button[data-testid^="history-toggle-"]')]
+      .every((button) => button.getAttribute("aria-expanded") === "false")).toBe(true);
+    expect(page.container.querySelectorAll('[data-focused="true"]')).toHaveLength(0);
   });
 
   it("opens multiple full-width details and keeps each set of facts with its movement after reorder", async () => {

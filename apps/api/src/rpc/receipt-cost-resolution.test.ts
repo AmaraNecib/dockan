@@ -231,12 +231,15 @@ describe("persisted review counterexamples", () => {
       .toEqual([{ movementId: first.id, quantity: 1 }]);
     expect(persistedMovements.find((movement) => movement.id === durableOutflowId)?.consumedMovements)
       .toEqual([{ movementId: nonFifoSource.id, quantity: 1 }]);
-    expect(persistedMovements.find((movement) => movement.id === groupedSaleIds[0])?.consumedMovements)
-      .toEqual([{ movementId: `scale-${product.id}-0`, quantity: 1 }]);
-    expect(persistedMovements.find((movement) => movement.id === groupedSaleIds[1])?.consumedMovements)
-      .toEqual([{ movementId: `scale-${product.id}-1`, quantity: 1 }]);
-    expect(persistedMovements.find((movement) => movement.id === groupedSaleIds.at(-1))?.consumedMovements)
-      .toEqual([{ movementId: `scale-${product.id}-${invoiceGroupCount}`, quantity: 1 }]);
+    const groupedIds = new Set(groupedSaleIds);
+    const groupedMovements = persistedMovements.filter((movement) => groupedIds.has(movement.id));
+    const byId = new Map(groupedMovements.map((movement) => [movement.id, movement]));
+    expect(groupedMovements).toHaveLength(groupedSaleIds.length);
+    expect(byId.size).toBe(groupedSaleIds.length);
+    for (const [sourceIndex, movementId] of groupedSaleIds.entries()) {
+      expect(byId.get(movementId)?.consumedMovements)
+        .toEqual([{ movementId: `scale-${product.id}-${sourceIndex}`, quantity: 1 }]);
+    }
     const history = await client.itemsHistory({ itemId: product.id, limit: 1, offset: fillerCount + 2 });
     expect(history.total).toBe(movementCount);
     expect(history.movements[0]?.kind).toBe("SALE");

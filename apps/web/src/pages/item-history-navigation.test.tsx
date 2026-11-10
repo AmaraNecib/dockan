@@ -265,6 +265,31 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     expect(secondToggle.getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("places the neutral native values explanation after the amount list", async () => {
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => page.query("history-table") !== null, "history table");
+    await act(async () => page.query<HTMLButtonElement>("history-toggle-movement-a")?.click());
+
+    const amountSection = page.query("history-fact-selling-price-movement-a")?.parentElement?.parentElement;
+    const amounts = amountSection?.querySelector("dl");
+    const help = amountSection?.querySelector<HTMLDetailsElement>('[data-testid="history-facts-help"]');
+    const summary = help?.querySelector("summary");
+    expect(amountSection?.querySelector("h3")?.textContent).toBe("القيم المسجلة للحركة");
+    expect(amounts).not.toBeNull();
+    expect(help).not.toBeNull();
+    expect(amounts?.nextElementSibling).toBe(help);
+    expect(help?.open).toBe(false);
+    expect(summary?.textContent?.trim()).toBe("توضيح القيم");
+    expect(summary?.className).toContain("min-h-11");
+    expect(summary?.className).not.toMatch(/text-primary|underline/);
+    const hint = "الأسعار والتكاليف كما سُجلت وقت الحركة، لا أسعار اليوم. قد تغيب القيم القديمة وتكون تكلفة الوحدة مقربة. إجمالي التكلفة يخص وحدات هذه الحركة لا إجمالي البيع؛ إذا لم يُسجل، يبقى غير متوفر ولا يُستنتج من تكلفة الوحدة المقربة أو تكلفة اليوم.";
+    expect(help?.querySelector("p")?.textContent).toBe(hint);
+
+    await act(async () => summary?.click());
+    expect(help?.open).toBe(true);
+    expect(help?.querySelector("p")?.textContent).toBe(hint);
+  });
+
   it("labels missing historical amounts as unavailable instead of inventing values", async () => {
     const original = sale("movement-a", documentA, "INV-467-A", -2);
     historyResult = {

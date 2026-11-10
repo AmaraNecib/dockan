@@ -647,15 +647,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                       <div id={detailId} data-testid={`history-detail-${movement.id}`} className="w-full max-w-[min(56rem,calc(100vw-10rem))] space-y-3">
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                           <section className="min-w-0">
-                            <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                              <h3 className="text-xs font-semibold text-muted-foreground">{t("historyAmounts")}</h3>
-                              <details data-testid="history-facts-help" className="min-w-0 text-xs text-muted-foreground">
-                                <summary className="min-h-8 cursor-pointer rounded px-1 py-1 text-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-                                  {t("historyFactsHelpLabel")}
-                                </summary>
-                                <p className="mt-1 max-w-prose leading-relaxed">{t("historyFactsHint")}</p>
-                              </details>
-                            </div>
+                            <h3 className="mb-2 text-xs font-semibold text-muted-foreground">{t("historyAmounts")}</h3>
                             <dl className="space-y-2 text-sm">
                               <div data-testid={`history-fact-selling-price-${movement.id}`} className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
                                 <dt className="min-w-0 break-words text-right text-xs text-muted-foreground">{t("stockSellingPrice")}</dt>
@@ -688,6 +680,12 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                                 </dd>
                               </div>
                             </dl>
+                            <details data-testid="history-facts-help" className="mt-2 border-t pt-2 text-sm text-muted-foreground">
+                              <summary className="min-h-11 cursor-pointer rounded px-1 py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+                                {t("historyFactsHelpLabel")}
+                              </summary>
+                              <p className="mt-1 max-w-prose leading-relaxed">{t("historyFactsHint")}</p>
+                            </details>
                           </section>
                           <div className="space-y-3">
                             <dl className="text-sm">

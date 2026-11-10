@@ -541,7 +541,7 @@ const toExpenseCorrection = (row: ExpenseCorrectionRow): ExpenseCorrection =>
     reversesCorrectionId: row.reversesCorrectionId,
   }) satisfies ExpenseCorrection;
 const toStockLink = (r: typeof stockLinks.$inferSelect): StockLink =>
-  ({ id: r.id, invoiceId: r.invoiceId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
+  ({ id: r.id, invoiceId: r.invoiceId, invoiceLineId: r.invoiceLineId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
 
 /** A supplier account entry joined to its invoice number (nullable). */
 type SupplierEntryRow = {
@@ -1481,6 +1481,60 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }
   };
 
+  /** Add sale-line keys to legacy stock links only when line identity is provable. */
+  const ensureStockLinkLineAttribution = (): void => {
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      // SAFETY: PRAGMA table_info returns one row per column with a string name.
+      const columns = conn.raw.query("PRAGMA table_info(stock_links)").all() as Array<{ name: string }>;
+      const names = new Set(columns.map((column) => column.name));
+      if (columns.length > 0 && !names.has("invoice_line_id")) {
+        conn.raw.exec("ALTER TABLE stock_links ADD COLUMN invoice_line_id TEXT REFERENCES invoice_lines(id)");
+      }
+
+      // Legacy sale links only prove a line when exactly one line of that item
+      // exists on the invoice and the links account for the full line quantity.
+      // Any duplicate line or incomplete aggregate remains unattributed.
+      if (columns.length > 0) {
+        const provenRowsQuery = conn.raw.query(`
+          SELECT sl.invoice_id AS invoiceId, il.id AS lineId
+          FROM stock_links sl
+          JOIN stock_movements sm ON sm.id = sl.movement_id
+          JOIN invoices i ON i.id = sl.invoice_id AND i.kind = 'SALE'
+          JOIN invoice_lines il ON il.invoice_id = sl.invoice_id AND il.item_id = sm.item_id
+          WHERE sl.invoice_line_id IS NULL
+          GROUP BY sl.invoice_id, sm.item_id, il.id, il.quantity
+          HAVING (SELECT COUNT(*) FROM invoice_lines all_lines
+                  WHERE all_lines.invoice_id = sl.invoice_id AND all_lines.item_id = sm.item_id) = 1
+             AND (SELECT SUM(all_links.quantity) FROM stock_links all_links
+                  JOIN stock_movements all_movements ON all_movements.id = all_links.movement_id
+                          WHERE all_links.invoice_id = sl.invoice_id AND all_movements.item_id = sm.item_id
+                    AND all_links.invoice_line_id IS NULL) = il.quantity
+             AND NOT EXISTS (SELECT 1 FROM stock_links attributed
+                             JOIN stock_movements attributed_movement ON attributed_movement.id = attributed.movement_id
+                             WHERE attributed.invoice_id = sl.invoice_id
+                               AND attributed_movement.item_id = sm.item_id
+                               AND attributed.invoice_line_id IS NOT NULL)
+        `);
+        // SAFETY: SELECT names exactly invoiceId and lineId from proven, unique matches.
+        const provenRows = provenRowsQuery.all() as Array<{ invoiceId: string; lineId: string }>;
+        const update = conn.raw.query(`
+          UPDATE stock_links SET invoice_line_id = ?
+          WHERE invoice_id = ? AND invoice_line_id IS NULL
+            AND movement_id IN (SELECT id FROM stock_movements WHERE item_id = (
+              SELECT item_id FROM invoice_lines WHERE id = ?
+            ))
+        `);
+        for (const row of provenRows) update.run(row.lineId, row.invoiceId, row.lineId);
+      }
+      conn.raw.exec("CREATE INDEX IF NOT EXISTS idx_stock_links_line ON stock_links(invoice_line_id)");
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      conn.raw.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
   /**
    * Seed the default expense categories atomically with a durable marker, and
    * SELF-HEAL partial seeds left by a boot interrupted mid-seed (the pre-fix
@@ -1508,6 +1562,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureSupplierAdjustmentDedupKeyColumn();
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
+    ensureStockLinkLineAttribution();
     ensurePendingCostColumns();
     ensureSaleColumns();
     // issue 120: point legacy typed-name invoices at real party records (once).
@@ -2094,7 +2149,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const row = firstRowOf(
         await db
           .insert(stockLinks)
-          .values({ id: id(), invoiceId: link.invoiceId, movementId: link.movementId, quantity: link.quantity, createdAt: now() })
+          .values({ id: id(), invoiceId: link.invoiceId, invoiceLineId: link.invoiceLineId ?? null, movementId: link.movementId, quantity: link.quantity, createdAt: now() })
           .returning(),
       );
       return toStockLink(row);
@@ -2106,6 +2161,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           id: stockLinks.id,
           invoiceId: stockLinks.invoiceId,
           movementId: stockLinks.movementId,
+          invoiceLineId: stockLinks.invoiceLineId,
           quantity: stockLinks.quantity,
           createdAt: stockLinks.createdAt,
         })
@@ -2125,6 +2181,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           id: stockLinks.id,
           invoiceId: stockLinks.invoiceId,
           movementId: stockLinks.movementId,
+          invoiceLineId: stockLinks.invoiceLineId,
           quantity: stockLinks.quantity,
           createdAt: stockLinks.createdAt,
         })

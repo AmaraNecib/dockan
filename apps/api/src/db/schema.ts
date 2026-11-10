@@ -262,6 +262,8 @@ export const stockLinks = sqliteTable("stock_links", {
   invoiceId: text("invoice_id")
     .notNull()
     .references(() => invoices.id),
+  /** exact sale line for FIFO consumption; nullable on legacy and purchase links */
+  invoiceLineId: text("invoice_line_id").references(() => invoiceLines.id),
   movementId: text("movement_id")
     .notNull()
     .references(() => stockMovements.id),
@@ -543,7 +545,11 @@ export const SCHEMA_DDL: readonly string[] = [
   // rewrite. The index is built on the next boot from this same array —
   // ~50 ms at 100k rows, once.
   `CREATE INDEX IF NOT EXISTS idx_stock_movements_item ON stock_movements(item_id, created_at)`,
-  `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), invoice_line_id TEXT REFERENCES invoice_lines(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS receipt_cost_resolutions (id TEXT PRIMARY KEY, movement_id TEXT NOT NULL UNIQUE REFERENCES stock_movements(id), unit_cost INTEGER NOT NULL CHECK (unit_cost >= 0), reason TEXT NOT NULL CHECK (length(trim(reason)) > 0), actor_id TEXT, actor_name TEXT, recorded_at TEXT NOT NULL, CHECK ((actor_id IS NULL AND actor_name IS NULL) OR (actor_id IS NOT NULL AND actor_name IS NOT NULL)))`,
+  `CREATE TABLE IF NOT EXISTS receipt_cost_adjustments (id TEXT PRIMARY KEY, resolution_id TEXT NOT NULL REFERENCES receipt_cost_resolutions(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_adjustments_line ON receipt_cost_adjustments(invoice_line_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_receipt_cost_adjustments_resolution ON receipt_cost_adjustments(resolution_id)`,
   `CREATE TABLE IF NOT EXISTS supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), direction TEXT CHECK (direction IN ('WE_OWE','THEY_OWE') OR direction IS NULL), invoice_id TEXT REFERENCES invoices(id), method TEXT, note TEXT, ref TEXT, dedup_key TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL))`,
   `CREATE INDEX IF NOT EXISTS idx_supplier_entries_supplier ON supplier_account_entries(supplier_id, occurred_at)`,
   // #181 — the DB backstop for the adjustment dedup key. Partial so every

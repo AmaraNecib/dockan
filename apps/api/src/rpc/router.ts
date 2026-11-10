@@ -1553,9 +1553,6 @@ export function createRpcRouter(deps: RpcDeps) {
               const outflow = posted.outflowCost;
               if (outflow === null) throw new Error("SALE movement returned no outflow cost");
               const { unitCost: costAtSale, totalCost: cogsExact } = outflow;
-              for (const consumed of outflow.consumedMovements ?? []) {
-                await tx.insertStockLink({ invoiceId: invoice.id, movementId: consumed.movementId, quantity: consumed.quantity });
-              }
               const inserted = await tx.insertInvoiceLine({
                 invoiceId: invoice.id,
                 itemId: item.id,
@@ -1570,6 +1567,9 @@ export function createRpcRouter(deps: RpcDeps) {
                 discountAllocated: calculated.discountAllocated,
                 netTotal: calculated.netTotal,
               });
+              for (const consumed of outflow.consumedMovements ?? []) {
+                await tx.insertStockLink({ invoiceId: invoice.id, invoiceLineId: inserted.id, movementId: consumed.movementId, quantity: consumed.quantity });
+              }
               insertedLines.push(inserted);
             }
             const insertedPayments: InvoiceDetail["payments"] = [];

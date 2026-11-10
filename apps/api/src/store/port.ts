@@ -127,6 +127,8 @@ export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "d
 export interface StockLink {
   id: string;
   invoiceId: string;
+  /** exact sale line for FIFO consumption; absent on old adapters, null for unproven legacy rows */
+  invoiceLineId?: string | null;
   movementId: string;
   quantity: number;
   createdAt: string;
@@ -323,7 +325,7 @@ export interface StorePort {
 
   // --- invoice-to-stock attribution -----------------------------------------
   /** appends attribution between an invoice and a stock movement; the ledger itself is never rewritten */
-  insertStockLink(link: { invoiceId: string; movementId: string; quantity: number }): Promise<StockLink>;
+  insertStockLink(link: { invoiceId: string; invoiceLineId?: string | null; movementId: string; quantity: number }): Promise<StockLink>;
   /** all links whose movement belongs to the item (link consumption audit) */
   listStockLinksByItem(itemId: string): Promise<StockLink[]>;
   /** purchase-only attribution links for the item's inventory pool */

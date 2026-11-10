@@ -83,8 +83,12 @@ import type { Database } from "bun:sqlite";
  * Version 12 (issue 392 bounded fix): items gain `cost_price_known`. Existing
  * caches retain the legacy known default; new pending receipts make the cache
  * untrusted until a known basis can be derived or explicitly entered.
+ *
+ * Version 13 (issue 393 checkpoint): stock links gain nullable sale-line
+ * attribution, and receipt cost resolution plus exact COGS adjustment ledgers
+ * are additive. A v12 build cannot read these facts and must refuse the file.
  */
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 /**
  * A database written by a newer app. The older build cannot know what the

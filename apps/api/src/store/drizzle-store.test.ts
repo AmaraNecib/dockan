@@ -236,6 +236,56 @@ describe("setup + seed", () => {
     expect(settings.storeName).toBe("Dokan");
   });
 
+  it("backfills only provable legacy sale-line stock links", async () => {
+    const migrationDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-stock-line-migration-"));
+    const existing = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: migrationDir, DOKAN_DB_PATH: path.join(migrationDir, "existing.db") }),
+    );
+    const existingStore = createDrizzleStore(existing);
+    try {
+      await existingStore.setup();
+      const category = await existingStore.createCategory({ name: `legacy-link-${Date.now()}` });
+      const item = await existingStore.createItem({ name: `legacy-link-item-${Date.now()}`, categoryId: category.id, costPrice: 10, sellingPrice: 20 });
+      const uniqueSale = await existingStore.insertInvoice({
+        invoiceNumber: `INV-UNIQUE-${crypto.randomUUID()}`, kind: "SALE", counterpartyId: null,
+        counterpartyName: null, invoiceDate: localDate(), totalAmount: 20, paidAmount: 0,
+        remainingAmount: 20, notes: null,
+      });
+      const uniqueLine = await existingStore.insertInvoiceLine({
+        invoiceId: uniqueSale.id, itemId: item.id, description: item.name, quantity: 1,
+        unitPrice: 20, costAtSale: 10, total: 20,
+      });
+      const uniqueReceipt = await existingStore.insertStockMovement({
+        itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: 10, reason: null, ref: null, occurredAt: stamp(),
+      });
+      const uniqueLink = await existingStore.insertStockLink({ invoiceId: uniqueSale.id, movementId: uniqueReceipt.id, quantity: 1 });
+
+      const duplicateSale = await existingStore.insertInvoice({
+        invoiceNumber: `INV-DUPLICATE-${crypto.randomUUID()}`, kind: "SALE", counterpartyId: null,
+        counterpartyName: null, invoiceDate: localDate(), totalAmount: 60, paidAmount: 0,
+        remainingAmount: 60, notes: null,
+      });
+      await existingStore.insertInvoiceLine({ invoiceId: duplicateSale.id, itemId: item.id, description: item.name, quantity: 1, unitPrice: 20, costAtSale: 10, total: 20 });
+      await existingStore.insertInvoiceLine({ invoiceId: duplicateSale.id, itemId: item.id, description: item.name, quantity: 2, unitPrice: 20, costAtSale: 10, total: 40 });
+      const duplicateReceipt = await existingStore.insertStockMovement({
+        itemId: item.id, kind: "PURCHASE", delta: 3, unitCost: 10, reason: null, ref: null, occurredAt: stamp(),
+      });
+      const duplicateLink = await existingStore.insertStockLink({ invoiceId: duplicateSale.id, movementId: duplicateReceipt.id, quantity: 3 });
+
+      existing.raw.exec("DROP INDEX IF EXISTS idx_stock_links_line");
+      existing.raw.exec("ALTER TABLE stock_links DROP COLUMN invoice_line_id");
+      existing.raw.exec("PRAGMA user_version = 12");
+      await existingStore.setup();
+
+      const links = await existingStore.listStockLinksByItem(item.id);
+      expect(links.find((link) => link.id === uniqueLink.id)?.invoiceLineId).toBe(uniqueLine.id);
+      expect(links.find((link) => link.id === duplicateLink.id)?.invoiceLineId).toBeNull();
+    } finally {
+      await existing.close();
+      removeTempDirRetry(migrationDir);
+    }
+  });
+
   it("creates the invoice-line item index when setup runs on an existing database", async () => {
     const indexDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-history-index-"));
     const existing = openConnection(
@@ -2045,6 +2095,41 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
     expect(linksA).toHaveLength(1);
     expect(linksA[0]).toMatchObject({ movementId: movementA.id, quantity: 4 });
     expect(await store.listStockLinksByItem(b.id)).toEqual([]);
+  });
+
+  it("persists exact sale-line identity on each consumed receipt link", async () => {
+    const category = await store.createCategory({ name: `line-link-${Date.now()}` });
+    const item = await store.createItem({ name: `line-link-item-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150 });
+    const sale = await store.insertInvoice({
+      invoiceNumber: `INV-LINE-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      totalAmount: 150,
+      paidAmount: 0,
+      remainingAmount: 150,
+      notes: null,
+    });
+    const line = await store.insertInvoiceLine({
+      invoiceId: sale.id,
+      itemId: item.id,
+      description: item.name,
+      quantity: 1,
+      unitPrice: 150,
+      costAtSale: 100,
+      total: 150,
+    });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: 100, reason: null, ref: null, occurredAt: stamp() });
+    const link = await store.insertStockLink({ invoiceId: sale.id, invoiceLineId: line.id, movementId: receipt.id, quantity: 1 });
+
+    expect(link.invoiceLineId).toBe(line.id);
+    expect(await store.listStockLinksByItem(item.id)).toContainEqual(expect.objectContaining({
+      invoiceId: sale.id,
+      invoiceLineId: line.id,
+      movementId: receipt.id,
+      quantity: 1,
+    }));
   });
 
   it("filters purchase attribution links in SQLite without dropping sale history links", async () => {

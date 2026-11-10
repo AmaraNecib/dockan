@@ -1,5 +1,5 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "../lib/scoped-mutation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -463,6 +463,12 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
   const pendingReturns = returns.filter((record) => record.status === "PENDING_REVIEW");
   const reviewedReturns = returns.filter((record) => record.status !== "PENDING_REVIEW");
   const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
+  const sourceQueries = useQueries({ queries: returnableLines.map((line) => {
+    const query = orpc.returnsSources.queryOptions({ input: { invoiceId: invoice.id, invoiceLineId: line.id } });
+    return { ...query, enabled: !draftBlank(drafts[line.id] ?? "") };
+  }) });
+  const sourceQueryByLine = new Map(returnableLines.map((line, index) => [line.id, sourceQueries[index]]));
+  const [sourceChoices, setSourceChoices] = useState<Record<string, { mode: "UNKNOWN" } | { allocations: Record<string, string> }>>({});
   // A structurally returnable line can still have nothing left (sold quantity
   // zero, or every unit already returned). The empty state must not offer a
   // focus action into that dead form (issue #96).
@@ -547,6 +553,21 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
   // which OTHER invoices to relieve — a choice the owner never saw. Block the
   // untouched save; an explicit pick is the owner answering it (#256 round 3).
   const splitUnknown = !settlementChosen && derivedSplit === null;
+  const sourceSelectionReady = returnableLines.filter((line) => !draftBlank(drafts[line.id] ?? "")).every((line) => {
+    const query = sourceQueryByLine.get(line.id);
+    if (query === undefined || query.isPending || query.isFetching || query.isError || query.data?.provenanceComplete !== true) return false;
+    if (!query.data.selectionRequired) return true;
+    const quantity = parseWholeAmount(drafts[line.id] ?? "");
+    const choice = sourceChoices[line.id];
+    if (choice !== undefined && "mode" in choice) return true;
+    if (quantity === null || choice === undefined || !("allocations" in choice)) return false;
+    const allocations = query.data.sources.map((source) => ({
+      quantity: parseWholeAmount(choice.allocations[source.stockLinkId] ?? "") ?? 0,
+      available: source.quantityAvailable,
+    }));
+    return allocations.every((allocation) => allocation.quantity <= allocation.available)
+      && allocations.reduce((sum, allocation) => sum + allocation.quantity, 0) === quantity;
+  });
   // how much of the tab sits on OTHER invoices — the part the default spreads
   // over the party's open invoices (oldest first)
   const crossInvoiceDebt = partyDebt === null ? 0 : Math.max(0, partyDebt - invoice.remainingAmount);
@@ -615,6 +636,7 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
     orpc.returnsCreate.mutationOptions({
       onSuccess: (record) => {
         setDrafts({});
+        setSourceChoices({});
         setReason("");
         setCashDraft("");
         setCashPercentage("");
@@ -629,11 +651,17 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
           // the shell badge and dashboard notice read this aggregate (issue #118)
           queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
+          queryClient.invalidateQueries({ queryKey: ["returnsSources"] }),
         ]);
       },
       onError: (err) => {
         setSavedReturn(null);
         setError(tError(err.message));
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: orpc.returnsForInvoice.queryKey({ input: { invoiceId: invoice.id } }) }),
+          queryClient.invalidateQueries({ queryKey: ["returnsSources"] }),
+          queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
+        ]);
       },
     }),
   );
@@ -659,6 +687,31 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
         return;
       }
     }
+    for (const line of entered) {
+      const sourceQuery = sourceQueryByLine.get(line.id);
+      if (sourceQuery === undefined || sourceQuery.isPending || sourceQuery.isFetching || sourceQuery.isError || sourceQuery.data?.provenanceComplete !== true) {
+        setError(sourceQuery?.data !== undefined && !sourceQuery.data.provenanceComplete ? t("returnSourceUnavailable") : t("returnSourceLoadError"));
+        return;
+      }
+      if (sourceQuery.data.selectionRequired) {
+        const quantity = parseWholeAmount(drafts[line.id] ?? "");
+        const choice = sourceChoices[line.id];
+        if (choice === undefined) {
+          setError(t("returnSourceChooseSplit"));
+          return;
+        }
+        if (!("mode" in choice)) {
+          const allocations = sourceQuery.data.sources.map((source) => ({
+            available: source.quantityAvailable,
+            quantity: parseWholeAmount(choice.allocations[source.stockLinkId] ?? "") ?? 0,
+          }));
+          if (allocations.some((allocation) => allocation.quantity > allocation.available) || allocations.reduce((sum, allocation) => sum + allocation.quantity, 0) !== quantity) {
+            setError(t("returnSourceChooseSplit"));
+            return;
+          }
+        }
+      }
+    }
     if (!cashIsValid) {
       setError(t("returnsInvalidCash"));
       return;
@@ -672,7 +725,17 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
     }
     const lines = entered.flatMap((line) => {
       const quantity = parseWholeAmount(drafts[line.id] ?? "");
-      return quantity === null ? [] : [{ invoiceLineId: line.id, quantity }];
+      if (quantity === null) return [];
+      const sourceQuery = sourceQueryByLine.get(line.id);
+      const sourceChoice = sourceChoices[line.id];
+      if (sourceQuery?.data?.selectionRequired !== true) return [{ invoiceLineId: line.id, quantity }];
+      if (sourceChoice !== undefined && "mode" in sourceChoice) return [{ invoiceLineId: line.id, quantity, sourceMode: "UNKNOWN" as const }];
+      if (sourceChoice === undefined || !("allocations" in sourceChoice) || !sourceQuery.data.provenanceComplete) return [];
+      const sourceAllocations = sourceQuery.data.sources.flatMap((source) => {
+        const allocated = parseWholeAmount(sourceChoice.allocations[source.stockLinkId] ?? "");
+        return allocated !== null && allocated > 0 ? [{ stockLinkId: source.stockLinkId, quantity: allocated }] : [];
+      });
+      return [{ invoiceLineId: line.id, quantity, sourceAllocations }];
     });
     void create.mutate({
       invoiceId: invoice.id,
@@ -806,6 +869,9 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
             {returnableLines.map((line) => {
               const remaining = remainingReturnableFor(line, returns);
               const soldOut = remaining === 0;
+              const sourceQuery = sourceQueryByLine.get(line.id);
+              const sourceChoice = sourceChoices[line.id];
+              const quantityEntered = !draftBlank(drafts[line.id] ?? "");
               return (
                 <div
                   key={line.id}
@@ -827,6 +893,8 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
                         value={drafts[line.id] ?? ""}
                         onChange={(event) => {
                           setDrafts((current) => ({ ...current, [line.id]: event.target.value }));
+                          setSourceChoices((current) => { const next = { ...current }; delete next[line.id]; return next; });
+                          setError(null);
                           setSavedReturn(null);
                         }}
                         disabled={soldOut || create.isPending}
@@ -836,6 +904,65 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
                       <span className="text-sm text-muted-foreground">{t("returnsUnitPiece")}</span>
                     </span>
                   </label>
+                  {quantityEntered && sourceQuery?.isPending && <p className="col-span-full text-xs text-muted-foreground" role="status">{t("historyLoading")}</p>}
+                  {quantityEntered && sourceQuery !== undefined && (sourceQuery.isError || (sourceQuery.data !== undefined && !sourceQuery.data.provenanceComplete)) && (
+                    <div className="col-span-full grid gap-2" role="alert" data-testid={`return-sources-error-${line.id}`}>
+                      <p className="text-sm text-destructive">{sourceQuery.isError ? t("returnSourceLoadError") : t("returnSourceUnavailable")}</p>
+                      <Button type="button" variant="outline" size="sm" onClick={() => void sourceQuery.refetch()} disabled={sourceQuery.isFetching}>{t("returnSourceRetry")}</Button>
+                    </div>
+                  )}
+                  {quantityEntered && sourceQuery?.data?.selectionRequired && sourceQuery.data.provenanceComplete && (
+                    <fieldset className="col-span-full grid gap-2 rounded border bg-muted/20 p-3" data-testid={`return-source-choice-${line.id}`}>
+                      <legend className="px-1 text-sm font-semibold">{t("returnSourceTitle")}</legend>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="radio"
+                          name={`return-source-mode-${line.id}`}
+                          checked={sourceChoice !== undefined && "allocations" in sourceChoice}
+                          onChange={() => setSourceChoices((current) => ({ ...current, [line.id]: { allocations: {} } }))}
+                        />
+                        {t("returnSourceChooseSplit")}
+                      </label>
+                      {sourceQuery.data.sources.map((source) => (
+                        <div key={source.stockLinkId} className="grid grid-cols-[1fr_auto] items-center gap-x-2 gap-y-1 border-b border-border/60 py-2 last:border-0">
+                          <span className="min-w-0 text-sm">
+                            {t("returnSourceReceiptDate")} <bdi dir="ltr">{formatDateTime(source.occurredAt)}</bdi>
+                            <span className="block text-xs text-muted-foreground">{source.costPending ? t("returnSourceCostPending") : <><Amount value={source.unitCost ?? 0} /> / {t("stockUnitCost")}</>}</span>
+                            <span className="block text-xs text-muted-foreground">{t("returnsRemaining", { remaining: source.quantityAvailable })}</span>
+                          </span>
+                          <label className="grid gap-1 text-xs text-muted-foreground">
+                            <span>{t("returnSourceQuantity")}</span>
+                            <input
+                              className="h-9 w-20 rounded-md border border-input bg-card text-center tabular-nums focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+                              type="number"
+                              min="0"
+                              max={source.quantityAvailable}
+                              step="1"
+                              inputMode="numeric"
+                              disabled={create.isPending || !(sourceChoice !== undefined && "allocations" in sourceChoice)}
+                              value={sourceChoice !== undefined && "allocations" in sourceChoice ? sourceChoice.allocations[source.stockLinkId] ?? "" : ""}
+                              onChange={(event) => setSourceChoices((current) => {
+                                const previous = current[line.id];
+                                const allocations = previous !== undefined && "allocations" in previous ? previous.allocations : {};
+                                return { ...current, [line.id]: { allocations: { ...allocations, [source.stockLinkId]: event.target.value } } };
+                              })}
+                              aria-label={`${t("returnSourceQuantity")} ${formatDateTime(source.occurredAt)}`}
+                              data-testid={`return-source-qty-${line.id}-${source.stockLinkId}`}
+                            />
+                          </label>
+                        </div>
+                      ))}
+                      <label className="flex items-center gap-2 border-t pt-2 text-sm">
+                        <input
+                          type="radio"
+                          name={`return-source-mode-${line.id}`}
+                          checked={sourceChoice !== undefined && "mode" in sourceChoice}
+                          onChange={() => setSourceChoices((current) => ({ ...current, [line.id]: { mode: "UNKNOWN" } }))}
+                        />
+                        {t("returnSourceUnknown")}
+                      </label>
+                    </fieldset>
+                  )}
                 </div>
               );
             })}
@@ -1013,7 +1140,7 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
         <button
           type="submit"
           className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
-          disabled={create.isPending || splitUnknown}
+          disabled={create.isPending || splitUnknown || !sourceSelectionReady}
           data-testid="returns-submit"
         >
           {t("returnsSave")}

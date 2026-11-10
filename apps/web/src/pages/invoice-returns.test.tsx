@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import i18n from "../lib/i18n"; // initializes i18next (ar) for useTranslation; also resolves option labels
 
-import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
+import type { InvoiceDetail, ReturnDetail, ReturnSources } from "@dokan/contracts";
 
 import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 import { routerMock } from "../tests/router-mock";
@@ -23,9 +23,11 @@ let failReturnsCreate = false;
 let failReturnsRead = false;
 /** #256 round 3 — make the party-tab read fail, so the derived split is UNKNOWN */
 let failPartyDebt = false;
+let failReturnSources = false;
+let returnSourcesData: ReturnSources = { provenanceComplete: true, selectionRequired: false, sources: [] };
 /** what the mocked returnsCreate resolves with; a test can override it */
 let createdReturn: ReturnDetail | null = null;
-let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string; cashPaidOut?: number } | null = null;
+let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number; sourceMode?: "UNKNOWN"; sourceAllocations?: Array<{ stockLinkId: string; quantity: number }> }>; reason?: string; cashPaidOut?: number } | null = null;
 
 // The page module imports the router Link at module scope; use the shared stub
 // so the panel is testable without a network or a router mount.
@@ -61,6 +63,16 @@ mock.module("@/lib/rpc", () => ({
     },
     returnsPendingCount: {
       queryKey: () => ["returnsPendingCount"],
+    },
+    returnsSources: {
+      queryOptions: () => ({
+        queryKey: ["returnsSources"],
+        queryFn: async () => {
+          if (failReturnSources) throw new Error("RETURN_SOURCES_FAILED");
+          return returnSourcesData;
+        },
+      }),
+      queryKey: () => ["returnsSources"],
     },
     debtsByParty: {
       // #256 — the panel derives the default refund method from the customer's
@@ -189,6 +201,8 @@ beforeEach(() => {
   failReturnsCreate = false;
   failReturnsRead = false;
   failPartyDebt = false;
+  failReturnSources = false;
+  returnSourcesData = { provenanceComplete: true, selectionRequired: false, sources: [] };
   createdReturn = null;
   lastCreateInput = null;
 });
@@ -398,6 +412,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     // untouched form waits for it (#256 round 3)
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     expect(host.querySelector('[data-testid="returns-done"]')).not.toBeNull();
@@ -459,6 +474,81 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toContain("8,100");
   });
 
+  it("keeps homogeneous sources automatic without asking for a choice", async () => {
+    returnSourcesData = { provenanceComplete: true, selectionRequired: false, sources: [] };
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
+    expect(host.querySelector('[data-testid^="return-source-choice-"]')).toBeNull();
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(recordedCreateInput().lines).toEqual([{ invoiceLineId: LINE_ID, quantity: 1 }]);
+  });
+
+  it("splits a mixed-source return across receipt links with exact quantities", async () => {
+    const firstLink = "00000000-0000-4000-8000-0000000000a1";
+    const secondLink = "00000000-0000-4000-8000-0000000000a2";
+    returnSourcesData = { provenanceComplete: true, selectionRequired: true, sources: [
+      { stockLinkId: firstLink, movementId: "00000000-0000-4000-8000-0000000000a3", occurredAt: "2026-08-20T10:00:00", unitCost: 100, costPending: false, quantityAvailable: 2 },
+      { stockLinkId: secondLink, movementId: "00000000-0000-4000-8000-0000000000a4", occurredAt: "2026-08-21T10:00:00", unitCost: null, costPending: true, quantityAvailable: 3 },
+    ] };
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    await flushAsync();
+    const choice = host.querySelector('[data-testid^="return-source-choice-"]');
+    expect(choice?.textContent).toContain(i18n.t("returnSourceCostPending"));
+    const split = choice?.querySelector<HTMLInputElement>('input[type="radio"]');
+    act(() => split?.click());
+    typeInto(host.querySelector<HTMLInputElement>(`[data-testid="return-source-qty-${LINE_ID}-${firstLink}"]`)!, "1");
+    typeInto(host.querySelector<HTMLInputElement>(`[data-testid="return-source-qty-${LINE_ID}-${secondLink}"]`)!, "1");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(recordedCreateInput().lines).toEqual([{ invoiceLineId: LINE_ID, quantity: 2, sourceAllocations: [
+      { stockLinkId: firstLink, quantity: 1 }, { stockLinkId: secondLink, quantity: 1 },
+    ] }]);
+  });
+
+  it("sends UNKNOWN explicitly when the operator does not know the source", async () => {
+    returnSourcesData = { provenanceComplete: true, selectionRequired: true, sources: [
+      { stockLinkId: "00000000-0000-4000-8000-0000000000a1", movementId: "00000000-0000-4000-8000-0000000000a3", occurredAt: "2026-08-20T10:00:00", unitCost: 100, costPending: false, quantityAvailable: 4 },
+      { stockLinkId: "00000000-0000-4000-8000-0000000000a2", movementId: "00000000-0000-4000-8000-0000000000a4", occurredAt: "2026-08-21T10:00:00", unitCost: 200, costPending: false, quantityAvailable: 2 },
+    ] };
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    await flushAsync();
+    const unknown = Array.from(host.querySelectorAll<HTMLInputElement>('[data-testid^="return-source-choice-"] input[type="radio"]')).at(-1);
+    act(() => unknown?.click());
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(recordedCreateInput().lines).toEqual([{ invoiceLineId: LINE_ID, quantity: 2, sourceMode: "UNKNOWN" }]);
+  });
+
+  it("blocks submission when source loading fails and preserves the quantity draft", async () => {
+    failReturnSources = true;
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
+    expect(host.querySelector('[data-testid^="return-sources-error-"]')?.textContent).toContain(i18n.t("returnSourceLoadError"));
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="returns-submit"]')?.disabled).toBe(true);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')?.value).toBe("1");
+    expect(lastCreateInput).toBeNull();
+  });
+
+  it("blocks submission when source provenance is incomplete", async () => {
+    returnSourcesData = { provenanceComplete: false, selectionRequired: false, sources: [] };
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
+    expect(host.querySelector('[data-testid^="return-sources-error-"]')?.textContent).toContain(i18n.t("returnSourceUnavailable"));
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="returns-submit"]')?.disabled).toBe(true);
+    expect(lastCreateInput).toBeNull();
+  });
+
   it("flags a pending return and separates it from the reviewed ones (issue #118)", async () => {
     returnsData = [
       returnRecord({ id: "00000000-0000-4000-8000-0000000000d3", returnNumber: "RTN-0002", status: "ACCEPTED" }),
@@ -497,6 +587,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     await flushAsync();
     const input = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
     typeInto(input, "٢");
+    await flushAsync();
     // the valueTotal projection must read the SAME reader the validator does: 2 ×
     // 900 net = 1800, not 0 (the #229 preview/submit split, on the customer side)
     expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("1,800 دج");
@@ -545,6 +636,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-زيت"]')!, "\u200f");
+    await flushAsync();
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     // preview and payload agree: the mark-only line is not part of the return
@@ -555,6 +647,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()]));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-reason"]')!, "الزبون بدل رأيه");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
@@ -596,6 +689,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()]));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     const detail = host.querySelector('[data-testid="returns-done-detail"]');
@@ -609,6 +703,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()]));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     const detail = host.querySelector('[data-testid="returns-done-detail"]');
@@ -638,6 +733,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     await flushAsync();
     failReturnsCreate = true;
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("الكمية تتجاوز المتبقي القابل للإرجاع");
@@ -738,6 +834,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
   it("sends cash 0 for the all-debt preset", async () => {
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    await flushAsync();
     await pickSettlement(i18n.t("returnsSplitAllDebt"));
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
@@ -922,6 +1019,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()], 0));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("900");
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("0");
     expect(host.querySelector('[data-testid="returns-debt-default-note"]')).toBeNull();
@@ -948,6 +1046,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("300 دج");
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
     // the split is named, not silently applied
@@ -970,6 +1069,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()], 900));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("900 دج");
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("0 دج");
     // the tab is shown, and the default says it spreads oldest-first
@@ -987,6 +1087,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()], 200));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     await pickSettlement(i18n.t("returnsSplitAllDebt"));
     expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("700 دج");
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
@@ -1024,6 +1125,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()], 0));
     await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     expect(host.querySelector('[data-testid="returns-done"]')).toBeTruthy();

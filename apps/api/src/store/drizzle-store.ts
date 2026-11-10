@@ -2221,12 +2221,31 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           ...movementCols,
           unitCost: sql<number | null>`COALESCE((SELECT r.unit_cost FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id), stock_movements.unit_cost)`,
           costPending: sql<boolean>`CASE WHEN EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id) THEN 0 ELSE stock_movements.cost_pending END`,
+          receiptOriginalUnitCost: stockMovements.unitCost,
+          receiptOriginalCostPending: stockMovements.costPending,
+          receiptResolutionUnitCost: sql<number | null>`(SELECT r.unit_cost FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id)`,
+          receiptResolutionReason: sql<string | null>`(SELECT r.reason FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id)`,
+          receiptResolutionActorId: sql<string | null>`(SELECT r.actor_id FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id)`,
+          receiptResolutionActorName: sql<string | null>`(SELECT r.actor_name FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id)`,
+          receiptResolutionRecordedAt: sql<string | null>`(SELECT r.recorded_at FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id)`,
           seq: sql<number>`rowid`,
         })
         .from(stockMovements)
         .where(eq(stockMovements.itemId, itemId))
         .orderBy(stockMovements.occurredAt, sql`rowid`);
-      return withSaleSources(withResolvedReturnCosts(rows.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) }))));
+      return withSaleSources(withResolvedReturnCosts(rows.map((row) => ({
+        ...toMovement(row),
+        costPending: Boolean(row.costPending),
+        receiptOriginalCostPending: Boolean(row.receiptOriginalCostPending),
+        receiptResolution: row.receiptResolutionUnitCost === null ? null : {
+          unitCost: row.receiptResolutionUnitCost,
+          reason: row.receiptResolutionReason ?? "",
+          actorId: row.receiptResolutionActorId,
+          actorName: row.receiptResolutionActorName,
+          recordedAt: row.receiptResolutionRecordedAt ?? "",
+        },
+        seq: Number(row.seq),
+      }))));
     },
     async listStockMovementsSince(itemId, recordedAfter) {
       // the #295 repeat window: only the movements RECORDED after the cutoff

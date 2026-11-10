@@ -408,10 +408,30 @@ function HistoryAmount({ value }: { value: number | null | undefined }) {
 export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?: number } = {}) {
   const { orpc } = useRpc();
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
   const pager = usePagination();
   const [expandedMovementIds, setExpandedMovementIds] = useState<Set<string>>(() => new Set());
+  const [resolutionMovementId, setResolutionMovementId] = useState<string | null>(null);
+  const [resolutionCost, setResolutionCost] = useState("");
+  const [resolutionReason, setResolutionReason] = useState("");
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const resolutionCostRef = useRef<HTMLInputElement>(null);
+  const resolutionReasonRef = useRef<HTMLInputElement>(null);
+  const resolveReceipt = useMutation(orpc.receiptCostsResolve.mutationOptions({
+    onSuccess: async () => {
+      setResolutionMovementId(null);
+      setResolutionCost("");
+      setResolutionReason("");
+      setResolutionError(null);
+      await queryClient.invalidateQueries();
+    },
+    onError: async (error) => {
+      setResolutionError(tError(error.message));
+      await queryClient.invalidateQueries();
+    },
+  }));
   useEffect(() => {
     pager.reset();
     setExpandedMovementIds(new Set());
@@ -429,6 +449,40 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
   // them (issue 151): a future-dated purchase the owner would otherwise read as
   // one that never moved the average
   const superseded = history.data === undefined ? new Set<number>() : supersededByCorrection(history.data.movements);
+
+  function beginReceiptResolution(movementId: string) {
+    setResolutionMovementId(movementId);
+    setResolutionCost("");
+    setResolutionReason("");
+    setResolutionError(null);
+    resolveReceipt.reset();
+  }
+
+  function cancelReceiptResolution() {
+    setResolutionMovementId(null);
+    setResolutionCost("");
+    setResolutionReason("");
+    setResolutionError(null);
+    resolveReceipt.reset();
+  }
+
+  function submitReceiptResolution(event: React.FormEvent<HTMLFormElement>, movementId: string) {
+    event.preventDefault();
+    const parsedCost = parseWholeNumber(resolutionCost);
+    if (draftBlank(resolutionCost) || parsedCost === null) {
+      setResolutionError(t("receiptResolutionCostRequired"));
+      resolutionCostRef.current?.focus();
+      return;
+    }
+    const reason = resolutionReason.trim();
+    if (reason.length === 0) {
+      setResolutionError(t("receiptResolutionReasonRequired"));
+      resolutionReasonRef.current?.focus();
+      return;
+    }
+    setResolutionError(null);
+    void resolveReceipt.mutate({ movementId, unitCost: parsedCost, reason });
+  }
 
   function toggleMovementDetails(movementId: string) {
     setExpandedMovementIds((current) => {
@@ -625,6 +679,41 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                               <dt className="text-xs text-muted-foreground">{t("historyRecordedAt")}</dt>
                               <dd className="break-words">{formatDateTime(movement.createdAt)}</dd>
                             </dl>
+                            {movement.details?.receiptOriginalCost?.costPending && movement.details.receiptResolution == null && (
+                              <div className="space-y-2 rounded border bg-background p-3" data-testid={`receipt-resolution-${movement.id}`}>
+                                <p className="text-sm font-medium">{t("receiptResolutionPending")}</p>
+                                {resolutionMovementId !== movement.id ? (
+                                  <Button type="button" variant="outline" size="sm" onClick={() => beginReceiptResolution(movement.id)} data-testid={`receipt-resolution-open-${movement.id}`}>
+                                    {t("receiptResolutionAction")}
+                                  </Button>
+                                ) : (
+                                  <form className="grid gap-2" onSubmit={(event) => submitReceiptResolution(event, movement.id)}>
+                                    <label className="grid gap-1 text-sm">
+                                      <span>{t("receiptResolutionCost")}</span>
+                                      <input ref={resolutionCostRef} className={inputClass} inputMode="numeric" autoComplete="off" value={resolutionCost} onChange={(event) => setResolutionCost(event.target.value)} data-testid="receipt-resolution-cost" />
+                                    </label>
+                                    <label className="grid gap-1 text-sm">
+                                      <span>{t("receiptResolutionReason")}</span>
+                                      <input ref={resolutionReasonRef} className={inputClass} autoComplete="off" maxLength={1000} value={resolutionReason} onChange={(event) => setResolutionReason(event.target.value)} data-testid="receipt-resolution-reason" />
+                                    </label>
+                                    {resolutionError && <p role="alert" className="text-sm text-destructive" data-testid="receipt-resolution-error">{resolutionError}</p>}
+                                    <div className="flex flex-wrap gap-2">
+                                      <Button type="submit" disabled={resolveReceipt.isPending} data-testid="receipt-resolution-save">{resolveReceipt.isPending ? t("receiptResolutionSaving") : t("receiptResolutionSave")}</Button>
+                                      <Button type="button" variant="outline" disabled={resolveReceipt.isPending} onClick={cancelReceiptResolution} data-testid="receipt-resolution-cancel">{t("receiptResolutionCancel")}</Button>
+                                    </div>
+                                  </form>
+                                )}
+                              </div>
+                            )}
+                            {movement.details?.receiptResolution && (
+                              <dl className="space-y-2 rounded border bg-background p-3 text-sm" data-testid={`receipt-resolution-audit-${movement.id}`}>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionOriginalCost")}</dt><dd>{movement.details.receiptOriginalCost?.costPending ? t("historyCostPending") : <HistoryAmount value={movement.details.receiptOriginalCost?.unitCost} />}</dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionEffectiveCost")}</dt><dd><Amount value={movement.details.receiptResolution.unitCost} /></dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionRecordedAt")}</dt><dd>{formatDateTime(movement.details.receiptResolution.recordedAt)}</dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionActor")}</dt><dd>{movement.details.receiptResolution.actorName ?? t("historyUnavailable")}</dd></div>
+                                <div><dt className="text-xs text-muted-foreground">{t("receiptResolutionReason")}</dt><dd className="break-words">{movement.details.receiptResolution.reason}</dd></div>
+                              </dl>
+                            )}
                             {movement.details?.documents.length ? (
                               <div>
                                 <p className="mb-1 text-xs text-muted-foreground">{t("historyDocuments")}</p>

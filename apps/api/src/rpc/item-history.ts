@@ -92,13 +92,18 @@ export async function readItemHistory(store: Pick<StorePort, "withReadTransactio
       const cost = costPending
         ? { unitCost: recordedCost, total: null, costPending: true }
         : { unitCost: recordedCost, total: sale === undefined ? safeInflowTotal : safeSaleCogs };
-      return { ...row, supersededBySeq: superseded[index] ?? null, details: {
+      const details: NonNullable<ItemHistoryMovement["details"]> = {
         sellingPrice: sale?.unitPrice ?? null,
         saleTotal: safeSaleTotal,
         netSaleTotal: safeNetSaleTotal,
         cost,
         documents,
-      } };
+      };
+      if (row.delta > 0 && (row.receiptOriginalCostPending === true || row.receiptResolution !== null)) {
+        details.receiptOriginalCost = { unitCost: row.receiptOriginalUnitCost ?? null, costPending: row.receiptOriginalCostPending === true };
+        details.receiptResolution = row.receiptResolution ?? null;
+      }
+      return { ...row, supersededBySeq: superseded[index] ?? null, details };
     });
     return { item: { id: item.id, name: item.name }, movements: rows, total: movements.length, stockOnHand: projected.at(-1)?.stockAfter ?? 0 };
   });

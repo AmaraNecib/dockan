@@ -1741,6 +1741,9 @@ export const itemHistoryDetailsSchema = z.object({
   saleTotal: dinarsSchema.nullable(),
   netSaleTotal: dinarsSchema.nullable(),
   cost: z.object({ unitCost: dinarsSchema.nullable(), total: dinarsSchema.nullable(), costPending: z.boolean().optional() }).nullable(),
+  /** Raw receipt facts and immutable audit metadata; `cost` above remains effective. */
+  receiptOriginalCost: z.object({ unitCost: dinarsSchema.nullable(), costPending: z.boolean() }).optional(),
+  receiptResolution: z.object({ unitCost: dinarsSchema, reason: z.string().min(1), actorId: idSchema.nullable(), actorName: z.string().nullable(), recordedAt: z.string().min(1) }).nullable().optional(),
   documents: z.array(z.object({ id: idSchema, number: z.string() })),
 });
 

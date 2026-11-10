@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import type { ReceiptCostResolution } from "@dokan/contracts";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import i18n from "../lib/i18n";
@@ -52,6 +53,9 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => ({ movements, total: movements.length }),
       }),
       queryKey: () => ["itemsHistory"],
+    },
+    receiptCostsResolve: {
+      mutationOptions: (options: { onSuccess?: (record: ReceiptCostResolution) => void; onError?: (error: Error) => void }) => ({ mutationKey: ["receiptCostsResolve"], ...options, mutationFn: async (): Promise<ReceiptCostResolution> => { throw new Error("Not implemented in this test"); } }),
     },
   },
   rpcClient: {},

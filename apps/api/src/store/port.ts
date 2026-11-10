@@ -328,6 +328,10 @@ export interface StorePort {
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
   listStockMovements(itemId: string): Promise<Array<StockMovement & {
     seq: number;
+    /** Immutable receipt facts retained alongside the effective movement projection. */
+    receiptOriginalUnitCost?: number | null;
+    receiptOriginalCostPending?: boolean;
+    receiptResolution?: { unitCost: number; reason: string; actorId: string | null; actorName: string | null; recordedAt: string } | null;
     /** Complete persisted sale sources for effective FIFO projection, not rewritten movement facts. */
     consumedMovements?: Array<{ movementId: string; quantity: number }>;
   }>>;

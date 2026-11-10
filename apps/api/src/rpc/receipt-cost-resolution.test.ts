@@ -189,10 +189,21 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
     expect(await conn.db.select().from(stockMovements).where(eq(stockMovements.id, source.id))).toEqual(originalReceipt);
     expect(await client.reportsDebts()).toEqual(debts);
-    expect((await store.listStockMovements(product.id)).map(({ unitCost: _unitCost, costPending: _costPending, ...fact }) => fact)).toEqual(originalMovements.map(({ unitCost: _unitCost, costPending: _costPending, ...fact }) => fact));
+    expect((await store.listStockMovements(product.id)).map(({ unitCost: _unitCost, costPending: _costPending, receiptOriginalUnitCost: _receiptOriginalUnitCost, receiptOriginalCostPending: _receiptOriginalCostPending, receiptResolution: _receiptResolution, ...fact }) => fact)).toEqual(originalMovements.map(({ unitCost: _unitCost, costPending: _costPending, receiptOriginalUnitCost: _receiptOriginalUnitCost, receiptOriginalCostPending: _receiptOriginalCostPending, receiptResolution: _receiptResolution, ...fact }) => fact));
     const activities = await resolutionActivities(source.id);
     expect(activities).toHaveLength(1);
     expect(activities[0]).toMatchObject({ actorId: await store.getSetting("adminUserId"), actorName: "Owner" });
+    const history = await client.itemsHistory({ itemId: product.id });
+    expect(history.movements.find((movement) => movement.id === source.id)).toMatchObject({
+      occurredAt: source.occurredAt,
+      createdAt: source.createdAt,
+      unitCost: 100,
+      costPending: false,
+      details: {
+        receiptOriginalCost: { unitCost: null, costPending: true },
+        receiptResolution: { unitCost: 100, reason: "supplier invoice found", actorName: "Owner", recordedAt: result.recordedAt },
+      },
+    });
   });
 
   it("resolves full consumption with no phantom stock or resolution-period COGS", async () => {

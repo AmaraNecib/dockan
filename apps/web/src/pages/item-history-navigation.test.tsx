@@ -1,5 +1,6 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import type { ReceiptCostResolution } from "@dokan/contracts";
 
 import "../lib/i18n";
 import { mountWithProviders, unmountAllMountedPages } from "../tests/page-harness";
@@ -24,11 +25,14 @@ interface HistoryFixture {
     occurredAt: string;
     createdAt: string;
     stockAfter: number;
+    costPending?: boolean;
     details?: {
       sellingPrice: number | null;
       saleTotal: number | null;
       netSaleTotal: number | null;
-      cost: { unitCost: number | null; total: number | null } | null;
+      cost: { unitCost: number | null; total: number | null; costPending?: boolean } | null;
+      receiptOriginalCost?: { unitCost: number | null; costPending: boolean };
+      receiptResolution?: { unitCost: number; reason: string; actorId: string | null; actorName: string | null; recordedAt: string } | null;
       documents: { id: string; number: string }[];
     };
   }[];
@@ -62,11 +66,42 @@ function sale(id: string, documentId: string, number: string, delta: number) {
 
 let historyResult: HistoryFixture;
 let historyPromise: Promise<HistoryFixture> | null = null;
+let resolutionCalls: Array<{ movementId: string; unitCost: number; reason: string }> = [];
+let failResolution = false;
+
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (setter === undefined) throw new Error("HTML input value setter is unavailable");
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
     itemsHistory: {
       queryOptions: () => ({ queryKey: ["issue467-item-history"], queryFn: () => historyPromise ?? Promise.resolve(historyResult) }),
+    },
+    receiptCostsResolve: {
+      mutationOptions: (options: { onSuccess?: (record: ReceiptCostResolution) => void; onError?: (error: Error) => void }) => ({
+        mutationKey: ["receiptCostsResolve"],
+        ...options,
+        mutationFn: async (input: { movementId: string; unitCost: number; reason: string }) => {
+          resolutionCalls.push(input);
+          if (failResolution) { failResolution = false; throw new Error("RECEIPT_RESOLUTION_CONFLICT"); }
+          const resolution = { id: "resolution-1", ...input, actorId: "owner-1", actorName: "Owner", recordedAt: "2026-11-10T12:00:00", created: true, adjustments: [] };
+          historyResult = { ...historyResult, movements: historyResult.movements.map((movement) => {
+            if (movement.id !== input.movementId) return movement;
+            const previousDetails = movement.details ?? { sellingPrice: null, saleTotal: null, netSaleTotal: null, cost: null, documents: [] };
+            return {
+              ...movement,
+              unitCost: input.unitCost,
+              costPending: false,
+              details: { ...previousDetails, cost: { unitCost: input.unitCost, total: movement.delta * input.unitCost, costPending: false }, receiptResolution: { unitCost: input.unitCost, reason: input.reason, actorId: "owner-1", actorName: "Owner", recordedAt: resolution.recordedAt } },
+            };
+          }) };
+          return resolution;
+        },
+      }),
     },
   },
   rpcClient: {},
@@ -77,6 +112,8 @@ const { ItemHistoryPage } = await import("./stock");
 describe("item-history navigation and disclosure (issue #467)", () => {
   beforeEach(() => {
     historyPromise = null;
+    resolutionCalls = [];
+    failResolution = false;
     historyResult = {
       item: { id: itemId, name: "بطارية طويلة الاسم للاختبار" },
       total: 2,
@@ -201,6 +238,82 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     const detail = page.query("history-detail-movement-a");
     expect(detail?.textContent?.match(/غير متوفر في السجل/g)).toHaveLength(5);
     expect(page.container.querySelectorAll("button")).toHaveLength(1);
+  });
+
+  it("resolves a pending receipt from its own history without changing the original posting facts", async () => {
+    historyResult = {
+      ...historyResult,
+      total: 1,
+      movements: [{
+        id: "pending-receipt", itemId, kind: "PURCHASE", delta: 5, unitCost: null, costPending: true, reason: null, ref: null,
+        returnMark: null, occurredAt: "2026-10-10T09:00:00", createdAt: "2026-10-10T09:01:00", stockAfter: 5,
+        details: { sellingPrice: 900, saleTotal: null, netSaleTotal: null, cost: { unitCost: null, total: null, costPending: true }, receiptOriginalCost: { unitCost: null, costPending: true }, receiptResolution: null, documents: [] },
+      }],
+    };
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => page.query("history-table") !== null, "pending receipt history");
+    await act(async () => page.query<HTMLButtonElement>("history-toggle-pending-receipt")?.click());
+    const open = page.query<HTMLButtonElement>("receipt-resolution-open-pending-receipt");
+    expect(open).not.toBeNull();
+    await act(async () => open?.click());
+    expect(page.query("history-detail-pending-receipt")?.textContent).toContain("تكلفة هذا الوارد ما زالت معلّقة");
+    expect(page.query("history-detail-pending-receipt")?.textContent).toContain("2026");
+
+    const cost = page.query<HTMLInputElement>("receipt-resolution-cost");
+    const reason = page.query<HTMLInputElement>("receipt-resolution-reason");
+    expect(cost).not.toBeNull();
+    expect(reason).not.toBeNull();
+    if (cost === null || reason === null) return;
+    await act(async () => page.query<HTMLButtonElement>("receipt-resolution-save")?.click());
+    expect(document.activeElement).toBe(cost);
+    expect(page.query("receipt-resolution-error")?.textContent).toContain("أدخل تكلفة وحدة صحيحة");
+    await act(async () => {
+      setInputValue(cost, "0");
+    });
+    await act(async () => page.query<HTMLButtonElement>("receipt-resolution-save")?.click());
+    expect(document.activeElement).toBe(reason);
+    expect(page.query("receipt-resolution-error")?.textContent).toContain("اكتب سبب معرفة التكلفة");
+    await act(async () => page.query<HTMLButtonElement>("receipt-resolution-cancel")?.click());
+    expect(resolutionCalls).toHaveLength(0);
+  });
+
+  it("keeps receipt identity and draft after a failed write, then shows the immutable audit on retry", async () => {
+    failResolution = true;
+    historyResult = {
+      ...historyResult,
+      total: 1,
+      movements: [{
+        id: "pending-receipt", itemId, kind: "PURCHASE", delta: 5, unitCost: null, costPending: true, reason: null, ref: null,
+        returnMark: null, occurredAt: "2026-10-10T09:00:00", createdAt: "2026-10-10T09:01:00", stockAfter: 5,
+        details: { sellingPrice: 900, saleTotal: null, netSaleTotal: null, cost: { unitCost: null, total: null, costPending: true }, receiptOriginalCost: { unitCost: null, costPending: true }, receiptResolution: null, documents: [] },
+      }],
+    };
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => page.query("history-table") !== null, "pending receipt history");
+    await act(async () => page.query<HTMLButtonElement>("history-toggle-pending-receipt")?.click());
+    await act(async () => page.query<HTMLButtonElement>("receipt-resolution-open-pending-receipt")?.click());
+    const cost = page.query<HTMLInputElement>("receipt-resolution-cost");
+    const reason = page.query<HTMLInputElement>("receipt-resolution-reason");
+    if (cost === null || reason === null) throw new Error("Receipt resolution inputs did not render");
+    await act(async () => { setInputValue(cost, "100"); setInputValue(reason, "supplier receipt confirmed"); });
+    await act(async () => page.query<HTMLButtonElement>("receipt-resolution-save")?.click());
+    await page.poll(() => page.query("receipt-resolution-error") !== null, "write refusal");
+    expect(cost.value).toBe("100");
+    expect(reason.value).toBe("supplier receipt confirmed");
+    expect(page.query("receipt-resolution-error")?.textContent).toContain("سُجّلت تكلفة مختلفة");
+
+    await act(async () => page.query<HTMLButtonElement>("receipt-resolution-save")?.click());
+    await page.poll(() => page.query("receipt-resolution-audit-pending-receipt") !== null, "resolution audit");
+    expect(resolutionCalls).toEqual([
+      { movementId: "pending-receipt", unitCost: 100, reason: "supplier receipt confirmed" },
+      { movementId: "pending-receipt", unitCost: 100, reason: "supplier receipt confirmed" },
+    ]);
+    const audit = page.query("receipt-resolution-audit-pending-receipt");
+    expect(audit?.textContent).toContain("التكلفة المسجلة عند الاستلام");
+    expect(audit?.textContent).toContain("التكلفة الفعلية بعد التصحيح");
+    expect(audit?.textContent).toContain("Owner");
+    expect(audit?.textContent).toContain("supplier receipt confirmed");
+    expect(page.query("history-detail-pending-receipt")?.textContent).toContain("وقت تسجيل التصحيح");
   });
 
   it("uses focusable native disclosure buttons with an exact invoice destination per movement", async () => {

@@ -135,6 +135,115 @@ async function assertOriginal(sale: InvoiceDetail) {
 }
 
 describe("persisted review counterexamples", () => {
+  it("loads oversized pending histories and saved source choices through SQLite after reopen", async () => {
+    const product = await item("Large history scale proof");
+    const first = await receipt(product.id, 1, 100, "2026-01-10T09:00:00");
+    const nonFifoSource = await receipt(product.id, 1, 200, "2026-01-10T10:00:00");
+    const sale = await sell(product.id, 1, "2026-01-11");
+    const saleMovement = required((await store.listStockMovements(product.id)).find((movement) => movement.kind === "SALE" && movement.ref === sale.id));
+    expect(saleMovement.consumedMovements).toEqual([{ movementId: first.id, quantity: 1 }]);
+
+    // SAFETY: SQLite PRAGMA compile_options returns text rows under compile_options.
+    const compileOptions = conn.raw.query("PRAGMA compile_options").all() as Array<{ compile_options: string }>;
+    const variableLimit = Number(compileOptions.map(({ compile_options }) => compile_options.match(/^MAX_VARIABLE_NUMBER=(\d+)$/)?.[1]).find(Boolean));
+    expect(Number.isSafeInteger(variableLimit) && variableLimit > 0).toBe(true);
+    const fillerCount = variableLimit;
+    const insertMovement = conn.raw.prepare(`INSERT INTO stock_movements
+      (id, item_id, kind, delta, unit_cost, cost_pending, reason, ref, return_mark, occurred_at, created_at)
+      VALUES (?, ?, 'PURCHASE', 1, 100, 0, NULL, NULL, NULL, '2026-01-10T11:00:00', '2026-01-10T11:00:00')`);
+    conn.raw.transaction(() => {
+      for (let index = 0; index < fillerCount; index++) {
+        insertMovement.run(`scale-${product.id}-${index}`, product.id);
+      }
+    })();
+
+    const pendingA = await item("Combined pending history A");
+    const pendingB = await item("Combined pending history B");
+    const firstPendingCount = Math.floor(variableLimit / 2) + 1;
+    const secondPendingCount = variableLimit - firstPendingCount + 1;
+    const insertPendingMovement = conn.raw.prepare(`INSERT INTO stock_movements
+      (id, item_id, kind, delta, unit_cost, cost_pending, reason, ref, return_mark, occurred_at, created_at)
+      VALUES (?, ?, 'PURCHASE', 1, NULL, 1, NULL, NULL, NULL, '2026-01-10T11:00:00', '2026-01-10T11:00:00')`);
+    conn.raw.transaction(() => {
+      for (let index = 0; index < firstPendingCount; index++) {
+        insertPendingMovement.run(`pending-a-${pendingA.id}-${index}`, pendingA.id);
+      }
+      for (let index = 0; index < secondPendingCount; index++) {
+        insertPendingMovement.run(`pending-b-${pendingB.id}-${index}`, pendingB.id);
+      }
+    })();
+
+    const invoiceGroupCount = 501;
+    const groupedSaleIds: string[] = [];
+    await store.withTransactionImmediate(async (tx) => {
+      for (let index = 0; index < invoiceGroupCount; index++) {
+        const invoice = await tx.insertInvoice({
+          invoiceNumber: `SCALE-${product.id}-${index}`, kind: "SALE", counterpartyId: null, counterpartyName: null,
+          invoiceDate: "2026-01-12", subtotalAmount: index === 0 ? 400 : 200, discountType: null, discountValue: null,
+          discountAmount: 0, totalAmount: index === 0 ? 400 : 200, paidAmount: index === 0 ? 400 : 200, remainingAmount: 0, notes: null,
+        });
+        const line = await tx.insertInvoiceLine({
+          invoiceId: invoice.id, itemId: product.id, description: product.name, quantity: 1,
+          unitPrice: 200, costAtSale: 100, cogsExact: 100, total: 200,
+        });
+        const movementId = `scale-sale-${product.id}-${index}`;
+        const sourceIndex = index === 0 ? 0 : index + 1;
+        const sourceMovementId = `scale-${product.id}-${sourceIndex}`;
+        await tx.insertStockMovement({
+          id: movementId, itemId: product.id, kind: "SALE", delta: -1, unitCost: null,
+          costPending: false, reason: null, ref: invoice.id, occurredAt: "2026-01-12T09:00:00",
+          consumedMovements: [{ movementId: first.id, quantity: 1 }],
+        });
+        await tx.insertStockLink({ invoiceId: invoice.id, invoiceLineId: line.id, movementId: sourceMovementId, quantity: 1 });
+        groupedSaleIds.push(movementId);
+        if (index === 0) {
+          const secondLine = await tx.insertInvoiceLine({
+            invoiceId: invoice.id, itemId: product.id, description: product.name, quantity: 1,
+            unitPrice: 200, costAtSale: 100, cogsExact: 100, total: 200,
+          });
+          const secondMovementId = `${movementId}-second`;
+          await tx.insertStockMovement({
+            id: secondMovementId, itemId: product.id, kind: "SALE", delta: -1, unitCost: null,
+            costPending: false, reason: null, ref: invoice.id, occurredAt: "2026-01-12T09:00:00",
+            consumedMovements: [{ movementId: first.id, quantity: 1 }],
+          });
+          await tx.insertStockLink({ invoiceId: invoice.id, invoiceLineId: secondLine.id, movementId: `scale-${product.id}-1`, quantity: 1 });
+          groupedSaleIds.push(secondMovementId);
+        }
+      }
+    });
+
+    const durableOutflowId = `scale-nonfifo-outflow-${product.id}`;
+    await store.insertStockMovement({
+      id: durableOutflowId, itemId: product.id, kind: "MANUAL_ADJUSTMENT", delta: -1,
+      unitCost: null, costPending: false, reason: "scale proof", ref: null,
+      occurredAt: "2026-01-12T10:00:00", consumedMovements: [{ movementId: nonFifoSource.id, quantity: 1 }],
+    });
+
+    const movementCount = fillerCount + 5 + invoiceGroupCount;
+    await closeDatabase();
+    await connect();
+    client = wire(cookie);
+
+    const persistedMovements = await store.listStockMovements(product.id);
+    expect(persistedMovements).toHaveLength(movementCount);
+    expect(persistedMovements.find((movement) => movement.id === saleMovement.id)?.consumedMovements)
+      .toEqual([{ movementId: first.id, quantity: 1 }]);
+    expect(persistedMovements.find((movement) => movement.id === durableOutflowId)?.consumedMovements)
+      .toEqual([{ movementId: nonFifoSource.id, quantity: 1 }]);
+    expect(persistedMovements.find((movement) => movement.id === groupedSaleIds[0])?.consumedMovements)
+      .toEqual([{ movementId: `scale-${product.id}-0`, quantity: 1 }]);
+    expect(persistedMovements.find((movement) => movement.id === groupedSaleIds[1])?.consumedMovements)
+      .toEqual([{ movementId: `scale-${product.id}-1`, quantity: 1 }]);
+    expect(persistedMovements.find((movement) => movement.id === groupedSaleIds.at(-1))?.consumedMovements)
+      .toEqual([{ movementId: `scale-${product.id}-${invoiceGroupCount}`, quantity: 1 }]);
+    const history = await client.itemsHistory({ itemId: product.id, limit: 1, offset: fillerCount + 2 });
+    expect(history.total).toBe(movementCount);
+    expect(history.movements[0]?.kind).toBe("SALE");
+    const catalogue = await client.itemsAll();
+    expect(catalogue.items.find((row) => row.id === pendingA.id)?.costPending).toBe(true);
+    expect(catalogue.items.find((row) => row.id === pendingB.id)?.costPending).toBe(true);
+  }, 120_000);
   it("keeps an accepted backdated manual outflow replayable after reopen", async () => {
     const product = await item();
     const jan1 = await receipt(product.id, 5, 100, "2026-01-01T10:00:00");

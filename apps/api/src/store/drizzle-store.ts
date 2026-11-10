@@ -1977,6 +1977,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
 
   /** Overlay only complete saved sale allocations, never a replay-derived guess. */
   const withSaleSources = async (movements: Array<StockMovement & { seq: number }>) => {
+    const lookupBatchSize = 500;
     const saleGroups = new Map<string, typeof movements>();
     for (const movement of [...movements].sort((a, b) => a.seq - b.seq)) {
       if (movement.kind !== "SALE" || movement.delta >= 0 || movement.ref === null) continue;
@@ -1986,11 +1987,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       saleGroups.set(key, group);
     }
     const movementIds = movements.flatMap((movement) => movement.id === undefined ? [] : [movement.id]);
-    const savedConsumptions = movementIds.length === 0 ? [] : await db.select({
-      movementId: stockOutflowConsumptions.movementId,
-      sourceMovementId: stockOutflowConsumptions.sourceMovementId,
-      quantity: stockOutflowConsumptions.quantity,
-    }).from(stockOutflowConsumptions).where(inArray(stockOutflowConsumptions.movementId, movementIds));
+    const savedConsumptions: Array<{ movementId: string; sourceMovementId: string; quantity: number }> = [];
+    for (let offset = 0; offset < movementIds.length; offset += lookupBatchSize) {
+      const batch = movementIds.slice(offset, offset + lookupBatchSize);
+      savedConsumptions.push(...await db.select({
+        movementId: stockOutflowConsumptions.movementId,
+        sourceMovementId: stockOutflowConsumptions.sourceMovementId,
+        quantity: stockOutflowConsumptions.quantity,
+      }).from(stockOutflowConsumptions)
+        .where(inArray(stockOutflowConsumptions.movementId, batch))
+        .orderBy(sql`stock_outflow_consumptions.rowid`));
+    }
     const durable = new Map<string, Array<{ movementId: string; quantity: number }>>();
     for (const row of savedConsumptions) {
       const source = durable.get(row.movementId) ?? [];
@@ -2002,11 +2009,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return consumedMovements === undefined ? movement : { ...movement, consumedMovements };
     });
     const invoiceIds = [...new Set([...saleGroups.values()].flatMap((group) => group.flatMap((row) => row.ref === null ? [] : [row.ref])))];
-    const links = await db.select({
-      invoiceId: stockLinks.invoiceId, movementId: stockLinks.movementId, quantity: stockLinks.quantity,
-      lineInvoiceId: invoiceLines.invoiceId, lineItemId: invoiceLines.itemId,
-    }).from(stockLinks).leftJoin(invoiceLines, eq(invoiceLines.id, stockLinks.invoiceLineId))
-      .where(inArray(stockLinks.invoiceId, invoiceIds)).orderBy(sql`stock_links.rowid`);
+    const links: Array<{
+      invoiceId: string; movementId: string; quantity: number; lineInvoiceId: string | null; lineItemId: string | null;
+    }> = [];
+    for (let offset = 0; offset < invoiceIds.length; offset += lookupBatchSize) {
+      const batch = invoiceIds.slice(offset, offset + lookupBatchSize);
+      links.push(...await db.select({
+        invoiceId: stockLinks.invoiceId, movementId: stockLinks.movementId, quantity: stockLinks.quantity,
+        lineInvoiceId: invoiceLines.invoiceId, lineItemId: invoiceLines.itemId,
+      }).from(stockLinks).leftJoin(invoiceLines, eq(invoiceLines.id, stockLinks.invoiceLineId))
+        .where(inArray(stockLinks.invoiceId, batch)).orderBy(sql`stock_links.rowid`));
+    }
     const byId = new Map(movements.map((movement) => [movement.id, movement]));
     const attributed = new Map<string, Array<{ movementId: string; quantity: number }>>();
     for (const group of saleGroups.values()) {

@@ -65,14 +65,14 @@ mock.module("@/lib/rpc", () => ({
       queryKey: () => ["returnsPendingCount"],
     },
     returnsSources: {
-      queryOptions: () => ({
-        queryKey: ["returnsSources"],
+      queryOptions: ({ input }: { input: { invoiceId: string; invoiceLineId: string } }) => ({
+        queryKey: [["returnsSources"], { input }],
         queryFn: async () => {
           if (failReturnSources) throw new Error("RETURN_SOURCES_FAILED");
           return returnSourcesData;
         },
       }),
-      queryKey: () => ["returnsSources"],
+      queryKey: () => [["returnsSources"]],
     },
     debtsByParty: {
       // #256 — the panel derives the default refund method from the customer's

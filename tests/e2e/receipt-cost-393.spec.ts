@@ -30,7 +30,7 @@ async function createItem(page: Page, name: string) {
   const categories = await rpc<{ items: Array<{ id: string }> }>(page, { procedure: "categoriesList", input: {} });
   const category = categories.items[0];
   if (!category) throw new Error("Expected the seeded default category");
-  return rpc<{ id: string }>(page, {
+  return rpc<{ id: string; name: string }>(page, {
     procedure: "itemsCreate",
     input: { name, categoryId: category.id, costPrice: 0, sellingPrice: 400, lowStockThreshold: 0 },
   });

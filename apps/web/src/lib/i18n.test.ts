@@ -64,6 +64,14 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     expect(copy).toMatch(/[\u0600-\u06FF]/);
   });
 
+  it("explains receipt provenance safety refusals in Arabic", () => {
+    for (const code of ["RECEIPT_PROVENANCE_AMBIGUOUS", "RECEIPT_RETURN_PROVENANCE_UNSUPPORTED"]) {
+      const message = tError(code);
+      expect(message).not.toBe(i18n.t("errorGeneric"));
+      expect(message).toMatch(/[\u0600-\u06FF]/);
+    }
+  });
+
   it("falls back to raw validator sentences only when no code arrives", () => {
     expect(serverErrorKey("expected an Algerian mobile, e.g. +213550123123 or 0550123123")).toBe("INVALID_PHONE_NUMBER");
     expect(serverErrorKey("Too many requests. Please try again later.")).toBe("AUTH_TOO_MANY_ATTEMPTS");

@@ -651,7 +651,9 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
           // the shell badge and dashboard notice read this aggregate (issue #118)
           queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
-          queryClient.invalidateQueries({ queryKey: ["returnsSources"] }),
+          ...returnableLines.map((line) => queryClient.invalidateQueries({
+            queryKey: orpc.returnsSources.queryKey({ input: { invoiceId: invoice.id, invoiceLineId: line.id } }),
+          })),
         ]);
       },
       onError: (err) => {
@@ -659,7 +661,9 @@ export function ReturnsPanel({ invoice, refreshMs = LEDGER_REFETCH_MS }: { invoi
         setError(tError(err.message));
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.returnsForInvoice.queryKey({ input: { invoiceId: invoice.id } }) }),
-          queryClient.invalidateQueries({ queryKey: ["returnsSources"] }),
+          ...returnableLines.map((line) => queryClient.invalidateQueries({
+            queryKey: orpc.returnsSources.queryKey({ input: { invoiceId: invoice.id, invoiceLineId: line.id } }),
+          })),
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
         ]);
       },

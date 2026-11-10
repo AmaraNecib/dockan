@@ -16,7 +16,7 @@ interface HistoryFixture {
   movements: {
     id: string;
     itemId: string;
-    kind: "SALE" | "PURCHASE" | "MANUAL_ADJUSTMENT";
+    kind: "SALE" | "PURCHASE" | "RETURN_RECORDED" | "MANUAL_ADJUSTMENT";
     delta: number;
     unitCost: number | null;
     reason: string | null;
@@ -275,6 +275,30 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     expect(page.query("receipt-resolution-error")?.textContent).toContain("اكتب سبب معرفة التكلفة");
     await act(async () => page.query<HTMLButtonElement>("receipt-resolution-cancel")?.click());
     expect(resolutionCalls).toHaveLength(0);
+  });
+
+  it("offers receipt resolution only on the original purchase, before and after its resolution", async () => {
+    const purchase = {
+      id: "pending-receipt", itemId, kind: "PURCHASE" as const, delta: 5, unitCost: null, costPending: true, reason: null, ref: null,
+      returnMark: null, occurredAt: "2026-10-10T09:00:00", createdAt: "2026-10-10T09:01:00", stockAfter: 5,
+      details: { sellingPrice: 900, saleTotal: null, netSaleTotal: null, cost: { unitCost: null, total: null, costPending: true }, receiptOriginalCost: { unitCost: null, costPending: true }, receiptResolution: null, documents: [] },
+    };
+    const returnedLayer = { ...purchase, id: "returned-layer", kind: "RETURN_RECORDED" as const, delta: 1 };
+    historyResult = { ...historyResult, total: 2, movements: [purchase, returnedLayer] };
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => page.query("history-table") !== null, "pending receipt history");
+    await act(async () => {
+      page.query<HTMLButtonElement>("history-toggle-pending-receipt")?.click();
+      page.query<HTMLButtonElement>("history-toggle-returned-layer")?.click();
+    });
+    expect(page.query("receipt-resolution-open-pending-receipt")).not.toBeNull();
+    expect(page.query("receipt-resolution-returned-layer")).toBeNull();
+    historyResult = { ...historyResult, movements: [{ ...purchase, details: { ...purchase.details, receiptResolution: { unitCost: 100, reason: "confirmed", actorId: "owner-1", actorName: "Owner", recordedAt: "2026-10-11T09:00:00" } } }, returnedLayer] };
+    await act(async () => { await page.queryClient.invalidateQueries({ queryKey: ["issue467-item-history"] }); });
+    await page.poll(() => page.query("receipt-resolution-open-pending-receipt") === null, "resolved receipt action to disappear");
+    expect(page.query("receipt-resolution-open-pending-receipt")).toBeNull();
+    expect(page.query("receipt-resolution-returned-layer")).toBeNull();
+    expect(page.query("receipt-resolution-audit-pending-receipt")).not.toBeNull();
   });
 
   it("keeps receipt identity and draft after a failed write, then shows the immutable audit on retry", async () => {

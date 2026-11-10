@@ -679,7 +679,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
                               <dt className="text-xs text-muted-foreground">{t("historyRecordedAt")}</dt>
                               <dd className="break-words">{formatDateTime(movement.createdAt)}</dd>
                             </dl>
-                            {movement.details?.receiptOriginalCost?.costPending && movement.details.receiptResolution == null && (
+                            {movement.kind === "PURCHASE" && movement.details?.receiptOriginalCost?.costPending && movement.details.receiptResolution == null && (
                               <div className="space-y-2 rounded border bg-background p-3" data-testid={`receipt-resolution-${movement.id}`}>
                                 <p className="text-sm font-medium">{t("receiptResolutionPending")}</p>
                                 {resolutionMovementId !== movement.id ? (

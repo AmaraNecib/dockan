@@ -72,6 +72,8 @@ export interface ProfitSaleLine {
   costAtSale: number;
   /** exact total COGS of the layers this line consumed (unrounded FIFO sum) */
   cogsExact: number;
+  /** immutable linked receipt-cost deltas, booked in this line's sale period */
+  cogsAdjustment?: number;
   costPending?: boolean;
   netTotal: number;
 }
@@ -123,6 +125,17 @@ export type InvoiceInsert = Omit<Invoice, "id" | "createdAt" | "updatedAt" | "su
   Partial<Pick<Invoice, "subtotalAmount" | "discountType" | "discountValue" | "discountAmount">>;
 export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact" | "costPending"> &
   Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact" | "costPending">>;
+
+export interface ReceiptCostResolutionRecord {
+  id: string;
+  movementId: string;
+  unitCost: number;
+  reason: string;
+  actorId: string;
+  actorName: string;
+  recordedAt: string;
+  adjustments: Array<{ invoiceLineId: string; amount: number }>;
+}
 
 export interface StockLink {
   id: string;
@@ -330,6 +343,8 @@ export interface StorePort {
   listStockLinksByItem(itemId: string): Promise<StockLink[]>;
   /** purchase-only attribution links for the item's inventory pool */
   listPurchaseStockLinksByItem(itemId: string): Promise<StockLink[]>;
+  /** Resolves one pending receipt and appends exact linked sale-line COGS deltas atomically. */
+  resolveReceiptCost(input: { movementId: string; unitCost: number; reason: string; actorId: string; actorName: string; recordedAt: string }): Promise<ReceiptCostResolutionRecord>;
 
   // --- expenses + profit report (ticket 31) --------------------------------
   listExpenseCategories(): Promise<ExpenseCategory[]>;

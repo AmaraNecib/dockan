@@ -2132,6 +2132,33 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
     }));
   });
 
+  it("resolves a pending receipt into persisted exact sold COGS and remaining FIFO value", async () => {
+    const category = await store.createCategory({ name: `receipt-resolution-${Date.now()}` });
+    const item = await store.createItem({ name: `receipt-item-${Date.now()}`, categoryId: category.id, costPrice: 0, sellingPrice: 200 });
+    const purchase = await store.insertInvoice({ invoiceNumber: `SUP-R-${Date.now()}`, kind: "PURCHASE", counterpartyId: null, counterpartyName: "supplier", invoiceDate: "2026-01-10", totalAmount: 0, paidAmount: 0, remainingAmount: 0, notes: null });
+    const sale = await store.insertInvoice({ invoiceNumber: `INV-R-${Date.now()}`, kind: "SALE", counterpartyId: null, counterpartyName: null, invoiceDate: "2026-01-11", totalAmount: 400, paidAmount: 0, remainingAmount: 400, notes: null });
+    const line = await store.insertInvoiceLine({ invoiceId: sale.id, itemId: item.id, description: item.name, quantity: 2, unitPrice: 200, costAtSale: 0, total: 400, costPending: true, cogsExact: 0 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 5, unitCost: null, costPending: true, reason: null, ref: purchase.id, occurredAt: "2026-01-10T10:00:00" });
+    await store.insertStockMovement({ itemId: item.id, kind: "SALE", delta: -2, unitCost: null, reason: null, ref: sale.id, occurredAt: "2026-01-11T10:00:00" });
+    await store.insertStockLink({ invoiceId: sale.id, invoiceLineId: line.id, movementId: receipt.id, quantity: 2 });
+
+    const result = await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "supplier invoice found", actorId: "admin", actorName: "Owner", recordedAt: "2026-02-01T12:00:00" }));
+    expect(result.adjustments).toEqual([{ invoiceLineId: line.id, amount: 200 }]);
+    expect(await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "supplier invoice found", actorId: "admin", actorName: "Owner", recordedAt: "2026-02-02T12:00:00" }))).toEqual(result);
+    expect((await store.listStockMovements(item.id)).find((movement) => movement.id === receipt.id)).toMatchObject({ unitCost: 100, costPending: false, delta: 5 });
+    const saleLines = await store.listSaleLinesForProfit("2026-01-11", "2026-01-11");
+    expect(saleLines.find((row) => row.invoiceId === sale.id)).toMatchObject({ cogsExact: 200, costPending: false, netTotal: 400 });
+    expect(await store.listStockMovements(item.id)).toHaveLength(2); // resolution did not alter stock movements
+  });
+
+  it("refuses a retry that changes the immutable resolution reason", async () => {
+    const category = await store.createCategory({ name: `receipt-conflict-${Date.now()}` });
+    const item = await store.createItem({ name: `receipt-conflict-item-${Date.now()}`, categoryId: category.id, costPrice: 0, sellingPrice: 1 });
+    const receipt = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 1, unitCost: null, costPending: true, reason: null, ref: null, occurredAt: stamp() });
+    await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 0, reason: "zero cost confirmed", actorId: "admin", actorName: "Owner", recordedAt: stamp() }));
+    await expect(store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 1, reason: "different", actorId: "admin", actorName: "Owner", recordedAt: stamp() }))).rejects.toThrow("RECEIPT_RESOLUTION_CONFLICT");
+  });
+
   it("filters purchase attribution links in SQLite without dropping sale history links", async () => {
     const category = await store.createCategory({ name: `link-kind-${Date.now()}` });
     const item = await store.createItem({ name: `link-kind-item-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150 });

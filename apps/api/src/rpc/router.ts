@@ -2302,6 +2302,36 @@ export function createRpcRouter(deps: RpcDeps) {
         });
       }),
     ),
+    receiptCostsResolve: os.receiptCostsResolve.handler(
+      guardedInput(async (input, _context, session) => {
+        const actor = await expenseActor(session);
+        const actorName = actor.name ?? actor.id;
+        try {
+          return await deps.store.withTransactionImmediate(async (tx) => {
+            const resolution = await tx.resolveReceiptCost({
+              ...input,
+              reason: input.reason.trim(),
+              actorId: actor.id,
+              actorName,
+              recordedAt: localDateTime(),
+            });
+            await insertSessionActivity(tx, session, {
+              type: "RECEIPT_COST_RESOLVED",
+              summary: `RECEIPT_COST_RESOLVED ${input.movementId} ${input.unitCost}`,
+              ref: input.movementId,
+            });
+            return resolution;
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (message === "RECEIPT_RESOLUTION_CONFLICT") throw new ORPCError("CONFLICT", { message });
+          if (message === "RECEIPT_RETURN_PROVENANCE_UNSUPPORTED" || message === "RECEIPT_PROVENANCE_AMBIGUOUS" || message === "RECEIPT_PROVENANCE_INVALID" || message === "RECEIPT_NOT_PENDING") {
+            throw new ORPCError("BAD_REQUEST", { message });
+          }
+          throw error;
+        }
+      }),
+    ),
     // --- debts screen (ticket 9) -------------------------------------------
     reportsDebts: os.reportsDebts.handler(
       guarded(async () => {

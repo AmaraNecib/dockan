@@ -49,6 +49,7 @@ export const activityTypes = [
   "PAYMENT_RECORDED",
   "BACKUP_CREATED",
   "STOCK_ADJUSTED",
+  "RECEIPT_COST_RESOLVED",
   "RETURN_RECORDED",
   "RETURN_REVIEWED",
   "ADJUSTMENT_RECORDED",
@@ -1631,6 +1632,22 @@ export const purchasesLinkStockOutputSchema = z.object({
   remainderMoved: z.number().int().min(0),
 });
 
+export const receiptCostResolveInputSchema = z.object({
+  movementId: idSchema,
+  unitCost: z.number().int().min(0).max(1_000_000_000),
+  reason: z.string().trim().min(1).max(1000),
+});
+export const receiptCostResolutionSchema = z.object({
+  id: idSchema,
+  movementId: idSchema,
+  unitCost: z.number().int().min(0),
+  reason: z.string().min(1),
+  actorId: z.string().min(1),
+  actorName: z.string().min(1),
+  recordedAt: z.string().min(1),
+  adjustments: z.array(z.object({ invoiceLineId: idSchema, amount: z.number().int() })),
+});
+
 export const purchasesProposalOutputSchema = z.object({
   invoiceId: idSchema,
   items: z.array(
@@ -1644,6 +1661,9 @@ export const purchasesProposalOutputSchema = z.object({
     }),
   ),
 });
+
+export type ReceiptCostResolveInput = z.infer<typeof receiptCostResolveInputSchema>;
+export type ReceiptCostResolution = z.infer<typeof receiptCostResolutionSchema>;
 
 export const purchasesCorrectLineInputSchema = z.object({
   lineId: idSchema,

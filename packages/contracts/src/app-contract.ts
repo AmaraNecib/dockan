@@ -70,6 +70,8 @@ import {
   profitReportInputSchema,
   profitReportOutputSchema,
   purchasesCorrectLineInputSchema,
+  receiptCostResolveInputSchema,
+  receiptCostResolutionSchema,
   purchasesLinkStockInputSchema,
   purchasesLinkStockOutputSchema,
   purchasesProposalOutputSchema,
@@ -216,6 +218,7 @@ export const dokanContract = {
   purchasesProposal: oc.input(z.object({ invoiceId: z.string().uuid() })).output(purchasesProposalOutputSchema),
   purchasesLinkStock: oc.input(purchasesLinkStockInputSchema).output(purchasesLinkStockOutputSchema),
   purchasesCorrectLine: oc.input(purchasesCorrectLineInputSchema).output(invoiceDetailSchema),
+  receiptCostsResolve: oc.input(receiptCostResolveInputSchema).output(receiptCostResolutionSchema),
 
   // --- reports -------------------------------------------------------------
   reportsDebts: oc.output(debtsOutputSchema),

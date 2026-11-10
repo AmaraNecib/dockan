@@ -860,6 +860,7 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "setItemStockAndCost",
   "insertStockMovement",
   "insertStockLink",
+  "resolveReceiptCost",
   "createExpenseCategory",
   "insertExpense",
   "insertExpenseCorrection",
@@ -2116,11 +2117,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     async listStockMovements(itemId) {
       // rowid breaks same-timestamp ties deterministically (insertion order)
       const rows = await db
-        .select({ ...movementCols, seq: sql<number>`rowid` })
+        .select({
+          ...movementCols,
+          unitCost: sql<number | null>`COALESCE((SELECT r.unit_cost FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id), stock_movements.unit_cost)`,
+          costPending: sql<boolean>`CASE WHEN EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id) THEN 0 ELSE stock_movements.cost_pending END`,
+          seq: sql<number>`rowid`,
+        })
         .from(stockMovements)
         .where(eq(stockMovements.itemId, itemId))
         .orderBy(stockMovements.occurredAt, sql`rowid`);
-      return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
+      return rows.map((row) => ({ ...toMovement(row), costPending: Boolean(row.costPending), seq: Number(row.seq) }));
     },
     async listStockMovementsSince(itemId, recordedAfter) {
       // the #295 repeat window: only the movements RECORDED after the cutoff
@@ -2191,6 +2197,45 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .where(and(eq(stockMovements.itemId, itemId), eq(invoices.kind, "PURCHASE")))
         .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
       return rows.map((row) => ({ ...row }) satisfies StockLink);
+    },
+
+    async resolveReceiptCost(input) {
+      // SAFETY: the fixed aliases and selected columns define the returned row shape.
+      const existing = conn.raw.query(`SELECT id, movement_id AS movementId, unit_cost AS unitCost, reason, actor_id AS actorId, actor_name AS actorName, recorded_at AS recordedAt FROM receipt_cost_resolutions WHERE movement_id = ?`).get(input.movementId) as { id: string; movementId: string; unitCost: number; reason: string; actorId: string | null; actorName: string | null; recordedAt: string } | null;
+      if (existing !== null) {
+        if (existing.unitCost !== input.unitCost || existing.reason !== input.reason || existing.actorId !== input.actorId) throw new Error("RECEIPT_RESOLUTION_CONFLICT");
+        // SAFETY: the fixed aliases and selected columns define these adjustment rows.
+        const adjustments = conn.raw.query(`SELECT invoice_line_id AS invoiceLineId, amount FROM receipt_cost_adjustments WHERE resolution_id = ? ORDER BY rowid`).all(existing.id) as Array<{ invoiceLineId: string; amount: number }>;
+        return { ...existing, actorId: input.actorId, actorName: existing.actorName ?? input.actorName, adjustments };
+      }
+      // SAFETY: the fixed aliases and columns define the receipt row shape.
+      const receipt = conn.raw.query(`SELECT id, item_id AS itemId, kind, delta, cost_pending AS costPending FROM stock_movements WHERE id = ?`).get(input.movementId) as { id: string; itemId: string; kind: string; delta: number; costPending: number } | null;
+      if (receipt === null || receipt.kind !== "PURCHASE" || receipt.delta <= 0 || receipt.costPending !== 1) throw new Error("RECEIPT_NOT_PENDING");
+      // SAFETY: these aliases are fixed; nullable line ids are validated immediately below.
+      const links = conn.raw.query(`SELECT sl.invoice_line_id AS invoiceLineId, sl.quantity FROM stock_links sl JOIN invoices i ON i.id = sl.invoice_id WHERE sl.movement_id = ? AND i.kind = 'SALE' ORDER BY sl.rowid`).all(input.movementId) as Array<{ invoiceLineId: string | null; quantity: number }>;
+      if (links.some((link) => link.invoiceLineId === null)) throw new Error("RECEIPT_PROVENANCE_AMBIGUOUS");
+      const provenLinks = links.filter((link): link is { invoiceLineId: string; quantity: number } => link.invoiceLineId !== null);
+      const soldQuantity = provenLinks.reduce((sum, link) => sum + link.quantity, 0);
+      if (soldQuantity > receipt.delta) throw new Error("RECEIPT_PROVENANCE_INVALID");
+      const lineIds = [...new Set(provenLinks.map((link) => link.invoiceLineId))];
+      if (lineIds.length > 0) {
+        const placeholders = lineIds.map(() => "?").join(",");
+        const returned = conn.raw.query(`SELECT 1 AS found FROM return_lines WHERE invoice_line_id IN (${placeholders}) LIMIT 1`).get(...lineIds);
+        if (returned !== null) throw new Error("RECEIPT_RETURN_PROVENANCE_UNSUPPORTED");
+      }
+      const resolutionId = id();
+      conn.raw.query(`INSERT INTO receipt_cost_resolutions (id, movement_id, unit_cost, reason, actor_id, actor_name, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(resolutionId, input.movementId, input.unitCost, input.reason, input.actorId, input.actorName, input.recordedAt);
+      const byLine = new Map<string, number>();
+      for (const link of provenLinks) {
+        const lineId = link.invoiceLineId;
+        byLine.set(lineId, (byLine.get(lineId) ?? 0) + link.quantity * input.unitCost);
+      }
+      const adjustments: Array<{ invoiceLineId: string; amount: number }> = [];
+      for (const [invoiceLineId, amount] of byLine) {
+        conn.raw.query(`INSERT INTO receipt_cost_adjustments (id, resolution_id, invoice_line_id, amount, created_at) VALUES (?, ?, ?, ?, ?)`).run(id(), resolutionId, invoiceLineId, amount, input.recordedAt);
+        adjustments.push({ invoiceLineId, amount });
+      }
+      return { id: resolutionId, movementId: input.movementId, unitCost: input.unitCost, reason: input.reason, actorId: input.actorId, actorName: input.actorName, recordedAt: input.recordedAt, adjustments };
     },
 
     // --- expenses + profit report (ticket 31) --------------------------------
@@ -2395,13 +2440,29 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
                l.id AS lineId, l.quantity AS quantity,
                l.cost_at_sale AS costAtSale, l.cogs_exact AS cogsExact,
-               l.cost_pending AS costPending, l.net_total AS netTotal
+               CASE
+                 WHEN EXISTS (
+                   SELECT 1 FROM stock_links sl
+                   JOIN stock_movements source ON source.id = sl.movement_id
+                   WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
+                     AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
+                 ) THEN 1
+                 WHEN COALESCE((SELECT SUM(sl.quantity) FROM stock_links sl WHERE sl.invoice_line_id = l.id), 0) = l.quantity
+                   AND NOT EXISTS (
+                     SELECT 1 FROM stock_links sl JOIN stock_movements source ON source.id = sl.movement_id
+                     WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
+                       AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
+                   ) THEN 0
+                 ELSE l.cost_pending
+               END AS costPending,
+               l.net_total AS netTotal,
+               COALESCE((SELECT SUM(a.amount) FROM receipt_cost_adjustments a WHERE a.invoice_line_id = l.id), 0) AS cogsAdjustment
         FROM invoice_lines l
         JOIN invoices i ON i.id = l.invoice_id
         WHERE i.kind = 'SALE'
           AND i.invoice_date >= substr(${from}, 1, 10)
           AND i.invoice_date <= substr(${to}, 1, 10)
-      `)) as Array<ProfitSaleLine & { lineId: string }>;
+      `)) as Array<ProfitSaleLine & { lineId: string; cogsAdjustment: number }>;
       if (lines.length === 0) return [];
       // per-original-line return aggregates: held (pending/accepted) returns,
       // rejected returns, and — for the rejected ones — the quantity the reject
@@ -2429,12 +2490,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       for (const line of lines) {
         const perLineStats = statsByLine.get(line.lineId);
         if (perLineStats === undefined) {
-          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact, costPending: Boolean(line.costPending), netTotal: line.netTotal });
+          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact + line.cogsAdjustment, cogsAdjustment: line.cogsAdjustment, costPending: Boolean(line.costPending), netTotal: line.netTotal });
           continue;
         }
         const booked = bookSaleLineForReturns(line, perLineStats);
         if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
-        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact, costPending: Boolean(line.costPending), netTotal: booked.netTotal });
+        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact + line.cogsAdjustment, cogsAdjustment: line.cogsAdjustment, costPending: Boolean(line.costPending), netTotal: booked.netTotal });
       }
       return rows;
     },

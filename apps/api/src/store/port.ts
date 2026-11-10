@@ -297,7 +297,7 @@ export type PartyDeleteResult = "DELETED" | "HAS_INVOICES" | "NOT_FOUND";
 /** Read methods needed by composed snapshot reads; no write or transaction handle. */
 export type StoreReadPort = Pick<StorePort,
   "getItemsByIds" | "listStockMovements" | "listItemHistoryLines" |
-  "listStockLinksByItem" | "getInvoiceDetail" | "returnedByLine" |
+  "listStockLinksByItem" | "getInvoiceDetail" | "returnedByLine" | "returnSourceAllocationsByLine" |
   "getReturnHeader" | "getSupplierReturn" | "getExpenseRefundHistory"
 >;
 
@@ -480,7 +480,9 @@ export interface StorePort {
   /** Reserves the next return number (RET-%04d) atomically in the database. */
   allocateReturnNumber(): Promise<string>;
   insertReturn(input: ReturnInsert): Promise<{ id: string }>;
-  insertReturnLine(line: ReturnLineInsert): Promise<void>;
+  insertReturnLine(line: ReturnLineInsert): Promise<string>;
+  insertReturnSourceAllocation(allocation: { returnLineId: string; stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string }): Promise<void>;
+  returnSourceAllocationsByLine?(invoiceLineId: string): Promise<Array<{ stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string }>>;
   /** full return with lines; optional invoice scope. `total` is the count for
    * the filters, independent of the page. */
   listReturns(filters: { invoiceId?: string }, pagination?: PaginationInput): Promise<{ items: ReturnDetail[]; total: number }>;

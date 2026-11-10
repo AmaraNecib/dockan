@@ -523,13 +523,97 @@ describe("persisted return source choices", () => {
     await expect(client.returnsSources({ invoiceId: first.id, invoiceLineId: required(second.lines[0]).id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "LINE_NOT_ON_INVOICE" });
   });
 
+  it("persists selected mixed-source splits and subtracts exact caps after reopen", async () => {
+    const product = await item();
+    const known = await receipt(product.id, 2, 40);
+    await receipt(product.id, 2, undefined, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    const lineId = required(sale.lines[0]).id;
+    const sources = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId });
+    const result = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 3, sourceAllocations: [
+      { stockLinkId: required(sources.sources[0]).stockLinkId, quantity: 1 },
+      { stockLinkId: required(sources.sources[1]).stockLinkId, quantity: 2 },
+    ] }] });
+    expect(result.lines[0]).toMatchObject({ quantity: 3, sourceAttribution: "SELECTED", sourceAllocations: [
+      { stockLinkId: required(sources.sources[0]).stockLinkId, quantity: 1 },
+      { stockLinkId: required(sources.sources[1]).stockLinkId, quantity: 2 },
+    ] });
+    expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({
+      provenanceComplete: true,
+      sources: [{ movementId: known.id, quantityAvailable: 1 }],
+    });
+    await closeDatabase();
+    await connect();
+    client = wire(cookie);
+    expect((await client.returnsForInvoice({ invoiceId: sale.id })).items[0]?.lines[0]).toMatchObject({ quantity: 3, sourceAttribution: "SELECTED", sourceAllocations: [
+      { stockLinkId: required(sources.sources[0]).stockLinkId, quantity: 1 },
+      { stockLinkId: required(sources.sources[1]).stockLinkId, quantity: 2 },
+    ] });
+    expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({ provenanceComplete: true, sources: [{ movementId: known.id, quantityAvailable: 1 }] });
+  });
+
+  it("requires explicit choice for mixed sources and rejects forged or duplicate selections atomically", async () => {
+    const product = await item();
+    await receipt(product.id, 2, 40);
+    await receipt(product.id, 2, undefined, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    const lineId = required(sale.lines[0]).id;
+    const sources = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId });
+    await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_SOURCE_SELECTION_REQUIRED" });
+    const forged = "00000000-0000-4000-8000-000000000001";
+    for (const sourceAllocations of [
+      [{ stockLinkId: forged, quantity: 1 }],
+      [{ stockLinkId: required(sources.sources[0]).stockLinkId, quantity: 1 }, { stockLinkId: required(sources.sources[0]).stockLinkId, quantity: 1 }],
+    ]) {
+      await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1, sourceAllocations }] })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_SOURCE_ALLOCATION_INVALID" });
+    }
+    expect((await client.returnsForInvoice({ invoiceId: sale.id })).items).toHaveLength(0);
+  });
+
+  it("automatically allocates homogeneous sources without asking", async () => {
+    const product = await item();
+    await receipt(product.id, 2, 40);
+    const second = await receipt(product.id, 2, 40, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    const lineId = required(sale.lines[0]).id;
+    const sourceSet = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId });
+    expect(sourceSet.selectionRequired).toBe(false);
+    const result = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 3 }] });
+    expect(result.lines[0]).toMatchObject({ sourceAttribution: "AUTO", sourceAllocations: [
+      { stockLinkId: required(sourceSet.sources[0]).stockLinkId, quantity: 2 },
+      { stockLinkId: required(sourceSet.sources[1]).stockLinkId, quantity: 1 },
+    ] });
+    expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({ sources: [{ movementId: second.id, quantityAvailable: 1 }] });
+  });
+
+  it("persists explicit UNKNOWN mode by oldest eligible original source", async () => {
+    const product = await item();
+    await receipt(product.id, 2, 40);
+    const next = await receipt(product.id, 2, 60, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    const lineId = required(sale.lines[0]).id;
+    const sources = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId });
+    const result = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 3, sourceMode: "UNKNOWN" }] });
+    expect(result.lines[0]).toMatchObject({ quantity: 3, sourceAttribution: "UNKNOWN", sourceAllocations: [
+      { stockLinkId: required(sources.sources[0]).stockLinkId, quantity: 2 },
+      { stockLinkId: required(sources.sources[1]).stockLinkId, quantity: 1 },
+    ] });
+    expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({ provenanceComplete: true, sources: [{ movementId: next.id, quantityAvailable: 1 }] });
+  });
+
   it("does not invent per-source caps for a legacy unattributed return", async () => {
     const product = await item();
     await receipt(product.id, 2, 40);
     await receipt(product.id, 2, undefined, "2026-01-10T11:00:00");
     const sale = await sell(product.id, 4);
     const line = required(sale.lines[0]);
-    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: line.id, quantity: 1 }] });
+    const choices = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: line.id });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: line.id, quantity: 1,
+      sourceAllocations: [{ stockLinkId: required(choices.sources[0]).stockLinkId, quantity: 1 }] }] });
+    // Simulate a pre-allocation legacy row: preserve the return and returned
+    // movement, but remove its source attribution record.
+    conn.raw.query(`DELETE FROM return_source_allocations WHERE return_line_id IN (SELECT id FROM return_lines WHERE return_id = ?)`)
+      .run(created.id);
     expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: line.id })).toEqual({ provenanceComplete: false, selectionRequired: false, sources: [] });
   });
 });

@@ -809,6 +809,8 @@ export const returnLineSchema = z.object({
   refundUnitPrice: dinarsSchema,
   /** quantity × refundUnitPrice, whole DZD */
   refundAmount: dinarsSchema,
+  sourceAttribution: z.enum(["AUTO", "SELECTED", "UNKNOWN"]).nullable().optional(),
+  sourceAllocations: z.array(z.object({ stockLinkId: idSchema, quantity: z.number().int().positive() })).optional(),
 });
 
 /**
@@ -1452,7 +1454,11 @@ export const returnLineInputSchema = z.object({
   invoiceLineId: idSchema,
   /** capped so quantity × price never approaches Number.MAX_SAFE_INTEGER */
   quantity: z.number().int().positive().max(1_000_000),
-});
+  /** Explicit source split; omitted only for homogeneous automatic allocation. */
+  sourceAllocations: z.array(z.object({ stockLinkId: idSchema, quantity: z.number().int().positive().max(1_000_000) })).min(1).max(200).optional(),
+  /** Operator explicitly does not know; server allocates oldest eligible first. */
+  sourceMode: z.enum(["UNKNOWN"]).optional(),
+}).refine((line) => !(line.sourceAllocations !== undefined && line.sourceMode !== undefined), "source choice is mutually exclusive");
 
 export const returnsCreateInputSchema = z.object({
   invoiceId: idSchema,

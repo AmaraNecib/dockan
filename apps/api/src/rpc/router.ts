@@ -1824,6 +1824,53 @@ export function createRpcRouter(deps: RpcDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
           }
 
+          // Validate every source choice against immutable original-sale links
+          // while holding the immediate transaction lock. Legacy returns with
+          // no proven allocation remain a hard refusal, never guessed FIFO.
+          const sourceAllocationsByLine = new Map<string, { mode: "AUTO" | "SELECTED" | "UNKNOWN"; allocations: Array<{ stockLinkId: string; quantity: number }> }>();
+          if (new Set(input.lines.map((entry) => entry.invoiceLineId)).size !== input.lines.length) {
+            throw new ORPCError("BAD_REQUEST", { message: "RETURN_LINE_DUPLICATE" });
+          }
+          for (const entry of input.lines) {
+            const sourceSet = await readReturnSources(tx, { invoiceId: invoice.id, invoiceLineId: entry.invoiceLineId });
+            if (!sourceSet.provenanceComplete) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_PROVENANCE_UNAVAILABLE" });
+            let allocations: Array<{ stockLinkId: string; quantity: number }>;
+            let mode: "AUTO" | "SELECTED" | "UNKNOWN";
+            if (entry.sourceAllocations !== undefined) {
+              mode = "SELECTED";
+              const ids = entry.sourceAllocations.map((allocation) => allocation.stockLinkId);
+              if (new Set(ids).size !== ids.length || entry.sourceAllocations.some((allocation) => !sourceSet.sources.some((source) => source.stockLinkId === allocation.stockLinkId && allocation.quantity <= source.quantityAvailable)) ||
+                  entry.sourceAllocations.reduce((sum, allocation) => sum + allocation.quantity, 0) !== entry.quantity) {
+                throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_ALLOCATION_INVALID" });
+              }
+              allocations = entry.sourceAllocations;
+            } else if (entry.sourceMode === "UNKNOWN") {
+              mode = "UNKNOWN";
+              let remaining = entry.quantity;
+              allocations = [];
+              for (const source of sourceSet.sources) {
+                const quantity = Math.min(remaining, source.quantityAvailable);
+                if (quantity > 0) allocations.push({ stockLinkId: source.stockLinkId, quantity });
+                remaining -= quantity;
+                if (remaining === 0) break;
+              }
+              if (remaining !== 0) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_ALLOCATION_INVALID" });
+            } else {
+              if (sourceSet.selectionRequired) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_SELECTION_REQUIRED" });
+              mode = "AUTO";
+              let remaining = entry.quantity;
+              allocations = [];
+              for (const source of sourceSet.sources) {
+                const quantity = Math.min(remaining, source.quantityAvailable);
+                if (quantity > 0) allocations.push({ stockLinkId: source.stockLinkId, quantity });
+                remaining -= quantity;
+                if (remaining === 0) break;
+              }
+              if (remaining !== 0) throw new ORPCError("BAD_REQUEST", { message: "RETURN_SOURCE_ALLOCATION_INVALID" });
+            }
+            sourceAllocationsByLine.set(entry.invoiceLineId, { mode, allocations });
+          }
+
           // refund math reads the authoritative line snapshots (netTotal after
           // the allocated invoice discount, divided by the line's SOLD count), never
           // client-sent prices — a partial return prices at what the customer
@@ -1916,7 +1963,7 @@ export function createRpcRouter(deps: RpcDeps) {
             if (item === undefined) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
-            await tx.insertReturnLine({
+            const returnLineId = await tx.insertReturnLine({
               returnId,
               invoiceLineId: line.id,
               itemId: item.id,
@@ -1931,7 +1978,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // line, marked PENDING for the owner's review. An inflow can never
             // dip stock, but the seam still projects the whole history so a
             // corrupt ledger fails loudly before any write.
-            await postStock(tx, {
+            const returnedMovement = await postStock(tx, {
               itemId: item.id,
               kind: "SALE",
               delta: lineRefund.quantity,
@@ -1944,6 +1991,10 @@ export function createRpcRouter(deps: RpcDeps) {
               ref: returnId,
               returnMark: "PENDING",
               occurredAt,
+            });
+            const sourceChoice = sourceAllocationsByLine.get(line.id)!;
+            for (const allocation of sourceChoice.allocations) await tx.insertReturnSourceAllocation({
+              returnLineId, ...allocation, attributionMode: sourceChoice.mode, returnedMovementId: returnedMovement.movement.id,
             });
           }
           // #68: the debt portion is NOT settled while the return is pending —

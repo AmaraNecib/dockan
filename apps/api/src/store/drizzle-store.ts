@@ -872,6 +872,7 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "allocateReturnNumber",
   "insertReturn",
   "insertReturnLine",
+  "insertReturnSourceAllocation",
   "transitionReturnStatus",
   "applyDebtOffsetToInvoice",
   "setDebtApplied",
@@ -2883,10 +2884,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return { id: row.id };
     },
     async insertReturnLine(line: ReturnLineInsert) {
+      const lineId = id();
       await db
         .insert(returnLines)
         .values({
-          id: id(),
+          id: lineId,
           returnId: line.returnId,
           invoiceLineId: line.invoiceLineId,
           itemId: line.itemId ?? null,
@@ -2896,6 +2898,23 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           refundAmount: line.refundAmount,
         })
         .run();
+      return lineId;
+    },
+    async insertReturnSourceAllocation(allocation) {
+      conn.raw.query(`INSERT INTO return_source_allocations
+        (id, return_line_id, stock_link_id, quantity, attribution_mode, returned_movement_id)
+        VALUES (?, ?, ?, ?, ?, ?)`).run(id(), allocation.returnLineId, allocation.stockLinkId,
+        allocation.quantity, allocation.attributionMode, allocation.returnedMovementId);
+    },
+    async returnSourceAllocationsByLine(invoiceLineId) {
+      // SAFETY: selected aliases match the declared row shape; schema CHECKs restrict modes.
+      return conn.raw.query(`SELECT a.stock_link_id AS stockLinkId, a.quantity AS quantity,
+        a.attribution_mode AS attributionMode, a.returned_movement_id AS returnedMovementId
+        FROM return_source_allocations a
+        JOIN return_lines rl ON rl.id = a.return_line_id
+        WHERE rl.invoice_line_id = ? ORDER BY a.rowid`).all(invoiceLineId) as Array<{
+          stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN"; returnedMovementId: string;
+        }>;
     },
     /** One return header joined to its invoice identity (for the voucher/list).
      * Returns the contract shape with an empty line list — the caller resolves
@@ -2936,7 +2955,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .from(returnLines)
         .where(eq(returnLines.returnId, returnId))
         .orderBy(returnLines.id);
-      return { ...header, lines: lineRows.map((row) => toReturnLine(row)) } satisfies ReturnDetail;
+      const lines = await Promise.all(lineRows.map(async (row) => {
+        // SAFETY: SELECT aliases match this row shape; schema CHECKs restrict modes.
+        const allocations = conn.raw.query(`SELECT stock_link_id AS stockLinkId, quantity, attribution_mode AS attributionMode
+          FROM return_source_allocations WHERE return_line_id = ? ORDER BY rowid`).all(row.id) as Array<{
+            stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN";
+          }>;
+        return { ...toReturnLine(row), sourceAttribution: allocations[0]?.attributionMode ?? null,
+          sourceAllocations: allocations.map(({ stockLinkId, quantity }) => ({ stockLinkId, quantity })) };
+      }));
+      return { ...header, lines } satisfies ReturnDetail;
     },
     async listReturns(filters: { invoiceId?: string }, pagination?: PaginationInput) {
       const conds: SQL[] = [];
@@ -2983,7 +3011,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const linesByReturn = new Map<string, ReturnDetail["lines"]>();
       for (const row of lineRows) {
         const list = linesByReturn.get(row.returnId) ?? [];
-        list.push(toReturnLine(row));
+        // SAFETY: SELECT aliases match this row shape; schema CHECKs restrict modes.
+        const allocations = conn.raw.query(`SELECT stock_link_id AS stockLinkId, quantity, attribution_mode AS attributionMode
+          FROM return_source_allocations WHERE return_line_id = ? ORDER BY rowid`).all(row.id) as Array<{
+            stockLinkId: string; quantity: number; attributionMode: "AUTO" | "SELECTED" | "UNKNOWN";
+          }>;
+        list.push({ ...toReturnLine(row), sourceAttribution: allocations[0]?.attributionMode ?? null,
+          sourceAllocations: allocations.map(({ stockLinkId, quantity }) => ({ stockLinkId, quantity })) });
         linesByReturn.set(row.returnId, list);
       }
       return { items: headers.map((header) => ({ ...toReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies ReturnDetail[], total };

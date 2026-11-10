@@ -126,7 +126,13 @@ async function assertStock(itemId: string, quantity: number, fifoValue: number, 
 }
 
 async function resolutionActivities(movementId: string) {
-  return (await client.activitiesList({ limit: 500 })).items.filter((row) => row.type === "RECEIPT_COST_RESOLVED" && row.ref === movementId);
+  const movement = required(await store.getStockMovementById(movementId));
+  const activityPrefix = `RECEIPT_COST_RESOLVED_ITEM ${movementId} `;
+  return (await client.activitiesList({ limit: 500 })).items.filter((row) =>
+    row.type === "RECEIPT_COST_RESOLVED"
+    && row.ref === movement.itemId
+    && row.summary.startsWith(activityPrefix),
+  );
 }
 
 async function assertOriginal(sale: InvoiceDetail) {
@@ -599,6 +605,23 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await saved(product.id)).toEqual(state);
     expect(await resolutionActivities(source.id)).toEqual(activity);
     expect(activity).toHaveLength(1);
+  });
+
+  it("associates each resolution activity with its exact receipt when receipts share an item", async () => {
+    const product = await item();
+    const first = await receipt(product.id, 1, undefined, "2026-01-10T10:00:00");
+    const second = await receipt(product.id, 1, undefined, "2026-01-11T10:00:00");
+
+    await resolve(first.id, 100);
+    await resolve(second.id, 200);
+
+    const all = (await client.activitiesList({ limit: 500 })).items.filter((row) => row.type === "RECEIPT_COST_RESOLVED");
+    expect(all).toHaveLength(2);
+    expect(all.every((row) => row.ref === product.id)).toBe(true);
+    const firstActivity = required(all.find((row) => row.summary.startsWith(`RECEIPT_COST_RESOLVED_ITEM ${first.id} `)));
+    const secondActivity = required(all.find((row) => row.summary.startsWith(`RECEIPT_COST_RESOLVED_ITEM ${second.id} `)));
+    expect(await resolutionActivities(first.id)).toEqual([firstActivity]);
+    expect(await resolutionActivities(second.id)).toEqual([secondActivity]);
   });
 
   it("rolls resolution, COGS, cache and activity back when the final audit insert fails", async () => {

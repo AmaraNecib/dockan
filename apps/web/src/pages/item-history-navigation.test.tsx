@@ -66,9 +66,11 @@ function sale(id: string, documentId: string, number: string, delta: number) {
   };
 }
 
+type HistoryRequest = { itemId: string; focusMovementId?: string; limit?: number; offset?: number };
 let historyResult: HistoryFixture;
+let historyResultForRequest: ((input: HistoryRequest) => HistoryFixture) | null = null;
 let historyPromise: Promise<HistoryFixture> | null = null;
-const historyRequests: Array<{ itemId: string; focusMovementId?: string; limit?: number; offset?: number }> = [];
+const historyRequests: HistoryRequest[] = [];
 let resolutionCalls: Array<{ movementId: string; unitCost: number; reason: string }> = [];
 let failResolution = false;
 
@@ -82,9 +84,9 @@ function setInputValue(input: HTMLInputElement, value: string): void {
 mock.module("@/lib/rpc", () => ({
   orpc: {
     itemsHistory: {
-      queryOptions: ({ input }: { input: { itemId: string; focusMovementId?: string; limit?: number; offset?: number } }) => {
+      queryOptions: ({ input }: { input: HistoryRequest }) => {
         historyRequests.push(input);
-        return { queryKey: ["issue467-item-history", input], queryFn: () => historyPromise ?? Promise.resolve(historyResult) };
+        return { queryKey: ["issue467-item-history", input], queryFn: () => historyPromise ?? Promise.resolve(historyResultForRequest?.(input) ?? historyResult) };
       },
     },
     receiptCostsResolve: {
@@ -119,6 +121,7 @@ describe("item-history navigation and disclosure (issue #467)", () => {
   beforeEach(() => {
     delete routeSearch.focusMovementId;
     historyRequests.length = 0;
+    historyResultForRequest = null;
     historyPromise = null;
     resolutionCalls = [];
     failResolution = false;
@@ -206,6 +209,53 @@ describe("item-history navigation and disclosure (issue #467)", () => {
     expect(expandedRows.map((button) => button.dataset.testid)).toEqual([`history-toggle-${focusedMovementId}`]);
     const highlightedRows = [...page.container.querySelectorAll('[data-focused="true"]')];
     expect(highlightedRows.map((row) => row.getAttribute("data-testid"))).toEqual([`history-movement-row-${focusedMovementId}`]);
+  });
+
+  it("focused receipt then click page1 stays on page 1 after refetch", async () => {
+    const focusedMovementId = "00000000-0000-4000-8000-000000000999";
+    routeSearch.focusMovementId = focusedMovementId;
+    const pageThree: HistoryFixture = {
+      ...historyResult,
+      total: 50,
+      pageOffset: 20,
+      movements: Array.from({ length: 10 }, (_, index) => sale(
+        index === 9 ? focusedMovementId : `movement-page-3-${index}`,
+        documentA,
+        `INV-467-${index}`,
+        -1,
+      )),
+    };
+    const pageOne: HistoryFixture = {
+      ...historyResult,
+      total: 50,
+      pageOffset: 0,
+      movements: Array.from({ length: 10 }, (_, index) => sale(
+        `movement-page-1-${index}`,
+        documentA,
+        `INV-467-FIRST-${index}`,
+        -1,
+      )),
+    };
+    historyResultForRequest = (input) => input.focusMovementId === focusedMovementId ? pageThree : pageOne;
+
+    const page = await mountWithProviders(<ItemHistoryPage />);
+    await page.poll(() => page.query(`history-movement-row-${focusedMovementId}`) !== null, "focused receipt on page 3");
+    expect(page.query("history-pager-page-3")?.getAttribute("aria-current")).toBe("page");
+
+    await act(async () => page.query<HTMLButtonElement>("history-pager-page-1")?.click());
+    await page.poll(() => page.query("history-pager-page-1")?.getAttribute("aria-current") === "page", "page 1 after selection");
+    expect(page.query("history-focus-unavailable")).toBeNull();
+    expect(historyRequests.some((input) => input.offset === 0 && input.focusMovementId === undefined)).toBe(true);
+
+    const requestsBeforeRefetch = historyRequests.length;
+    await act(async () => {
+      await page.queryClient.invalidateQueries({ queryKey: ["issue467-item-history"] });
+    });
+    expect(historyRequests.length).toBeGreaterThan(requestsBeforeRefetch);
+    expect(page.query("history-pager-page-1")?.getAttribute("aria-current")).toBe("page");
+    expect(page.query("history-focus-unavailable")).toBeNull();
+    expect(historyRequests.at(-1)).toMatchObject({ offset: 0, itemId });
+    expect(historyRequests.at(-1)?.focusMovementId).toBeUndefined();
   });
 
   it("reports a missing or other-item focus without expanding another movement", async () => {

@@ -413,6 +413,9 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
   const { itemId } = useParams({ strict: false }) as { itemId: string };
   // SAFETY: itemHistoryRoute validates focusMovementId as an optional UUID.
   const { focusMovementId } = useSearch({ strict: false }) as { focusMovementId?: string };
+  const [dismissedFocusJumpKey, setDismissedFocusJumpKey] = useState<string | null>(null);
+  const focusJumpKey = focusMovementId === undefined ? undefined : `${itemId}:${focusMovementId}`;
+  const applyFocusJump = focusJumpKey !== undefined && dismissedFocusJumpKey !== focusJumpKey;
   const pager = usePagination();
   const [expandedMovementIds, setExpandedMovementIds] = useState<Set<string>>(() => new Set());
   const [resolutionMovementId, setResolutionMovementId] = useState<string | null>(null);
@@ -439,7 +442,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
     setExpandedMovementIds(new Set());
   }, [itemId]);
   const history = useQuery({
-    ...orpc.itemsHistory.queryOptions({ input: { itemId, focusMovementId, ...pager.pagination } }),
+    ...orpc.itemsHistory.queryOptions({ input: { itemId, focusMovementId: applyFocusJump ? focusMovementId : undefined, ...pager.pagination } }),
     // #295 — the running stock column on this screen is a hot counter too: a
     // sale or an adjustment posted in another window has to show up here
     // without the owner reloading the page. The ledger read is slower than
@@ -452,7 +455,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
   // one that never moved the average
   const superseded = history.data === undefined ? new Set<number>() : supersededByCorrection(history.data.movements);
   useEffect(() => {
-    if (focusMovementId === undefined || history.data === undefined) return;
+    if (!applyFocusJump || focusMovementId === undefined || history.data === undefined) return;
     if (pager.offset === 0 && history.data.pageOffset !== undefined && history.data.pageOffset > 0) {
       pager.setOffset(history.data.pageOffset);
       return;
@@ -460,7 +463,21 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
     if (history.data.movements.some((movement) => movement.id === focusMovementId)) {
       setExpandedMovementIds((current) => new Set(current).add(focusMovementId));
     }
-  }, [focusMovementId, history.data, pager.offset]);
+  }, [applyFocusJump, focusMovementId, history.data, pager.offset]);
+
+  function dismissFocusJump() {
+    if (focusJumpKey !== undefined) setDismissedFocusJumpKey(focusJumpKey);
+  }
+
+  function changeHistoryPage(offset: number) {
+    dismissFocusJump();
+    pager.setOffset(offset);
+  }
+
+  function changeHistoryPageSize(pageSize: number) {
+    dismissFocusJump();
+    pager.setPageSize(pageSize);
+  }
 
   function beginReceiptResolution(movementId: string) {
     setResolutionMovementId(movementId);
@@ -580,7 +597,7 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
         />
       ) : (
         <>
-        {focusMovementId !== undefined && !history.data.movements.some((movement) => movement.id === focusMovementId) && (
+        {applyFocusJump && focusMovementId !== undefined && !history.data.movements.some((movement) => movement.id === focusMovementId) && (
           <p role="status" className="mt-4 rounded border border-warning p-3 text-sm text-warning-foreground" data-testid="history-focus-unavailable">{t("historyFocusedMovementUnavailable")}</p>
         )}
         <Table className="mt-4 min-w-[40rem] rounded border bg-card text-sm" data-testid="history-table">
@@ -759,8 +776,8 @@ export function ItemHistoryPage({ refreshMs = LEDGER_REFETCH_MS }: { refreshMs?:
           total={history.data.total}
           pageSize={pager.pageSize}
           offset={history.data.pageOffset ?? pager.offset}
-          onOffsetChange={pager.setOffset}
-          onPageSizeChange={pager.setPageSize}
+          onOffsetChange={changeHistoryPage}
+          onPageSizeChange={changeHistoryPageSize}
           testId="history-pager"
         />
         </>

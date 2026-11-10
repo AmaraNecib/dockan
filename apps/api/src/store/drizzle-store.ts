@@ -2117,6 +2117,24 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
       return rows.map((row) => ({ ...row }) satisfies StockLink);
     },
+    async listPurchaseStockLinksByItem(itemId: string) {
+      // Keep sale-consumption links in the all-links history query, but filter
+      // attribution links here before they leave SQLite.
+      const rows = await db
+        .select({
+          id: stockLinks.id,
+          invoiceId: stockLinks.invoiceId,
+          movementId: stockLinks.movementId,
+          quantity: stockLinks.quantity,
+          createdAt: stockLinks.createdAt,
+        })
+        .from(stockLinks)
+        .innerJoin(stockMovements, eq(stockMovements.id, stockLinks.movementId))
+        .innerJoin(invoices, eq(invoices.id, stockLinks.invoiceId))
+        .where(and(eq(stockMovements.itemId, itemId), eq(invoices.kind, "PURCHASE")))
+        .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
+      return rows.map((row) => ({ ...row }) satisfies StockLink);
+    },
 
     // --- expenses + profit report (ticket 31) --------------------------------
     async listExpenseCategories() {

@@ -245,9 +245,14 @@ async function postOne(
         : Math.round((priorQuantity * cache.costPrice + spec.delta * candidate.unitCost) / (priorQuantity + spec.delta));
     }
   } else if (existing.some((entry) => entry.occurredAt > occurredAt)) {
-    // Backdated writes remain ledger-replayed because their insertion position
-    // changes the historical weighted average.
-    costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+    // A backdated pending layer has no trusted price. Replaying it as zero
+    // would dilute a known live basis; keep the cache independent from that
+    // provisional FIFO layer. Other backdated movements still replay because
+    // their position can change the valued ledger, and explicit corrections
+    // above still take precedence.
+    if (!(spec.delta > 0 && spec.costPending === true)) {
+      costPrice = weightedAverageCost([...existing, candidate], { fallbackUnitCost });
+    }
   }
   state.appended.set(spec.itemId, [...(state.appended.get(spec.itemId) ?? []), candidate]);
   cache.stockOnHand = projection.stockOnHand;

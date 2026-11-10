@@ -2047,6 +2047,40 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
     expect(await store.listStockLinksByItem(b.id)).toEqual([]);
   });
 
+  it("filters purchase attribution links in SQLite without dropping sale history links", async () => {
+    const category = await store.createCategory({ name: `link-kind-${Date.now()}` });
+    const item = await store.createItem({ name: `link-kind-item-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150 });
+    const purchase = await store.insertInvoice({
+      invoiceNumber: `SUP-${Date.now()}`,
+      kind: "PURCHASE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      totalAmount: 100,
+      paidAmount: 0,
+      remainingAmount: 100,
+      notes: null,
+    });
+    const sale = await store.insertInvoice({
+      invoiceNumber: `INV-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      totalAmount: 100,
+      paidAmount: 0,
+      remainingAmount: 100,
+      notes: null,
+    });
+    const purchaseMovement = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 2, unitCost: 100, reason: null, ref: null, occurredAt: stamp() });
+    const saleMovement = await store.insertStockMovement({ itemId: item.id, kind: "SALE", delta: -1, unitCost: null, reason: null, ref: sale.id, occurredAt: stamp() });
+    const purchaseLink = await store.insertStockLink({ invoiceId: purchase.id, movementId: purchaseMovement.id, quantity: 1 });
+    const saleLink = await store.insertStockLink({ invoiceId: sale.id, movementId: saleMovement.id, quantity: 1 });
+
+    expect(await store.listPurchaseStockLinksByItem(item.id)).toEqual([purchaseLink]);
+    expect(await store.listStockLinksByItem(item.id)).toEqual([purchaseLink, saleLink]);
+  });
+
   it("getInvoiceLine returns a single line or undefined", async () => {
     const cats = await store.listCategories();
     const categoryId = cats[0]!.id;

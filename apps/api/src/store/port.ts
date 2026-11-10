@@ -326,6 +326,8 @@ export interface StorePort {
   insertStockLink(link: { invoiceId: string; movementId: string; quantity: number }): Promise<StockLink>;
   /** all links whose movement belongs to the item (link consumption audit) */
   listStockLinksByItem(itemId: string): Promise<StockLink[]>;
+  /** purchase-only attribution links for the item's inventory pool */
+  listPurchaseStockLinksByItem(itemId: string): Promise<StockLink[]>;
 
   // --- expenses + profit report (ticket 31) --------------------------------
   listExpenseCategories(): Promise<ExpenseCategory[]>;

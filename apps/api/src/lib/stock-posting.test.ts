@@ -259,6 +259,29 @@ describe("recordStockMovement", () => {
     }
   });
 
+  it("keeps a backdated pending layer out of the trusted average after it is drained", async () => {
+    const { tx, cache } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+
+    const pending = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 10,
+      costPending: true,
+      occurredAt: "2020-01-01T00:00:00",
+    });
+    expect(pending.costPriceKnown).toBe(true);
+    expect(pending.costPrice).toBe(100);
+
+    await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-03T00:00:00" });
+    const later = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, occurredAt: "2020-01-04T00:00:00" });
+
+    expect(later.movement.unitCost).toBe(100);
+    expect(later.costPrice).toBe(100);
+    expect(later.costPriceKnown).toBe(true);
+    expect(cache).toEqual({ stockOnHand: 12, costPrice: 100 });
+  });
+
   it("replays the full ledger on a BACKDATED outflow (issue 143 outflow rule)", async () => {
     const { tx, cache } = fakeTx({ costPrice: 100 });
     await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T10:00:00" });

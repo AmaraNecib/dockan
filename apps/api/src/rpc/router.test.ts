@@ -1433,6 +1433,68 @@ describe("purchase intake (ticket 29)", () => {
     expect(after.movements).toHaveLength(links);
   });
 
+  async function seedSaleLinksAgainstOneItem() {
+    const item = await makeItem(`ربط-كثير-مبيعات-${Date.now()}`, 400);
+    await client.stockAddManual({ itemId: item.id, delta: 30, unitCost: 400, kind: "PURCHASE" });
+    for (let index = 0; index < 20; index++) {
+      await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    }
+    const purchase = await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 3, unitPrice: 400 }] });
+    expect((await store.listStockLinksByItem(item.id)).filter((link) => link.invoiceId !== purchase.id)).toHaveLength(20);
+    return { item, purchase };
+  }
+
+  async function withInvoiceDetailReadCount<T>(run: () => Promise<T>): Promise<{ result: T; reads: number }> {
+    let reads = 0;
+    const originalGetDetail = store.getInvoiceDetail;
+    const originalWithTransaction = store.withTransaction;
+    Object.defineProperty(store, "getInvoiceDetail", {
+      configurable: true,
+      value: async (id: string) => {
+        reads += 1;
+        return originalGetDetail.call(store, id);
+      },
+    });
+    Object.defineProperty(store, "withTransaction", {
+      configurable: true,
+      value: <R>(callback: (tx: StorePort) => Promise<R>) => originalWithTransaction.call(store, (tx) => callback({
+        ...tx,
+        getInvoiceDetail: async (id) => {
+          reads += 1;
+          return tx.getInvoiceDetail(id);
+        },
+      })),
+    });
+    try {
+      return { result: await run(), reads };
+    } finally {
+      Object.defineProperty(store, "getInvoiceDetail", { configurable: true, value: originalGetDetail });
+      Object.defineProperty(store, "withTransaction", { configurable: true, value: originalWithTransaction });
+    }
+  }
+
+  it("keeps purchase proposals bounded when an item has many sale links", async () => {
+    const { item, purchase } = await seedSaleLinksAgainstOneItem();
+    const measured = await withInvoiceDetailReadCount(() => client.purchasesProposal({ invoiceId: purchase.id }));
+
+    expect(measured.result.items[0]).toMatchObject({ uninvoicedQty: 30, proposedLinkQty: 3 });
+    expect(measured.reads).toBe(1); // only the proposal invoice detail, independent of sale-link count
+    expect((await store.listStockLinksByItem(item.id)).filter((link) => link.invoiceId !== purchase.id)).toHaveLength(20);
+  });
+
+  it("keeps purchase linking bounded when an item has many sale links", async () => {
+    const { item, purchase } = await seedSaleLinksAgainstOneItem();
+    const measured = await withInvoiceDetailReadCount(() => client.purchasesLinkStock({
+      invoiceId: purchase.id,
+      allocations: [{ itemId: item.id, quantity: 3 }],
+    }));
+
+    expect(measured.result).toEqual({ linked: 3, remainderMoved: 0 });
+    expect(measured.reads).toBe(1); // only the target purchase detail, inside the transaction
+    expect((await store.listStockLinksByItem(item.id)).filter((link) => link.invoiceId !== purchase.id)).toHaveLength(20);
+    expect((await store.listStockLinksByItem(item.id)).filter((link) => link.invoiceId === purchase.id)).toHaveLength(1);
+  });
+
   it("keeps sold uninvoiced receipt quantity available for purchase attribution", async () => {
     const item = await makeItem("ربط-بعد-البيع", 400);
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 400, kind: "PURCHASE" });

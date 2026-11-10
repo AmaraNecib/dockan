@@ -134,6 +134,8 @@ export interface ReceiptCostResolutionRecord {
   actorId: string;
   actorName: string;
   recordedAt: string;
+  /** True only for the transaction that created the immutable resolution. */
+  created: boolean;
   adjustments: Array<{ invoiceLineId: string; amount: number }>;
 }
 

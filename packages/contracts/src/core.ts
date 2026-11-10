@@ -1645,6 +1645,7 @@ export const receiptCostResolutionSchema = z.object({
   actorId: z.string().min(1),
   actorName: z.string().min(1),
   recordedAt: z.string().min(1),
+  created: z.boolean(),
   adjustments: z.array(z.object({ invoiceLineId: idSchema, amount: z.number().int() })),
 });
 

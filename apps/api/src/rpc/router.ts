@@ -2315,11 +2315,13 @@ export function createRpcRouter(deps: RpcDeps) {
               actorName,
               recordedAt: localDateTime(),
             });
-            await insertSessionActivity(tx, session, {
-              type: "RECEIPT_COST_RESOLVED",
-              summary: `RECEIPT_COST_RESOLVED ${input.movementId} ${input.unitCost}`,
-              ref: input.movementId,
-            });
+            if (resolution.created) {
+              await insertSessionActivity(tx, session, {
+                type: "RECEIPT_COST_RESOLVED",
+                summary: `RECEIPT_COST_RESOLVED ${input.movementId} ${input.unitCost}`,
+                ref: input.movementId,
+              });
+            }
             return resolution;
           });
         } catch (error) {

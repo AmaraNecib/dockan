@@ -5892,6 +5892,32 @@ describe("items cost correction (issue 144)", () => {
     expect(row.costPrice).toBe(233);
   });
 
+  it("resolves a pending receipt once and keeps catalog, later FIFO sales, and report periods aligned", async () => {
+    const item = await makeItem(`receipt-resolution-${Date.now()}`, 0);
+    await client.stockAddManual({ itemId: item.id, delta: 5, costPending: true, kind: "PURCHASE" });
+    const receipt = (await client.itemsHistory({ itemId: item.id })).movements.find((row) => row.delta === 5)!;
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const beforeStamp = receipt.occurredAt;
+
+    const resolution = await client.receiptCostsResolve({ movementId: receipt.id, unitCost: 100, reason: "supplier receipt confirmed" });
+    expect(resolution.created).toBe(true);
+    const retry = await client.receiptCostsResolve({ movementId: receipt.id, unitCost: 100, reason: "supplier receipt confirmed" });
+    expect(retry.created).toBe(false);
+    expect((await client.activitiesList({ limit: 500 })).items.filter((row) => row.type === "RECEIPT_COST_RESOLVED" && row.ref === receipt.id)).toHaveLength(1);
+
+    const catalog = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
+    expect(catalog).toMatchObject({ stockOnHand: 3, costPrice: 100, costPriceKnown: true, costPending: false });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((row) => row.id === receipt.id)).toMatchObject({ unitCost: 100, costPending: false, occurredAt: beforeStamp, delta: 5 });
+    expect((await client.invoicesGet({ id: sale.id })).lines[0]).toMatchObject({ cogsExact: 0, costPending: true });
+
+    const laterSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(laterSale.lines[0]).toMatchObject({ cogsExact: 100, costPending: false });
+    const window = { preset: "CUSTOM" as const, customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`, customTo: `${item.createdAt.slice(0, 10)}T23:59:59` };
+    const report = await client.reportsProfit(window);
+    expect(report.cogs).toBe(300);
+  });
+
   it("writes exactly one correction activity row, and none on replay", async () => {
     const item = await makeItem(`تصحيح-سجل-${Date.now()}`, 100);
     await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE" });

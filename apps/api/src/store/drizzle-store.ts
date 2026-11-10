@@ -55,7 +55,7 @@ import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberBoundSequence, invoiceNumberFor, invoiceNumberPrefixFor, invoiceSequenceForRange, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
-import { projectLedger } from "../lib/stock-ledger";
+import { projectLedger, weightedAverageCost } from "../lib/stock-ledger";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, SUPPLIER_ENTRY_KINDS, SUPPLIER_ENTRY_RULES, supplierBalance, supplierEntrySign, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { assertSchemaVersionSupported, CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersion } from "../lib/schema-version";
@@ -1977,14 +1977,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .where(and(inArray(stockMovements.itemId, itemIds), eq(stockMovements.costPending, true)));
         const pendingItemIds = pendingItemRows.map(({ itemId }) => itemId);
         if (pendingItemIds.length === 0) return rows.map((row) => ({ ...row, costPending: false, costPriceKnown: row.costPriceKnown ?? true }));
-        const movements = await db.select({ ...movementCols, seq: sql<number>`rowid` })
+        const movements = await db.select({ ...movementCols,
+          unitCost: sql<number | null>`COALESCE((SELECT r.unit_cost FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id), stock_movements.unit_cost)`,
+          costPending: sql<boolean>`CASE WHEN EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = stock_movements.id) THEN 0 ELSE stock_movements.cost_pending END`,
+          seq: sql<number>`rowid` })
           .from(stockMovements)
           .where(inArray(stockMovements.itemId, pendingItemIds))
           .orderBy(stockMovements.occurredAt, sql`rowid`);
         const byItem = new Map<string, typeof movements>();
         for (const movement of movements) {
           const bucket = byItem.get(movement.itemId) ?? [];
-          bucket.push(movement);
+          bucket.push({ ...movement, costPending: Boolean(movement.costPending) });
           byItem.set(movement.itemId, bucket);
         }
         return rows.map((row) => {
@@ -2206,7 +2209,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         if (existing.unitCost !== input.unitCost || existing.reason !== input.reason || existing.actorId !== input.actorId) throw new Error("RECEIPT_RESOLUTION_CONFLICT");
         // SAFETY: the fixed aliases and selected columns define these adjustment rows.
         const adjustments = conn.raw.query(`SELECT invoice_line_id AS invoiceLineId, amount FROM receipt_cost_adjustments WHERE resolution_id = ? ORDER BY rowid`).all(existing.id) as Array<{ invoiceLineId: string; amount: number }>;
-        return { ...existing, actorId: input.actorId, actorName: existing.actorName ?? input.actorName, adjustments };
+        return { ...existing, actorId: input.actorId, actorName: existing.actorName ?? input.actorName, created: false, adjustments };
       }
       // SAFETY: the fixed aliases and columns define the receipt row shape.
       const receipt = conn.raw.query(`SELECT id, item_id AS itemId, kind, delta, cost_pending AS costPending FROM stock_movements WHERE id = ?`).get(input.movementId) as { id: string; itemId: string; kind: string; delta: number; costPending: number } | null;
@@ -2235,7 +2238,18 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         conn.raw.query(`INSERT INTO receipt_cost_adjustments (id, resolution_id, invoice_line_id, amount, created_at) VALUES (?, ?, ?, ?, ?)`).run(id(), resolutionId, invoiceLineId, amount, input.recordedAt);
         adjustments.push({ invoiceLineId, amount });
       }
-      return { id: resolutionId, movementId: input.movementId, unitCost: input.unitCost, reason: input.reason, actorId: input.actorId, actorName: input.actorName, recordedAt: input.recordedAt, adjustments };
+      // Keep the ADR-0002 live average cache aligned with the effective ledger.
+      // The mutation is exposed only through this transactional store operation.
+      const movements = await this.listStockMovements(receipt.itemId);
+      const item = await this.getItemsByIds([receipt.itemId]);
+      const current = item.get(receipt.itemId);
+      if (current === undefined) throw new Error("RECEIPT_ITEM_NOT_FOUND");
+      const average = weightedAverageCost(movements, { fallbackUnitCost: current.costPrice });
+      const pendingRemains = projectLedger(movements, { fallbackUnitCost: current.costPrice }).layers.some((layer) => layer.costPending === true);
+      const hasValuedInflows = movements.some((movement) => movement.delta > 0 && movement.costPending !== true && movement.unitCost !== null);
+      const known = current.costPriceKnown || hasValuedInflows || !pendingRemains;
+      await this.setItemStockAndCost(receipt.itemId, current.stockOnHand, average, known);
+      return { id: resolutionId, movementId: input.movementId, unitCost: input.unitCost, reason: input.reason, actorId: input.actorId, actorName: input.actorName, recordedAt: input.recordedAt, created: true, adjustments };
     },
 
     // --- expenses + profit report (ticket 31) --------------------------------

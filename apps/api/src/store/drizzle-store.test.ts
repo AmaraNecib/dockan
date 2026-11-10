@@ -2144,7 +2144,7 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
 
     const result = await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "supplier invoice found", actorId: "admin", actorName: "Owner", recordedAt: "2026-02-01T12:00:00" }));
     expect(result.adjustments).toEqual([{ invoiceLineId: line.id, amount: 200 }]);
-    expect(await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "supplier invoice found", actorId: "admin", actorName: "Owner", recordedAt: "2026-02-02T12:00:00" }))).toEqual(result);
+    expect(await store.withTransactionImmediate((tx) => tx.resolveReceiptCost({ movementId: receipt.id, unitCost: 100, reason: "supplier invoice found", actorId: "admin", actorName: "Owner", recordedAt: "2026-02-02T12:00:00" }))).toEqual({ ...result, created: false });
     expect((await store.listStockMovements(item.id)).find((movement) => movement.id === receipt.id)).toMatchObject({ unitCost: 100, costPending: false, delta: 5 });
     const saleLines = await store.listSaleLinesForProfit("2026-01-11", "2026-01-11");
     expect(saleLines.find((row) => row.invoiceId === sale.id)).toMatchObject({ cogsExact: 200, costPending: false, netTotal: 400 });

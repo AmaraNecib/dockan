@@ -282,6 +282,98 @@ describe("recordStockMovement", () => {
     expect(cache).toEqual({ stockOnHand: 12, costPrice: 100 });
   });
 
+  it("keeps trusted cost through a valued backdate, pending drain and default receipt", async () => {
+    const { tx, cache, movements } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    const pending = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    expect(pending.costPrice).toBe(100);
+    const valued = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T12:00:00" });
+    expect(valued.costPrice).toBe(100);
+    expect(valued.costPriceKnown).toBe(true);
+
+    const sale = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-03T00:00:00" });
+    expect(sale.outflowCost).toMatchObject({ totalCost: 0, unitCost: 0, costPending: true });
+    const later = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, occurredAt: "2020-01-04T00:00:00" });
+    expect(later.movement).toMatchObject({ unitCost: 100, costPending: false });
+    expect(later.costPriceKnown).toBe(true);
+    expect(cache).toEqual({ stockOnHand: 22, costPrice: 100 });
+    expect(movements.find((row) => row.id === pending.movement.id)).toMatchObject({ unitCost: null, costPending: true });
+    expect(sale.outflowCost).toMatchObject({ totalCost: 0, costPending: true });
+  });
+
+  it("replays backdated outflows with pending history without zero-valuing the live basis", async () => {
+    const { tx } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 300, occurredAt: "2020-01-04T00:00:00" });
+
+    const posted = await recordStockMovement(tx, { itemId: "i1", kind: "MANUAL_ADJUSTMENT", delta: -5, occurredAt: "2020-01-03T00:00:00" });
+    // The backdate leaves 15 units at the trusted 100 basis before 10@300.
+    // This must replay to 180, not preserve the chronological cache of 167.
+    expect(posted).toMatchObject({ costPrice: 180, costPriceKnown: true, stockOnHand: 25 });
+    expect(posted.outflowCost).toMatchObject({ totalCost: 0, costPending: true });
+  });
+
+  it("keeps pending return facts and correction precedence across later backdates", async () => {
+    const { tx, movements } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    const returned = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: 10, costPending: true, reason: "RETURN_RECORDED", returnMark: "PENDING", occurredAt: "2020-01-01T00:00:00" });
+    const valued = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: 10, unitCost: 100, reason: "RETURN_RECORDED", returnMark: "PENDING", occurredAt: "2020-01-01T12:00:00" });
+    expect(valued).toMatchObject({ costPrice: 100, costPriceKnown: true });
+    await recordStockMovement(tx, { itemId: "i1", kind: "MANUAL_ADJUSTMENT", delta: 0, unitCost: 250, reason: COST_CORRECTION_REASON, occurredAt: "2019-12-31T00:00:00" });
+    const afterCorrection = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 50, occurredAt: "2020-01-01T18:00:00" });
+    // The correction is recorded after the three inflows, despite its date.
+    expect(afterCorrection).toMatchObject({ costPrice: 200, costPriceKnown: true, stockOnHand: 40 });
+    expect(movements.find((row) => row.id === returned.movement.id)).toMatchObject({ unitCost: null, costPending: true, returnMark: "PENDING" });
+  });
+
+  it("replays a recovered basis through a later backdated receipt and omitted default", async () => {
+    const { tx } = fakeTx({ costPrice: 0, costPriceKnown: false });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 2, costPending: true, occurredAt: "2020-01-01T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 100, occurredAt: "2020-01-02T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -3, occurredAt: "2020-01-03T00:00:00" });
+    const blend = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, unitCost: 200, occurredAt: "2020-01-05T00:00:00" });
+    expect(blend.costPrice).toBe(120);
+    // One more 100-cost receipt before the sale leaves five at 100, then
+    // 1@200, so the historical replay is 117, not a blend against today's 120.
+    const backdated = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, unitCost: 100, occurredAt: "2020-01-02T12:00:00" });
+    expect(backdated).toMatchObject({ costPrice: 117, costPriceKnown: true });
+    const later = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 1, occurredAt: "2020-01-06T00:00:00" });
+    expect(later.movement).toMatchObject({ unitCost: 117, costPending: false });
+    expect(later.costPrice).toBe(117);
+  });
+
+  it("does not revive an exhausted price when replay crosses a new pending opening", async () => {
+    const { tx } = fakeTx({ costPrice: 500 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 500, occurredAt: "2020-01-01T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-02T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-03T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-04T00:00:00" });
+    const recovered = await recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-05T00:00:00" });
+    expect(recovered).toMatchObject({ costPrice: 100, costPriceKnown: true });
+    const backdated = await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-04T12:00:00" });
+    expect(backdated).toMatchObject({ costPrice: 100, costPriceKnown: true });
+  });
+
+  it("matches single posting for a mixed-backdate batch with one snapshot read", async () => {
+    const specs: StockMovementSpec[] = [
+      { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T00:00:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 10, costPending: true, occurredAt: "2020-01-01T00:00:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T12:00:00" },
+      { itemId: "i1", kind: "SALE", delta: -10, occurredAt: "2020-01-03T00:00:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 2, occurredAt: "2020-01-04T00:00:00" },
+    ];
+    const singles = fakeTx();
+    const expected = [];
+    for (const spec of specs) expected.push(await recordStockMovement(singles.tx, spec));
+    const batch = fakeTx();
+    const posted = await recordStockMovements(batch.tx, specs);
+    expect(posted).toEqual(expected);
+    expect(posted.map((entry) => entry.costPrice)).toEqual([100, 100, 100, 100, 100]);
+    expect(batch.cache).toEqual({ stockOnHand: 22, costPrice: 100 });
+    expect(batch.stats).toEqual({ historyReads: 1, cacheWrites: 1 });
+  });
+
   it("replays the full ledger on a BACKDATED outflow (issue 143 outflow rule)", async () => {
     const { tx, cache } = fakeTx({ costPrice: 100 });
     await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T10:00:00" });

@@ -391,6 +391,11 @@ export function averageCostAfter(
  * date precedes that future row. No movement's stored `occurredAt` is
  * rewritten, and with no corrections the whole ledger is one segment, so the
  * result is the historical occurredAt replay.
+ *
+ * Pending inflows add quantity without asserting a price. The first valued
+ * inflow establishes a numeric basis; later inflows weight that live basis
+ * by all on-hand quantity, as chronological posting does. This never prices
+ * pending FIFO layers or establishes cache trust. Posting owns trust recovery.
  */
 export function weightedAverageCost(
   movements: readonly LedgerMovement[],
@@ -398,16 +403,23 @@ export function weightedAverageCost(
 ): number {
   let quantity = 0;
   let average = 0;
+  let hasCostBasis = false;
   let segment: LedgerMovement[] = [];
   const flushSegment = (): void => {
     for (const movement of ordered(segment)) {
-      if (movement.delta > 0) {
-        average = averageCostAfter(
-          average,
-          quantity,
-          movement.delta,
-          movement.costPending === true ? 0 : (movement.unitCost ?? opts.fallbackUnitCost ?? 0),
-        );
+      // Pending inflows change quantity, never the live cost basis. Until a
+      // valued inflow or correction establishes that basis, there is no
+      // average to weight by the earlier pending quantity. FIFO facts remain
+      // unknown in projectLedger; this replay only computes the live cache.
+      if (movement.delta > 0 && movement.costPending === true && quantity === 0) {
+        hasCostBasis = false;
+      }
+      if (movement.delta > 0 && movement.costPending !== true) {
+        const unitCost = movement.unitCost ?? opts.fallbackUnitCost ?? 0;
+        average = hasCostBasis
+          ? averageCostAfter(average, quantity, movement.delta, unitCost)
+          : unitCost;
+        hasCostBasis = true;
       }
       quantity += movement.delta;
     }
@@ -418,6 +430,7 @@ export function weightedAverageCost(
       flushSegment();
       // explicit cost correction: set the average for the on-hand quantity
       average = movement.unitCost;
+      hasCostBasis = true;
     } else {
       segment.push(movement);
     }

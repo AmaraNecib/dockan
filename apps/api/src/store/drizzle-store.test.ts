@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
-import { stockMovements } from "../db/schema";
+import { stockLinks, stockMovements } from "../db/schema";
 import { localDateTime, localDate } from "../lib/logger";
 import { supplierBalance, UnsignableSupplierEntryError } from "../lib/supplier-ledger";
 import { createDrizzleStore, backfillReturnDebtApplications, seedExpenseCategories } from "./drizzle-store";
@@ -2072,13 +2072,50 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
       remainingAmount: 100,
       notes: null,
     });
-    const purchaseMovement = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 2, unitCost: 100, reason: null, ref: null, occurredAt: stamp() });
-    const saleMovement = await store.insertStockMovement({ itemId: item.id, kind: "SALE", delta: -1, unitCost: null, reason: null, ref: sale.id, occurredAt: stamp() });
+    const purchaseMovement = await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 30, unitCost: 100, reason: null, ref: null, occurredAt: stamp() });
     const purchaseLink = await store.insertStockLink({ invoiceId: purchase.id, movementId: purchaseMovement.id, quantity: 1 });
-    const saleLink = await store.insertStockLink({ invoiceId: sale.id, movementId: saleMovement.id, quantity: 1 });
+    const saleLinks = [];
+    for (let index = 0; index < 20; index++) {
+      const saleMovement = await store.insertStockMovement({ itemId: item.id, kind: "SALE", delta: -1, unitCost: null, reason: null, ref: sale.id, occurredAt: stamp() });
+      saleLinks.push(await store.insertStockLink({ invoiceId: sale.id, movementId: saleMovement.id, quantity: 1 }));
+    }
 
-    expect(await store.listPurchaseStockLinksByItem(item.id)).toEqual([purchaseLink]);
-    expect(await store.listStockLinksByItem(item.id)).toEqual([purchaseLink, saleLink]);
+    // Observe real query results before store-level mapping or filtering.
+    // No SQL text or predicate representation is part of this assertion.
+    const originalSelect = conn.db.select;
+    const databaseRowCounts: number[] = [];
+    const instrumentedSelect = (...args: Parameters<typeof conn.db.select>) => {
+      const query = originalSelect.apply(conn.db, args);
+      const originalFrom = query.from.bind(query);
+      type FromTable = Parameters<typeof query.from>[0];
+      Object.defineProperty(query, "from", {
+        configurable: true,
+        value: (table: FromTable) => {
+          const selection = originalFrom(table);
+          if (table === stockLinks) {
+            const originalAll = selection.all.bind(selection);
+            Object.defineProperty(selection, "all", {
+              configurable: true,
+              value: (...params: Parameters<typeof selection.all>) => {
+                const rows = originalAll(...params);
+                databaseRowCounts.push(rows.length);
+                return rows;
+              },
+            });
+          }
+          return selection;
+        },
+      });
+      return query;
+    };
+    Object.defineProperty(conn.db, "select", { configurable: true, value: instrumentedSelect });
+    try {
+      expect(await store.listPurchaseStockLinksByItem(item.id)).toEqual([purchaseLink]);
+      expect(databaseRowCounts).toEqual([1]);
+    } finally {
+      Object.defineProperty(conn.db, "select", { configurable: true, value: originalSelect });
+    }
+    expect(await store.listStockLinksByItem(item.id)).toEqual([purchaseLink, ...saleLinks]);
   });
 
   it("getInvoiceLine returns a single line or undefined", async () => {

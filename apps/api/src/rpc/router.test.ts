@@ -1998,6 +1998,26 @@ describe("sale checkout (ticket 30)", () => {
     expect((await client.invoicesGet({ id: pendingSale.id })).lines[0]).toMatchObject({ costPending: true, cogsExact: 0 });
   });
 
+  it("keeps receipt defaults trusted after mixed backdates without rewriting sold pending COGS", async () => {
+    const item = await makeSaleItem("معلق-واستلام-بأثر-رجعي", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE", occurredAt: "2020-01-02T00:00:00" });
+    await client.stockAddManual({ itemId: item.id, delta: 10, costPending: true, kind: "PURCHASE", occurredAt: "2020-01-01T00:00:00" });
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE", occurredAt: "2020-01-01T12:00:00" });
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id))
+      .toMatchObject({ costPrice: 100, costPriceKnown: true, costPending: true, stockOnHand: 30 });
+
+    const pendingSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 10 }] });
+    expect(pendingSale.lines[0]).toMatchObject({ costAtSale: 0, cogsExact: 0, costPending: true });
+    await client.stockAddManual({ itemId: item.id, delta: 2, kind: "PURCHASE" });
+    expect((await client.itemsHistory({ itemId: item.id })).movements.at(-1))
+      .toMatchObject({ unitCost: 100, costPending: false });
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id))
+      .toMatchObject({ costPrice: 100, costPriceKnown: true, costPending: false, stockOnHand: 22 });
+    const knownSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(knownSale.lines[0]).toMatchObject({ costAtSale: 100, cogsExact: 100, costPending: false });
+    expect((await client.invoicesGet({ id: pendingSale.id })).lines[0]).toEqual(pendingSale.lines[0]!);
+  });
+
   it("keeps pending receipt facts when an explicit item cost correction establishes a future basis", async () => {
     const item = await makeSaleItem("تصحيح-تكلفة-ومعلق", 0, 300);
     await client.stockAddManual({ itemId: item.id, delta: 2, costPending: true, kind: "PURCHASE" });

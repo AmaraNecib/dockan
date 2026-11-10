@@ -473,3 +473,63 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 });
+
+describe("persisted return source choices", () => {
+  it("offers only original-sale sources and asks when cost or pending status differs", async () => {
+    const product = await item();
+    const known = await receipt(product.id, 2, 40);
+    const pending = await receipt(product.id, 3, undefined, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    await receipt(product.id, 5, 999, "2026-01-12T10:00:00");
+    const output = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: required(sale.lines[0]).id });
+    expect(output).toMatchObject({ provenanceComplete: true, selectionRequired: true });
+    expect(output.sources).toHaveLength(2);
+    expect(output.sources).toMatchObject([
+      { movementId: known.id, unitCost: 40, costPending: false, quantityAvailable: 2, occurredAt: known.occurredAt },
+      { movementId: pending.id, unitCost: null, costPending: true, quantityAvailable: 2, occurredAt: pending.occurredAt },
+    ]);
+    expect(new Set(output.sources.map((source) => source.stockLinkId)).size).toBe(2);
+  });
+
+  it("does not ask when all sources have identical known or pending cost", async () => {
+    for (const cost of [40, undefined]) {
+      const product = await item();
+      await receipt(product.id, 2, cost);
+      await receipt(product.id, 2, cost, "2026-01-10T11:00:00");
+      const sale = await sell(product.id, 4);
+      const output = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: required(sale.lines[0]).id });
+      expect(output).toMatchObject({ provenanceComplete: true, selectionRequired: false });
+      expect(output.sources.map((source) => source.quantityAvailable)).toEqual([2, 2]);
+    }
+  });
+
+  it("compares effective resolved costs rather than immutable pending markers", async () => {
+    const product = await item();
+    await receipt(product.id, 2, 40);
+    const pending = await receipt(product.id, 2, undefined, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    await resolve(pending.id, 40);
+    const output = await client.returnsSources({ invoiceId: sale.id, invoiceLineId: required(sale.lines[0]).id });
+    expect(output).toMatchObject({ provenanceComplete: true, selectionRequired: false });
+    expect(output.sources.map((source) => [source.unitCost, source.costPending])).toEqual([[40, false], [40, false]]);
+  });
+
+  it("refuses unauthenticated and foreign-line source reads", async () => {
+    const product = await item();
+    await receipt(product.id);
+    const first = await sell(product.id);
+    const second = await sell(product.id);
+    await expect(wire("").returnsSources({ invoiceId: first.id, invoiceLineId: required(first.lines[0]).id })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(client.returnsSources({ invoiceId: first.id, invoiceLineId: required(second.lines[0]).id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "LINE_NOT_ON_INVOICE" });
+  });
+
+  it("does not invent per-source caps for a legacy unattributed return", async () => {
+    const product = await item();
+    await receipt(product.id, 2, 40);
+    await receipt(product.id, 2, undefined, "2026-01-10T11:00:00");
+    const sale = await sell(product.id, 4);
+    const line = required(sale.lines[0]);
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: line.id, quantity: 1 }] });
+    expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: line.id })).toEqual({ provenanceComplete: false, selectionRequired: false, sources: [] });
+  });
+});

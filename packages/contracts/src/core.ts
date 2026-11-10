@@ -1484,6 +1484,21 @@ export const returnsListInputSchema = paginationInputSchema.extend({
  * review screen) pages. */
 export const returnsForInvoiceInputSchema = z.object({ invoiceId: idSchema });
 
+export const returnSourcesInputSchema = z.object({ invoiceId: idSchema, invoiceLineId: idSchema });
+export const returnSourcesOutputSchema = z.object({
+  provenanceComplete: z.boolean(),
+  selectionRequired: z.boolean(),
+  sources: z.array(z.object({
+    stockLinkId: idSchema,
+    movementId: idSchema,
+    occurredAt: localDateTimeSchema,
+    unitCost: dinarsSchema.nullable(),
+    costPending: z.boolean(),
+    quantityAvailable: z.number().int().positive(),
+  })),
+});
+export type ReturnSources = z.infer<typeof returnSourcesOutputSchema>;
+
 export const returnsReviewInputSchema = z.object({
   returnId: idSchema,
   /** rejection note appended to the standard damaged-return reason */

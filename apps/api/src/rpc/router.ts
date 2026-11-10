@@ -14,6 +14,7 @@ import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { readItemHistory } from "./item-history";
+import { readReturnSources } from "./return-sources";
 import { itemStockProjection, recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { expressUnitCost, matchesAdjustment, repeatCutoff, type StockAdjustment } from "../lib/stock-adjustment";
 import { calculateSaleTotals } from "../lib/sale-calculations";
@@ -1971,6 +1972,9 @@ export function createRpcRouter(deps: RpcDeps) {
         const { items } = await deps.store.listReturns({ invoiceId });
         return { items };
       }),
+    ),
+    returnsSources: os.returnsSources.handler(
+      guardedInput(async (input) => deps.store.withReadTransaction((tx) => readReturnSources(tx, input))),
     ),
     returnsPendingCount: os.returnsPendingCount.handler(guarded(async () => ({ count: await deps.store.pendingReturnsCount() }))),
     // Review accept: consumes the pending stock mark — the returned goods are

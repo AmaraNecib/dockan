@@ -297,7 +297,8 @@ export type PartyDeleteResult = "DELETED" | "HAS_INVOICES" | "NOT_FOUND";
 /** Read methods needed by composed snapshot reads; no write or transaction handle. */
 export type StoreReadPort = Pick<StorePort,
   "getItemsByIds" | "listStockMovements" | "listItemHistoryLines" |
-  "listStockLinksByItem" | "getReturnHeader" | "getSupplierReturn" | "getExpenseRefundHistory"
+  "listStockLinksByItem" | "getInvoiceDetail" | "returnedByLine" |
+  "getReturnHeader" | "getSupplierReturn" | "getExpenseRefundHistory"
 >;
 
 export interface StorePort {

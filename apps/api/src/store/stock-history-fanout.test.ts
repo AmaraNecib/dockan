@@ -16,7 +16,7 @@ let conn: Connection;
 let store: StorePort;
 
 beforeAll(async () => {
-  const scratch = "D:/worktrees/mani-project/t3-ae3f661d-8b5004bd411ed186/.scratch";
+  const scratch = path.resolve(import.meta.dir, "../../../../.scratch");
   fs.mkdirSync(scratch, { recursive: true });
   dir = fs.mkdtempSync(path.join(scratch, "stock-history-fanout-"));
   conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));

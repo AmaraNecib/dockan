@@ -55,6 +55,8 @@ export interface StockMovementSpec {
   returnMark?: ReturnMark | null;
   /** Wall-clock moment the movement is recorded at; defaults to now. */
   occurredAt?: string;
+  /** Explicit durable source quantities for this outflow; otherwise FIFO is chosen at posting. */
+  consumedMovements?: Array<{ movementId: string; quantity: number }>;
   /**
    * SALE only: the invoice's explicit business date. When present the movement
    * time is the issue-43 bound `saleMovementTime(backdateTo, existing)`, so a
@@ -172,6 +174,9 @@ async function postOne(
   // the candidate that the caller will persist as stock links.
   const outflowCost =
     spec.delta < 0 ? fifoOutflowCost(existing, -spec.delta, { fallbackUnitCost }) : null;
+  const consumedMovements = spec.delta < 0
+    ? (spec.consumedMovements ?? outflowCost?.consumedMovements)
+    : undefined;
   const candidate: LedgerMovement = {
     kind: spec.kind,
     delta: spec.delta,
@@ -181,13 +186,11 @@ async function postOne(
     costPending: spec.costPending === true,
     seq: undefined,
   };
-  if (outflowCost?.consumedMovements !== undefined) {
-    candidate.consumedMovements = outflowCost.consumedMovements;
-  }
+  if (consumedMovements !== undefined) candidate.consumedMovements = consumedMovements;
   // the whole-history projection validates the candidate in order
   const projection = projectLedger([...existing, candidate], { fallbackUnitCost });
 
-  const movement = await tx.insertStockMovement({
+  const movementInput: Parameters<StockPostingTx["insertStockMovement"]>[0] = {
     id: spec.movementId,
     itemId: spec.itemId,
     kind: spec.kind,
@@ -198,7 +201,9 @@ async function postOne(
     ref: spec.ref ?? null,
     returnMark: spec.returnMark ?? null,
     occurredAt,
-  });
+  };
+  if (consumedMovements !== undefined) movementInput.consumedMovements = consumedMovements;
+  const movement = await tx.insertStockMovement(movementInput);
 
   // Keep cache trust separate from pending FIFO facts. Chronological priced
   // inflows blend the trusted live basis; ordinary outflows preserve it.

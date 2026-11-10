@@ -323,7 +323,7 @@ export interface StorePort {
 
   // --- stock ledger (ticket 27) --------------------------------------------
   /** append-only; no update or delete exists by design */
-  insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "id" | "returnMark">>): Promise<StockMovement>;
+  insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "id" | "returnMark">> & { consumedMovements?: Array<{ movementId: string; quantity: number }> }): Promise<StockMovement>;
   getStockMovementById(id: string): Promise<StockMovement | undefined>;
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
   listStockMovements(itemId: string): Promise<Array<StockMovement & {

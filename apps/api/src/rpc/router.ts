@@ -2194,13 +2194,28 @@ export function createRpcRouter(deps: RpcDeps) {
             // the final cache match the per-line calls exactly.
             const scrapSpecs: StockMovementSpec[] = [];
             const itemLinks = await tx.listStockLinksByItem(item.id);
+            const remainingByLayer = new Map(projection.layers.flatMap((layer) => layer.movementId === undefined ? [] : [[layer.movementId, layer.quantity] as const]));
             let remaining = removalBudget;
             for (const line of linesOfItem) {
               const sourceAllocations = await tx.returnSourceAllocationsByReturnLine(line.id);
               if (sourceAllocations.length === 0) {
                 const take = Math.min(line.quantity, remaining);
-                if (take > 0) scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
-                  reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt });
+                if (take > 0) {
+                  let unallocated = take;
+                  const consumedMovements: Array<{ movementId: string; quantity: number }> = [];
+                  for (const layer of projection.layers) {
+                    if (unallocated === 0 || layer.movementId === undefined) continue;
+                    const available = remainingByLayer.get(layer.movementId) ?? 0;
+                    const layerTake = Math.min(unallocated, available);
+                    if (layerTake === 0) continue;
+                    consumedMovements.push({ movementId: layer.movementId, quantity: layerTake });
+                    remainingByLayer.set(layer.movementId, available - layerTake);
+                    unallocated -= layerTake;
+                  }
+                  if (unallocated !== 0) throw new Error("STOCK_PROVENANCE_INVALID");
+                  scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
+                    reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt, consumedMovements });
+                }
                 remaining -= take;
                 continue;
               }
@@ -2209,10 +2224,13 @@ export function createRpcRouter(deps: RpcDeps) {
                   .reduce((sum, link) => sum + link.quantity, 0);
                 const notResold = Math.max(0, source.quantity - soldFromLayer);
                 if (notResold > 0) await tx.recordReturnSourceRejection({ returnLineId: line.id, stockLinkId: source.stockLinkId, quantity: notResold });
-                const take = Math.min(notResold, remaining);
+                const layerRemaining = remainingByLayer.get(source.returnedMovementId) ?? 0;
+                const take = Math.min(notResold, layerRemaining, remaining);
                 if (take <= 0) continue;
                 scrapSpecs.push({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -take,
-                  reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt });
+                  reason: `${reasonKey} #${line.id}`, ref: existing.id, occurredAt,
+                  consumedMovements: [{ movementId: source.returnedMovementId, quantity: take }] });
+                remainingByLayer.set(source.returnedMovementId, layerRemaining - take);
                 remaining -= take;
               }
             }

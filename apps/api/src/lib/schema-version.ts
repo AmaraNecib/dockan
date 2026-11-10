@@ -94,8 +94,13 @@ import type { Database } from "bun:sqlite";
  * layer for a mixed-source return, losing ancestry needed to resolve receipt
  * cost and correctly book resale COGS. It must refuse this format rather than
  * silently writing financially ambiguous facts.
+ *
+ * Version 15 (issue 393 source replay): stock outflows gain durable source
+ * consumption rows. A v14 build ignores that relation and would replay a
+ * backdated outflow against a different FIFO layer, so it must refuse a v15
+ * database rather than discard the acknowledged source choice.
  */
-export const CURRENT_SCHEMA_VERSION = 14;
+export const CURRENT_SCHEMA_VERSION = 15;
 
 /**
  * A database written by a newer app. The older build cannot know what the

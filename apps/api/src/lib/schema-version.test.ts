@@ -159,9 +159,20 @@ describe("the version gate", () => {
     const database = new Database(":memory:");
     try {
       database.exec("PRAGMA user_version = 14");
-      expect(CURRENT_SCHEMA_VERSION).toBe(14);
+      expect(CURRENT_SCHEMA_VERSION).toBe(15);
       expect(() => assertSchemaVersionSupported(database, 13)).toThrow(UnsupportedSchemaVersionError);
       expect(readSchemaVersion(database)).toBe(14);
+    } finally {
+      database.close();
+    }
+  });
+
+  itHeavy("refuses v14 readers after durable outflow source attribution is added", () => {
+    const database = new Database(":memory:");
+    try {
+      database.exec("PRAGMA user_version = 15");
+      expect(() => assertSchemaVersionSupported(database, 14)).toThrow(UnsupportedSchemaVersionError);
+      expect(readSchemaVersion(database)).toBe(15);
     } finally {
       database.close();
     }

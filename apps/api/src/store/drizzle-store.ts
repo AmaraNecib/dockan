@@ -52,7 +52,7 @@ import { expenseRefundSchema, MAX_EXPENSE_AMOUNT, arabicIncludes, foldArabic, FU
 import type { Connection } from "../db/connection";
 import { SnapshotPersistenceError } from "../db/encrypted-connection";
 import { snapshotFailurePolicy } from "../db/snapshot-failure-policy";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenseCorrections, expenseRefunds, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, stockOutflowConsumptions, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberBoundSequence, invoiceNumberFor, invoiceNumberPrefixFor, invoiceSequenceForRange, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { projectLedger, weightedAverageCost } from "../lib/stock-ledger";
@@ -1985,7 +1985,22 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       group.push(movement);
       saleGroups.set(key, group);
     }
-    if (saleGroups.size === 0) return movements;
+    const movementIds = movements.flatMap((movement) => movement.id === undefined ? [] : [movement.id]);
+    const savedConsumptions = movementIds.length === 0 ? [] : await db.select({
+      movementId: stockOutflowConsumptions.movementId,
+      sourceMovementId: stockOutflowConsumptions.sourceMovementId,
+      quantity: stockOutflowConsumptions.quantity,
+    }).from(stockOutflowConsumptions).where(inArray(stockOutflowConsumptions.movementId, movementIds));
+    const durable = new Map<string, Array<{ movementId: string; quantity: number }>>();
+    for (const row of savedConsumptions) {
+      const source = durable.get(row.movementId) ?? [];
+      source.push({ movementId: row.sourceMovementId, quantity: row.quantity });
+      durable.set(row.movementId, source);
+    }
+    if (saleGroups.size === 0) return movements.map((movement) => {
+      const consumedMovements = movement.id === undefined ? undefined : durable.get(movement.id);
+      return consumedMovements === undefined ? movement : { ...movement, consumedMovements };
+    });
     const invoiceIds = [...new Set([...saleGroups.values()].flatMap((group) => group.flatMap((row) => row.ref === null ? [] : [row.ref])))];
     const links = await db.select({
       invoiceId: stockLinks.invoiceId, movementId: stockLinks.movementId, quantity: stockLinks.quantity,
@@ -2022,7 +2037,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       }
     }
     return movements.map((movement) => {
-      const consumedMovements = attributed.get(movement.id);
+      const consumedMovements = attributed.get(movement.id) ?? (movement.id === undefined ? undefined : durable.get(movement.id));
       return consumedMovements === undefined ? movement : { ...movement, consumedMovements };
     });
   };
@@ -2212,6 +2227,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           })
           .returning(),
       );
+      if (movement.consumedMovements !== undefined) {
+        await db.insert(stockOutflowConsumptions).values(movement.consumedMovements.map((source) => ({
+          movementId: row.id,
+          sourceMovementId: source.movementId,
+          quantity: source.quantity,
+        })));
+      }
       return toMovement(row);
     },
     async listStockMovements(itemId) {
@@ -2659,6 +2681,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return rows;
     },
     async listSaleLinesForProfit(from, to) {
+      // Effective quantity removed from an original source: held returns are
+      // excluded, and rejected returns are excluded only to the extent their
+      // returned layer was subsequently consumed by a sale. Unsold rejected
+      // units remain booked as damage on the original sale.
+      const returnedEffectiveQuantity = sql<number>`COALESCE((
+        SELECT SUM(CASE WHEN returned.status != 'REJECTED_DAMAGED' THEN a.quantity ELSE
+          MIN(a.quantity, COALESCE((SELECT SUM(resale.quantity) FROM stock_links resale
+            JOIN invoices sale ON sale.id = resale.invoice_id AND sale.kind = 'SALE'
+            WHERE resale.movement_id = a.returned_movement_id), 0)) END)
+        FROM return_source_allocations a
+        JOIN return_lines rl ON rl.id = a.return_line_id
+        JOIN returns returned ON returned.id = rl.return_id
+        WHERE a.stock_link_id = sl.id
+      ), 0)`;
       // raw line facts only: netTotal (revenue basis), cogsExact (exact COGS
       // basis) and costAtSale (rounded snapshot, kept for the DTO); the pure
       // report module owns the formulas. setup() guarantees the column;
@@ -2675,12 +2711,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                    SELECT 1 FROM stock_links sl
                    JOIN stock_movements source ON source.id = sl.movement_id
                    WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
-                     AND sl.quantity > COALESCE((
-                       SELECT SUM(a.quantity) FROM return_source_allocations a
-                       JOIN return_lines rl ON rl.id = a.return_line_id
-                       JOIN returns returned ON returned.id = rl.return_id
-                       WHERE a.stock_link_id = sl.id AND returned.status != 'REJECTED_DAMAGED'
-                     ), 0)
+                     AND sl.quantity > ${returnedEffectiveQuantity}
                      AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
                      AND EXISTS (
                        WITH RECURSIVE ancestry(movement_id) AS (
@@ -2701,12 +2732,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                    AND NOT EXISTS (
                      SELECT 1 FROM stock_links sl JOIN stock_movements source ON source.id = sl.movement_id
                      WHERE sl.invoice_line_id = l.id AND source.cost_pending = 1
-                       AND sl.quantity > COALESCE((
-                         SELECT SUM(a.quantity) FROM return_source_allocations a
-                         JOIN return_lines rl ON rl.id = a.return_line_id
-                         JOIN returns returned ON returned.id = rl.return_id
-                         WHERE a.stock_link_id = sl.id AND returned.status != 'REJECTED_DAMAGED'
-                       ), 0)
+                       AND sl.quantity > ${returnedEffectiveQuantity}
                        AND NOT EXISTS (SELECT 1 FROM receipt_cost_resolutions r WHERE r.movement_id = source.id)
                        AND EXISTS (
                          WITH RECURSIVE ancestry(movement_id) AS (

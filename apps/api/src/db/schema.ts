@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { activityTypes, invoiceKinds, movementKinds, paymentMethods, returnMarks, returnPayoutMethods, returnStatuses, supplierAdjustmentDirections, supplierEntryKinds } from "@dokan/contracts";
 /**
  * Drizzle table definitions. Column names are snake_case; the API layer
@@ -255,6 +255,13 @@ export const stockMovements = sqliteTable("stock_movements", {
   occurredAt: text("occurred_at").notNull(),
   createdAt: text("created_at").notNull(),
 });
+
+/** Append-only source quantities that make each stock outflow replayable. */
+export const stockOutflowConsumptions = sqliteTable("stock_outflow_consumptions", {
+  movementId: text("movement_id").notNull().references(() => stockMovements.id),
+  sourceMovementId: text("source_movement_id").notNull().references(() => stockMovements.id),
+  quantity: integer("quantity").notNull(),
+}, (table) => [primaryKey({ columns: [table.movementId, table.sourceMovementId] })]);
 
 /** Append-only attribution from invoice lines to the stock movements they consume. */
 export const stockLinks = sqliteTable("stock_links", {
@@ -553,6 +560,8 @@ export const SCHEMA_DDL: readonly string[] = [
   // ~50 ms at 100k rows, once.
   `CREATE INDEX IF NOT EXISTS idx_stock_movements_item ON stock_movements(item_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), invoice_line_id TEXT REFERENCES invoice_lines(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS stock_outflow_consumptions (movement_id TEXT NOT NULL REFERENCES stock_movements(id), source_movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL CHECK (quantity > 0), PRIMARY KEY (movement_id, source_movement_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_stock_outflow_consumptions_source ON stock_outflow_consumptions(source_movement_id)`,
   `CREATE TABLE IF NOT EXISTS receipt_cost_resolutions (id TEXT PRIMARY KEY, movement_id TEXT NOT NULL UNIQUE REFERENCES stock_movements(id), unit_cost INTEGER NOT NULL CHECK (unit_cost >= 0), reason TEXT NOT NULL CHECK (length(trim(reason)) > 0), actor_id TEXT, actor_name TEXT, recorded_at TEXT NOT NULL, CHECK ((actor_id IS NULL AND actor_name IS NULL) OR (actor_id IS NOT NULL AND actor_name IS NOT NULL)))`,
   `CREATE TABLE IF NOT EXISTS receipt_cost_adjustments (id TEXT PRIMARY KEY, resolution_id TEXT NOT NULL REFERENCES receipt_cost_resolutions(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_receipt_cost_adjustments_line ON receipt_cost_adjustments(invoice_line_id)`,

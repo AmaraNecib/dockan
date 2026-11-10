@@ -134,15 +134,98 @@ async function assertOriginal(sale: InvoiceDetail) {
   expect(byId((await client.invoicesGet({ id: sale.id })).lines)).toEqual(byId(sale.lines));
 }
 
+describe("persisted review counterexamples", () => {
+  it("keeps an accepted backdated manual outflow replayable after reopen", async () => {
+    const product = await item();
+    const jan1 = await receipt(product.id, 5, 100, "2026-01-01T10:00:00");
+    const jan2 = await receipt(product.id, 5, undefined, "2026-01-02T10:00:00");
+    const earlierSale = await sell(product.id, 5, "2026-01-05");
+    expect((await store.listStockLinksByItem(product.id)).filter((link) => link.invoiceId === earlierSale.id).map((link) => [link.movementId, link.quantity]))
+      .toEqual([[jan1.id, 5]]);
+
+    await client.stockAddManual({ itemId: product.id, kind: "MANUAL_ADJUSTMENT", delta: -1, occurredAt: "2026-01-03T10:00:00" });
+    await closeDatabase();
+    await connect();
+    client = wire(cookie);
+    expect((await client.itemsAll()).items.find((row) => row.id === product.id)).toMatchObject({ stockOnHand: 4 });
+    expect((await store.listStockLinksByItem(product.id)).filter((link) => link.invoiceId === earlierSale.id).map((link) => [link.movementId, link.quantity]))
+      .toEqual([[jan1.id, 5]]);
+    const manual = required((await store.listStockMovements(product.id)).find((movement) => movement.delta === -1 && movement.kind === "MANUAL_ADJUSTMENT"));
+    expect(manual.consumedMovements).toEqual([{ movementId: jan2.id, quantity: 1 }]);
+    const later = await sell(product.id, 1, "2026-01-06");
+    expect(required(later.lines[0]).quantity).toBe(1);
+  });
+
+  it("rejects only the remaining quantity of the returned layer, not older FIFO stock", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 5);
+    const original = await sell(product.id, 2, "2026-01-11");
+    const returned = await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: required(original.lines[0]).id, quantity: 1 }] });
+    await client.returnsReject({ returnId: returned.id, reason: "damaged" });
+    const sourceAllocation = required((await store.returnSourceAllocationsByReturnLine(required(returned.lines[0]).id))[0]);
+    await closeDatabase();
+    await connect();
+    client = wire(cookie);
+    const scrap = required((await store.listStockMovements(product.id)).find((movement) => movement.delta === -1 && movement.kind === "MANUAL_ADJUSTMENT"));
+    expect(scrap.consumedMovements).toEqual([{ movementId: sourceAllocation.returnedMovementId, quantity: 1 }]);
+    const resale = await sell(product.id, 3, "2026-11-11");
+    await resolve(source.id, 100);
+    expect(await report("2026-01-11")).toMatchObject({ revenue: 400, cogs: 200, grossProfit: 200 });
+    expect(await report("2026-11-11")).toMatchObject({ revenue: 600, cogs: 300, grossProfit: 300 });
+    expect(await saved(product.id)).toMatchObject({ catalog: { stockOnHand: 0 } });
+    expect(required(resale.lines[0]).quantity).toBe(3);
+  });
+
+  it("keeps a rejected pending unit provisional when it was damaged before resale", async () => {
+    const product = await item();
+    const source = await receipt(product.id, 1);
+    const original = await sell(product.id, 1, "2026-01-11");
+    const returned = await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: required(original.lines[0]).id, quantity: 1 }] });
+    await client.returnsReject({ returnId: returned.id, reason: "damaged" });
+    expect(await report("2026-01-11")).toMatchObject({ revenue: 200, cogs: 0, grossProfit: 200, provisional: true });
+    expect((await saved(product.id)).movements.find((movement) => movement.id === source.id)?.costPending).toBe(true);
+  });
+
+  it("finalizes rejected-and-resold pending units but keeps the damaged pending unit provisional", async () => {
+    const product = await item();
+    const known = await receipt(product.id, 1, 40, "2026-01-10T09:00:00");
+    const pending = await receipt(product.id, 1, undefined, "2026-01-10T10:00:00");
+    const original = await sell(product.id, 2, "2026-01-11");
+    const lineId = required(original.lines[0]).id;
+    const sources = await client.returnsSources({ invoiceId: original.id, invoiceLineId: lineId });
+    expect((await store.listStockLinksByItem(product.id)).filter((link) => link.invoiceId === original.id).map((link) => [link.movementId, link.quantity]))
+      .toEqual([[known.id, 1], [pending.id, 1]]);
+    const pendingSource = required(sources.sources.find((row) => row.movementId === pending.id));
+    const returned = await client.returnsCreate({ invoiceId: original.id, lines: [{ invoiceLineId: lineId, quantity: 1,
+      sourceAllocations: [{ stockLinkId: pendingSource.stockLinkId, quantity: 1 }] }] });
+    const resale = await sell(product.id, 1, "2026-11-11");
+    await client.returnsReject({ returnId: returned.id, reason: "damaged" });
+    expect(await report("2026-01-11")).toMatchObject({ revenue: 200, cogs: 40, grossProfit: 160, provisional: false });
+    expect(await report("2026-11-11")).toMatchObject({ revenue: 200, cogs: 0, grossProfit: 200, provisional: true });
+    await resolve(pending.id, 100);
+    expect(await report("2026-01-11")).toMatchObject({ revenue: 200, cogs: 40, grossProfit: 160, provisional: false });
+    expect(await report("2026-11-11")).toMatchObject({ revenue: 200, cogs: 100, grossProfit: 100, provisional: false });
+    expect(required(resale.lines[0]).quantity).toBe(1);
+  });
+});
+
 describe("persisted no-return receipt cost resolution", () => {
   it("creates the returned-movement lookup index on reopen", async () => {
     const indexName = "idx_return_source_allocations_returned_movement";
+    const consumptionIndex = "idx_stock_outflow_consumptions_source";
     expect(conn.raw.query(`PRAGMA index_info('${indexName}')`).all()).toMatchObject([{ name: "returned_movement_id" }]);
+    expect(conn.raw.query(`PRAGMA table_info(stock_outflow_consumptions)`).all()).toMatchObject([
+      { name: "movement_id" }, { name: "source_movement_id" }, { name: "quantity" },
+    ]);
+    expect(conn.raw.query(`PRAGMA index_info('${consumptionIndex}')`).all()).toMatchObject([{ name: "source_movement_id" }]);
     conn.raw.query(`DROP INDEX IF EXISTS ${indexName}`).run();
     await closeDatabase();
     await connect();
     client = wire(cookie);
     expect(conn.raw.query(`PRAGMA index_info('${indexName}')`).all()).toMatchObject([{ name: "returned_movement_id" }]);
+    expect(conn.raw.query(`PRAGMA table_info(stock_outflow_consumptions)`).all()).toMatchObject([
+      { name: "movement_id" }, { name: "source_movement_id" }, { name: "quantity" },
+    ]);
   });
   it("finalizes a mixed-source sale after its only pending source is returned", async () => {
     const product = await item();

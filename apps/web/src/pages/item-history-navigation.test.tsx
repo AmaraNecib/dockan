@@ -85,8 +85,10 @@ mock.module("@/lib/rpc", () => ({
   orpc: {
     itemsHistory: {
       queryOptions: ({ input }: { input: HistoryRequest }) => {
-        historyRequests.push(input);
-        return { queryKey: ["issue467-item-history", input], queryFn: () => historyPromise ?? Promise.resolve(historyResultForRequest?.(input) ?? historyResult) };
+        return { queryKey: ["issue467-item-history", input], queryFn: () => {
+          historyRequests.push(input);
+          return historyPromise ?? Promise.resolve(historyResultForRequest?.(input) ?? historyResult);
+        } };
       },
     },
     receiptCostsResolve: {

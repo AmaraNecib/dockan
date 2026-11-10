@@ -268,6 +268,7 @@ describe("persisted review counterexamples", () => {
     expect(required(later.lines[0]).quantity).toBe(1);
   });
 
+  // red-on-parent-waive: "rejects only the remaining quantity of the returned layer, not older FIFO stock" — b6d2e24e lacks return-source allocation storage and the persisted source lookup used by this fixture, so setup cannot reach this assertion
   it("rejects only the remaining quantity of the returned layer, not older FIFO stock", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -288,6 +289,7 @@ describe("persisted review counterexamples", () => {
     expect(required(resale.lines[0]).quantity).toBe(3);
   });
 
+  // red-on-parent-waive: "keeps a rejected pending unit provisional when it was damaged before resale" — b6d2e24e already supports this unchanged rejection and provisional-report behavior
   it("keeps a rejected pending unit provisional when it was damaged before resale", async () => {
     const product = await item();
     const source = await receipt(product.id, 1);
@@ -298,6 +300,7 @@ describe("persisted review counterexamples", () => {
     expect((await saved(product.id)).movements.find((movement) => movement.id === source.id)?.costPending).toBe(true);
   });
 
+  // red-on-parent-waive: "finalizes rejected-and-resold pending units but keeps the damaged pending unit provisional" — b6d2e24e has no returnsSources RPC or source-allocation persistence for this fixture
   it("finalizes rejected-and-resold pending units but keeps the damaged pending unit provisional", async () => {
     const product = await item();
     const known = await receipt(product.id, 1, 40, "2026-01-10T09:00:00");
@@ -339,6 +342,7 @@ describe("persisted no-return receipt cost resolution", () => {
       { name: "movement_id" }, { name: "source_movement_id" }, { name: "quantity" },
     ]);
   });
+  // red-on-parent-waive: "finalizes a mixed-source sale after its only pending source is returned" — b6d2e24e has no returnsSources RPC or source-allocation persistence for this fixture
   it("finalizes a mixed-source sale after its only pending source is returned", async () => {
     const product = await item();
     await receipt(product.id, 1, 40, "2026-01-10T09:00:00");
@@ -353,6 +357,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await report()).toMatchObject({ revenue: 200, cogs: 40, grossProfit: 160, provisional: false });
   });
 
+  // red-on-parent-waive: "keeps full sale revenue and COGS when a split-source return is rejected" — b6d2e24e has no returnsSources RPC or source-allocation persistence for this fixture
   it("keeps full sale revenue and COGS when a split-source return is rejected", async () => {
     const product = await item();
     await receipt(product.id, 2, 100, "2026-01-10T09:00:00");
@@ -365,6 +370,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await client.returnsReject({ returnId: returned.id, reason: "inspection refused" });
     expect(await report()).toMatchObject({ revenue: 800, cogs: 400, grossProfit: 400, provisional: false });
   });
+  // red-on-parent-waive: "relieves the resale's booked cost on a repeated known-cost return" — b6d2e24e already supports this unchanged known-cost return behavior
   it("relieves the resale's booked cost on a repeated known-cost return", async () => {
     const product = await item();
     await receipt(product.id, 3, 100);
@@ -378,6 +384,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await report()).toMatchObject({ revenue: 200, cogs: 100, grossProfit: 100, provisional: false });
   });
 
+  // red-on-parent-waive: "accepts a backdated sale while preserving the earlier sale's consumed source" — b6d2e24e already preserves saved sale allocations when a backdated sale is posted
   it("accepts a backdated sale while preserving the earlier sale's consumed source", async () => {
     const product = await item();
     const jan1 = await receipt(product.id, 5, 100, "2026-01-01T10:00:00");
@@ -432,6 +439,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect((await resolve(pending.id, 100, "  invoice found  ")).reason).toBe("invoice found");
   });
 
+  // red-on-parent-waive: "books exactly 200 in the original sale period and 300 remaining FIFO without changing invoice facts" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("books exactly 200 in the original sale period and 300 remaining FIFO without changing invoice facts", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -465,6 +473,7 @@ describe("persisted no-return receipt cost resolution", () => {
     });
   });
 
+  // red-on-parent-waive: "resolves full consumption with no phantom stock or resolution-period COGS" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("resolves full consumption with no phantom stock or resolution-period COGS", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -476,6 +485,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 
+  // red-on-parent-waive: "treats confirmed zero as final across retry and reopen" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("treats confirmed zero as final across retry and reopen", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -497,6 +507,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 
+  // red-on-parent-waive: "adds exact mixed-layer deltas successively and becomes final only after the last pending source" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("adds exact mixed-layer deltas successively and becomes final only after the last pending source", async () => {
     const product = await item();
     await receipt(product.id, 2, 11, "2026-01-08T10:00:00");
@@ -526,6 +537,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 
+  // red-on-parent-waive: "preserves mixed source splits across duplicate-item lines and a later backdate" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("preserves mixed source splits across duplicate-item lines and a later backdate", async () => {
     const product = await item();
     await receipt(product.id, 1, 11, "2026-01-09T10:00:00");
@@ -543,6 +555,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 
+  // red-on-parent-waive: "preserves unrelated sales and posting-time provenance after a backdated inflow" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("preserves unrelated sales and posting-time provenance after a backdated inflow", async () => {
     const product = await item();
     await receipt(product.id, 2, 40, "2026-01-08T10:00:00");
@@ -569,6 +582,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(affected);
   });
 
+  // red-on-parent-waive: "makes identical retries inert and refuses cost-only and reason-only conflicts atomically" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("makes identical retries inert and refuses cost-only and reason-only conflicts atomically", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -609,6 +623,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await resolutionActivities(source.id)).toHaveLength(1);
   });
 
+  // red-on-parent-waive: "retains effective outcomes on reopen and snapshots resolved FIFO for the next sale" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("retains effective outcomes on reopen and snapshots resolved FIFO for the next sale", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -649,6 +664,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertStock(product.id, 2, 0, 0);
   });
 
+  // red-on-parent-waive: "resolves a pending source through an attributed return and values the remaining layer once" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("resolves a pending source through an attributed return and values the remaining layer once", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -662,6 +678,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 
+  // red-on-parent-waive: "uses selected source cost instead of proportional COGS for a mixed-source return" — b6d2e24e has no returnsSources or receiptCostsResolve RPCs and no source-allocation persistence
   it("uses selected source cost instead of proportional COGS for a mixed-source return", async () => {
     const product = await item();
     const known = await receipt(product.id, 1, 40);
@@ -675,6 +692,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await report()).toMatchObject({ cogs: 100, provisional: false });
   });
 
+  // red-on-parent-waive: "reverses resolved COGS by the selected source when the return happens later" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("reverses resolved COGS by the selected source when the return happens later", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -688,6 +706,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 
+  // red-on-parent-waive: "keeps mixed known and pending source returns in separate valued layers" — b6d2e24e has no returnsSources RPC or source-allocation persistence
   it("keeps mixed known and pending source returns in separate valued layers", async () => {
     const product = await item();
     const known = await receipt(product.id, 1, 40);
@@ -708,6 +727,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await report()).toMatchObject({ cogs: 0, provisional: false });
   });
 
+  // red-on-parent-waive: "moves resolved source cost from the original sale to a returned-layer resale" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("moves resolved source cost from the original sale to a returned-layer resale", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -726,6 +746,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(resale);
   });
 
+  // red-on-parent-waive: "snapshots exact cost on a sale made after resolving a returned layer" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("snapshots exact cost on a sale made after resolving a returned layer", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -740,6 +761,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(original);
   });
 
+  // red-on-parent-waive: "finishes rejection after returned stock was resold without scrapping unrelated stock" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("finishes rejection after returned stock was resold without scrapping unrelated stock", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -757,6 +779,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(resale);
   });
 
+  // red-on-parent-waive: "keeps original COGS when a rejected return was consumed by an unlinked stock outflow" — b6d2e24e has no receiptCostsResolve RPC or persisted stock-outflow ancestry table for this fixture
   it("keeps original COGS when a rejected return was consumed by an unlinked stock outflow", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -770,6 +793,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect((await saved(product.id)).projection.stockOnHand).toBe(0);
   });
 
+  // red-on-parent-waive: "resolves a returned source after rejection and resale" — b6d2e24e has no receiptCostsResolve RPC or receipt-resolution tables
   it("resolves a returned source after rejection and resale", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -786,6 +810,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await report("2026-01-12")).toMatchObject({ cogs: 100, provisional: false });
   });
 
+  // red-on-parent-waive: "keeps ancestry through a return-resale-return chain" — b6d2e24e has no receiptCostsResolve RPC or persisted return-source/outflow ancestry tables
   it("keeps ancestry through a return-resale-return chain", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -800,6 +825,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertStock(product.id, 1, 100, 100);
   });
 
+  // red-on-parent-waive: "accepts only unambiguous complete legacy line links on reopen" — b6d2e24e stock_links has no invoice_line_id column for this legacy-link fixture
   it("accepts only unambiguous complete legacy line links on reopen", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -828,6 +854,7 @@ describe("persisted no-return receipt cost resolution", () => {
     expect(await resolutionActivities(source.id)).toEqual([]);
   });
 
+  // red-on-parent-waive: "refuses receipt resolution when a legacy return has no source allocation" — b6d2e24e has no return-source allocation table or receiptCostsResolve RPC
   it("refuses receipt resolution when a legacy return has no source allocation", async () => {
     const product = await item();
     const source = await receipt(product.id, 5);
@@ -862,6 +889,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(sale);
   });
 
+  // red-on-parent-waive: "refuses a linked line owned by another invoice and item instead of correcting its profit" — b6d2e24e stock_links has no invoice_line_id column and no receiptCostsResolve RPC
   it("refuses a linked line owned by another invoice and item instead of correcting its profit", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -880,6 +908,7 @@ describe("persisted no-return receipt cost resolution", () => {
     await assertOriginal(unrelated);
   });
 
+  // red-on-parent-waive: "refuses ambiguous legacy duplicate-line attribution after reopen without inventing allocations" — b6d2e24e stock_links has no invoice_line_id column for this legacy-link fixture
   it("refuses ambiguous legacy duplicate-line attribution after reopen without inventing allocations", async () => {
     const product = await item();
     const source = await receipt(product.id);
@@ -899,6 +928,7 @@ describe("persisted no-return receipt cost resolution", () => {
 });
 
 describe("persisted return source choices", () => {
+  // red-on-parent-waive: "offers only original-sale sources and asks when cost or pending status differs" — b6d2e24e has no returnsSources RPC or invoice-line source provenance
   it("offers only original-sale sources and asks when cost or pending status differs", async () => {
     const product = await item();
     const known = await receipt(product.id, 2, 40);
@@ -915,6 +945,7 @@ describe("persisted return source choices", () => {
     expect(new Set(output.sources.map((source) => source.stockLinkId)).size).toBe(2);
   });
 
+  // red-on-parent-waive: "does not ask when all sources have identical known or pending cost" — b6d2e24e has no returnsSources RPC or invoice-line source provenance
   it("does not ask when all sources have identical known or pending cost", async () => {
     for (const cost of [40, undefined]) {
       const product = await item();
@@ -927,6 +958,7 @@ describe("persisted return source choices", () => {
     }
   });
 
+  // red-on-parent-waive: "compares effective resolved costs rather than immutable pending markers" — b6d2e24e has no returnsSources or receiptCostsResolve RPCs or receipt-resolution tables
   it("compares effective resolved costs rather than immutable pending markers", async () => {
     const product = await item();
     await receipt(product.id, 2, 40);
@@ -947,6 +979,7 @@ describe("persisted return source choices", () => {
     await expect(client.returnsSources({ invoiceId: first.id, invoiceLineId: required(second.lines[0]).id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "LINE_NOT_ON_INVOICE" });
   });
 
+  // red-on-parent-waive: "persists selected mixed-source splits and subtracts exact caps after reopen" — b6d2e24e has no returnsSources RPC or return-source allocation table
   it("persists selected mixed-source splits and subtracts exact caps after reopen", async () => {
     const product = await item();
     const known = await receipt(product.id, 2, 40);
@@ -976,6 +1009,7 @@ describe("persisted return source choices", () => {
     expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({ provenanceComplete: true, sources: [{ movementId: known.id, quantityAvailable: 1 }] });
   });
 
+  // red-on-parent-waive: "requires explicit choice for mixed sources and rejects forged or duplicate selections atomically" — b6d2e24e has no returnsSources RPC or return-source allocation table
   it("requires explicit choice for mixed sources and rejects forged or duplicate selections atomically", async () => {
     const product = await item();
     await receipt(product.id, 2, 40);
@@ -994,6 +1028,7 @@ describe("persisted return source choices", () => {
     expect((await client.returnsForInvoice({ invoiceId: sale.id })).items).toHaveLength(0);
   });
 
+  // red-on-parent-waive: "automatically allocates homogeneous sources without asking" — b6d2e24e has no returnsSources RPC or return-source allocation table
   it("automatically allocates homogeneous sources without asking", async () => {
     const product = await item();
     await receipt(product.id, 2, 40);
@@ -1010,6 +1045,7 @@ describe("persisted return source choices", () => {
     expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({ sources: [{ movementId: second.id, quantityAvailable: 1 }] });
   });
 
+  // red-on-parent-waive: "persists explicit UNKNOWN mode by oldest eligible original source" — b6d2e24e has no returnsSources RPC or return-source allocation table
   it("persists explicit UNKNOWN mode by oldest eligible original source", async () => {
     const product = await item();
     await receipt(product.id, 2, 40);
@@ -1025,6 +1061,7 @@ describe("persisted return source choices", () => {
     expect(await client.returnsSources({ invoiceId: sale.id, invoiceLineId: lineId })).toMatchObject({ provenanceComplete: true, sources: [{ movementId: next.id, quantityAvailable: 1 }] });
   });
 
+  // red-on-parent-waive: "safely keeps homogeneous known-cost legacy returns available" — b6d2e24e has no returnsSources RPC or invoice-line source provenance
   it("safely keeps homogeneous known-cost legacy returns available", async () => {
     const product = await item();
     await receipt(product.id, 2, 40);
@@ -1044,6 +1081,7 @@ describe("persisted return source choices", () => {
     expect(first.provenanceComplete).toBe(true);
   });
 
+  // red-on-parent-waive: "does not invent per-source caps for a legacy unattributed return" — b6d2e24e has no returnsSources RPC or return-source allocation table
   it("does not invent per-source caps for a legacy unattributed return", async () => {
     const product = await item();
     await receipt(product.id, 2, 40);

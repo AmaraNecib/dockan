@@ -230,3 +230,17 @@ decision, so pick one of these instead:
 - or name the subtree you mean: `find apps/api/src -name "*.ts"`. A subtree is the only
   `find` the guard runs: it refuses a bare `find .` even with `-prune`, so the pruned
   root form is not a safe recommendation.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repository's GitHub Issues. Use `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels configured for this repository. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: read the root `CONTEXT.md` and relevant ADRs in `docs/adr/`. See `docs/agents/domain.md`.
